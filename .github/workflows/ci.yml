@@ -124,6 +124,13 @@ jobs:
           echo "✗ Concurrency tests failed"
           exit 1
         fi
+        echo "Running VACUUM concurrency tests..."
+        if (cd test/scripts && ./vacuum_concurrent_merge.sh); then
+          echo "✓ VACUUM concurrency tests passed"
+        else
+          echo "✗ VACUUM concurrency tests failed"
+          exit 1
+        fi
         echo "Running segment tests..."
         if (cd test/scripts && ./segment.sh); then
           echo "✓ Segment tests passed"

@@ -406,23 +406,33 @@ tp_parallel_build_worker_main(dsm_segment *seg, shm_toc *toc)
 	{
 		uint32 i;
 
+		/*
+		 * The shared result struct can only report
+		 * TP_MAX_WORKER_SEGMENTS segment offsets/sizes to the leader.
+		 * If a worker produced more than that, truncating would
+		 * silently drop the extra segments and build an incomplete
+		 * index.  Fail the build instead so the missing postings are
+		 * never committed.  See issue #409.
+		 */
+		if (tracker.count > TP_MAX_WORKER_SEGMENTS)
+			ereport(ERROR,
+					(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
+					 errmsg("parallel index build: worker %d "
+							"produced too many segments (%u, "
+							"limit %d)",
+							worker_id,
+							tracker.count,
+							TP_MAX_WORKER_SEGMENTS),
+					 errhint("Increase maintenance_work_mem or "
+							 "reduce "
+							 "max_parallel_maintenance_workers.")));
+
 		for (i = 0; i < tracker.count; i++)
 		{
-			if (i >= TP_MAX_WORKER_SEGMENTS)
-			{
-				elog(WARNING,
-					 "worker %d has too many segments (%u), "
-					 "truncating",
-					 worker_id,
-					 tracker.count);
-				break;
-			}
-
 			my_result->seg_offsets[i] = tracker.entries[i].offset;
 			my_result->seg_sizes[i]	  = tracker.entries[i].data_size;
 		}
-		my_result->final_segment_count =
-				Min(tracker.count, TP_MAX_WORKER_SEGMENTS);
+		my_result->final_segment_count = tracker.count;
 	}
 
 	/* Export BufFile so leader can reopen */

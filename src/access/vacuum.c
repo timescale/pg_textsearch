@@ -851,7 +851,32 @@ tp_bulkdelete(
 	if (index_state != NULL)
 		tp_spill_memtable_if_needed(info->index, index_state, 1);
 
-	/* Re-read metapage after spill */
+	/*
+	 * Hold the per-index LWLock in shared mode across Phase 2 (identify)
+	 * and Phase 3 (mark / replace).  A concurrent spill / merge /
+	 * compaction takes LW_EXCLUSIVE to mutate level_heads and free
+	 * segment pages via the FSM, so without this lock a segment we
+	 * identify in Phase 2 can be shrunk or have its blocks recycled
+	 * before Phase 3 reopens it by block number -- yielding an
+	 * "invalid segment header" error or, when a shrunk segment still
+	 * passes the header magic check, an out-of-bounds alive-bitset
+	 * write from a now-stale doc_id (tp_alive_bitset_mark_dead).  See
+	 * tp_vacuumcleanup, which holds the same lock for the same reason.
+	 *
+	 * Acquire after Phase 1's spill (which takes LW_EXCLUSIVE itself) to
+	 * avoid a shared->exclusive upgrade, and before re-reading the
+	 * metapage so the level_heads snapshot we walk stays stable.  Inserts
+	 * and scans also hold this lock LW_SHARED, so they neither block nor
+	 * are blocked by this walk; only the exclusive spill/merge/compaction
+	 * recyclers are excluded.  (VACUUM's own Phase-3 page reclamation also
+	 * runs under LW_SHARED and so is not excluded against concurrent
+	 * scans -- a separate, pre-existing concern tracked in issue #413, not
+	 * addressed here.)
+	 */
+	if (index_state != NULL)
+		tp_acquire_index_lock(index_state, LW_SHARED);
+
+	/* Re-read metapage after spill (now under the shared lock) */
 	pfree(metap);
 	metap = tp_get_metapage(info->index);
 	if (!metap)
@@ -859,6 +884,8 @@ tp_bulkdelete(
 		stats->num_pages		= 1;
 		stats->num_index_tuples = 0;
 		stats->tuples_removed	= 0;
+		if (index_state != NULL)
+			tp_release_index_lock(index_state);
 		return stats;
 	}
 
@@ -880,6 +907,8 @@ tp_bulkdelete(
 		stats->pages_deleted	= 0;
 		pfree(metap);
 		pfree(segments);
+		if (index_state != NULL)
+			tp_release_index_lock(index_state);
 		return stats;
 	}
 
@@ -1002,6 +1031,10 @@ tp_bulkdelete(
 				info->index, docs_shrinkage, tokens_shrinkage);
 	}
 
+	/* Identify + mark complete; drop the shared lock. */
+	if (index_state != NULL)
+		tp_release_index_lock(index_state);
+
 	/*
 	 * tp_vacuumcleanup will set num_index_tuples to the actual live
 	 * count; only tuples_removed needs to carry through from here.
@@ -1050,7 +1083,20 @@ tp_vacuumcleanup(IndexVacuumInfo *info, IndexBulkDeleteResult *stats)
 		tp_spill_memtable_if_needed(
 				info->index, index_state, TP_MIN_SPILL_PAGES);
 
-	/* Get current index statistics from metapage */
+	/*
+	 * Acquire the per-index LWLock in shared mode *before* reading the
+	 * metapage so the level_heads snapshot we walk in tp_count_live_docs
+	 * stays valid: concurrent spills / compactions take LW_EXCLUSIVE to
+	 * mutate level_heads and free segment pages via the FSM, so a snapshot
+	 * read outside the lock could leave us opening a block a merge has
+	 * already recycled ("invalid segment header").  Acquire after the
+	 * spill above (which takes LW_EXCLUSIVE itself) to avoid a
+	 * shared->exclusive upgrade.
+	 */
+	if (index_state != NULL)
+		tp_acquire_index_lock(index_state, LW_SHARED);
+
+	/* Get current index statistics from metapage (under the shared lock) */
 	metap = tp_get_metapage(info->index);
 	if (metap)
 	{
@@ -1063,14 +1109,10 @@ tp_vacuumcleanup(IndexVacuumInfo *info, IndexBulkDeleteResult *stats)
 		 * regardless of whether tp_bulkdelete ran or this is a
 		 * no-deletes maintenance round.
 		 *
-		 * Hold the per-index LWLock in shared mode across the walk
-		 * so concurrent spills / compactions (which take
-		 * LW_EXCLUSIVE to mutate level_heads and free segment
-		 * pages via the FSM) can't recycle a page we're about to
-		 * tp_segment_open.
+		 * The per-index LWLock acquired above is held across the walk
+		 * so concurrent spills / compactions can't recycle a page we're
+		 * about to tp_segment_open.
 		 */
-		if (index_state != NULL)
-			tp_acquire_index_lock(index_state, LW_SHARED);
 		stats->num_index_tuples = (double)
 				tp_count_live_docs(info->index, metap);
 		if (index_state != NULL)
@@ -1105,6 +1147,9 @@ tp_vacuumcleanup(IndexVacuumInfo *info, IndexBulkDeleteResult *stats)
 	}
 	else
 	{
+		if (index_state != NULL)
+			tp_release_index_lock(index_state);
+
 		elog(WARNING,
 			 "Tapir vacuum cleanup: couldn't read metapage "
 			 "for index %s",
