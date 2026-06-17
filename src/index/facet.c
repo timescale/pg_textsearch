@@ -11,11 +11,15 @@
  */
 #include <postgres.h>
 
+#include <access/heapam.h>
+#include <access/htup_details.h>
 #include <access/relscan.h>
 #include <access/table.h>
 #include <access/tableam.h>
 #include <executor/tuptable.h>
 #include <fmgr.h>
+#include <storage/bufmgr.h>
+#include <storage/bufpage.h>
 #include <utils/datum.h>
 #include <utils/fmgroids.h>
 #include <utils/lsyscache.h>
@@ -109,6 +113,55 @@ tp_tid_cmp(const void *a, const void *b)
 	return ItemPointerCompare((ItemPointer)a, (ItemPointer)b);
 }
 
+/*
+ * Remap each collected heap TID from the live tuple it points at to the
+ * root of its HOT update chain.
+ *
+ * This is essential for correctness. A heap (sequential) scan yields the
+ * *live* tuple of each row, whose CTID is the tip of any HOT update chain.
+ * The BM25 index, like every Postgres index, stores the CTID of the HOT
+ * chain *root* (that is what the index build callback receives). After even
+ * a single HOT update the two diverge, so an allow-list built from live
+ * CTIDs would fail to match the segment's stored CTIDs and silently exclude
+ * matching documents from the top-k.
+ *
+ * heap_get_root_tuples() maps every offset on a page to its chain root, and
+ * because HOT chains never span pages the remap stays within the same block.
+ * For un-updated rows the root is the tuple itself, so this is a no-op.
+ */
+static void
+tp_remap_tids_to_hot_roots(Relation heap, ItemPointerData *tids, int count)
+{
+	BlockNumber	 cur_blk = InvalidBlockNumber;
+	Buffer		 buf	 = InvalidBuffer;
+	OffsetNumber root_offsets[MaxHeapTuplesPerPage];
+	int			 i;
+
+	for (i = 0; i < count; i++)
+	{
+		BlockNumber	 blk = ItemPointerGetBlockNumber(&tids[i]);
+		OffsetNumber off = ItemPointerGetOffsetNumber(&tids[i]);
+		OffsetNumber root;
+
+		if (blk != cur_blk)
+		{
+			if (BufferIsValid(buf))
+				UnlockReleaseBuffer(buf);
+			buf = ReadBuffer(heap, blk);
+			LockBuffer(buf, BUFFER_LOCK_SHARE);
+			heap_get_root_tuples(BufferGetPage(buf), root_offsets);
+			cur_blk = blk;
+		}
+
+		root = root_offsets[off - 1];
+		if (OffsetNumberIsValid(root))
+			ItemPointerSetOffsetNumber(&tids[i], root);
+	}
+
+	if (BufferIsValid(buf))
+		UnlockReleaseBuffer(buf);
+}
+
 TpFacetFilter *
 tp_build_query_facet(Relation bm25_index, MemoryContext ctx)
 {
@@ -183,6 +236,15 @@ tp_build_query_facet(Relation bm25_index, MemoryContext ctx)
 
 	table_endscan(scan);
 	ExecDropSingleTupleTableSlot(slot);
+
+	/*
+	 * Translate live-tuple CTIDs to HOT-chain roots so the allow-list matches
+	 * the CTIDs the BM25 segment stored at build time. Done while the heap is
+	 * still open because it reads heap buffers.
+	 */
+	if (count > 0)
+		tp_remap_tids_to_hot_roots(heap, tids, count);
+
 	table_close(heap, AccessShareLock);
 
 	elog(DEBUG1,

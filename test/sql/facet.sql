@@ -106,4 +106,53 @@ FROM (
 RESET pg_textsearch.facet_selectivity_threshold;
 RESET pg_textsearch.enable_facet_pushdown;
 DROP TABLE facet_docs;
+
+-- HOT-update regression: the BM25 segment stores HOT-chain root CTIDs (as every
+-- index does), so the facet allow-list must be mapped to those same roots. If it
+-- used live-tuple CTIDs instead, any HOT update would shift the live tuple and
+-- the pushdown would silently drop matching rows from the top-k. fillfactor=50
+-- leaves room so the update to a non-indexed column stays on-page (a HOT update,
+-- which does not touch the index).
+CREATE TABLE facet_hot (
+    id    INT PRIMARY KEY,
+    facet INT,
+    note  TEXT,
+    body  TEXT
+) WITH (fillfactor = 50);
+
+INSERT INTO facet_hot VALUES
+    (1, 0, 'x', 'alpha beta'),
+    (2, 0, 'x', 'alpha gamma delta'),
+    (3, 0, 'x', 'alpha alpha alpha alpha'),
+    (4, 0, 'x', 'alpha'),
+    (5, 0, 'x', 'alpha epsilon');
+
+CREATE INDEX facet_hot_idx ON facet_hot USING bm25(body)
+    WITH (text_config='english');
+ANALYZE facet_hot;
+
+-- HOT update: changes only the non-indexed "note" column.
+UPDATE facet_hot SET note = 'y' WHERE id = 3;
+
+-- With the pushdown engaged, every matching row (including the HOT-updated id 3)
+-- must still be returned, identical to the post-filter path.
+SET pg_textsearch.facet_selectivity_threshold = 1.0;
+SET pg_textsearch.enable_facet_pushdown = true;
+SELECT id
+FROM facet_hot
+WHERE facet < 1
+ORDER BY body <@> to_bm25query('alpha', 'facet_hot_idx'), id
+LIMIT 5;
+
+SET pg_textsearch.enable_facet_pushdown = false;
+SELECT id
+FROM facet_hot
+WHERE facet < 1
+ORDER BY body <@> to_bm25query('alpha', 'facet_hot_idx'), id
+LIMIT 5;
+
+RESET pg_textsearch.facet_selectivity_threshold;
+RESET pg_textsearch.enable_facet_pushdown;
+DROP TABLE facet_hot;
+
 DROP EXTENSION pg_textsearch CASCADE;
