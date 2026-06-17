@@ -12,6 +12,7 @@
 #include <access/relscan.h>
 #include <utils/memutils.h>
 
+#include "index/facet.h"
 #include "index/limit.h"
 #include "index/metapage.h"
 #include "index/state.h"
@@ -95,18 +96,33 @@ tp_memtable_search(
 	Assert(query_frequencies != NULL);
 	Assert(so->result_ctids != NULL);
 
-	/* Score documents using the unified scoring function */
-	result_count = tp_score_documents(
-			index_state,
-			scan->indexRelation,
-			query_terms,
-			query_frequencies,
-			entry_count,
-			k1_value,
-			b_value,
-			max_results,
-			so->result_ctids,
-			&so->result_scores);
+	/*
+	 * Activate the facet allow-list (if any) for the duration of scoring so
+	 * BMW constrains the top-k to matching documents. Cleared in the
+	 * PG_FINALLY block so an error cannot leave a dangling active filter.
+	 */
+	tp_facet_set_active(so->facet);
+
+	PG_TRY();
+	{
+		/* Score documents using the unified scoring function */
+		result_count = tp_score_documents(
+				index_state,
+				scan->indexRelation,
+				query_terms,
+				query_frequencies,
+				entry_count,
+				k1_value,
+				b_value,
+				max_results,
+				so->result_ctids,
+				&so->result_scores);
+	}
+	PG_FINALLY();
+	{
+		tp_facet_clear_active();
+	}
+	PG_END_TRY();
 
 	so->result_count	 = result_count;
 	so->current_pos		 = 0;

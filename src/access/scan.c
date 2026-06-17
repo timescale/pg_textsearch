@@ -21,6 +21,7 @@
 
 #include "access/am.h"
 #include "constants.h"
+#include "index/facet.h"
 #include "index/limit.h"
 #include "index/metapage.h"
 #include "index/resolve.h"
@@ -224,6 +225,12 @@ tp_rescan(
 		int query_limit = tp_get_query_limit(scan->indexRelation);
 		so->limit		= (query_limit > 0) ? query_limit : -1;
 	}
+
+	/*
+	 * Build the faceted-search allow-list, if the planner stashed a facet
+	 * spec for this index. Built once per rescan into the scan context.
+	 */
+	so->facet = tp_build_query_facet(scan->indexRelation, so->scan_context);
 
 	/* Reset scan state */
 	if (so)

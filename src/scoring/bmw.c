@@ -12,6 +12,7 @@
 #include <utils/memutils.h>
 
 #include "constants.h"
+#include "index/facet.h"
 #include "index/metapage.h"
 #include "index/source.h"
 #include "memtable/chain_source.h"
@@ -453,6 +454,10 @@ score_memtable_single_term(
 
 		score = compute_bm25_score(idf, tf, doc_len, k1, b, avg_doc_len);
 
+		/* Skip documents excluded by the faceted-search filter */
+		if (tp_facet_excludes(ctid))
+			continue;
+
 		if (!tp_topk_dominated(heap, score))
 			tp_topk_add_memtable(heap, *ctid, score);
 
@@ -545,6 +550,16 @@ score_segment_single_term_bmw(
 				if (stats)
 					stats->dead_docs_skipped++;
 				continue;
+			}
+
+			/* Skip documents excluded by the faceted-search filter */
+			if (tp_facet_active())
+			{
+				ItemPointerData ctid;
+
+				tp_segment_lookup_ctid(reader, posting->doc_id, &ctid);
+				if (tp_facet_excludes(&ctid))
+					continue;
 			}
 
 			score = compute_bm25_score(
@@ -787,6 +802,10 @@ score_memtable_multi_term(
 		hash_seq_init(&seq, doc_accum);
 		while ((entry = hash_seq_search(&seq)) != NULL)
 		{
+			/* Skip documents excluded by the faceted-search filter */
+			if (tp_facet_excludes(&entry->ctid))
+				continue;
+
 			if (!tp_topk_dominated(heap, entry->score))
 				tp_topk_add_memtable(heap, entry->ctid, entry->score);
 
@@ -1588,6 +1607,15 @@ score_segment_multi_term_bmw(
 			/* Step 5: Score the pivot document */
 			doc_score =
 					score_pivot_document(terms, pivot_len, k1, b, avg_doc_len);
+
+			if (tp_facet_active())
+			{
+				ItemPointerData ctid;
+
+				tp_segment_lookup_ctid(reader, pivot_doc_id, &ctid);
+				if (tp_facet_excludes(&ctid))
+					doc_score = 0.0f; /* exclude from top-k */
+			}
 
 			if (doc_score > 0.0f && !tp_topk_dominated(heap, doc_score))
 				tp_topk_add_segment(

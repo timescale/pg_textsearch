@@ -25,6 +25,7 @@
 
 #include "access/am.h"
 #include "constants.h"
+#include "index/facet.h"
 #include "index/registry.h"
 #include "index/state.h"
 #include "planner/hooks.h"
@@ -216,6 +217,36 @@ _PG_init(void)
 			false,	   /* default off */
 			PGC_SUSET, /* superuser-only: prevents GUC persistence
 						* in connection-pooled environments */
+			0,
+			NULL,
+			NULL,
+			NULL);
+
+	DefineCustomBoolVariable(
+			"pg_textsearch.enable_facet_pushdown",
+			"Push scalar WHERE filters into BM25 scoring (faceted search)",
+			"When enabled, a selective \"column OP constant\" filter combined "
+			"with an ORDER BY BM25 score is pushed into Block-Max WAND so the "
+			"top-k reflects only matching rows, instead of post-filtering an "
+			"over-fetched scan.",
+			&tp_enable_facet_pushdown,
+			true, /* default on */
+			PGC_USERSET,
+			0,
+			NULL,
+			NULL,
+			NULL);
+
+	DefineCustomRealVariable(
+			"pg_textsearch.facet_selectivity_threshold",
+			"Maximum estimated selectivity for facet filter pushdown",
+			"Filters estimated to match more than this fraction of the table "
+			"are left to the standard post-filter path.",
+			&tp_facet_selectivity_threshold,
+			0.12, /* default */
+			0.0,  /* min */
+			1.0,  /* max */
+			PGC_USERSET,
 			0,
 			NULL,
 			NULL,
@@ -505,6 +536,8 @@ tp_xact_callback(XactEvent event, void *arg __attribute__((unused)))
 		tp_release_all_index_locks();
 		/* Reset bulk load counters for next transaction */
 		tp_reset_bulk_load_counters();
+		/* Drop any stashed faceted-search spec */
+		tp_cleanup_query_facets();
 		break;
 
 	case XACT_EVENT_ABORT:
@@ -515,6 +548,8 @@ tp_xact_callback(XactEvent event, void *arg __attribute__((unused)))
 		tp_release_all_index_locks();
 		/* Reset bulk load counters for next transaction */
 		tp_reset_bulk_load_counters();
+		/* Drop any stashed faceted-search spec */
+		tp_cleanup_query_facets();
 		break;
 
 	case XACT_EVENT_PRE_PREPARE:

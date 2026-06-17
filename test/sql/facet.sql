@@ -1,0 +1,109 @@
+-- Faceted-search filter pushdown for BM25 (column OP constant + ORDER BY <@>)
+--
+-- The pushdown constrains Block-Max WAND to rows matching a scalar filter so
+-- the top-k reflects only matching documents. Correctness must match the
+-- standard post-filter path; PostgreSQL's Filter node above the index scan is
+-- the exact recheck.
+
+SET log_duration = off;
+CREATE EXTENSION IF NOT EXISTS pg_textsearch;
+
+SET client_min_messages = NOTICE;
+-- Force the BM25 index to satisfy the ORDER BY so the facet becomes a Filter.
+SET enable_seqscan = false;
+
+CREATE TABLE facet_docs (
+    id       SERIAL PRIMARY KEY,
+    category TEXT,
+    rank     INT,
+    content  TEXT
+);
+
+-- Many "common" docs and a few selective categories.
+INSERT INTO facet_docs (category, rank, content)
+SELECT 'common', g,
+       'database query optimization common document number ' || g
+FROM generate_series(1, 60) g;
+
+INSERT INTO facet_docs (category, rank, content) VALUES
+    ('engineering', 101, 'postgresql database indexing and query optimization engine'),
+    ('engineering', 102, 'distributed database systems with storage and indexing'),
+    ('engineering', 103, 'query optimization and database performance tuning'),
+    ('engineering', 104, 'machine learning over a vector database for search'),
+    ('support',     201, 'troubleshooting database connection and query errors'),
+    ('support',     202, 'database backup and recovery support procedures');
+
+CREATE INDEX facet_docs_idx ON facet_docs USING bm25(content)
+    WITH (text_config='english');
+
+ANALYZE facet_docs;
+
+-- Plan keeps the facet as a Filter above the BM25 index scan.
+EXPLAIN (COSTS OFF)
+SELECT id, category
+FROM facet_docs
+WHERE category = 'engineering'
+ORDER BY content <@> 'database query'
+LIMIT 3;
+
+-- Force the selectivity gate open so the pushdown path is exercised regardless
+-- of planner row estimates, then confirm correctness.
+SET pg_textsearch.facet_selectivity_threshold = 1.0;
+
+SET pg_textsearch.enable_facet_pushdown = true;
+SELECT id, category, ROUND((content <@> 'database query')::numeric, 4) AS score
+FROM facet_docs
+WHERE category = 'engineering'
+ORDER BY content <@> 'database query', id
+LIMIT 3;
+
+-- Disabling pushdown must yield identical results (post-filter path).
+SET pg_textsearch.enable_facet_pushdown = false;
+SELECT id, category, ROUND((content <@> 'database query')::numeric, 4) AS score
+FROM facet_docs
+WHERE category = 'engineering'
+ORDER BY content <@> 'database query', id
+LIMIT 3;
+
+SET pg_textsearch.enable_facet_pushdown = true;
+
+-- Non-equality operator on a numeric column is supported too.
+SELECT id, category, rank
+FROM facet_docs
+WHERE rank >= 201
+ORDER BY content <@> 'database recovery', id
+LIMIT 5;
+
+-- A facet matching no rows yields no results.
+SELECT id
+FROM facet_docs
+WHERE category = 'nonexistent'
+ORDER BY content <@> 'database'
+LIMIT 5;
+
+-- A LIMIT larger than the matching set returns exactly the matching rows.
+SELECT count(*) AS engineering_hits
+FROM (
+    SELECT id
+    FROM facet_docs
+    WHERE category = 'engineering'
+    ORDER BY content <@> 'database'
+    LIMIT 100
+) s;
+
+-- Gate closed (threshold 0): a broad facet falls back to the post-filter path
+-- and still returns correct results.
+SET pg_textsearch.facet_selectivity_threshold = 0.0;
+SELECT count(*) AS common_hits
+FROM (
+    SELECT id
+    FROM facet_docs
+    WHERE category = 'common'
+    ORDER BY content <@> 'database'
+    LIMIT 100
+) s;
+
+RESET pg_textsearch.facet_selectivity_threshold;
+RESET pg_textsearch.enable_facet_pushdown;
+DROP TABLE facet_docs;
+DROP EXTENSION pg_textsearch CASCADE;

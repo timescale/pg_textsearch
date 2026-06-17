@@ -107,7 +107,6 @@ LIMIT 10;
 NOTICE:  BM25 index scan: tid=(0,8), BM25_score=-2.3908
 NOTICE:  BM25 index scan: tid=(0,2), BM25_score=-1.3220
 NOTICE:  BM25 index scan: tid=(0,10), BM25_score=-1.3220
-NOTICE:  BM25 index scan: tid=(0,11), BM25_score=-1.1191
 NOTICE:  BM25 index scan: tid=(0,3), BM25_score=-1.0228
 NOTICE:  BM25 index scan: tid=(0,4), BM25_score=-0.9806
              title             |                                               content                                               |  score  
