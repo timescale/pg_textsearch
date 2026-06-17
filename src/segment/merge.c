@@ -14,6 +14,7 @@
 #include <utils/memutils.h>
 #include <utils/timestamp.h>
 
+#include "access/am.h"
 #include "constants.h"
 #include "index/metapage.h"
 #include "index/state.h"
@@ -27,6 +28,7 @@
 #include "segment/merge_internal.h"
 #include "segment/pagemapper.h"
 #include "segment/segment.h"
+#include "segment/tombstone.h"
 
 /* Sentinel for dead docs in old_to_new mapping */
 #define TP_MERGE_DOC_DEAD UINT32_MAX
@@ -1441,6 +1443,21 @@ tp_merge_level_segments(Relation index, uint32 level, uint32 max_merge)
 		return InvalidBlockNumber;
 	}
 
+	/*
+	 * Opportunistically return any already-past-horizon displaced
+	 * pages to the FSM so the tombstone chain doesn't grow unbounded
+	 * between vacuums.  The merge caller already holds the per-index
+	 * LWLock EXCLUSIVE end-to-end, so own_lock=false.  Use the most
+	 * conservative (NULL) horizon: it can only over-retain.
+	 */
+	{
+		uint32 drained = tp_tombstone_drain(
+				index, NULL, tp_reclaim_horizon(NULL), /* own_lock */ false);
+
+		if (drained > 0)
+			IndexFreeSpaceMapVacuum(index);
+	}
+
 	/* Read metapage to get segment chain */
 	metabuf = ReadBuffer(index, 0);
 	LockBuffer(metabuf, BUFFER_LOCK_SHARE);
@@ -1753,7 +1770,41 @@ tp_merge_level_segments(Relation index, uint32 level, uint32 max_merge)
 			GenericXLogState *xlog_state;
 			Page			  meta_copy;
 			TpIndexMetaPage	  meta_ptr;
-			Buffer			  seg_buf = InvalidBuffer;
+			Buffer			  seg_buf	  = InvalidBuffer;
+			FullTransactionId merged_fxid = ReadNextFullTransactionId();
+			BlockNumber		  batch_head;
+
+			/*
+			 * Park the displaced pages BEFORE taking the metapage
+			 * lock.  The new tombstone pages are unreferenced until
+			 * we set pending_free_head in the swap record below, so
+			 * a crash here only leaks them (no corruption).  We hold
+			 * the per-index LWLock EXCLUSIVE for the whole merge, so
+			 * no concurrent merge can change pending_free_head
+			 * between this read and the swap record.
+			 */
+			{
+				BlockNumber *flat = palloc(
+						sizeof(BlockNumber) * Max(total_pages_to_free, 1));
+				uint32 n = 0;
+				int	   s;
+
+				for (s = 0; s < (int)num_segments_tracked; s++)
+				{
+					uint32 p;
+
+					for (p = 0; p < segment_page_counts[s]; p++)
+						flat[n++] = segment_pages[s][p];
+				}
+
+				batch_head = tp_tombstone_enqueue(
+						index,
+						flat,
+						n,
+						merged_fxid,
+						tp_tombstone_read_head(index));
+				pfree(flat);
+			}
 
 			metabuf = ReadBuffer(index, 0);
 			LockBuffer(metabuf, BUFFER_LOCK_EXCLUSIVE);
@@ -1791,6 +1842,18 @@ tp_merge_level_segments(Relation index, uint32 level, uint32 max_merge)
 												   tokens_shrinkage
 										 : 0;
 
+			/*
+			 * Prepend the freshly written batch (head = batch_head,
+			 * tail already chained to the old pending_free_head) to
+			 * the deferred-free chain.  This transitions the
+			 * displaced pages from "referenced by the level chain"
+			 * to "referenced by the tombstone list" atomically with
+			 * the level-swap, with no writes to the displaced data
+			 * pages.
+			 */
+			if (batch_head != InvalidBlockNumber)
+				meta_ptr->pending_free_head = batch_head;
+
 			GenericXLogFinish(xlog_state);
 			if (BufferIsValid(seg_buf))
 				UnlockReleaseBuffer(seg_buf);
@@ -1799,28 +1862,15 @@ tp_merge_level_segments(Relation index, uint32 level, uint32 max_merge)
 	}
 
 	/*
-	 * Free pages from merged source segments. Now that the metapage no longer
-	 * references these segments, their pages can be recycled via the FSM.
+	 * The merged source segments' pages were parked in the tombstone
+	 * chain (set as pending_free_head in the swap record above), not
+	 * freed.  They are returned to the FSM by a later drain once their
+	 * merge horizon is past every standby snapshot.
 	 */
-	for (i = 0; i < (int)num_segments_tracked; i++)
-	{
-		if (segment_pages[i] && segment_page_counts[i] > 0)
-		{
-			tp_segment_free_pages(
-					index, segment_pages[i], segment_page_counts[i]);
-		}
-	}
-
-	/*
-	 * Update FSM upper-level pages so searches can find the freed pages.
-	 * Without this, RecordFreeIndexPage only updates leaf pages, but
-	 * GetFreeIndexPage searches from the root down.
-	 */
-	IndexFreeSpaceMapVacuum(index);
 
 	elog(DEBUG1,
 		 "Merged %u segments from L%u into L%u segment at block %u "
-		 "(%u terms, freed %u pages)",
+		 "(%u terms, parked %u pages)",
 		 segment_count,
 		 level,
 		 level + 1,

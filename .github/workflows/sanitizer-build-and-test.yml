@@ -201,6 +201,16 @@ jobs:
           cd test/scripts && ./recovery.sh
         "
 
+        # Deferred-reclaim crash recovery (issue #380): parks displaced
+        # segment pages in the tombstone chain, crashes (immediate stop),
+        # and asserts WAL replay reconstructs the chain.  Under ASan a
+        # use-after-recycle of a displaced page would trip immediately.
+        echo "Running deferred-reclaim crash recovery tests under sanitizer..."
+        timeout 600s bash -c "
+          export PATH=\"$HOME/$PG_INSTALL_DIR/bin:\$PATH\"
+          cd test/scripts && ./standby_reclaim.sh
+        "
+
         echo "Running shutdown spill tests under sanitizer..."
         timeout 600s bash -c "
           export PATH=\"$HOME/$PG_INSTALL_DIR/bin:\$PATH\"
@@ -265,6 +275,19 @@ jobs:
         timeout 1200s bash -c "
           export PATH=\"$HOME/$PG_INSTALL_DIR/bin:\$PATH\"
           cd test/scripts && ./replication_spill_paths.sh
+        "
+
+        # Standby segment-reclaim acceptance (issue #380): a live
+        # standby snapshot with hot_standby_feedback=on must hold the
+        # primary's reclaim horizon so a merge+VACUUM keeps displaced
+        # pages parked, and the standby reads cleanly across merge
+        # replay.  Spins up its own primary + standby on dedicated
+        # ports.  Under ASan, recycling a page out from under the
+        # standby read would surface as a use-after-recycle.
+        echo "Running standby segment-reclaim acceptance tests under sanitizer..."
+        timeout 1200s bash -c "
+          export PATH=\"$HOME/$PG_INSTALL_DIR/bin:\$PATH\"
+          cd test/scripts && ./replication_segment_reclaim.sh
         "
 
         # Clean up

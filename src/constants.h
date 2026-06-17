@@ -16,6 +16,10 @@
 #define TP_MEMTABLE_PAGE_MAGIC                                              \
 	0x5450544D /* "TPTM" - Tapir Memtable (replaces docid pages; introduced \
 				* with the on-disk memtable design, see issue #374) */
+#define TP_TOMBSTONE_MAGIC                                                \
+	0x5450544F /* "TPTO" - Tapir Tombstone: parks displaced segment pages \
+				* for deferred, standby-safe FSM reclaim (issue #380) */
+#define TP_TOMBSTONE_VERSION 1
 
 /*
  * Page format versions - bump when on-disk format changes.
@@ -51,7 +55,10 @@
  * pre-v0.5.0 indexes carry an older segment format the v7
  * binary cannot read; those continue to require REINDEX.
  */
-#define TP_METAPAGE_VERSION	   7
+#define TP_METAPAGE_VERSION 8
+#define TP_METAPAGE_VERSION_V7                                            \
+	7							 /* read-compatible: on-disk memtable, no \
+								  * pending_free_head (issue #380) */
 #define TP_METAPAGE_VERSION_V6 6 /* read-compatible (issue #383) */
 #define TP_PAGE_INDEX_VERSION  1 /* Page index format version */
 /* Initial version (introduced with the on-disk memtable design) */

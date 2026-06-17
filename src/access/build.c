@@ -43,6 +43,7 @@
 #include "segment/io.h"
 #include "segment/merge.h"
 #include "segment/segment.h"
+#include "segment/tombstone.h"
 #include "types/array.h"
 #include "types/vector.h"
 
@@ -465,6 +466,23 @@ tp_truncate_dead_pages(Relation index)
 	}
 
 	UnlockReleaseBuffer(metabuf);
+
+	/*
+	 * Fold in the deferred-free tombstone chain (issue #380): both
+	 * the tombstone pages and the displaced blocks they park must
+	 * survive truncation.  Truncating a parked page would dangle
+	 * pending_free_head and (being WAL-logged) could yank a page a
+	 * hot standby is still reading out from under it.  Read the
+	 * chain after releasing the metapage buffer to avoid taking a
+	 * second SHARE lock on block 0; the caller's per-index
+	 * LWLock EXCLUSIVE keeps the chain stable.
+	 */
+	{
+		BlockNumber tomb_max = tp_tombstone_max_used_block(index);
+
+		if (tomb_max > max_used)
+			max_used = tomb_max;
+	}
 
 	nblocks = RelationGetNumberOfBlocks(index);
 	if (max_used < nblocks)

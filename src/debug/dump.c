@@ -26,6 +26,7 @@
 #include "memtable/page.h"
 #include "segment/io.h"
 #include "segment/segment.h"
+#include "segment/tombstone.h"
 
 /* Output size limits for string mode */
 #define MAX_OUTPUT_SIZE	 (256 * 1024) /* 256KB soft limit */
@@ -779,6 +780,53 @@ tp_summarize_index(PG_FUNCTION_ARGS)
 	tp_summarize_index_to_output(index_name, &out);
 
 	PG_RETURN_TEXT_P(cstring_to_text(result.data));
+}
+
+PG_FUNCTION_INFO_V1(tp_pending_free_pages);
+
+Datum
+tp_pending_free_pages(PG_FUNCTION_ARGS)
+{
+	text			  *index_name_text = PG_GETARG_TEXT_PP(0);
+	char			  *index_name	   = text_to_cstring(index_name_text);
+	Oid				   index_oid;
+	Relation		   index_rel;
+	TpLocalIndexState *index_state;
+	uint64			   count;
+
+	if (!superuser())
+		ereport(ERROR,
+				(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
+				 errmsg("must be superuser to inspect index")));
+
+	index_oid = tp_resolve_index_name_shared(index_name);
+	if (!OidIsValid(index_oid))
+		ereport(ERROR,
+				(errcode(ERRCODE_UNDEFINED_OBJECT),
+				 errmsg("index \"%s\" not found", index_name)));
+
+	index_rel = index_open(index_oid, AccessShareLock);
+
+	/*
+	 * Hold the per-index LWLock in shared mode across the tombstone
+	 * walk so a concurrent VACUUM drain / merge enqueue (which take
+	 * LW_EXCLUSIVE to mutate the chain and recycle tombstone pages via
+	 * the FSM) can't recycle a page we're about to read.  Without it
+	 * the walk could follow a stale next_page link into a page that
+	 * has already been reinitialized as a different chain's tombstone
+	 * and return a silently wrong count.  Mirrors tp_count_live_docs
+	 * in vacuum.c.
+	 */
+	index_state = tp_get_local_index_state(index_oid);
+	if (index_state != NULL)
+		tp_acquire_index_lock(index_state, LW_SHARED);
+	count = tp_pending_free_block_count(index_rel);
+	if (index_state != NULL)
+		tp_release_index_lock(index_state);
+
+	index_close(index_rel, AccessShareLock);
+
+	PG_RETURN_INT64((int64)count);
 }
 
 /*

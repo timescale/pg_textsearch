@@ -45,6 +45,7 @@ OBJS = \
 	src/segment/dictionary.o \
 	src/segment/scan.o \
 	src/segment/merge.o \
+	src/segment/tombstone.o \
 	src/segment/docmap.o \
 	src/segment/alive_bitset.o \
 	src/segment/compression.o \
@@ -81,7 +82,7 @@ PG_CPPFLAGS += -Wno-unknown-warning-option -Wno-clobbered -Wno-packed-not-aligne
 # PG_CPPFLAGS += -DDEBUG_DUMP_INDEX
 
 # Test configuration
-REGRESS = abort aerodocs basic facet binary_io bmw bmw_skip_advance bulk_load cache_apply cache_memory_cap cache_source cache_spill catalog_stats chain_source compression concurrent_build coverage deletion vacuum vacuum_bitmap vacuum_extended vacuum_rebuild dropped empty explicit_index expression_index force_merge implicit index inheritance large_documents limits lock manyterms memory memtable_append memtable_page memtable_spill memtable_spill_dead memtable_reclaim merge mixed parallel_build parallel_bmw partitioned partitioned_many partial_index pgstats queries quoted_identifiers rescan schema scoring1 scoring2 scoring3 scoring4 scoring5 scoring6 security segment segment_integrity strings temp_table text_array text_config unsupported updates vector vector_v1_rejected unlogged_index wand
+REGRESS = abort aerodocs basic facet binary_io bmw bmw_skip_advance bulk_load cache_apply cache_memory_cap cache_source cache_spill catalog_stats chain_source compression concurrent_build coverage deletion vacuum vacuum_bitmap vacuum_extended vacuum_rebuild dropped empty explicit_index expression_index force_merge implicit index inheritance large_documents limits lock manyterms memory memtable_append memtable_page memtable_spill memtable_spill_dead memtable_reclaim merge mixed parallel_build parallel_bmw partitioned partitioned_many partial_index pgstats queries quoted_identifiers rescan schema scoring1 scoring2 scoring3 scoring4 scoring5 scoring6 security segment segment_integrity segment_reclaim strings temp_table text_array text_config unsupported updates vector vector_v1_rejected unlogged_index wand
 REGRESS_OPTS = --inputdir=test --outputdir=test
 
 PG_CONFIG ?= pg_config
@@ -129,6 +130,7 @@ test-recovery:
 	@echo "Running crash recovery tests..."
 	@cd test/scripts && ./recovery.sh
 	@cd test/scripts && ./shutdown_spill.sh
+	@cd test/scripts && ./standby_reclaim.sh
 
 test-segment:
 	@echo "Running multi-backend segment tests..."
@@ -164,6 +166,7 @@ test-replication-extended:
 	    replication_cascading.sh \
 	    replication_spill_paths.sh \
 	    replication_memtable_dead_reclaim.sh \
+	    replication_segment_reclaim.sh \
 	    wal_audit.sh"; \
 	failed=""; \
 	for s in $$scripts; do \

@@ -92,6 +92,17 @@ typedef struct TpIndexMetaPageData
 	 */
 	BlockNumber memtable_head_blkno;
 	BlockNumber memtable_tail_blkno;
+
+	/*
+	 * Head of the deferred-free tombstone chain (issue #380).
+	 * InvalidBlockNumber when empty.  Each tombstone page lists
+	 * displaced segment blocks plus a merge horizon; pages are
+	 * returned to the FSM only once that horizon is past
+	 * GetOldestNonRemovableTransactionId.  Introduced in
+	 * TP_METAPAGE_VERSION 8.  All mutations go through
+	 * GenericXLog atomic with the corresponding chain mutation.
+	 */
+	BlockNumber pending_free_head;
 } TpIndexMetaPageData;
 
 typedef TpIndexMetaPageData *TpIndexMetaPage;
@@ -119,6 +130,19 @@ typedef TpIndexMetaPageData *TpIndexMetaPage;
 StaticAssertDecl(
 		TP_INDEX_METAPAGE_DATA_SIZE_V6 == 108,
 		"v6 metapage prefix layout changed - "
+		"backward-compat is broken");
+
+/*
+ * v7 prefix size: everything up to (but not including)
+ * pending_free_head.  v7 was frozen by v1.3.x; v8 only appends
+ * pending_free_head after this prefix.  See issue #380.
+ */
+#define TP_INDEX_METAPAGE_DATA_SIZE_V7 \
+	offsetof(TpIndexMetaPageData, pending_free_head)
+
+StaticAssertDecl(
+		TP_INDEX_METAPAGE_DATA_SIZE_V7 == 116,
+		"v7 metapage prefix layout changed - "
 		"backward-compat is broken");
 
 /*

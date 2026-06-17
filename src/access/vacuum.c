@@ -39,6 +39,7 @@
 #include "segment/io.h"
 #include "segment/merge.h"
 #include "segment/segment.h"
+#include "segment/tombstone.h"
 
 /*
  * Per-segment state for VACUUM dead tuple tracking.
@@ -85,6 +86,14 @@ tp_full_xid_from_allowable_at(FullTransactionId nextFullXid, TransactionId xid)
 
 	return FullTransactionIdFromEpochAndXid(epoch, xid);
 #endif
+}
+
+FullTransactionId
+tp_reclaim_horizon(Relation heaprel)
+{
+	TransactionId oldest = GetOldestNonRemovableTransactionId(heaprel);
+
+	return tp_full_xid_from_allowable_at(ReadNextFullTransactionId(), oldest);
 }
 
 /*
@@ -1141,6 +1150,30 @@ tp_vacuumcleanup(IndexVacuumInfo *info, IndexBulkDeleteResult *stats)
 		{
 			stats->pages_free += freed_pages;
 			IndexFreeSpaceMapVacuum(info->index);
+		}
+
+		/*
+		 * Drain past-horizon displaced segment pages (issue #380).
+		 * Unlike the memtable reclaim above, this MUTATES the shared
+		 * tombstone chain (metap->pending_free_head and tombstone
+		 * next_page links), so it must run under LW_EXCLUSIVE, not
+		 * LW_SHARED.  tp_tombstone_drain takes/releases the lock per
+		 * unlink (own_lock=true) so concurrent reads never wait more
+		 * than a single unlink.
+		 */
+		if (index_state != NULL)
+		{
+			uint32 drained = tp_tombstone_drain(
+					info->index,
+					index_state,
+					tp_reclaim_horizon(info->heaprel),
+					/* own_lock */ true);
+
+			if (drained != 0)
+			{
+				stats->pages_free += drained;
+				IndexFreeSpaceMapVacuum(info->index);
+			}
 		}
 
 		pfree(metap);

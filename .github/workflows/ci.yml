@@ -145,6 +145,13 @@ jobs:
           echo "✗ Crash recovery tests failed"
           exit 1
         fi
+        echo "Running deferred-reclaim crash recovery tests (#380)..."
+        if (cd test/scripts && ./standby_reclaim.sh); then
+          echo "✓ Deferred-reclaim crash recovery tests passed"
+        else
+          echo "✗ Deferred-reclaim crash recovery tests failed"
+          exit 1
+        fi
         echo "Running shutdown spill tests..."
         if (cd test/scripts && ./shutdown_spill.sh); then
           echo "✓ Shutdown spill tests passed"
@@ -178,6 +185,13 @@ jobs:
           echo "✓ Spill-paths replication tests passed"
         else
           echo "✗ Spill-paths replication tests failed"
+          exit 1
+        fi
+        echo "Running standby segment-reclaim acceptance tests (#380)..."
+        if (cd test/scripts && ./replication_segment_reclaim.sh); then
+          echo "✓ Standby segment-reclaim tests passed"
+        else
+          echo "✗ Standby segment-reclaim tests failed"
           exit 1
         fi
         echo "Running WAL audit tests..."
@@ -496,6 +510,16 @@ jobs:
           cd test/scripts && ./recovery.sh
         "
 
+        # Deferred-reclaim crash recovery (issue #380): parks displaced
+        # segment pages, crashes (immediate stop), asserts WAL replay
+        # reconstructs the tombstone chain.  Spins up its own instance;
+        # under ASan a use-after-recycle of a displaced page trips here.
+        echo "Running deferred-reclaim crash recovery tests under sanitizer..."
+        timeout 600s bash -c "
+          export PATH=\"$HOME/$PG_INSTALL_DIR/bin:\$PATH\"
+          cd test/scripts && ./standby_reclaim.sh
+        "
+
         echo "Running shutdown spill tests under sanitizer..."
         timeout 600s bash -c "
           export PATH=\"$HOME/$PG_INSTALL_DIR/bin:\$PATH\"
@@ -526,6 +550,18 @@ jobs:
           export PGHOST=$PWD/tmp_sanitizer_test
           export PGPORT=55433
           cd test/scripts && ./multi_index.sh
+        "
+
+        # Standby segment-reclaim acceptance (issue #380): a live standby
+        # snapshot with hot_standby_feedback=on holds the primary's
+        # reclaim horizon so a merge+VACUUM keeps displaced pages parked,
+        # and the standby reads cleanly across merge replay.  Spins up its
+        # own primary + standby; under ASan, recycling a page out from
+        # under the standby read surfaces as a use-after-recycle.
+        echo "Running standby segment-reclaim acceptance tests under sanitizer..."
+        timeout 1200s bash -c "
+          export PATH=\"$HOME/$PG_INSTALL_DIR/bin:\$PATH\"
+          cd test/scripts && ./replication_segment_reclaim.sh
         "
 
         # Clean up
@@ -637,11 +673,13 @@ jobs:
         (cd test/scripts && ./concurrency.sh) || true
         (cd test/scripts && ./segment.sh) || true
         (cd test/scripts && ./recovery.sh) || true
+        (cd test/scripts && ./standby_reclaim.sh) || true
         (cd test/scripts && ./shutdown_spill.sh) || true
         (cd test/scripts && ./cic.sh) || true
         (cd test/scripts && ./multi_index.sh) || true
         (cd test/scripts && ./replication.sh) || true
         (cd test/scripts && ./replication_spill_paths.sh) || true
+        (cd test/scripts && ./replication_segment_reclaim.sh) || true
         (cd test/scripts && ./wal_audit.sh) || true
 
     - name: Stop PostgreSQL and flush coverage
@@ -728,10 +766,10 @@ jobs:
         # Exercise v6-metapage in-place upgrade + REINDEX path.
         # Issue #383: the 1.3.0 binary now reads v6 metapages in place
         # (byte-identical prefix), normalizes the new chain head/tail
-        # fields, and lazily upgrades to v7 on the first metapage
-        # write.  This step exercises the read path, the
+        # fields, and lazily upgrades to the current version on the
+        # first metapage write.  This step exercises the read path, the
         # ALTER EXTENSION UPDATE, an INSERT that triggers the in-place
-        # v6→v7 upgrade via memtable_bootstrap_and_append, and finally
+        # v6→v8 upgrade via memtable_bootstrap_and_append, and finally
         # a REINDEX (still supported as the fallback recovery path)
         # plus VACUUM and force_merge.
         psql -h $PWD/tmp_upgrade_cov -p 55435 -d upgrade_cov << 'SQL'
@@ -774,7 +812,7 @@ jobs:
 
         -- INSERT triggers memtable_bootstrap_and_append, which
         -- runs tp_metapage_upgrade_to_current() inside its
-        -- GenericXLog record.  Validates that the v6→v7 in-place
+        -- GenericXLog record.  Validates that the v6→v8 in-place
         -- upgrade landed on disk.
         INSERT INTO docs (content) VALUES
           ('compat upgrade insert one'),
@@ -784,12 +822,12 @@ jobs:
         DECLARE dump_text text;
         BEGIN
           dump_text := bm25_dump_index('idx');
-          IF dump_text NOT LIKE '%version: 7' || E'\n' || '%' THEN
+          IF dump_text NOT LIKE '%version: 8' || E'\n' || '%' THEN
             RAISE EXCEPTION
-              'FAIL: metapage not upgraded to v7 after INSERT; '
+              'FAIL: metapage not upgraded to v8 after INSERT; '
               'dump excerpt: %', substr(dump_text, 1, 400);
           END IF;
-          RAISE NOTICE 'PASS: in-place v6→v7 upgrade after first write';
+          RAISE NOTICE 'PASS: in-place v6→v8 upgrade after first write';
         END $$;
 
         -- REINDEX is still supported as the operator fallback;
