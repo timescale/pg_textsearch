@@ -122,6 +122,7 @@ test-concurrency:
 	@echo "Running concurrency tests..."
 	@cd test/scripts && ./concurrency.sh
 	@cd test/scripts && ./partial_concurrent_read.sh
+	@cd test/scripts && ./concurrent_duplicate_read.sh
 	@cd test/scripts && ./vacuum_concurrent_merge.sh
 
 test-recovery:

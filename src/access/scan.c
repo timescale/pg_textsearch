@@ -14,6 +14,7 @@
 #include <pgstat.h>
 #include <storage/bufmgr.h>
 #include <utils/builtins.h>
+#include <utils/hsearch.h>
 #include <utils/lsyscache.h>
 #include <utils/memutils.h>
 #include <utils/regproc.h>
@@ -42,6 +43,55 @@ float8
 tp_get_cached_score(void)
 {
 	return tp_cached_score;
+}
+
+/*
+ * Record that a heap CTID has been emitted by this scan, returning
+ * true if it was already emitted earlier.
+ *
+ * Used to guarantee each heap tuple is returned at most once even
+ * when the limit-doubling re-execution in tp_gettuple re-scores the
+ * corpus under concurrent writes (which can reorder results between
+ * passes).  The set is created lazily in the scan's memory context
+ * and torn down on rescan / endscan.
+ */
+static bool
+tp_ctid_seen_or_mark(TpScanOpaque so, ItemPointer tid)
+{
+	bool found;
+
+	if (so->returned_ctids == NULL)
+	{
+		HASHCTL ctl;
+
+		memset(&ctl, 0, sizeof(ctl));
+		ctl.keysize	  = sizeof(ItemPointerData);
+		ctl.entrysize = sizeof(ItemPointerData);
+		ctl.hcxt	  = so->scan_context;
+
+		so->returned_ctids = hash_create(
+				"Tapir scan returned ctids",
+				1024,
+				&ctl,
+				HASH_ELEM | HASH_BLOBS | HASH_CONTEXT);
+	}
+
+	(void)hash_search(so->returned_ctids, tid, HASH_ENTER, &found);
+	return found;
+}
+
+/*
+ * Drop the emitted-CTID set so the next batch of results starts
+ * fresh.  Called when a scan is restarted.
+ */
+static void
+tp_returned_ctids_reset(TpScanOpaque so)
+{
+	if (so && so->returned_ctids)
+	{
+		hash_destroy(so->returned_ctids);
+		so->returned_ctids = NULL;
+	}
 }
 
 /*
@@ -230,6 +280,9 @@ tp_rescan(
 	{
 		/* Clean up any previous results */
 		tp_rescan_cleanup_results(so);
+
+		/* Drop the emitted-CTID dedup set from any prior scan */
+		tp_returned_ctids_reset(so);
 
 		/* Reset scan position and state */
 		so->current_pos	 = 0;
@@ -438,57 +491,81 @@ tp_gettuple(IndexScanDesc scan, ScanDirection dir)
 		}
 	}
 
-	/* Check if we've reached the end of current result set */
-	if (so->current_pos >= so->result_count || so->eof_reached)
+	/*
+	 * Advance to the next emittable result, re-executing the scoring
+	 * query with a larger limit when the current batch is exhausted.
+	 * Positions are skipped when they carry an invalid block number or
+	 * when their CTID was already returned by an earlier pass (the
+	 * re-execution re-scores from scratch and can reorder results under
+	 * concurrent writes, so position-based skipping alone would
+	 * re-emit rows).
+	 */
+	for (;;)
 	{
-		/*
-		 * If result_count hit the internal limit, there may be more
-		 * documents.  Double the limit and re-execute the scoring
-		 * query, skipping already-returned results.
-		 */
-		if (!so->eof_reached && so->result_count > 0 &&
-			so->result_count >= so->max_results_used &&
-			so->max_results_used < TP_MAX_QUERY_LIMIT)
+		if (so->current_pos >= so->result_count || so->eof_reached)
 		{
-			int old_count = so->result_count;
-			int new_limit = so->max_results_used * 2;
-
-			if (new_limit > TP_MAX_QUERY_LIMIT)
-				new_limit = TP_MAX_QUERY_LIMIT;
-
-			so->limit = new_limit;
-			if (tp_execute_scoring_query(scan) && so->result_count > old_count)
+			/*
+			 * If result_count hit the internal limit, there may be
+			 * more documents.  Double the limit and re-execute the
+			 * scoring query.
+			 */
+			if (!so->eof_reached && so->result_count > 0 &&
+				so->result_count >= so->max_results_used &&
+				so->max_results_used < TP_MAX_QUERY_LIMIT)
 			{
-				/* Skip already-returned results */
-				so->current_pos = old_count;
-				/* Fall through to return next tuple */
+				int old_count = so->result_count;
+				int new_limit = so->max_results_used * 2;
+
+				if (new_limit > TP_MAX_QUERY_LIMIT)
+					new_limit = TP_MAX_QUERY_LIMIT;
+
+				so->limit = new_limit;
+				if (tp_execute_scoring_query(scan) &&
+					so->result_count > old_count)
+				{
+					/*
+					 * Resume just past the rows the previous pass
+					 * produced.  Any of those that re-appear here are
+					 * filtered by the emitted-CTID check below, which
+					 * is what makes re-execution safe under concurrent
+					 * writes.
+					 */
+					so->current_pos = old_count;
+					continue;
+				}
+				else
+				{
+					so->eof_reached = true;
+					return false;
+				}
 			}
 			else
-			{
-				so->eof_reached = true;
 				return false;
-			}
 		}
-		else
-			return false;
-	}
 
-	Assert(so->scan_context != NULL);
-	Assert(so->result_ctids != NULL);
-	Assert(so->current_pos < so->result_count);
+		Assert(so->scan_context != NULL);
+		Assert(so->result_ctids != NULL);
+		Assert(so->current_pos < so->result_count);
+		Assert(ItemPointerIsValid(&so->result_ctids[so->current_pos]));
 
-	Assert(ItemPointerIsValid(&so->result_ctids[so->current_pos]));
-
-	/* Skip results with invalid block numbers */
-	blknum = BlockIdGetBlockNumber(
-			&(so->result_ctids[so->current_pos].ip_blkid));
-	while (blknum == InvalidBlockNumber)
-	{
-		so->current_pos++;
-		if (so->current_pos >= so->result_count)
-			return false;
+		/* Skip results with invalid block numbers */
 		blknum = BlockIdGetBlockNumber(
 				&(so->result_ctids[so->current_pos].ip_blkid));
+		if (blknum == InvalidBlockNumber)
+		{
+			so->current_pos++;
+			continue;
+		}
+
+		/* Skip CTIDs already emitted by an earlier pass (dedup) */
+		if (tp_ctid_seen_or_mark(so, &so->result_ctids[so->current_pos]))
+		{
+			so->current_pos++;
+			continue;
+		}
+
+		/* This position is emittable. */
+		break;
 	}
 
 	scan->xs_heaptid		= so->result_ctids[so->current_pos];
