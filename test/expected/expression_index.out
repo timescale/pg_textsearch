@@ -229,13 +229,20 @@ DROP TABLE expr_part CASCADE;
 -- ============================================================
 -- Multiple expression indexes trigger warning
 -- ============================================================
+-- Suppress build-progress NOTICEs for this index: its reported
+-- document count is not deterministic here.  expr_jsonb had rows
+-- deleted and vacuumed above, but if a concurrent backend holds
+-- back OldestXmin (autovacuum or a parallel session), VACUUM leaves
+-- the deleted tuples "recently dead" and this fresh build indexes
+-- them -- table_index_build_scan passes recently-dead tuples to the
+-- build callback, as any access method does.  The exact count is
+-- irrelevant to what this section tests (the multiple-index
+-- resolution warning), so suppress it.
+SET client_min_messages = warning;
 CREATE INDEX expr_jsonb_idx2 ON expr_jsonb
     USING bm25 ((data->>'content'))
     WITH (text_config='simple');
-NOTICE:  BM25 index build started for relation expr_jsonb_idx2
-NOTICE:  Using text search configuration: simple
-NOTICE:  Using index options: k1=1.20, b=0.75
-NOTICE:  BM25 index build completed: 1 documents, avg_length=5.00
+RESET client_min_messages;
 -- Implicit resolution should warn about multiple indexes
 SELECT id,
        ROUND(((data->>'content') <@>
