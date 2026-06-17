@@ -77,5 +77,31 @@ FROM (
  t
 (1 row)
 
+-- The drained pages must be genuinely reusable from the FSM, not just
+-- unlinked from the tombstone chain: allocating a fresh segment must
+-- pull those freed blocks via GetFreeIndexPage rather than extend the
+-- index relation.  Capture the size, spill a new segment, and assert
+-- the relation did not grow.  A regression that recorded the frees but
+-- skipped IndexFreeSpaceMapVacuum would still empty the chain above yet
+-- extend the relation here (the freed blocks would not be discoverable
+-- by the root-down GetFreeIndexPage search).
+SELECT pg_relation_size('reclaim_idx') / current_setting('block_size')::int
+    AS blocks_before_reuse \gset
+INSERT INTO reclaim_docs
+SELECT g, 'alpha beta term' || (g % 50)
+FROM generate_series(4001, 5000) g;
+SELECT bm25_spill_index('reclaim_idx') > 0 AS reuse_spilled;
+ reuse_spilled 
+---------------
+ t
+(1 row)
+
+SELECT pg_relation_size('reclaim_idx') / current_setting('block_size')::int
+    <= :blocks_before_reuse AS reused_freed_pages_no_extension;
+ reused_freed_pages_no_extension 
+---------------------------------
+ t
+(1 row)
+
 DROP TABLE reclaim_docs;
 DROP EXTENSION pg_textsearch CASCADE;
