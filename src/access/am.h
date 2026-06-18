@@ -10,6 +10,7 @@
 
 #include <access/amapi.h>
 #include <access/reloptions.h>
+#include <access/transam.h>
 #include <storage/block.h>
 #include <storage/bufpage.h>
 #include <tsearch/ts_type.h>
@@ -199,6 +200,14 @@ void tp_spill_memtable_if_needed(
  * segment page free).
  */
 int tp_reclaim_dead_memtable_pages(Relation indexrel, Relation heaprel);
+
+/*
+ * Compute the deferred-reclaim horizon as a FullTransactionId.
+ * Pass the heap relation when available (vacuum) for a precise
+ * horizon, or NULL (merge) for the most-conservative shared
+ * horizon — NULL can only over-retain, never free too early.
+ */
+extern FullTransactionId tp_reclaim_horizon(Relation heaprel);
 
 /*
  * Spill the current index's memtable to a disk segment.

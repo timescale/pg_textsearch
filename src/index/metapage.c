@@ -56,6 +56,7 @@ tp_init_metapage(Page page, Oid text_config_oid)
 	 */
 	metap->memtable_head_blkno = InvalidBlockNumber;
 	metap->memtable_tail_blkno = InvalidBlockNumber;
+	metap->pending_free_head   = InvalidBlockNumber;
 
 	/* Update page header to reflect that we've used space for metapage */
 	phdr		   = (PageHeader)page;
@@ -139,6 +140,7 @@ tp_get_metapage(Relation index)
 	 * REINDEX as before.
 	 */
 	if (metap->version != TP_METAPAGE_VERSION &&
+		metap->version != TP_METAPAGE_VERSION_V7 &&
 		metap->version != TP_METAPAGE_VERSION_V6)
 	{
 		uint32 found_version = metap->version;
@@ -179,12 +181,19 @@ tp_get_metapage(Relation index)
 	{
 		memcpy(result, metap, sizeof(TpIndexMetaPageData));
 	}
+	else if (metap->version == TP_METAPAGE_VERSION_V7)
+	{
+		/* v7 has memtable head/tail but no pending_free_head. */
+		memcpy(result, metap, TP_INDEX_METAPAGE_DATA_SIZE_V7);
+		result->pending_free_head = InvalidBlockNumber;
+	}
 	else
 	{
 		Assert(metap->version == TP_METAPAGE_VERSION_V6);
 		memcpy(result, metap, TP_INDEX_METAPAGE_DATA_SIZE_V6);
 		result->memtable_head_blkno = InvalidBlockNumber;
 		result->memtable_tail_blkno = InvalidBlockNumber;
+		result->pending_free_head	= InvalidBlockNumber;
 	}
 
 	UnlockReleaseBuffer(buf);
@@ -230,25 +239,14 @@ tp_metapage_upgrade_to_current(Relation index, Page page)
 {
 	TpIndexMetaPage metap;
 	PageHeader		phdr;
-	Size			v7_pd_lower;
-	BlockNumber		orphan_docid_page;
 
 	metap = (TpIndexMetaPage)PageGetContents(page);
 
 	if (metap->version == TP_METAPAGE_VERSION)
-		return;
+		return; /* already v8 */
 
-	/*
-	 * tp_get_metapage() is the only legitimate way to first
-	 * observe the on-disk version, and it has already filtered
-	 * out anything besides v6/v7.  Reaching this function with
-	 * any other version means a caller mutated the metapage
-	 * without going through the open path — refuse to stamp
-	 * an unknown layout as v7, which would silently corrupt
-	 * the page (the new chain head/tail fields may land on
-	 * top of meaningful bytes in a future format).
-	 */
-	if (metap->version != TP_METAPAGE_VERSION_V6)
+	if (metap->version != TP_METAPAGE_VERSION_V6 &&
+		metap->version != TP_METAPAGE_VERSION_V7)
 		ereport(ERROR,
 				(errcode(ERRCODE_DATA_CORRUPTED),
 				 errmsg("pg_textsearch: cannot upgrade metapage "
@@ -258,80 +256,56 @@ tp_metapage_upgrade_to_current(Relation index, Page page)
 						 "via tp_get_metapage() before calling "
 						 "tp_metapage_upgrade_to_current().")));
 
-	orphan_docid_page = metap->_unused_docid_page;
+	/*
+	 * v6 lacks the memtable chain fields and may carry a stale
+	 * docid pointer; v7 already has the chain fields.  Only the
+	 * v6 path initializes memtable head/tail and orphans the
+	 * docid pointer.
+	 */
+	if (metap->version == TP_METAPAGE_VERSION_V6)
+	{
+		BlockNumber orphan_docid_page = metap->_unused_docid_page;
 
-	metap->memtable_head_blkno = InvalidBlockNumber;
-	metap->memtable_tail_blkno = InvalidBlockNumber;
+		metap->memtable_head_blkno = InvalidBlockNumber;
+		metap->memtable_tail_blkno = InvalidBlockNumber;
+
+		if (BlockNumberIsValid(orphan_docid_page) && !RecoveryInProgress())
+			ereport(LOG,
+					(errmsg("pg_textsearch: upgrading index \"%s\" "
+							"from a pre-v1.3 metapage (v6) and "
+							"orphaning a non-empty docid chain "
+							"pointer (first_docid_page = %u)",
+							RelationGetRelationName(index),
+							orphan_docid_page),
+					 errdetail(
+							 "The docid chain was a v1.2.x mechanism for "
+							 "replaying in-flight documents from heap on "
+							 "restart.  v1.3 has no equivalent.  If you "
+							 "did not call bm25_spill_index() on this "
+							 "index before swapping binaries, some "
+							 "recently-inserted documents may be missing "
+							 "from query results."),
+					 errhint("If query results look incomplete, "
+							 "REINDEX INDEX %s to rebuild from heap.",
+							 RelationGetRelationName(index))));
+
+		metap->_unused_docid_page = InvalidBlockNumber;
+	}
+
+	/* Common to v6 and v7: introduce the deferred-free chain head. */
+	metap->pending_free_head = InvalidBlockNumber;
+
+	metap->version = TP_METAPAGE_VERSION;
 
 	/*
-	 * Orphan any stale v1.2.x docid-chain pointer.
-	 *
-	 * v1.2.x and earlier maintained a "docid chain" of pages
-	 * anchored by first_docid_page (now renamed
-	 * _unused_docid_page).  Inserts wrote ctids there before
-	 * the in-memory memtable; on a clean restart the chain was
-	 * replayed to re-tokenize pending documents from heap.
-	 * v1.3 (issue #374) replaced the docid chain with an
-	 * on-disk memtable, so the pointer's target is meaningless
-	 * to the v1.3+ binary.
-	 *
-	 * If the pointer is non-Invalid at upgrade time, the
-	 * operator either:
-	 *   - called bm25_spill_index() before the binary swap
-	 *     (data is in segments; the chain is stale bookkeeping
-	 *     safe to orphan), or
-	 *   - did not give v1.2.x a chance to drain (in-flight
-	 *     documents in the chain are lost — they were
-	 *     scheduled for re-tokenization that v1.3 cannot do).
-	 *
-	 * We cannot distinguish those cases from the on-disk bytes
-	 * alone.  Log a one-time LOG-level message recording the
-	 * orphaned pointer for forensics and proceed; the upgrade
-	 * fires at most once per index lifetime so this LOG fires
-	 * at most once per upgraded index (vs the previous design
-	 * which logged from tp_get_metapage and so fired once per
-	 * backend per opened-but-not-yet-written v6 index).
-	 *
-	 * RecoveryInProgress() suppresses the LOG on a hot standby
-	 * — standbys never reach this function (it runs only on
-	 * the primary, inside a writer's GenericXLog scope), but
-	 * the guard documents that intent.
+	 * Bump pd_lower so every newly-included field is inside the
+	 * "used" area; GenericXLog skips the [pd_lower, pd_upper) hole
+	 * and would otherwise zero the new fields on replay.
 	 */
-	if (BlockNumberIsValid(orphan_docid_page) && !RecoveryInProgress())
-		ereport(LOG,
-				(errmsg("pg_textsearch: upgrading index \"%s\" "
-						"from a pre-v1.3 metapage (v6) and "
-						"orphaning a non-empty docid chain "
-						"pointer (first_docid_page = %u)",
-						RelationGetRelationName(index),
-						orphan_docid_page),
-				 errdetail(
-						 "The docid chain was a v1.2.x mechanism for "
-						 "replaying in-flight documents from heap on "
-						 "restart.  v1.3 has no equivalent.  If you "
-						 "did not call bm25_spill_index() on this "
-						 "index before swapping binaries, some "
-						 "recently-inserted documents may be missing "
-						 "from query results."),
-				 errhint("If query results look incomplete, "
-						 "REINDEX INDEX %s to rebuild from heap.",
-						 RelationGetRelationName(index))));
-
-	metap->_unused_docid_page = InvalidBlockNumber;
-	metap->version			  = TP_METAPAGE_VERSION;
-
-	/*
-	 * Bump pd_lower so the two newly-included BlockNumber
-	 * fields are inside the "used" area of the page.
-	 * GenericXLog computes the page hole as
-	 * [pd_lower, pd_upper) and skips that region in the
-	 * recorded image — if we didn't bump pd_lower, the new
-	 * fields would land in the hole and replay would zero
-	 * them, leaving a v7 page with chain head/tail == 0 (i.e.
-	 * pointing at the metapage block itself).
-	 */
-	v7_pd_lower = SizeOfPageHeaderData + sizeof(TpIndexMetaPageData);
-	phdr		= (PageHeader)page;
-	if (phdr->pd_lower < v7_pd_lower)
-		phdr->pd_lower = v7_pd_lower;
+	{
+		Size v8_pd_lower = SizeOfPageHeaderData + sizeof(TpIndexMetaPageData);
+		phdr			 = (PageHeader)page;
+		if (phdr->pd_lower < v8_pd_lower)
+			phdr->pd_lower = v8_pd_lower;
+	}
 }

@@ -14,3 +14,14 @@ BEGIN
             'Add pg_textsearch to shared_preload_libraries and restart.';
     END IF;
 END $$;
+
+-- Deferred, standby-safe reclaim of displaced segment pages (#380):
+-- count the pages currently parked in the tombstone chain awaiting
+-- horizon-gated FSM reclaim.  Superuser-only, like the other debug
+-- introspection functions.
+CREATE FUNCTION bm25_pending_free_pages(index_name text)
+    RETURNS bigint
+    AS 'MODULE_PATHNAME', 'tp_pending_free_pages'
+    LANGUAGE C STRICT STABLE;
+
+REVOKE EXECUTE ON FUNCTION bm25_pending_free_pages(text) FROM PUBLIC;

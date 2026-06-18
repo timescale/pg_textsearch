@@ -24,7 +24,7 @@ jobs:
       fail-fast: false
       matrix:
         pg_version: [17, 18]
-        old_version: ['0.2.0', '0.3.0', '0.4.0', '0.4.1', '0.4.2', '0.5.0', '0.5.1', '0.6.0', '0.6.1', '1.0.0', '1.1.0', '1.2.0']
+        old_version: ['0.2.0', '0.3.0', '0.4.0', '0.4.1', '0.4.2', '0.5.0', '0.5.1', '0.6.0', '0.6.1', '1.0.0', '1.1.0', '1.2.0', '1.3.0']
 
     steps:
     - name: Checkout current code
@@ -115,19 +115,18 @@ jobs:
           USING bm25 (content) WITH (text_config = 'english');
         SQL
 
-        # Compat tier (v6 metapage, read-compatible with the new
-        # binary per issue #383): ALTER EXTENSION UPDATE alone is
-        # enough — no REINDEX needed.  Add batch 2, spill, capture
-        # baselines.  Pre-v0.5.1 versions have a v5 metapage which
-        # is still REINDEX-only (legacy tier below).
+        # Compat tier (read-compatible with the new binary, no
+        # REINDEX): metapage v6 (issue #383, v0.5.1–1.2.x) and
+        # metapage v7 (issue #374, v1.3.x) both upgrade in place on
+        # the first write.  ALTER EXTENSION UPDATE alone is enough.
+        # Add batch 2, spill, capture baselines.  Pre-v0.5.1
+        # versions have a v5 metapage which is still REINDEX-only
+        # (legacy tier below).
         #
-        # The regex bounds the upper end at 1.2.x deliberately:
-        # v1.3.0 is the first release that writes v7 metapages
-        # natively, so newer versions belong in their own tier
-        # (when added to the matrix they should NOT be classified
-        # as v6 compat — the in-place upgrade is a no-op and the
-        # Phase 1a "still v6" assertion would fail).
-        if [[ "${{ matrix.old_version }}" =~ ^(0\.5\.1|0\.6\.[01]|1\.[0-2]\.[0-9]+)$ ]]; then
+        # The source metapage version drives the Phase 1a "still old
+        # version" assertion (v6 for ≤1.2.x, v7 for 1.3.x); both then
+        # lazily upgrade to v8 on first write (issue #380).
+        if [[ "${{ matrix.old_version }}" =~ ^(0\.5\.1|0\.6\.[01]|1\.[0-3]\.[0-9]+)$ ]]; then
           psql -h /tmp -d upgrade_test << 'SQL'
           \set ON_ERROR_STOP on
 
@@ -257,7 +256,7 @@ jobs:
       run: |
         export PATH=/usr/lib/postgresql/${{ matrix.pg_version }}/bin:$PATH
 
-        if [[ "${{ matrix.old_version }}" =~ ^(0\.5\.1|0\.6\.[01]|1\.[0-2]\.[0-9]+)$ ]]; then  # v0.5.1+ uses metapage v6 (read-compatible via #383)
+        if [[ "${{ matrix.old_version }}" =~ ^(0\.5\.1|0\.6\.[01]|1\.[0-3]\.[0-9]+)$ ]]; then  # read-compatible: v6 (≤1.2.x) / v7 (1.3.x), no REINDEX
           echo "=== Testing new binary reads old segments (pre-ALTER EXTENSION) ==="
           psql -h /tmp -d upgrade_test << 'SQL'
           \set ON_ERROR_STOP on
@@ -348,7 +347,7 @@ jobs:
       run: |
         export PATH=/usr/lib/postgresql/${{ matrix.pg_version }}/bin:$PATH
 
-        if [[ "${{ matrix.old_version }}" =~ ^(0\.5\.1|0\.6\.[01]|1\.[0-2]\.[0-9]+)$ ]]; then  # v0.5.1+ uses metapage v6 (read-compatible via #383)
+        if [[ "${{ matrix.old_version }}" =~ ^(0\.5\.1|0\.6\.[01]|1\.[0-3]\.[0-9]+)$ ]]; then  # read-compatible: v6 (≤1.2.x) / v7 (1.3.x), no REINDEX
           echo "=== Compat tier: ALTER EXTENSION UPDATE (no REINDEX) ==="
           psql -h /tmp -d upgrade_test << 'SQL'
           \set ON_ERROR_STOP on
@@ -373,10 +372,20 @@ jobs:
         EXPECTED_VERSION=$(awk -F"'" '/^[\t ]*default_version/ {print $2}' \
           pg_textsearch.control | cut -d. -f1,2)
 
-        if [[ "${{ matrix.old_version }}" =~ ^(0\.5\.1|0\.6\.[01]|1\.[0-2]\.[0-9]+)$ ]]; then  # v0.5.1+ uses metapage v6 (read-compatible via #383)
+        # Source metapage version for the Phase 1a "still old version"
+        # assertion: v1.3.x natively writes v7 (issue #374); v0.5.1–1.2.x
+        # write v6 (issue #383).  Both lazily upgrade to v8 on first write.
+        if [[ "${{ matrix.old_version }}" =~ ^1\.3\.[0-9]+$ ]]; then
+          OLD_METAPAGE_VERSION=7
+        else
+          OLD_METAPAGE_VERSION=6
+        fi
+
+        if [[ "${{ matrix.old_version }}" =~ ^(0\.5\.1|0\.6\.[01]|1\.[0-3]\.[0-9]+)$ ]]; then  # read-compatible: v6 (≤1.2.x) / v7 (1.3.x), no REINDEX
           echo "=== Compat tier: multi-phase segment validation ==="
           psql -h /tmp -d upgrade_test \
-            -v expected_version="$EXPECTED_VERSION" << 'SQL'
+            -v expected_version="$EXPECTED_VERSION" \
+            -v old_metapage_version="$OLD_METAPAGE_VERSION" << 'SQL'
           \set ON_ERROR_STOP on
 
           -- Phase 1: Post-ALTER EXTENSION — old segments, new SQL
@@ -385,47 +394,56 @@ jobs:
           SELECT validate_baseline('optimization',   'baseline_q3', 'post-alter q3');
 
           -- Phase 1a: After read-only queries the on-disk metapage
-          -- MUST still be v6 (issue #383 contract: tp_get_metapage
-          -- normalizes a v6 page in its palloc'd copy but does NOT
-          -- mutate the buffer).  This phase catches a regression
-          -- where the read path accidentally emits a write.
+          -- MUST still be the source version — v6 (issue #383) or v7
+          -- (issue #374): tp_get_metapage normalizes an old page in
+          -- its palloc'd copy but does NOT mutate the buffer.  This
+          -- phase catches a regression where the read path
+          -- accidentally emits a write.  The expected source version
+          -- is passed via a temp table (psql does not interpolate
+          -- :'var' inside a dollar-quoted block).
+          CREATE TEMP TABLE _old_meta(version text);
+          INSERT INTO _old_meta VALUES (:'old_metapage_version');
           DO $$
           DECLARE dump_text text;
+                  expected_meta text;
           BEGIN
+            SELECT version INTO expected_meta FROM _old_meta;
             dump_text := bm25_dump_index('idx_upgrade_bm25');
-            IF dump_text NOT LIKE '%version: 6' || E'\n' || '%' THEN
+            IF dump_text NOT LIKE '%version: ' || expected_meta || E'\n' || '%' THEN
               RAISE EXCEPTION
                 'FAIL: metapage upgraded after read-only queries; '
-                'expected version: 6, dump excerpt: %',
-                substr(dump_text, 1, 400);
+                'expected version: %, dump excerpt: %',
+                expected_meta, substr(dump_text, 1, 400);
             END IF;
             RAISE NOTICE 'PASS: read-only queries did not upgrade '
-                         'the v6 metapage';
+                         'the v% metapage', expected_meta;
           END $$;
 
-          -- Phase 1b: A single INSERT MUST trigger the lazy v6 -> v7
-          -- upgrade via memtable_bootstrap_and_append's GenericXLog
-          -- record (src/memtable/log.c calls
-          -- tp_metapage_upgrade_to_current).  We assert here, BEFORE
-          -- Phase 2's VACUUM and Phase 3's force_merge — both of
-          -- which also independently call the upgrade helper — so
-          -- that this phase isolates the INSERT path.  A regression
-          -- that removes only the INSERT-path call would still be
-          -- caught here even if VACUUM / force_merge still upgrade.
+          -- Phase 1b: A single INSERT MUST trigger the lazy
+          -- v6/v7 -> current (v8) upgrade via
+          -- memtable_bootstrap_and_append's GenericXLog record
+          -- (src/memtable/log.c calls tp_metapage_upgrade_to_current,
+          -- which jumps a v6 or v7 page straight to the current
+          -- version).  We assert here, BEFORE Phase 2's VACUUM and
+          -- Phase 3's force_merge — both of which also independently
+          -- call the upgrade helper — so that this phase isolates the
+          -- INSERT path.  A regression that removes only the
+          -- INSERT-path call would still be caught here even if
+          -- VACUUM / force_merge still upgrade.
           INSERT INTO upgrade_docs (content)
-            VALUES ('first post-upgrade write to trigger v6 -> v7');
+            VALUES ('first post-upgrade write to trigger v6/v7 -> v8');
 
           DO $$
           DECLARE dump_text text;
           BEGIN
             dump_text := bm25_dump_index('idx_upgrade_bm25');
-            IF dump_text NOT LIKE '%version: 7' || E'\n' || '%' THEN
+            IF dump_text NOT LIKE '%version: 8' || E'\n' || '%' THEN
               RAISE EXCEPTION
-                'FAIL: metapage not upgraded to v7 after first '
-                'INSERT (issue #383); dump excerpt: %',
+                'FAIL: metapage not upgraded to v8 after first '
+                'INSERT (issues #383, #374, #380); dump excerpt: %',
                 substr(dump_text, 1, 400);
             END IF;
-            RAISE NOTICE 'PASS: single INSERT triggered v6 -> v7 '
+            RAISE NOTICE 'PASS: single INSERT triggered v6/v7 -> v8 '
                          'lazy upgrade';
           END $$;
 
@@ -462,7 +480,7 @@ jobs:
             RAISE NOTICE 'PASS: new data searchable, id=%', rec.id;
           END $$;
 
-          -- Note: The v6 -> v7 upgrade is asserted in Phase 1b above
+          -- Note: The v6 -> v8 upgrade is asserted in Phase 1b above
           -- (in isolation from VACUUM / force_merge / additional
           -- INSERTs).  We rely on that assertion rather than
           -- re-checking here so that the test pinpoints the
