@@ -34,6 +34,13 @@ DURATION=45           # seconds of concurrent insert + read activity
 N_INSERTERS=6
 N_READERS=2
 
+# Per-session safety nets (mirrors the sibling concurrency scripts).  The
+# inserter CALL and the reader DO-block each run for ~DURATION as a single
+# statement, so statement_timeout must comfortably exceed DURATION; it only
+# fires if a client wedges.
+STMT_TIMEOUT="$((DURATION + 30))s"
+LOCK_TIMEOUT="30s"
+
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
@@ -144,7 +151,8 @@ SQL
 }
 
 inserter() {
-    $PSQL -c "CALL insert_docs(${DURATION});" \
+    PGOPTIONS="-c statement_timeout=${STMT_TIMEOUT} -c lock_timeout=${LOCK_TIMEOUT}" \
+        $PSQL -c "CALL insert_docs(${DURATION});" \
         >>"${ERR_DIR}/inserter_$1.log" 2>&1 || return 10
 }
 
@@ -153,7 +161,8 @@ inserter() {
 # dup_signal and stops.
 reader() {
     local tag=$1
-    $PSQL >>"${ERR_DIR}/reader_${tag}.log" 2>&1 <<SQL || return 20
+    PGOPTIONS="-c statement_timeout=${STMT_TIMEOUT} -c lock_timeout=${LOCK_TIMEOUT}" \
+        $PSQL >>"${ERR_DIR}/reader_${tag}.log" 2>&1 <<SQL || return 20
 DO \$\$
 DECLARE
     d int;
@@ -197,7 +206,9 @@ run_test() {
     done
 
     local dups
-    dups=$($PSQL -c "SELECT count(*) FROM dup_signal;" 2>/dev/null || echo "0")
+    if ! dups=$($PSQL -c "SELECT count(*) FROM dup_signal;"); then
+        error "TEST FAILED: could not query dup_signal (server down?)"
+    fi
     if [ "${dups:-0}" -gt 0 ]; then
         warn "Duplicate ctids observed in a single index-scan result set:"
         $PSQL -c "SELECT detected_at, extra, sample_query FROM dup_signal;" || true
@@ -213,10 +224,50 @@ run_test() {
     log "TEST PASSED: no duplicate ctids across concurrent top-k reads"
 }
 
+# Post-run, quiescent checks on the now-static corpus.  These don't reproduce
+# the race (a single static corpus re-scores identically across passes, so
+# nothing reorders) -- they are deterministic sanity nets that the top-k path
+# returns a complete, duplicate-free result, and they confirm the concurrent
+# phase actually exercised the LIMIT < corpus re-execution path.
+verify_postrun() {
+    local corpus expected total distinct
+
+    corpus=$($PSQL -c "SELECT count(*) FROM docs;")
+
+    # Sentinel: the inserters must have grown the corpus past QUERY_LIMIT,
+    # otherwise the readers never had LIMIT < corpus and the re-execution
+    # path this test targets was never reachable.
+    if [ "${corpus:-0}" -le "${QUERY_LIMIT}" ]; then
+        error "TEST INCONCLUSIVE: corpus (${corpus}) did not exceed QUERY_LIMIT (${QUERY_LIMIT}); re-execution path not exercised"
+    fi
+
+    # Completeness: a top-k over the static corpus must return exactly
+    # min(QUERY_LIMIT, corpus) rows, all distinct -- catching a gross
+    # under-return (miss) or duplicate in the scan/backfill path.
+    expected=${QUERY_LIMIT}
+    read -r total distinct <<<"$($PSQL -c "
+        SELECT count(*), count(DISTINCT ctid)
+        FROM (
+            SELECT ctid FROM docs
+            ORDER BY content <@> to_bm25query('alpha', 'docs_idx')
+            LIMIT ${QUERY_LIMIT}
+        ) s;" | tr '|' ' ')"
+
+    if [ "${total}" != "${expected}" ]; then
+        error "TEST FAILED: top-k returned ${total} rows, expected ${expected} (corpus=${corpus}) -- under-return/miss"
+    fi
+    if [ "${distinct}" != "${total}" ]; then
+        error "TEST FAILED: top-k returned ${total} rows but only ${distinct} distinct ctids -- duplicate"
+    fi
+
+    log "POST-RUN PASSED: top-k returns ${total} distinct rows on a ${corpus}-row corpus"
+}
+
 # Main
 setup_test_db
 seed_data
 run_test
+verify_postrun
 
 log "All tests passed!"
 exit 0

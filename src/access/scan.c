@@ -63,15 +63,25 @@ tp_ctid_seen_or_mark(TpScanOpaque so, ItemPointer tid)
 	if (so->returned_ctids == NULL)
 	{
 		HASHCTL ctl;
+		long	nelem;
 
 		memset(&ctl, 0, sizeof(ctl));
 		ctl.keysize	  = sizeof(ItemPointerData);
 		ctl.entrysize = sizeof(ItemPointerData);
 		ctl.hcxt	  = so->scan_context;
 
+		/*
+		 * Size the table to the current batch (the number of rows we
+		 * expect to emit in the common single-pass case) rather than a
+		 * fixed constant, so small-LIMIT scans don't over-allocate the
+		 * bucket directory.  dynahash grows on demand if re-execution
+		 * pushes the emitted set past this hint.
+		 */
+		nelem = so->max_results_used > 0 ? so->max_results_used : 256;
+
 		so->returned_ctids = hash_create(
 				"Tapir scan returned ctids",
-				1024,
+				nelem,
 				&ctl,
 				HASH_ELEM | HASH_BLOBS | HASH_CONTEXT);
 	}
@@ -524,13 +534,24 @@ tp_gettuple(IndexScanDesc scan, ScanDirection dir)
 					so->result_count > old_count)
 				{
 					/*
-					 * Resume just past the rows the previous pass
-					 * produced.  Any of those that re-appear here are
-					 * filtered by the emitted-CTID check below, which
-					 * is what makes re-execution safe under concurrent
-					 * writes.
+					 * Re-walk the freshly scored batch from the
+					 * start instead of resuming at old_count.  The
+					 * larger pass re-scores the whole corpus from
+					 * scratch, so under concurrent writes its ordering
+					 * can differ from the previous pass: a row we have
+					 * not emitted yet can now sit *before* old_count,
+					 * while a row we already emitted can drift *after*
+					 * it.  Resuming by position (at old_count) would
+					 * both re-emit the latter and silently drop the
+					 * former, returning fewer than LIMIT rows.  Walking
+					 * from 0 and filtering against the emitted-CTID set
+					 * below skips exactly the rows already returned --
+					 * by identity, not position -- so each heap tuple
+					 * is returned at most once and no newly-ranked row
+					 * is lost.  The extra work is O(old_count) hash
+					 * probes, dwarfed by the full re-score just done.
 					 */
-					so->current_pos = old_count;
+					so->current_pos = 0;
 					continue;
 				}
 				else
