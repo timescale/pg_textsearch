@@ -63,5 +63,48 @@ SELECT bm25_spill_index('reclaim_idx') > 0 AS reuse_spilled;
 SELECT pg_relation_size('reclaim_idx') / current_setting('block_size')::int
     <= :blocks_before_reuse AS reused_freed_pages_no_extension;
 
+-- VACUUM's own segment replacement/drop path must also park displaced
+-- pages instead of returning them to the FSM immediately (#413). Build a
+-- fresh index layout so the observation is independent of the merge case
+-- above.
+DROP INDEX reclaim_idx;
+TRUNCATE reclaim_docs;
+INSERT INTO reclaim_docs
+SELECT g, 'vacuum alpha beta term' || (g % 50)
+FROM generate_series(1, 1500) g;
+CREATE INDEX reclaim_idx ON reclaim_docs
+    USING bm25 (body) WITH (text_config = 'english');
+
+-- Add a second segment through the on-disk memtable, then delete exactly
+-- those rows so VACUUM drops that all-dead segment.
+INSERT INTO reclaim_docs
+SELECT g, 'vacuum dropped beta term' || (g % 50)
+FROM generate_series(1501, 2500) g;
+\pset format unaligned
+SELECT bm25_spill_index('reclaim_idx') > 0 AS vacuum_spilled;
+DELETE FROM reclaim_docs WHERE id BETWEEN 1501 AND 2500;
+VACUUM reclaim_docs;
+
+-- VACUUM should park the dropped segment's pages, not recycle them yet.
+SELECT bm25_pending_free_pages('reclaim_idx') > 0 AS parked_after_vacuum_drop;
+
+-- Once the xid horizon advances, a later VACUUM drains the parked pages.
+SELECT txid_current() IS NOT NULL AS vt1;
+SELECT txid_current() IS NOT NULL AS vt2;
+VACUUM reclaim_docs;
+SELECT bm25_pending_free_pages('reclaim_idx') AS parked_after_vacuum_drain;
+
+-- The drained pages must be reusable from the FSM without extending the
+-- index relation.
+SELECT pg_relation_size('reclaim_idx') / current_setting('block_size')::int
+    AS blocks_before_vacuum_reuse \gset
+INSERT INTO reclaim_docs
+SELECT g, 'vacuum reuse beta term' || (g % 50)
+FROM generate_series(2501, 3200) g;
+SELECT bm25_spill_index('reclaim_idx') > 0 AS vacuum_reuse_spilled;
+SELECT pg_relation_size('reclaim_idx') / current_setting('block_size')::int
+    <= :blocks_before_vacuum_reuse AS vacuum_reused_freed_pages_no_extension;
+\pset format aligned
+
 DROP TABLE reclaim_docs;
 DROP EXTENSION pg_textsearch CASCADE;

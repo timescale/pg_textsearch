@@ -618,7 +618,10 @@ tp_vacuum_rebuild_segment(
  * the chain entirely.
  *
  * Updates the metapage level_heads/level_counts as needed.
- * Frees old segment pages.
+ *
+ * Parks old segment pages in the deferred-free tombstone chain so they are
+ * not recycled until a later VACUUM observes that the replacement horizon is
+ * past every active snapshot.
  */
 static void
 tp_vacuum_replace_segment(
@@ -628,10 +631,12 @@ tp_vacuum_replace_segment(
 		BlockNumber new_root,
 		BlockNumber prev_root)
 {
-	Buffer		 metabuf;
-	BlockNumber *old_pages;
-	uint32		 old_page_count;
-	BlockNumber	 old_next;
+	Buffer			  metabuf;
+	BlockNumber		 *old_pages;
+	uint32			  old_page_count;
+	BlockNumber		  old_next;
+	FullTransactionId vacuum_fxid;
+	BlockNumber		  batch_head = InvalidBlockNumber;
 
 	/*
 	 * Read old segment's next_segment pointer before we free it.
@@ -645,8 +650,16 @@ tp_vacuum_replace_segment(
 		tp_segment_close(old_reader);
 	}
 
-	/* Collect old segment pages for freeing */
+	/* Collect old segment pages for deferred reclaim. */
 	old_page_count = tp_segment_collect_pages(index, old_root, &old_pages);
+	vacuum_fxid	   = ReadNextFullTransactionId();
+	if (old_pages && old_page_count > 0)
+		batch_head = tp_tombstone_enqueue(
+				index,
+				old_pages,
+				old_page_count,
+				vacuum_fxid,
+				tp_tombstone_read_head(index));
 
 	/*
 	 * Update chain pointers atomically via GenericXLog.
@@ -732,6 +745,9 @@ tp_vacuum_replace_segment(
 				meta_ptr->level_counts[level]--;
 		}
 
+		if (batch_head != InvalidBlockNumber)
+			meta_ptr->pending_free_head = batch_head;
+
 		GenericXLogFinish(xlog_state);
 		if (BufferIsValid(prev_buf))
 			UnlockReleaseBuffer(prev_buf);
@@ -740,13 +756,9 @@ tp_vacuum_replace_segment(
 		UnlockReleaseBuffer(metabuf);
 	}
 
-	/* Free old segment pages */
-	if (old_pages && old_page_count > 0)
-		tp_segment_free_pages(index, old_pages, old_page_count);
+	/* Old pages are parked in the tombstone chain and drained later. */
 	if (old_pages)
 		pfree(old_pages);
-
-	IndexFreeSpaceMapVacuum(index);
 }
 
 /*
@@ -877,10 +889,10 @@ tp_bulkdelete(
 	 * metapage so the level_heads snapshot we walk stays stable.  Inserts
 	 * and scans also hold this lock LW_SHARED, so they neither block nor
 	 * are blocked by this walk; only the exclusive spill/merge/compaction
-	 * recyclers are excluded.  (VACUUM's own Phase-3 page reclamation also
-	 * runs under LW_SHARED and so is not excluded against concurrent
-	 * scans -- a separate, pre-existing concern tracked in issue #413, not
-	 * addressed here.)
+	 * recyclers are excluded.  VACUUM's own Phase-3 replacement/drop path
+	 * parks displaced segment pages in the tombstone chain instead of
+	 * returning them to the FSM here, so concurrent LW_SHARED scans cannot
+	 * see those pages recycled out from under a metapage snapshot.
 	 */
 	if (index_state != NULL)
 		tp_acquire_index_lock(index_state, LW_SHARED);
