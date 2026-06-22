@@ -656,10 +656,10 @@ tp_vacuum_replace_segment(
 	if (old_pages && old_page_count > 0)
 	{
 		/*
-		 * Other pending_free_head writers hold LW_EXCLUSIVE; this VACUUM
-		 * holds LW_SHARED across the enqueue and metapage update.
+		 * VACUUM holds only LW_SHARED here, so tombstone pages must not
+		 * allocate from the FSM and race concurrent inserts.
 		 */
-		batch_head = tp_tombstone_enqueue(
+		batch_head = tp_tombstone_enqueue_extend(
 				index,
 				old_pages,
 				old_page_count,

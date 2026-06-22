@@ -59,14 +59,17 @@ tp_tombstone_page_is_valid(Page page)
  * pre-existing contents are irrelevant.
  */
 static BlockNumber
-tombstone_alloc_page(Relation index)
+tombstone_alloc_page(Relation index, bool use_fsm)
 {
 	Buffer		buffer;
 	BlockNumber block;
 
-	block = GetFreeIndexPage(index);
-	if (block != InvalidBlockNumber)
-		return block;
+	if (use_fsm)
+	{
+		block = GetFreeIndexPage(index);
+		if (block != InvalidBlockNumber)
+			return block;
+	}
 
 	buffer = ReadBufferExtended(
 			index, MAIN_FORKNUM, P_NEW, RBM_ZERO_AND_LOCK, NULL);
@@ -75,13 +78,14 @@ tombstone_alloc_page(Relation index)
 	return block;
 }
 
-BlockNumber
-tp_tombstone_enqueue(
+static BlockNumber
+tombstone_enqueue_internal(
 		Relation		  index,
 		BlockNumber		 *blocks,
 		uint32			  num_blocks,
 		FullTransactionId merged_fxid,
-		BlockNumber		  old_head)
+		BlockNumber		  old_head,
+		bool			  use_fsm)
 {
 	BlockNumber batch_head = old_head;
 	uint32		remaining  = num_blocks;
@@ -102,7 +106,7 @@ tp_tombstone_enqueue(
 	{
 		uint32			  chunk = Min(remaining, TP_TOMBSTONE_CAPACITY);
 		uint32			  start = remaining - chunk;
-		BlockNumber		  blk	= tombstone_alloc_page(index);
+		BlockNumber		  blk	= tombstone_alloc_page(index, use_fsm);
 		GenericXLogState *state;
 		Buffer			  buf;
 		Page			  page;
@@ -129,6 +133,30 @@ tp_tombstone_enqueue(
 	}
 
 	return batch_head;
+}
+
+BlockNumber
+tp_tombstone_enqueue(
+		Relation		  index,
+		BlockNumber		 *blocks,
+		uint32			  num_blocks,
+		FullTransactionId merged_fxid,
+		BlockNumber		  old_head)
+{
+	return tombstone_enqueue_internal(
+			index, blocks, num_blocks, merged_fxid, old_head, true);
+}
+
+BlockNumber
+tp_tombstone_enqueue_extend(
+		Relation		  index,
+		BlockNumber		 *blocks,
+		uint32			  num_blocks,
+		FullTransactionId merged_fxid,
+		BlockNumber		  old_head)
+{
+	return tombstone_enqueue_internal(
+			index, blocks, num_blocks, merged_fxid, old_head, false);
 }
 
 /*
