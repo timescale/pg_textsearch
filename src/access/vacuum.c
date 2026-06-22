@@ -276,7 +276,7 @@ tp_apply_vacuum_shrinkage(
 
 	xlog_state = GenericXLogStart(index);
 	mpage	   = GenericXLogRegisterBuffer(xlog_state, mbuf, 0);
-	/* v6 -> v7 in-place upgrade (issue #383). */
+	/* Upgrade legacy metapage before applying shrinkage. */
 	tp_metapage_upgrade_to_current(index, mpage);
 	mp = (TpIndexMetaPage)PageGetContents(mpage);
 
@@ -654,12 +654,18 @@ tp_vacuum_replace_segment(
 	old_page_count = tp_segment_collect_pages(index, old_root, &old_pages);
 	vacuum_fxid	   = ReadNextFullTransactionId();
 	if (old_pages && old_page_count > 0)
+	{
+		/*
+		 * Other pending_free_head writers hold LW_EXCLUSIVE; this VACUUM
+		 * holds LW_SHARED across the enqueue and metapage update.
+		 */
 		batch_head = tp_tombstone_enqueue(
 				index,
 				old_pages,
 				old_page_count,
 				vacuum_fxid,
 				tp_tombstone_read_head(index));
+	}
 
 	/*
 	 * Update chain pointers atomically via GenericXLog.
@@ -677,7 +683,7 @@ tp_vacuum_replace_segment(
 
 		xlog_state = GenericXLogStart(index);
 		meta_copy  = GenericXLogRegisterBuffer(xlog_state, metabuf, 0);
-		/* v6 -> v7 in-place upgrade (issue #383). */
+		/* Upgrade legacy metapage before writing pending_free_head. */
 		tp_metapage_upgrade_to_current(index, meta_copy);
 		meta_ptr = (TpIndexMetaPage)PageGetContents(meta_copy);
 
