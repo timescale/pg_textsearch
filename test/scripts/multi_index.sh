@@ -93,7 +93,7 @@ EOF
         "${TEST_DB}"
 
     run_sql_quiet "CREATE EXTENSION pg_textsearch
-                       VERSION '1.4.0-dev';"
+                       VERSION '1.3.1';"
 }
 
 run_sql() {
