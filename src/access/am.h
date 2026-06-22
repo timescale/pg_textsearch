@@ -40,6 +40,9 @@ typedef struct TpScanOpaqueData
 	/* LIMIT optimization */
 	int limit;			  /* Query LIMIT value, -1 if none */
 	int max_results_used; /* Internal limit used for current batch */
+
+	/* CTIDs already emitted; used across limit-doubling re-execs. */
+	struct HTAB *returned_ctids;
 } TpScanOpaqueData;
 
 typedef TpScanOpaqueData *TpScanOpaque;
