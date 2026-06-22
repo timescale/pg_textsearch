@@ -1,21 +1,6 @@
 #!/bin/bash
 #
-# Regression test for the duplicate-results bug in the BM25 index scan.
-#
-# tp_gettuple() sizes its first scoring pass to the query LIMIT.  When the
-# corpus is larger than the limit, the buffer fills and, once it is
-# exhausted, the scan re-executes the scoring query with a doubled limit and
-# resumes by INTEGER POSITION (so->current_pos = old_count).  Under
-# concurrent writes the corpus (and thus IDF / score ordering) changes
-# between the two passes, so a row already returned by the first pass can
-# move past old_count in the second pass and be emitted again: the same heap
-# tuple is returned twice, with two different scores.
-#
-# This test drives concurrent inserters while readers run a top-k query whose
-# LIMIT is smaller than the corpus, and checks that no single query ever
-# returns the same ctid twice.  Before the fix this trips within seconds;
-# after it (tp_gettuple skips already-returned ctids by identity) it stays
-# clean.
+# Regression test for duplicate CTIDs during concurrent top-k index scans.
 #
 
 set -e
@@ -27,17 +12,14 @@ DATA_DIR="${SCRIPT_DIR}/../tmp_concurrent_duplicate_read"
 LOGFILE="${DATA_DIR}/postgres.log"
 ERR_DIR="${DATA_DIR}/client_logs"
 
-# Tunables (kept small so the test is fast but still reproduces reliably).
+# Tunables.
 QUERY_LIMIT=3000      # top-k limit; must be < corpus to force re-execution
 SEED_ROWS=3500        # initial corpus, just above QUERY_LIMIT
 DURATION=45           # seconds of concurrent insert + read activity
 N_INSERTERS=6
 N_READERS=2
 
-# Per-session safety nets (mirrors the sibling concurrency scripts).  The
-# inserter CALL and the reader DO-block each run for ~DURATION as a single
-# statement, so statement_timeout must comfortably exceed DURATION; it only
-# fires if a client wedges.
+# Per-session safety nets for long-running CALL/DO statements.
 STMT_TIMEOUT="$((DURATION + 30))s"
 LOCK_TIMEOUT="30s"
 
@@ -79,11 +61,9 @@ shared_preload_libraries = 'pg_textsearch'
 logging_collector = on
 log_directory = '.'
 log_filename = 'postgres.log'
-# Insert-only workload: keep autovacuum out so this test targets the scan
-# re-execution bug, not the (separate) VACUUM-vs-merge race.
+# Keep this focused on scan re-execution, not VACUUM races.
 autovacuum = off
-# Spill / merge aggressively so the chain churns under concurrent inserts,
-# which is what makes the re-execution path fire.
+# Churn the index under concurrent inserts.
 pg_textsearch.memtable_pages_threshold = 2
 pg_textsearch.segments_per_level = 2
 pg_textsearch.bulk_load_threshold = 0
@@ -107,17 +87,15 @@ SET client_min_messages=warning;
 CREATE TABLE docs (id bigserial PRIMARY KEY, content text NOT NULL);
 CREATE INDEX docs_idx ON docs USING bm25(content) WITH (text_config='english');
 
--- Every doc shares the common token 'alpha' so the query matches the whole
--- corpus; a few random tokens add per-doc variation.
+-- Match the whole corpus while preserving some score variation.
 INSERT INTO docs(content)
 SELECT 'alpha w' || (gs % 50)
 FROM generate_series(1, ${SEED_ROWS}) gs;
 
--- Signal table: a reader inserts here if it ever sees a duplicate ctid.
+-- Reader-visible failure signal.
 CREATE TABLE dup_signal (detected_at timestamptz, extra int, sample_query text);
 
--- Inserter: commit frequently so the corpus grows between a reader's two
--- scoring passes.  Time-bounded so the test always terminates.
+-- Commit frequently so readers can re-score a changing corpus.
 CREATE PROCEDURE insert_docs(seconds int) LANGUAGE plpgsql AS \$\$
 DECLARE
     deadline timestamptz := clock_timestamp() + make_interval(secs => seconds);
@@ -136,8 +114,7 @@ END
 \$\$;
 SQL
 
-    # The bug only manifests on the index-scan path (ORDER BY ... LIMIT).
-    # Fail loudly if the planner stops choosing it.
+    # This test must exercise ORDER BY ... LIMIT via index scan.
     local plan
     plan=$($PSQL -c "EXPLAIN (COSTS off)
         SELECT ctid FROM docs
@@ -156,9 +133,7 @@ inserter() {
         >>"${ERR_DIR}/inserter_$1.log" 2>&1 || return 10
 }
 
-# Reader: repeatedly run a top-k query and check whether any single result
-# set contains the same ctid more than once.  Records the first violation in
-# dup_signal and stops.
+# Repeatedly check each top-k result set for duplicate CTIDs.
 reader() {
     local tag=$1
     PGOPTIONS="-c statement_timeout=${STMT_TIMEOUT} -c lock_timeout=${LOCK_TIMEOUT}" \
@@ -224,26 +199,18 @@ run_test() {
     log "TEST PASSED: no duplicate ctids across concurrent top-k reads"
 }
 
-# Post-run, quiescent checks on the now-static corpus.  These don't reproduce
-# the race (a single static corpus re-scores identically across passes, so
-# nothing reorders) -- they are deterministic sanity nets that the top-k path
-# returns a complete, duplicate-free result, and they confirm the concurrent
-# phase actually exercised the LIMIT < corpus re-execution path.
+# Quiescent sanity checks after the concurrent phase.
 verify_postrun() {
     local corpus expected total distinct
 
     corpus=$($PSQL -c "SELECT count(*) FROM docs;")
 
-    # Sentinel: the inserters must have grown the corpus past QUERY_LIMIT,
-    # otherwise the readers never had LIMIT < corpus and the re-execution
-    # path this test targets was never reachable.
+    # Ensure readers could hit the limit-doubling path.
     if [ "${corpus:-0}" -le "${QUERY_LIMIT}" ]; then
         error "TEST INCONCLUSIVE: corpus (${corpus}) did not exceed QUERY_LIMIT (${QUERY_LIMIT}); re-execution path not exercised"
     fi
 
-    # Completeness: a top-k over the static corpus must return exactly
-    # min(QUERY_LIMIT, corpus) rows, all distinct -- catching a gross
-    # under-return (miss) or duplicate in the scan/backfill path.
+    # Static top-k should be complete and duplicate-free.
     expected=${QUERY_LIMIT}
     read -r total distinct <<<"$($PSQL -c "
         SELECT count(*), count(DISTINCT ctid)

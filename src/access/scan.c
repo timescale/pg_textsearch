@@ -45,16 +45,7 @@ tp_get_cached_score(void)
 	return tp_cached_score;
 }
 
-/*
- * Record that a heap CTID has been emitted by this scan, returning
- * true if it was already emitted earlier.
- *
- * Used to guarantee each heap tuple is returned at most once even
- * when the limit-doubling re-execution in tp_gettuple re-scores the
- * corpus under concurrent writes (which can reorder results between
- * passes).  The set is created lazily in the scan's memory context
- * and torn down on rescan / endscan.
- */
+/* Track CTIDs already emitted by this scan. */
 static bool
 tp_ctid_seen_or_mark(TpScanOpaque so, ItemPointer tid)
 {
@@ -70,13 +61,7 @@ tp_ctid_seen_or_mark(TpScanOpaque so, ItemPointer tid)
 		ctl.entrysize = sizeof(ItemPointerData);
 		ctl.hcxt	  = so->scan_context;
 
-		/*
-		 * Size the table to the current batch (the number of rows we
-		 * expect to emit in the common single-pass case) rather than a
-		 * fixed constant, so small-LIMIT scans don't over-allocate the
-		 * bucket directory.  dynahash grows on demand if re-execution
-		 * pushes the emitted set past this hint.
-		 */
+		/* Use the current batch size as the initial dynahash hint. */
 		nelem = so->max_results_used > 0 ? so->max_results_used : 256;
 
 		so->returned_ctids = hash_create(
@@ -90,10 +75,7 @@ tp_ctid_seen_or_mark(TpScanOpaque so, ItemPointer tid)
 	return found;
 }
 
-/*
- * Drop the emitted-CTID set so the next batch of results starts
- * fresh.  Called when a scan is restarted.
- */
+/* Reset emitted-CTID tracking for a restarted scan. */
 static void
 tp_returned_ctids_reset(TpScanOpaque so)
 {
@@ -501,15 +483,7 @@ tp_gettuple(IndexScanDesc scan, ScanDirection dir)
 		}
 	}
 
-	/*
-	 * Advance to the next emittable result, re-executing the scoring
-	 * query with a larger limit when the current batch is exhausted.
-	 * Positions are skipped when they carry an invalid block number or
-	 * when their CTID was already returned by an earlier pass (the
-	 * re-execution re-scores from scratch and can reorder results under
-	 * concurrent writes, so position-based skipping alone would
-	 * re-emit rows).
-	 */
+	/* Advance, growing the scoring batch if needed. */
 	for (;;)
 	{
 		if (so->current_pos >= so->result_count || so->eof_reached)
@@ -534,22 +508,8 @@ tp_gettuple(IndexScanDesc scan, ScanDirection dir)
 					so->result_count > old_count)
 				{
 					/*
-					 * Re-walk the freshly scored batch from the
-					 * start instead of resuming at old_count.  The
-					 * larger pass re-scores the whole corpus from
-					 * scratch, so under concurrent writes its ordering
-					 * can differ from the previous pass: a row we have
-					 * not emitted yet can now sit *before* old_count,
-					 * while a row we already emitted can drift *after*
-					 * it.  Resuming by position (at old_count) would
-					 * both re-emit the latter and silently drop the
-					 * former, returning fewer than LIMIT rows.  Walking
-					 * from 0 and filtering against the emitted-CTID set
-					 * below skips exactly the rows already returned --
-					 * by identity, not position -- so each heap tuple
-					 * is returned at most once and no newly-ranked row
-					 * is lost.  The extra work is O(old_count) hash
-					 * probes, dwarfed by the full re-score just done.
+					 * Re-scoring can reorder concurrent results, so
+					 * restart and filter by emitted CTID, not position.
 					 */
 					so->current_pos = 0;
 					continue;

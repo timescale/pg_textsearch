@@ -41,21 +41,7 @@ typedef struct TpScanOpaqueData
 	int limit;			  /* Query LIMIT value, -1 if none */
 	int max_results_used; /* Internal limit used for current batch */
 
-	/*
-	 * Set of heap CTIDs already emitted by this scan.  The
-	 * limit-doubling re-execution in tp_gettuple re-scores the whole
-	 * corpus from scratch with a larger limit; under concurrent writes
-	 * the BM25 score ordering (IDF/avgdl) can change between passes.
-	 * After a re-execution the scan re-walks the new batch from the
-	 * start and skips any CTID already in this set, so previously
-	 * returned rows are filtered by identity, not by position.  That
-	 * makes emission idempotent -- each heap tuple is returned at most
-	 * once -- while still emitting rows the reorder moved ahead of the
-	 * previous resume point (avoiding a short, under-LIMIT result).
-	 * Within a single scoring pass the dedup is incidental (a pass
-	 * should not produce duplicate CTIDs); the set's purpose is
-	 * cross-pass dedup.  Lives in scan_context; reset on rescan.
-	 */
+	/* CTIDs already emitted; used across limit-doubling re-execs. */
 	struct HTAB *returned_ctids;
 } TpScanOpaqueData;
 
