@@ -177,5 +177,6 @@ window.BRANCH_INFO = {
   "876497f424c4472cbe440212e64ecb982cb22feb": "main",
   "07e2bfd7aae8474c89d4c218afaea3f748dd5544": "main",
   "f69d22d7aebd026c416e09338c26d2018f78095b": "main",
-  "bc05a141d66fafe5306cd7bbccaf892723899a74": "release-v1.3.1"
+  "bc05a141d66fafe5306cd7bbccaf892723899a74": "release-v1.3.1",
+  "578ff529894992fb9e67cae4c69424e65c84868e": "main"
 };
