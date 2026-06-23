@@ -81,6 +81,17 @@ extern BlockNumber tp_tombstone_enqueue(
 		BlockNumber		  old_head);
 
 /*
+ * Variant for callers that do not serialize against concurrent FSM
+ * allocators.  Extends the relation instead of calling GetFreeIndexPage().
+ */
+extern BlockNumber tp_tombstone_enqueue_extend(
+		Relation		  index,
+		BlockNumber		 *blocks,
+		uint32			  num_blocks,
+		FullTransactionId merged_fxid,
+		BlockNumber		  old_head);
+
+/*
  * Drain past-horizon tombstones.  For each tombstone whose
  * merged_fxid < `horizon`, WAL-unlink it then RecordFreeIndexPage its
  * listed blocks and its own page.
