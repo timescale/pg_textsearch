@@ -59,13 +59,14 @@ SELECT bm25_dump_index('child1_bm25_idx')::text ~ 'total_docs: 2' as has_two_doc
  t
 (1 row)
 
--- Test searching on child table works
-SELECT COUNT(*) as matching_docs
+-- BM25 search on the child table returns its top hit.
+SELECT content
 FROM child_docs1
-WHERE content @@ to_tsquery('english', 'postgresql & inheritance');
- matching_docs 
----------------
-             1
+ORDER BY content <@> to_bm25query('postgresql inheritance', 'child1_bm25_idx')
+LIMIT 1;
+                         content                         
+---------------------------------------------------------
+ PostgreSQL inheritance allows tables to share structure
 (1 row)
 
 -- Cleanup inheritance test

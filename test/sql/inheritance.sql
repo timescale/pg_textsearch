@@ -47,10 +47,11 @@ CREATE INDEX child1_bm25_idx ON child_docs1 USING bm25(content)
 -- Verify child index was created successfully with correct document count
 SELECT bm25_dump_index('child1_bm25_idx')::text ~ 'total_docs: 2' as has_two_docs;
 
--- Test searching on child table works
-SELECT COUNT(*) as matching_docs
+-- BM25 search on the child table returns its top hit.
+SELECT content
 FROM child_docs1
-WHERE content @@ to_tsquery('english', 'postgresql & inheritance');
+ORDER BY content <@> to_bm25query('postgresql inheritance', 'child1_bm25_idx')
+LIMIT 1;
 
 -- Cleanup inheritance test
 DROP TABLE child_docs1 CASCADE;
