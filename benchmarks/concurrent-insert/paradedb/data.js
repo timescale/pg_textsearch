@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1782203208309,
+  "lastUpdate": 1782289316565,
   "repoUrl": "https://github.com/timescale/pg_textsearch",
   "entries": {
     "Concurrent INSERT (ParadeDB)": [
@@ -5026,6 +5026,68 @@ window.BENCHMARK_DATA = {
           {
             "name": "ParadeDB INSERT latency (c=8)",
             "value": 0.627,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tjgreen@gmail.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "578ff529894992fb9e67cae4c69424e65c84868e",
+          "message": "Release v1.3.1 (#419)\n\n## Summary\n- prepare pg_textsearch v1.3.1 from current main\n- rename release SQL artifacts and set default/library version to 1.3.1\n- rename the release banner reference and image to v1.3.1\n\n## Release procedure\n- audited v1.3.0 -> current SQL delta; only new catalog object is\nbm25_pending_free_pages(text), covered by\nsql/pg_textsearch--1.3.0--1.3.1.sql\n- left upgrade-tests old_version matrix unchanged because it already\nincludes previous release 1.3.0\n\n## Validation\n- PG_CONFIG=/home/azureuser/pg17/bin/pg_config make\n- PG_CONFIG=/home/azureuser/pg17/bin/pg_config make format-check\n- PATH=/home/azureuser/pg17/bin:$PATH\nPG_CONFIG=/home/azureuser/pg17/bin/pg_config PGHOST=/tmp make test-local",
+          "timestamp": "2026-06-23T01:39:54Z",
+          "url": "https://github.com/timescale/pg_textsearch/commit/578ff529894992fb9e67cae4c69424e65c84868e"
+        },
+        "date": 1782289300604,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "ParadeDB INSERT TPS (c=1)",
+            "value": 3057.711711,
+            "unit": "tps"
+          },
+          {
+            "name": "ParadeDB INSERT latency (c=1)",
+            "value": 0.327,
+            "unit": "ms"
+          },
+          {
+            "name": "ParadeDB INSERT TPS (c=2)",
+            "value": 5936.669503,
+            "unit": "tps"
+          },
+          {
+            "name": "ParadeDB INSERT latency (c=2)",
+            "value": 0.337,
+            "unit": "ms"
+          },
+          {
+            "name": "ParadeDB INSERT TPS (c=4)",
+            "value": 9851.274419,
+            "unit": "tps"
+          },
+          {
+            "name": "ParadeDB INSERT latency (c=4)",
+            "value": 0.406,
+            "unit": "ms"
+          },
+          {
+            "name": "ParadeDB INSERT TPS (c=8)",
+            "value": 14906.161389,
+            "unit": "tps"
+          },
+          {
+            "name": "ParadeDB INSERT latency (c=8)",
+            "value": 0.537,
             "unit": "ms"
           }
         ]
