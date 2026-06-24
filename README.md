@@ -16,9 +16,9 @@ Modern ranked text search for Postgres.
 - Supports partitioned tables
 - Best in class performance and scalability
 
-🚀 **Status**: v1.3.1 - Production ready.
+🚀 **Status**: v1.4.0-dev - Production ready.
 
-![Tapir and Friends](images/tapir_and_friends_v1.3.1.png)
+![pg_textsearch](images/banner.png)
 
 ## Historical note
 
