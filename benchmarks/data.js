@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1783065498864,
+  "lastUpdate": 1783065501500,
   "repoUrl": "https://github.com/timescale/pg_textsearch",
   "entries": {
     "cranfield Benchmarks": [
@@ -162358,6 +162358,83 @@ window.BENCHMARK_DATA = {
           {
             "name": "paradedb_msmarco (8.8M docs) - Index Size",
             "value": 1502.93,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tjgreen@gmail.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "d17ea9c2111ccb039caf68feaee6a73f78bf47c7",
+          "message": "chore: bump version to 1.4.0-dev (#423)\n\n## Summary\n\nStarts the 1.4.0 development cycle and switches the README banner to a\nsingle, version-independent image.\n\n## Version bump (1.3.1 → 1.4.0-dev)\n\nRan `scripts/bump-version.sh 1.3.1 1.4.0-dev`, which:\n- Renamed `sql/pg_textsearch--1.3.1.sql` → `--1.4.0-dev.sql` and added\nthe `1.3.1--1.4.0-dev` upgrade stub.\n- Updated the Makefile `DATA` list, control file, `mod.c`, `CLAUDE.md`,\ntest scripts, and the msmarco benchmark version check.\n\n## Permanent banner\n\n- Added `images/banner.png` and removed the versioned\n`images/tapir_and_friends_v1.3.1.png`.\n- Pointed the README at `images/banner.png`.\n- Removed the banner-versioning logic from `scripts/bump-version.sh` and\nthe \"update the release banner image\" step from `RELEASING.md`, so the\nbanner stays fixed going forward.\n\n## Testing\n\n- `make` (PG17) — clean build.\n- `make test-local` — all 71 regression tests pass.\n- `make format-check` — passes (clang-format 21.1.8).",
+          "timestamp": "2026-06-25T00:49:53Z",
+          "url": "https://github.com/timescale/pg_textsearch/commit/d17ea9c2111ccb039caf68feaee6a73f78bf47c7"
+        },
+        "date": 1783065501141,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "paradedb_msmarco (8.8M docs) - Index Build Time",
+            "value": 152691.884,
+            "unit": "ms"
+          },
+          {
+            "name": "paradedb_msmarco (8.8M docs) - 1 Token Query (p50)",
+            "value": 17.52,
+            "unit": "ms"
+          },
+          {
+            "name": "paradedb_msmarco (8.8M docs) - 2 Token Query (p50)",
+            "value": 17.39,
+            "unit": "ms"
+          },
+          {
+            "name": "paradedb_msmarco (8.8M docs) - 3 Token Query (p50)",
+            "value": 23.15,
+            "unit": "ms"
+          },
+          {
+            "name": "paradedb_msmarco (8.8M docs) - 4 Token Query (p50)",
+            "value": 24.67,
+            "unit": "ms"
+          },
+          {
+            "name": "paradedb_msmarco (8.8M docs) - 5 Token Query (p50)",
+            "value": 26.6,
+            "unit": "ms"
+          },
+          {
+            "name": "paradedb_msmarco (8.8M docs) - 6 Token Query (p50)",
+            "value": 32.6,
+            "unit": "ms"
+          },
+          {
+            "name": "paradedb_msmarco (8.8M docs) - 7 Token Query (p50)",
+            "value": 33.84,
+            "unit": "ms"
+          },
+          {
+            "name": "paradedb_msmarco (8.8M docs) - 8+ Token Query (p50)",
+            "value": 41.48,
+            "unit": "ms"
+          },
+          {
+            "name": "paradedb_msmarco (8.8M docs) - Throughput (avg ms/query)",
+            "value": 28.86,
+            "unit": "ms"
+          },
+          {
+            "name": "paradedb_msmarco (8.8M docs) - Index Size",
+            "value": 1497.65,
             "unit": "MB"
           }
         ]
