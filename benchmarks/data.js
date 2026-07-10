@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1783670332123,
+  "lastUpdate": 1783670335058,
   "repoUrl": "https://github.com/timescale/pg_textsearch",
   "entries": {
     "cranfield Benchmarks": [
@@ -130819,6 +130819,93 @@ window.BENCHMARK_DATA = {
           {
             "name": "wikipedia_insert (0 docs) - Weighted Throughput (avg ms/query)",
             "value": 0.9,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia_insert (0 docs) - Index Size",
+            "value": 213.63,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tjgreen@gmail.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "d17ea9c2111ccb039caf68feaee6a73f78bf47c7",
+          "message": "chore: bump version to 1.4.0-dev (#423)\n\n## Summary\n\nStarts the 1.4.0 development cycle and switches the README banner to a\nsingle, version-independent image.\n\n## Version bump (1.3.1 → 1.4.0-dev)\n\nRan `scripts/bump-version.sh 1.3.1 1.4.0-dev`, which:\n- Renamed `sql/pg_textsearch--1.3.1.sql` → `--1.4.0-dev.sql` and added\nthe `1.3.1--1.4.0-dev` upgrade stub.\n- Updated the Makefile `DATA` list, control file, `mod.c`, `CLAUDE.md`,\ntest scripts, and the msmarco benchmark version check.\n\n## Permanent banner\n\n- Added `images/banner.png` and removed the versioned\n`images/tapir_and_friends_v1.3.1.png`.\n- Pointed the README at `images/banner.png`.\n- Removed the banner-versioning logic from `scripts/bump-version.sh` and\nthe \"update the release banner image\" step from `RELEASING.md`, so the\nbanner stays fixed going forward.\n\n## Testing\n\n- `make` (PG17) — clean build.\n- `make test-local` — all 71 regression tests pass.\n- `make format-check` — passes (clang-format 21.1.8).",
+          "timestamp": "2026-06-25T00:49:53Z",
+          "url": "https://github.com/timescale/pg_textsearch/commit/d17ea9c2111ccb039caf68feaee6a73f78bf47c7"
+        },
+        "date": 1783670334626,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "wikipedia_insert (0 docs) - Index Build Time",
+            "value": 1.412,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia_insert (0 docs) - Insert Time",
+            "value": 24754.971,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia_insert (0 docs) - 1 Token Query (p50)",
+            "value": 0.37,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia_insert (0 docs) - 2 Token Query (p50)",
+            "value": 0.6,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia_insert (0 docs) - 3 Token Query (p50)",
+            "value": 0.82,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia_insert (0 docs) - 4 Token Query (p50)",
+            "value": 1.04,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia_insert (0 docs) - 5 Token Query (p50)",
+            "value": 1.22,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia_insert (0 docs) - 6 Token Query (p50)",
+            "value": 1.42,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia_insert (0 docs) - 7 Token Query (p50)",
+            "value": 1.68,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia_insert (0 docs) - 8+ Token Query (p50)",
+            "value": 2.28,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia_insert (0 docs) - Weighted Latency (p50, ms)",
+            "value": 0.96,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia_insert (0 docs) - Weighted Throughput (avg ms/query)",
+            "value": 0.98,
             "unit": "ms"
           },
           {
