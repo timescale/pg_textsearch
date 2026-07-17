@@ -1,0 +1,101 @@
+name: CJK CI
+
+# End-to-end CJK (Chinese/Japanese/Korean) search test. pg_textsearch
+# tokenizes through the index's text_config, so this job pairs it with the
+# third-party pg_cjk_parser (2-gram CJK parser) and runs the `cjk` regression
+# test, which is intentionally kept out of the default REGRESS schedule.
+
+on:
+  push:
+    branches: [ main ]
+    paths:
+      - 'src/**'
+      - 'sql/**'
+      - 'Makefile'
+      - 'test/sql/cjk.sql'
+      - 'test/expected/cjk.out'
+      - '.github/workflows/cjk-ci.yml'
+  pull_request:
+    branches: [ main ]
+    paths:
+      - 'src/**'
+      - 'sql/**'
+      - 'Makefile'
+      - 'test/sql/cjk.sql'
+      - 'test/expected/cjk.out'
+      - '.github/workflows/cjk-ci.yml'
+  workflow_dispatch:
+
+env:
+  # Pinned pg_cjk_parser commit (v0.2.0) for reproducible CI.
+  PG_CJK_PARSER_REF: c38d21a2451dc88b781c168bc370c555ef6db179
+
+jobs:
+  cjk:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        pg_version: [17, 18]
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Install PostgreSQL ${{ matrix.pg_version }}
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y wget ca-certificates
+        wget --quiet -O - https://www.postgresql.org/media/keys/ACCC4CF8.asc | sudo apt-key add -
+        echo "deb http://apt.postgresql.org/pub/repos/apt/ $(lsb_release -cs)-pgdg main" | sudo tee /etc/apt/sources.list.d/pgdg.list
+        sudo apt-get update
+        sudo apt-get install -y postgresql-${{ matrix.pg_version }} postgresql-server-dev-${{ matrix.pg_version }}
+
+    - name: Install build dependencies
+      run: |
+        # libicu-dev is required to build pg_cjk_parser.
+        sudo apt-get install -y build-essential libicu-dev
+
+    - name: Build and install pg_textsearch
+      run: |
+        export PATH="/usr/lib/postgresql/${{ matrix.pg_version }}/bin:$PATH"
+        make clean
+        make
+        sudo env "PATH=$PATH" make install
+
+    - name: Build and install pg_cjk_parser (pinned)
+      run: |
+        export PATH="/usr/lib/postgresql/${{ matrix.pg_version }}/bin:$PATH"
+        git clone https://github.com/huangjimmy/pg_cjk_parser.git /tmp/pg_cjk_parser
+        cd /tmp/pg_cjk_parser
+        git checkout "$PG_CJK_PARSER_REF"
+        make
+        sudo env "PATH=$PATH" make install
+
+    - name: Run CJK regression test
+      timeout-minutes: 10
+      run: |
+        export PATH="/usr/lib/postgresql/${{ matrix.pg_version }}/bin:$PATH"
+        rm -rf tmp_check_cjk
+        mkdir -p tmp_check_cjk
+        initdb -D tmp_check_cjk/data --auth-local=trust --auth-host=trust -E UTF8
+        echo "port = 55440" >> tmp_check_cjk/data/postgresql.conf
+        echo "shared_preload_libraries = 'pg_textsearch'" >> tmp_check_cjk/data/postgresql.conf
+        echo "unix_socket_directories = '$PWD/tmp_check_cjk'" >> tmp_check_cjk/data/postgresql.conf
+
+        if ! pg_ctl start -D tmp_check_cjk/data -l tmp_check_cjk/data/logfile -w; then
+          echo "PostgreSQL failed to start. Log contents:"
+          cat tmp_check_cjk/data/logfile
+          exit 1
+        fi
+
+        if ! make test-cjk PGHOST=$PWD/tmp_check_cjk PGPORT=55440; then
+          echo "CJK test failed. Diff:"
+          cat test/results/cjk.out.diff 2>/dev/null || true
+          echo "PostgreSQL server log (last 100 lines):"
+          tail -100 tmp_check_cjk/data/logfile || true
+          pg_ctl stop -D tmp_check_cjk/data -l tmp_check_cjk/data/logfile || true
+          rm -rf tmp_check_cjk || true
+          exit 1
+        fi
+        pg_ctl stop -D tmp_check_cjk/data -l tmp_check_cjk/data/logfile
+        rm -rf tmp_check_cjk
