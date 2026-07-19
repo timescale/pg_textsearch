@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1784444669969,
+  "lastUpdate": 1784444673432,
   "repoUrl": "https://github.com/timescale/pg_textsearch",
   "entries": {
     "cranfield Benchmarks": [
@@ -36658,6 +36658,133 @@ window.BENCHMARK_DATA = {
           {
             "name": "msmarco (8.8M docs) - Query Latency After Update VACUUM",
             "value": 8.4,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tjgreen@gmail.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "d17ea9c2111ccb039caf68feaee6a73f78bf47c7",
+          "message": "chore: bump version to 1.4.0-dev (#423)\n\n## Summary\n\nStarts the 1.4.0 development cycle and switches the README banner to a\nsingle, version-independent image.\n\n## Version bump (1.3.1 → 1.4.0-dev)\n\nRan `scripts/bump-version.sh 1.3.1 1.4.0-dev`, which:\n- Renamed `sql/pg_textsearch--1.3.1.sql` → `--1.4.0-dev.sql` and added\nthe `1.3.1--1.4.0-dev` upgrade stub.\n- Updated the Makefile `DATA` list, control file, `mod.c`, `CLAUDE.md`,\ntest scripts, and the msmarco benchmark version check.\n\n## Permanent banner\n\n- Added `images/banner.png` and removed the versioned\n`images/tapir_and_friends_v1.3.1.png`.\n- Pointed the README at `images/banner.png`.\n- Removed the banner-versioning logic from `scripts/bump-version.sh` and\nthe \"update the release banner image\" step from `RELEASING.md`, so the\nbanner stays fixed going forward.\n\n## Testing\n\n- `make` (PG17) — clean build.\n- `make test-local` — all 71 regression tests pass.\n- `make format-check` — passes (clang-format 21.1.8).",
+          "timestamp": "2026-06-25T00:49:53Z",
+          "url": "https://github.com/timescale/pg_textsearch/commit/d17ea9c2111ccb039caf68feaee6a73f78bf47c7"
+        },
+        "date": 1784444672756,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "msmarco (8.8M docs) - Index Build Time",
+            "value": 229218.114,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - 1 Token Query (p50)",
+            "value": 0.67,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - 2 Token Query (p50)",
+            "value": 1.34,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - 3 Token Query (p50)",
+            "value": 2.44,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - 4 Token Query (p50)",
+            "value": 3.76,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - 5 Token Query (p50)",
+            "value": 6.49,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - 6 Token Query (p50)",
+            "value": 9.23,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - 7 Token Query (p50)",
+            "value": 14.02,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - 8+ Token Query (p50)",
+            "value": 21.5,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - Weighted Latency (p50, ms)",
+            "value": 4.06,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - Weighted Throughput (avg ms/query)",
+            "value": 5.2,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - Index Size",
+            "value": 1216,
+            "unit": "MB"
+          },
+          {
+            "name": "msmarco (8.8M docs) - Partial VACUUM (concentrated delete)",
+            "value": 4703.139,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - Full VACUUM (uniform delete)",
+            "value": 6387.247,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - Full VACUUM (uniform update)",
+            "value": 4643.041,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - Index Size After Partial VACUUM",
+            "value": 2595.85,
+            "unit": "MB"
+          },
+          {
+            "name": "msmarco (8.8M docs) - Index Size After Full VACUUM",
+            "value": 2595.86,
+            "unit": "MB"
+          },
+          {
+            "name": "msmarco (8.8M docs) - Query Latency After Partial VACUUM",
+            "value": 8.47,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - Query Latency After Full VACUUM",
+            "value": 8.16,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - Index Size After Update VACUUM",
+            "value": 2595.86,
+            "unit": "MB"
+          },
+          {
+            "name": "msmarco (8.8M docs) - Query Latency After Update VACUUM",
+            "value": 9.78,
             "unit": "ms"
           }
         ]
