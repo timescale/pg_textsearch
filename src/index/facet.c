@@ -35,7 +35,7 @@
 
 /* GUCs (registered in mod.c). */
 bool   tp_enable_facet_pushdown		  = true;
-double tp_facet_selectivity_threshold = 0.12;
+double tp_facet_selectivity_threshold = 0.02;
 bool   tp_log_facet					  = false;
 
 /*

@@ -241,9 +241,11 @@ _PG_init(void)
 			"pg_textsearch.facet_selectivity_threshold",
 			"Maximum estimated selectivity for facet filter pushdown",
 			"Filters estimated to match more than this fraction of the table "
-			"are left to the standard post-filter path.",
+			"are left to the post-filter path. The pushdown pays off only for "
+			"selective facets; the crossover shifts lower as the table grows, "
+			"so tune this for your data.",
 			&tp_facet_selectivity_threshold,
-			0.12, /* default */
+			0.02, /* default: ~pushdown/baseline crossover at 1M rows */
 			0.0,  /* min */
 			1.0,  /* max */
 			PGC_USERSET,
