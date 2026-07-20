@@ -737,17 +737,14 @@ below.
 
 pg_textsearch tokenizes both documents and queries through the index's
 `text_config` (a standard PostgreSQL text search configuration), so CJK
-(Chinese, Japanese, Korean) support is entirely a matter of choosing a
-CJK-aware configuration — pg_textsearch itself needs no CJK-specific
-code. PostgreSQL's built-in parser does not split CJK text into words,
-so pair pg_textsearch with a CJK parser.
+(Chinese, Japanese, Korean) support is a matter of choosing a CJK-aware
+configuration; pg_textsearch itself needs no CJK-specific code.
+PostgreSQL's built-in parser does not split CJK text into words, so pair
+pg_textsearch with a CJK parser.
 
-**n-gram parser (dictionary-free, portable) — recommended starting
-point.** [pg_cjk_parser](https://github.com/huangjimmy/pg_cjk_parser)
-extends the default parser to emit overlapping 2-gram (bigram) CJK
-tokens. It uses ICU for Unicode handling, supports PostgreSQL 11–18, and
-needs no `shared_preload_libraries`. Bigrams are deterministic, so
-tokenization is stable across environments.
+**n-gram parser (dictionary-free).**
+[pg_cjk_parser](https://github.com/huangjimmy/pg_cjk_parser) extends the
+default parser to emit overlapping 2-gram (bigram) CJK tokens.
 
 ```sql
 CREATE EXTENSION pg_cjk_parser;
@@ -781,7 +778,7 @@ LIMIT 10;
 An end-to-end regression test for this setup lives in `test/sql/cjk.sql`
 and runs via `make test-cjk` (see the `CJK CI` workflow).
 
-**Dictionary segmentation (per language, higher precision).**
+**Dictionary segmentation (per language).**
 [zhparser](https://github.com/amutu/zhparser) (Chinese, via SCWS) and
 similar parsers segment text into dictionary words instead of bigrams.
 The [large-document workaround](#large-documents-and-chunked-tokenization)

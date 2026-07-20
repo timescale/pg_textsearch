@@ -90,7 +90,7 @@ jobs:
 
         if ! make test-cjk PGHOST=$PWD/tmp_check_cjk PGPORT=55440; then
           echo "CJK test failed. Diff:"
-          cat test/results/cjk.out.diff 2>/dev/null || true
+          cat test/regression.diffs 2>/dev/null || true
           echo "PostgreSQL server log (last 100 lines):"
           tail -100 tmp_check_cjk/data/logfile || true
           pg_ctl stop -D tmp_check_cjk/data -l tmp_check_cjk/data/logfile || true
