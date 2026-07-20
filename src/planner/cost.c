@@ -38,6 +38,15 @@ tp_try_store_facet(PlannerInfo *root, IndexPath *path)
 	RelOptInfo *rel;
 	ListCell   *lc;
 
+	/*
+	 * Reset any spec stashed while costing an earlier BM25 path. Costing a
+	 * path does not mean it will be executed, so without this a spec from a
+	 * path that lost (or a different statement) could still be present and be
+	 * wrongly consumed by this statement's scan. We re-stash below only if
+	 * this path has a usable facet clause.
+	 */
+	tp_reset_pending_facet();
+
 	if (!tp_enable_facet_pushdown || root == NULL)
 		return;
 

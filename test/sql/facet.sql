@@ -254,4 +254,35 @@ RESET pg_textsearch.facet_selectivity_threshold;
 DROP TABLE facet_rls;
 DROP ROLE facet_rls_reader;
 
+-- Stale-spec isolation: a faceted query whose BM25 index path is costed but not
+-- executed (a seqscan wins) stashes a facet spec that is never consumed. That
+-- spec must not leak into a later statement's scan on the same index. Both run
+-- in one transaction so the transaction-end cleanup does not mask the leak.
+CREATE TABLE facet_stale (id INT PRIMARY KEY, cat TEXT, content TEXT);
+INSERT INTO facet_stale
+SELECT g, CASE WHEN g <= 5 THEN 'x' ELSE 'y' END, 'alpha document ' || g
+FROM generate_series(1, 20) g;
+CREATE INDEX facet_stale_bm25 ON facet_stale USING bm25(content)
+    WITH (text_config='english');
+ANALYZE facet_stale;
+BEGIN;
+SET LOCAL pg_textsearch.facet_selectivity_threshold = 1.0;
+-- A: enable_indexscan=off forces a seqscan, so the costed BM25 path's cat='x'
+-- spec is stashed but never consumed. A itself is correct (Filter cat='x').
+SET LOCAL enable_indexscan = off;
+SELECT id FROM facet_stale WHERE cat = 'x'
+    ORDER BY content <@> to_bm25query('alpha', 'facet_stale_bm25'), id
+    LIMIT 5;
+-- B: no facet, forced onto the BM25 scan. Must return ALL 20 rows, not the 5
+-- that A's stale cat='x' spec would wrongly restrict it to.
+SET LOCAL enable_indexscan = on;
+SET LOCAL enable_seqscan = off;
+SELECT count(*) AS b_all FROM (
+    SELECT id FROM facet_stale
+    ORDER BY content <@> to_bm25query('alpha', 'facet_stale_bm25')
+    LIMIT 100
+) s;
+COMMIT;
+DROP TABLE facet_stale;
+
 DROP EXTENSION pg_textsearch CASCADE;

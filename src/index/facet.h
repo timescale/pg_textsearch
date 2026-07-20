@@ -69,6 +69,13 @@ TpFacetFilter *tp_build_query_facet(Relation bm25_index, MemoryContext ctx);
 void tp_cleanup_query_facets(void);
 
 /*
+ * Drop only the pending planner-stashed spec (not any active scan filter).
+ * Called per BM25-path costing and at ExecutorEnd to bound the spec's
+ * lifetime to a single statement.
+ */
+void tp_reset_pending_facet(void);
+
+/*
  * Active-filter helpers consulted by BMW. The active filter is set around the
  * scoring run and points into the scan's memory context.
  */

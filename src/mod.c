@@ -12,6 +12,7 @@
 #include <catalog/dependency.h>
 #include <catalog/objectaccess.h>
 #include <catalog/pg_class_d.h>
+#include <executor/executor.h>
 #include <fmgr.h>
 #include <limits.h>
 #include <miscadmin.h>
@@ -113,6 +114,9 @@ static shmem_request_hook_type prev_shmem_request_hook = NULL;
 /* Previous ProcessUtility hook */
 static ProcessUtility_hook_type prev_process_utility_hook = NULL;
 
+/* Previous ExecutorEnd hook */
+static ExecutorEnd_hook_type prev_executor_end_hook = NULL;
+
 /* Shared memory size calculation */
 static void tp_shmem_request(void);
 
@@ -129,6 +133,9 @@ static void tp_object_access(
 
 /* Transaction callback to release index locks */
 static void tp_xact_callback(XactEvent event, void *arg);
+
+/* ExecutorEnd hook to bound the faceted-search spec to a single statement */
+static void tp_executor_end(QueryDesc *queryDesc);
 
 /* Subtransaction callback for savepoint rollback cleanup */
 static void tp_subxact_callback(
@@ -465,6 +472,14 @@ _PG_init(void)
 	/* Install ProcessUtility hook for partitioned build tracking */
 	prev_process_utility_hook = ProcessUtility_hook;
 	ProcessUtility_hook		  = tp_process_utility;
+
+	/*
+	 * Install ExecutorEnd hook so a faceted-search spec stashed while costing
+	 * a BM25 path that was not executed (e.g. a seqscan won, or the plan was
+	 * cached) does not survive the statement and leak into the next one.
+	 */
+	prev_executor_end_hook = ExecutorEnd_hook;
+	ExecutorEnd_hook	   = tp_executor_end;
 }
 
 /*
@@ -529,6 +544,24 @@ tp_shmem_startup(void)
 
 	/* Initialize the registry in shared memory (includes DSA control) */
 	tp_registry_shmem_startup();
+}
+
+/*
+ * ExecutorEnd hook. Runs after each executed statement; drops any pending
+ * faceted-search spec so a spec stashed while costing a BM25 path that this
+ * statement did not consume cannot be applied to a later statement's scan.
+ * Only the pending spec is dropped; an active scan filter is owned by the
+ * scan's own PG_TRY/PG_FINALLY.
+ */
+static void
+tp_executor_end(QueryDesc *queryDesc)
+{
+	if (prev_executor_end_hook)
+		prev_executor_end_hook(queryDesc);
+	else
+		standard_ExecutorEnd(queryDesc);
+
+	tp_reset_pending_facet();
 }
 
 /*

@@ -458,6 +458,20 @@ tp_cleanup_query_facets(void)
 	tp_active_facet			  = NULL;
 }
 
+/*
+ * Drop only the pending (planner-stashed) spec, leaving any active scan
+ * filter alone. Called at the start of each BM25-path costing and at
+ * ExecutorEnd so a spec stashed while costing a path that is never consumed
+ * (the path lost, or was only EXPLAINed) cannot leak into a later statement
+ * on the same index.
+ */
+void
+tp_reset_pending_facet(void)
+{
+	tp_facet_free_pending_value();
+	tp_pending_facet.is_valid = false;
+}
+
 void
 tp_facet_set_active(TpFacetFilter *filter)
 {
