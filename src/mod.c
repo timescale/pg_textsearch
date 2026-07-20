@@ -252,6 +252,24 @@ _PG_init(void)
 			NULL,
 			NULL);
 
+	DefineCustomBoolVariable(
+			"pg_textsearch.log_facet",
+			"Log how the faceted-search allow-list is built",
+			"When enabled, logs whether the facet pushdown built its "
+			"allow-list "
+			"via an index scan on the facet column (fast, O(matching rows)) "
+			"or "
+			"a full heap scan fallback. Useful for confirming a facet index "
+			"is "
+			"being used.",
+			&tp_log_facet,
+			false, /* default off */
+			PGC_USERSET,
+			0,
+			NULL,
+			NULL,
+			NULL);
+
 	DefineCustomIntVariable(
 			"pg_textsearch.bulk_load_threshold",
 			"Terms per transaction to trigger memtable spill",

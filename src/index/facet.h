@@ -29,6 +29,7 @@
 /* GUCs */
 extern bool	  tp_enable_facet_pushdown;
 extern double tp_facet_selectivity_threshold;
+extern bool	  tp_log_facet;
 
 /*
  * A sorted (ascending by CTID) array of heap TIDs that satisfy the facet

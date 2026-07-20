@@ -11,9 +11,12 @@
  */
 #include <postgres.h>
 
+#include <access/amapi.h>
+#include <access/genam.h>
 #include <access/heapam.h>
 #include <access/htup_details.h>
 #include <access/relscan.h>
+#include <access/skey.h>
 #include <access/table.h>
 #include <access/tableam.h>
 #include <executor/tuptable.h>
@@ -25,6 +28,7 @@
 #include <utils/lsyscache.h>
 #include <utils/memutils.h>
 #include <utils/rel.h>
+#include <utils/relcache.h>
 #include <utils/snapmgr.h>
 
 #include "index/facet.h"
@@ -32,6 +36,7 @@
 /* GUCs (registered in mod.c). */
 bool   tp_enable_facet_pushdown		  = true;
 double tp_facet_selectivity_threshold = 0.12;
+bool   tp_log_facet					  = false;
 
 /*
  * Per-backend facet spec captured during planning. Mirrors index/limit.c.
@@ -162,36 +167,148 @@ tp_remap_tids_to_hot_roots(Relation heap, ItemPointerData *tids, int count)
 		UnlockReleaseBuffer(buf);
 }
 
-TpFacetFilter *
-tp_build_query_facet(Relation bm25_index, MemoryContext ctx)
+/*
+ * Build the allow-list via an index scan on the facet column instead of a full
+ * heap scan, turning allow-list construction from O(table) into O(matching
+ * rows) -- the change that makes the pushdown pay off at scale.
+ *
+ * Scans the first suitable index on the heap: valid, non-partial, an AM with
+ * amgettuple, whose leading key column is the facet column and whose opclass
+ * supports the facet operator with a matching collation. Index entries
+ * reference HOT-chain roots (as the BM25 segment does), so unlike the heap
+ * scan this path needs no HOT-root remap. index_getnext_tid yields every
+ * matching index entry without a heap visibility check -- a safe superset,
+ * since the Filter node above the scan is the exact recheck.
+ *
+ * Returns a palloc'd (in ctx) array of matching heap TIDs and sets *out_count
+ * to the number found (>= 0). Returns NULL with *out_count == -1 when no
+ * suitable index exists, so the caller falls back to the heap scan.
+ */
+static ItemPointerData *
+tp_build_facet_via_index(
+		Relation	  heap,
+		Snapshot	  snapshot,
+		MemoryContext ctx,
+		int			 *out_count,
+		char		 *idxname,
+		size_t		  idxname_len)
 {
-	TpFacetFilter	*filter;
-	Relation		 heap;
+	List			*indexoids = RelationGetIndexList(heap);
+	ListCell		*lc;
+	ItemPointerData *tids  = NULL;
+	int				 count = -1;
+
+	foreach (lc, indexoids)
+	{
+		Oid			  indexoid = lfirst_oid(lc);
+		Relation	  irel	   = index_open(indexoid, AccessShareLock);
+		Oid			  opfamily = irel->rd_opfamily[0];
+		Oid			  scan_opno;
+		int			  strategy;
+		Oid			  lefttype;
+		Oid			  righttype;
+		ScanKeyData	  skey;
+		IndexScanDesc iscan;
+		ItemPointer	  tid;
+		int			  capacity;
+		MemoryContext oldcontext;
+#if PG_VERSION_NUM >= 180000
+		IndexScanInstrumentation instr;
+#endif
+
+		/* Commute "const OP var" into "var OP const" for the index scan. */
+		scan_opno = tp_pending_facet.var_on_left
+						  ? tp_pending_facet.opno
+						  : get_commutator(tp_pending_facet.opno);
+
+		/*
+		 * Reject indexes that can't safely/efficiently answer the facet:
+		 * invalid, partial (would miss rows -> false negatives), no
+		 * amgettuple, leading key not the facet column, operator not in the
+		 * opclass, or a collation mismatch.
+		 */
+		if (!irel->rd_index->indisvalid ||
+			RelationGetIndexPredicate(irel) != NIL ||
+			irel->rd_indam->amgettuple == NULL ||
+			irel->rd_index->indkey.values[0] != tp_pending_facet.attno ||
+			!OidIsValid(scan_opno) || !op_in_opfamily(scan_opno, opfamily) ||
+			irel->rd_indcollation[0] != tp_pending_facet.collation)
+		{
+			index_close(irel, AccessShareLock);
+			continue;
+		}
+
+		get_op_opfamily_properties(
+				scan_opno, opfamily, false, &strategy, &lefttype, &righttype);
+
+		oldcontext = MemoryContextSwitchTo(ctx);
+		capacity   = 1024;
+		tids	   = palloc(capacity * sizeof(ItemPointerData));
+		MemoryContextSwitchTo(oldcontext);
+		count = 0;
+
+		ScanKeyEntryInitialize(
+				&skey,
+				0,
+				1, /* leading index column */
+				(StrategyNumber)strategy,
+				InvalidOid,
+				tp_pending_facet.collation,
+				get_opcode(scan_opno),
+				tp_pending_facet.value);
+
+#if PG_VERSION_NUM >= 180000
+		memset(&instr, 0, sizeof(instr));
+		iscan = index_beginscan(heap, irel, snapshot, &instr, 1, 0);
+#else
+		iscan = index_beginscan(heap, irel, snapshot, 1, 0);
+#endif
+		index_rescan(iscan, &skey, 1, NULL, 0);
+
+		while ((tid = index_getnext_tid(iscan, ForwardScanDirection)) != NULL)
+		{
+			if (count >= capacity)
+			{
+				oldcontext = MemoryContextSwitchTo(ctx);
+				capacity *= 2;
+				tids = repalloc(tids, capacity * sizeof(ItemPointerData));
+				MemoryContextSwitchTo(oldcontext);
+			}
+			tids[count++] = *tid;
+		}
+
+		index_endscan(iscan);
+		strlcpy(idxname, RelationGetRelationName(irel), idxname_len);
+		index_close(irel, AccessShareLock);
+		break; /* first suitable index wins */
+	}
+
+	list_free(indexoids);
+	*out_count = count;
+	return tids;
+}
+
+/*
+ * Fallback: build the allow-list with a full heap scan, evaluating the facet
+ * operator on every live tuple. Used when no suitable facet index exists. Live
+ * tuples are the tip of any HOT chain, so their CTIDs are remapped to chain
+ * roots to match the CTIDs the BM25 segment stored at build time.
+ */
+static ItemPointerData *
+tp_build_facet_via_heap(
+		Relation heap, Snapshot snapshot, MemoryContext ctx, int *out_count)
+{
+	FmgrInfo		 opproc;
 	TableScanDesc	 scan;
 	TupleTableSlot	*slot;
-	Snapshot		 snapshot;
-	FmgrInfo		 opproc;
 	MemoryContext	 oldcontext;
 	ItemPointerData *tids;
 	int				 capacity;
 	int				 count = 0;
 
-	if (!tp_enable_facet_pushdown || !tp_pending_facet.is_valid)
-		return NULL;
-
-	if (!RelationIsValid(bm25_index) ||
-		RelationGetRelid(bm25_index) != tp_pending_facet.bm25_index_oid)
-		return NULL;
-
-	/* One-shot: consume the spec regardless of outcome below. */
-	tp_pending_facet.is_valid = false;
-
 	fmgr_info(get_opcode(tp_pending_facet.opno), &opproc);
-
-	heap	 = table_open(tp_pending_facet.heap_oid, AccessShareLock);
-	snapshot = GetActiveSnapshot();
-	slot	 = table_slot_create(heap, NULL);
-	scan	 = table_beginscan(heap, snapshot, 0, NULL);
+	slot = table_slot_create(heap, NULL);
+	scan = table_beginscan(heap, snapshot, 0, NULL);
 
 	oldcontext = MemoryContextSwitchTo(ctx);
 	capacity   = 1024;
@@ -237,15 +354,60 @@ tp_build_query_facet(Relation bm25_index, MemoryContext ctx)
 	table_endscan(scan);
 	ExecDropSingleTupleTableSlot(slot);
 
-	/*
-	 * Translate live-tuple CTIDs to HOT-chain roots so the allow-list matches
-	 * the CTIDs the BM25 segment stored at build time. Done while the heap is
-	 * still open because it reads heap buffers.
-	 */
 	if (count > 0)
 		tp_remap_tids_to_hot_roots(heap, tids, count);
 
+	*out_count = count;
+	return tids;
+}
+
+TpFacetFilter *
+tp_build_query_facet(Relation bm25_index, MemoryContext ctx)
+{
+	TpFacetFilter	*filter;
+	Relation		 heap;
+	Snapshot		 snapshot;
+	MemoryContext	 oldcontext;
+	ItemPointerData *tids;
+	int				 count;
+	bool			 used_index;
+	char			 idxname[NAMEDATALEN];
+
+	if (!tp_enable_facet_pushdown || !tp_pending_facet.is_valid)
+		return NULL;
+
+	if (!RelationIsValid(bm25_index) ||
+		RelationGetRelid(bm25_index) != tp_pending_facet.bm25_index_oid)
+		return NULL;
+
+	/* One-shot: consume the spec regardless of outcome below. */
+	tp_pending_facet.is_valid = false;
+
+	heap	 = table_open(tp_pending_facet.heap_oid, AccessShareLock);
+	snapshot = GetActiveSnapshot();
+
+	/*
+	 * Prefer an index scan on the facet column (O(matching rows)); fall back
+	 * to a full heap scan (O(table)) only when no suitable index exists.
+	 */
+	tids = tp_build_facet_via_index(
+			heap, snapshot, ctx, &count, idxname, sizeof(idxname));
+	used_index = (count >= 0);
+	if (!used_index)
+		tids = tp_build_facet_via_heap(heap, snapshot, ctx, &count);
+
 	table_close(heap, AccessShareLock);
+
+	if (tp_log_facet)
+	{
+		if (used_index)
+			elog(NOTICE,
+				 "facet pushdown: index scan via \"%s\" (%d tids)",
+				 idxname,
+				 count);
+		else
+			elog(NOTICE, "facet pushdown: heap scan (%d tids)", count);
+	}
 
 	elog(DEBUG1,
 		 "facet pushdown: collected %d matching TID(s) for index \"%s\"",
@@ -255,7 +417,8 @@ tp_build_query_facet(Relation bm25_index, MemoryContext ctx)
 	if (count == 0)
 	{
 		/* Empty allow-list still suppresses all results (correct). */
-		pfree(tids);
+		if (tids != NULL)
+			pfree(tids);
 		tids = NULL;
 	}
 	else

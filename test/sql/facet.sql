@@ -103,6 +103,29 @@ FROM (
     LIMIT 100
 ) s;
 
+-- Index-backed allow-list: a btree on the facet column lets the pushdown build
+-- its allow-list with an index scan (O(matching rows)) instead of a full heap
+-- scan. Results are identical; only the build path (reported by log_facet)
+-- changes. enable_bitmapscan is disabled so the plan keeps the BM25 index scan
+-- (and thus the pushdown) rather than a bitmap scan on the new facet index.
+SET pg_textsearch.facet_selectivity_threshold = 1.0;
+SET enable_bitmapscan = false;
+CREATE INDEX facet_docs_category_idx ON facet_docs (category);
+SET pg_textsearch.log_facet = on;
+SELECT id, category
+FROM facet_docs
+WHERE category = 'engineering'
+ORDER BY content <@> 'database query', id
+LIMIT 3;
+-- No index on rank: the pushdown falls back to the heap scan, still correct.
+SELECT id, rank
+FROM facet_docs
+WHERE rank >= 201
+ORDER BY content <@> 'database recovery', id
+LIMIT 5;
+SET pg_textsearch.log_facet = off;
+RESET enable_bitmapscan;
+
 RESET pg_textsearch.facet_selectivity_threshold;
 RESET pg_textsearch.enable_facet_pushdown;
 DROP TABLE facet_docs;
@@ -150,6 +173,22 @@ FROM facet_hot
 WHERE facet < 1
 ORDER BY body <@> to_bm25query('alpha', 'facet_hot_idx'), id
 LIMIT 5;
+
+-- Same rows with a btree on the facet column: the index path builds the
+-- allow-list from index entries, which reference HOT-chain roots (as the BM25
+-- segment does), so the HOT-updated id 3 is still returned. No HOT remap is
+-- needed on this path.
+SET enable_bitmapscan = false;
+CREATE INDEX facet_hot_facet_idx ON facet_hot (facet);
+SET pg_textsearch.log_facet = on;
+SET pg_textsearch.enable_facet_pushdown = true;
+SELECT id
+FROM facet_hot
+WHERE facet < 1
+ORDER BY body <@> to_bm25query('alpha', 'facet_hot_idx'), id
+LIMIT 5;
+SET pg_textsearch.log_facet = off;
+RESET enable_bitmapscan;
 
 RESET pg_textsearch.facet_selectivity_threshold;
 RESET pg_textsearch.enable_facet_pushdown;
