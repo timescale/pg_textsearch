@@ -62,6 +62,16 @@ tp_try_store_facet(PlannerInfo *root, IndexPath *path)
 		if (!IsA(rinfo->clause, OpExpr))
 			continue;
 
+		/*
+		 * Never push a clause that carries a security level (RLS or a
+		 * security-barrier view): building the allow-list evaluates the
+		 * predicate over the whole table, below the barrier, on rows the
+		 * caller may not see. Leave these to the post-filter path, which
+		 * applies the security quals above the scan.
+		 */
+		if (rinfo->security_level > 0)
+			continue;
+
 		opexpr = (OpExpr *)rinfo->clause;
 		if (list_length(opexpr->args) != 2)
 			continue;
@@ -102,7 +112,8 @@ tp_try_store_facet(PlannerInfo *root, IndexPath *path)
 			continue;
 
 		rte = planner_rt_fetch(rel->relid, root);
-		if (rte == NULL || rte->rtekind != RTE_RELATION)
+		if (rte == NULL || rte->rtekind != RTE_RELATION ||
+			rte->securityQuals != NIL)
 			continue;
 
 		get_typlenbyval(con->consttype, &typlen, &typbyval);

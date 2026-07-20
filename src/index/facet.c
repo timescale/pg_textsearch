@@ -19,6 +19,7 @@
 #include <access/skey.h>
 #include <access/table.h>
 #include <access/tableam.h>
+#include <access/transam.h>
 #include <executor/tuptable.h>
 #include <fmgr.h>
 #include <storage/bufmgr.h>
@@ -223,11 +224,16 @@ tp_build_facet_via_index(
 
 		/*
 		 * Reject indexes that can't safely/efficiently answer the facet:
-		 * invalid, partial (would miss rows -> false negatives), no
-		 * amgettuple, leading key not the facet column, operator not in the
-		 * opclass, or a collation mismatch.
+		 * invalid, still-suspect broken HOT chains under our snapshot
+		 * (indcheckxmin, mirroring the planner in plancat.c), partial (would
+		 * miss rows -> false negatives), no amgettuple, leading key not the
+		 * facet column, operator not in the opclass, or a collation mismatch.
 		 */
 		if (!irel->rd_index->indisvalid ||
+			(irel->rd_index->indcheckxmin &&
+			 !TransactionIdPrecedes(
+					 HeapTupleHeaderGetXmin(irel->rd_indextuple->t_data),
+					 TransactionXmin)) ||
 			RelationGetIndexPredicate(irel) != NIL ||
 			irel->rd_indam->amgettuple == NULL ||
 			irel->rd_index->indkey.values[0] != tp_pending_facet.attno ||
@@ -247,12 +253,21 @@ tp_build_facet_via_index(
 		MemoryContextSwitchTo(oldcontext);
 		count = 0;
 
+		/*
+		 * Pass the operator's right-hand type as the scan-key subtype (as
+		 * ExecIndexBuildScanKeys does) so a cross-type facet operator uses the
+		 * correct cross-type comparison/hash support proc. InvalidOid would
+		 * mean "same as the index column type", which misreads a differently
+		 * typed argument -- harmless for btree (recheck via the operator) but
+		 * silently wrong for hash (wrong bucket -> empty allow-list). For a
+		 * same-type operator righttype == the column type, so this is a no-op.
+		 */
 		ScanKeyEntryInitialize(
 				&skey,
 				0,
 				1, /* leading index column */
 				(StrategyNumber)strategy,
-				InvalidOid,
+				righttype,
 				tp_pending_facet.collation,
 				get_opcode(scan_opno),
 				tp_pending_facet.value);

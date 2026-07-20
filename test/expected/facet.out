@@ -260,4 +260,81 @@ RESET enable_bitmapscan;
 RESET pg_textsearch.facet_selectivity_threshold;
 RESET pg_textsearch.enable_facet_pushdown;
 DROP TABLE facet_hot;
+-- Cross-type facet operator via a non-btree index. float4 = float8 is a
+-- cross-type member of the hash opfamily, so the hash index is selected. The
+-- scan-key subtype must be the operator's right-hand type; with the wrong
+-- subtype the hash index probes the wrong bucket and returns an empty
+-- allow-list, silently dropping every matching row. Enough rows are used that
+-- the planner keeps the BM25 index scan (engaging the pushdown) over a hash
+-- scan + sort. All rows match, so the correct answer is a full LIMIT.
+SET enable_bitmapscan = false;
+CREATE TABLE facet_xtype (id INT PRIMARY KEY, sc float4, content TEXT);
+INSERT INTO facet_xtype
+SELECT g, 2.5::float4, 'alpha document number ' || g
+FROM generate_series(1, 2000) g;
+CREATE INDEX facet_xtype_hash ON facet_xtype USING hash (sc);
+CREATE INDEX facet_xtype_bm25 ON facet_xtype USING bm25(content)
+    WITH (text_config='english');
+NOTICE:  BM25 index build started for relation facet_xtype_bm25
+NOTICE:  Using text search configuration: english
+NOTICE:  Using index options: k1=1.20, b=0.75
+NOTICE:  BM25 index build completed: 2000 documents, avg_length=4.00
+ANALYZE facet_xtype;
+SET pg_textsearch.facet_selectivity_threshold = 1.0;
+SET pg_textsearch.log_facet = on;
+SELECT count(*) AS xtype_hits FROM (
+    SELECT id FROM facet_xtype
+    WHERE sc = float8 '2.5'
+    ORDER BY content <@> to_bm25query('alpha', 'facet_xtype_bm25')
+    LIMIT 20
+) s;
+NOTICE:  facet pushdown: index scan via "facet_xtype_hash" (2000 tids)
+ xtype_hits 
+------------
+         20
+(1 row)
+
+SET pg_textsearch.log_facet = off;
+RESET pg_textsearch.facet_selectivity_threshold;
+RESET enable_bitmapscan;
+DROP TABLE facet_xtype;
+-- Security: the pushdown must not build its allow-list across a Row-Level
+-- Security boundary -- doing so would evaluate the facet predicate on, and leak
+-- the count of, rows the caller cannot see. Under RLS it disengages (no facet
+-- pushdown NOTICE below) and the post-filter path returns only the visible rows.
+CREATE TABLE facet_rls (id INT PRIMARY KEY, tenant TEXT, facet INT, content TEXT);
+INSERT INTO facet_rls
+SELECT g, CASE WHEN g <= 5 THEN 'A' ELSE 'B' END, 0, 'alpha document ' || g
+FROM generate_series(1, 40) g;
+CREATE INDEX facet_rls_facet ON facet_rls (facet);
+CREATE INDEX facet_rls_bm25 ON facet_rls USING bm25(content)
+    WITH (text_config='english');
+NOTICE:  BM25 index build started for relation facet_rls_bm25
+NOTICE:  Using text search configuration: english
+NOTICE:  Using index options: k1=1.20, b=0.75
+NOTICE:  BM25 index build completed: 40 documents, avg_length=3.00
+ANALYZE facet_rls;
+ALTER TABLE facet_rls ENABLE ROW LEVEL SECURITY;
+CREATE POLICY facet_rls_pol ON facet_rls USING (tenant = 'A');
+CREATE ROLE facet_rls_reader;
+GRANT SELECT ON facet_rls TO facet_rls_reader;
+SET pg_textsearch.facet_selectivity_threshold = 1.0;
+SET pg_textsearch.log_facet = on;
+SET ROLE facet_rls_reader;
+SELECT count(*) AS visible_hits FROM (
+    SELECT id FROM facet_rls
+    WHERE facet < 1
+    ORDER BY content <@> to_bm25query('alpha', 'facet_rls_bm25')
+    LIMIT 20
+) s;
+ visible_hits 
+--------------
+            5
+(1 row)
+
+RESET ROLE;
+SET pg_textsearch.log_facet = off;
+RESET pg_textsearch.facet_selectivity_threshold;
+DROP TABLE facet_rls;
+DROP ROLE facet_rls_reader;
 DROP EXTENSION pg_textsearch CASCADE;
