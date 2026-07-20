@@ -1,0 +1,114 @@
+name: Chinese CI
+
+# End-to-end Chinese full-text search test. pg_textsearch tokenizes through
+# the index's text_config, so this job pairs it with the third-party
+# zhparser extension (an SCWS dictionary-based Chinese word segmenter) and
+# runs the `chinese` regression test, which is intentionally kept out of the
+# default REGRESS schedule.
+
+on:
+  push:
+    branches: [ main ]
+    paths:
+      - 'src/**'
+      - 'sql/**'
+      - 'Makefile'
+      - 'test/sql/chinese.sql'
+      - 'test/expected/chinese.out'
+      - '.github/workflows/chinese-ci.yml'
+  pull_request:
+    branches: [ main ]
+    paths:
+      - 'src/**'
+      - 'sql/**'
+      - 'Makefile'
+      - 'test/sql/chinese.sql'
+      - 'test/expected/chinese.out'
+      - '.github/workflows/chinese-ci.yml'
+  workflow_dispatch:
+
+env:
+  # Pinned third-party versions for reproducible CI. zhparser v2.3 bundles
+  # dict.utf8.xdb, so pinning it pins the segmentation dictionary and keeps
+  # the expected test output deterministic.
+  SCWS_REF: "1.2.3"
+  ZHPARSER_REF: v2.3
+
+jobs:
+  chinese:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        pg_version: [17, 18]
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Install PostgreSQL ${{ matrix.pg_version }}
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y wget ca-certificates
+        wget --quiet -O - https://www.postgresql.org/media/keys/ACCC4CF8.asc | sudo apt-key add -
+        echo "deb http://apt.postgresql.org/pub/repos/apt/ $(lsb_release -cs)-pgdg main" | sudo tee /etc/apt/sources.list.d/pgdg.list
+        sudo apt-get update
+        sudo apt-get install -y postgresql-${{ matrix.pg_version }} postgresql-server-dev-${{ matrix.pg_version }}
+
+    - name: Install build dependencies
+      run: |
+        # autoconf/automake/libtool bootstrap the SCWS build from its git tag.
+        sudo apt-get install -y build-essential autoconf automake libtool
+
+    - name: Build and install pg_textsearch
+      run: |
+        export PATH="/usr/lib/postgresql/${{ matrix.pg_version }}/bin:$PATH"
+        make clean
+        make
+        sudo env "PATH=$PATH" make install
+
+    - name: Build and install SCWS (pinned)
+      run: |
+        git clone --depth 1 --branch "$SCWS_REF" https://github.com/hightman/scws.git /tmp/scws
+        cd /tmp/scws
+        autoreconf -fi
+        ./configure --prefix=/usr/local
+        make
+        sudo make install
+        sudo ldconfig
+
+    - name: Build and install zhparser (pinned)
+      run: |
+        export PATH="/usr/lib/postgresql/${{ matrix.pg_version }}/bin:$PATH"
+        git clone --depth 1 --branch "$ZHPARSER_REF" https://github.com/amutu/zhparser.git /tmp/zhparser
+        cd /tmp/zhparser
+        SCWS_HOME=/usr/local make
+        sudo env "PATH=$PATH" SCWS_HOME=/usr/local make install
+
+    - name: Run Chinese regression test
+      timeout-minutes: 10
+      run: |
+        export PATH="/usr/lib/postgresql/${{ matrix.pg_version }}/bin:$PATH"
+        rm -rf tmp_check_chinese
+        mkdir -p tmp_check_chinese
+        initdb -D tmp_check_chinese/data --auth-local=trust --auth-host=trust -E UTF8
+        echo "port = 55440" >> tmp_check_chinese/data/postgresql.conf
+        echo "shared_preload_libraries = 'pg_textsearch'" >> tmp_check_chinese/data/postgresql.conf
+        echo "unix_socket_directories = '$PWD/tmp_check_chinese'" >> tmp_check_chinese/data/postgresql.conf
+
+        if ! pg_ctl start -D tmp_check_chinese/data -l tmp_check_chinese/data/logfile -w; then
+          echo "PostgreSQL failed to start. Log contents:"
+          cat tmp_check_chinese/data/logfile
+          exit 1
+        fi
+
+        if ! make test-chinese PGHOST=$PWD/tmp_check_chinese PGPORT=55440; then
+          echo "Chinese test failed. Diff:"
+          cat test/regression.diffs 2>/dev/null || true
+          echo "PostgreSQL server log (last 100 lines):"
+          tail -100 tmp_check_chinese/data/logfile || true
+          pg_ctl stop -D tmp_check_chinese/data -l tmp_check_chinese/data/logfile || true
+          rm -rf tmp_check_chinese || true
+          exit 1
+        fi
+        pg_ctl stop -D tmp_check_chinese/data -l tmp_check_chinese/data/logfile
+        rm -rf tmp_check_chinese

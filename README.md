@@ -730,44 +730,37 @@ Available configurations depend on your Postgres installation:
 (29 rows)
 ```
 Further language support is available via extensions — see
-[CJK and other non-whitespace-delimited languages](#cjk-and-other-non-whitespace-delimited-languages)
-below.
+[Chinese full-text search](#chinese-full-text-search) below.
 
-### CJK and other non-whitespace-delimited languages
+### Chinese full-text search
 
 pg_textsearch tokenizes both documents and queries through the index's
-`text_config` (a standard PostgreSQL text search configuration), so CJK
-(Chinese, Japanese, Korean) support is a matter of choosing a CJK-aware
-configuration; pg_textsearch itself needs no CJK-specific code.
-PostgreSQL's built-in parser does not split CJK text into words, so pair
-pg_textsearch with a CJK parser.
+`text_config` (a standard PostgreSQL text search configuration), so
+Chinese support is a matter of choosing a Chinese-aware configuration;
+pg_textsearch itself needs no language-specific code. PostgreSQL's
+built-in parser does not split Chinese text into words, so pair
+pg_textsearch with a Chinese word segmenter such as
+[zhparser](https://github.com/amutu/zhparser), which builds on the SCWS
+segmentation library.
 
-**n-gram parser (dictionary-free).**
-[pg_cjk_parser](https://github.com/huangjimmy/pg_cjk_parser) extends the
-default parser to emit overlapping 2-gram (bigram) CJK tokens.
+zhparser is packaged as a text search parser, so a configuration built on
+it plugs directly into a `bm25` index. `CREATE EXTENSION zhparser` also
+registers the parser; map the token types you want to index and reference
+the configuration by a schema-qualified name.
 
 ```sql
-CREATE EXTENSION pg_cjk_parser;
+CREATE EXTENSION zhparser;
 
--- CREATE EXTENSION installs only the parser support functions; register
--- the parser and a configuration that maps CJK bigrams (token type
--- "cjk") plus the usual Latin/numeric token types:
-CREATE TEXT SEARCH PARSER public.pg_cjk_parser (
-    START    = prsd2_cjk_start,
-    GETTOKEN = prsd2_cjk_nexttoken,
-    END      = prsd2_cjk_end,
-    LEXTYPES = prsd2_cjk_lextype,
-    HEADLINE = prsd2_cjk_headline);
-
-CREATE TEXT SEARCH CONFIGURATION config_2_gram_cjk (PARSER = pg_cjk_parser);
-ALTER TEXT SEARCH CONFIGURATION config_2_gram_cjk
-    ADD MAPPING FOR cjk, asciiword, asciihword, hword_asciipart,
-        word, hword, hword_part, numword, numhword
-    WITH simple;
+-- Map zhparser's content token types (nouns, verbs, adjectives, idioms,
+-- foreign words, temporal words). Schema-qualify the configuration so the
+-- bm25 index build can resolve it by name.
+CREATE TEXT SEARCH CONFIGURATION public.chinese (PARSER = zhparser);
+ALTER TEXT SEARCH CONFIGURATION public.chinese
+    ADD MAPPING FOR n, v, a, i, e, l WITH simple;
 
 CREATE TABLE docs (id bigserial PRIMARY KEY, content text);
 CREATE INDEX docs_bm25 ON docs USING bm25 (content)
-    WITH (text_config='config_2_gram_cjk');
+    WITH (text_config='public.chinese');
 
 -- The query string is tokenized with the same configuration:
 SELECT id FROM docs
@@ -775,24 +768,23 @@ ORDER BY content <@> to_bm25query('机器学习', 'docs_bm25')
 LIMIT 10;
 ```
 
-An end-to-end regression test for this setup lives in `test/sql/cjk.sql`
-and runs via `make test-cjk` (see the `CJK CI` workflow).
-
-**Dictionary segmentation (per language).**
-[zhparser](https://github.com/amutu/zhparser) (Chinese, via SCWS) and
-similar parsers segment text into dictionary words instead of bigrams.
-The [large-document workaround](#large-documents-and-chunked-tokenization)
-above shows a zhparser configuration.
+An end-to-end regression test for this setup lives in
+`test/sql/chinese.sql` and runs via `make test-chinese` (see the
+`Chinese CI` workflow). For large Chinese documents, the
+[large-document workaround](#large-documents-and-chunked-tokenization)
+above applies the same zhparser configuration to a chunked `text[]`
+column.
 
 **Caveats.**
 
 - **No phrase search.** The BM25 index stores no term positions, so
-  matching is recall-oriented. With bigram tokenization a query's
-  bigrams can match a document that contains them in a different order;
-  post-filter in the application if exact phrases matter.
+  matching is bag-of-words; post-filter in the application if exact
+  phrases matter.
 - **One `text_config` per index.** A single index cannot mix per-field
   or per-language analyzers; use a separate index (or expression index)
-  per language.
+  per language. Other non-whitespace-delimited languages work the same
+  way, paired with a parser for that language (for example, a MeCab-based
+  parser for Japanese).
 - **Managed platforms.** The parser extension must be installed and
   allow-listed on the server (for example, `zhparser` is not on the
   Azure Database for PostgreSQL Flexible Server allow-list).
