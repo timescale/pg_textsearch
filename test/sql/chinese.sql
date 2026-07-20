@@ -1,0 +1,72 @@
+-- End-to-end Chinese full-text search test.
+--
+-- pg_textsearch tokenizes both documents and queries through the index's
+-- text_config, so Chinese support is a matter of choosing a Chinese-aware
+-- text search configuration. This test pairs pg_textsearch with zhparser
+-- (https://github.com/amutu/zhparser), an SCWS dictionary-based Chinese
+-- word segmenter, and verifies indexing and ranked retrieval end to end.
+--
+-- Requires the zhparser extension (and its SCWS library) to be installed.
+-- This test is not part of the default REGRESS schedule; run it via
+-- `make test-chinese` in an environment where zhparser is available.
+
+CREATE EXTENSION IF NOT EXISTS pg_textsearch;
+CREATE EXTENSION IF NOT EXISTS zhparser;
+
+-- Pin zhparser's segmentation GUCs to their defaults so tokenization is
+-- deterministic regardless of any cluster-level configuration.
+SET zhparser.multi_short = off;
+SET zhparser.multi_duality = off;
+SET zhparser.multi_zmain = off;
+SET zhparser.multi_zall = off;
+SET zhparser.seg_with_duality = off;
+
+-- CREATE EXTENSION zhparser also registers the zhparser parser. Define a
+-- configuration that maps zhparser's content token types (nouns, verbs,
+-- adjectives, idioms, interjections, set phrases). The configuration
+-- must be schema-qualified so the bm25 index build can resolve it.
+CREATE TEXT SEARCH CONFIGURATION public.chinese (PARSER = zhparser);
+ALTER TEXT SEARCH CONFIGURATION public.chinese
+    ADD MAPPING FOR n, v, a, i, e, l WITH simple;
+
+-- zhparser segments Chinese into dictionary words (deterministic for a
+-- given SCWS dictionary): 机器学习 splits into 机器 + 学习. COLLATE "C"
+-- keeps the ordering byte-stable across locales.
+SELECT alias, token
+FROM ts_debug('public.chinese', '机器学习')
+ORDER BY token COLLATE "C";
+
+CREATE TABLE zh_docs (id int PRIMARY KEY, content text);
+INSERT INTO zh_docs VALUES
+  (1, 'PostgreSQL 是一个强大的开源关系数据库'),   -- database
+  (2, '机器学习是人工智能的一个重要分支'),         -- machine learning
+  (3, '全文检索能够快速查找文档内容'),             -- full-text search
+  (4, '自然语言处理研究人类语言'),                 -- natural language
+  (5, '深度学习推动人工智能技术发展');             -- shares 学习 only
+
+CREATE INDEX zh_docs_bm25 ON zh_docs USING bm25 (content)
+    WITH (text_config = 'public.chinese');
+
+-- Force the bm25 index scan so we exercise indexed retrieval, not
+-- standalone scoring.
+SET enable_seqscan = off;
+
+-- Query 机器学习 (words 机器 + 学习): doc 2 contains both, doc 5 contains
+-- only 学习, so doc 2 outranks doc 5 and no other doc matches.
+SELECT id, content
+FROM zh_docs
+ORDER BY content <@> to_bm25query('机器学习', 'zh_docs_bm25')
+LIMIT 2;
+
+-- Query 数据库: only doc 1 contains that word.
+SELECT id, content
+FROM zh_docs
+ORDER BY content <@> to_bm25query('数据库', 'zh_docs_bm25')
+LIMIT 1;
+
+RESET enable_seqscan;
+
+DROP TABLE zh_docs;
+DROP TEXT SEARCH CONFIGURATION public.chinese;
+DROP EXTENSION zhparser;
+DROP EXTENSION pg_textsearch;

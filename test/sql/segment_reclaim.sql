@@ -63,5 +63,64 @@ SELECT bm25_spill_index('reclaim_idx') > 0 AS reuse_spilled;
 SELECT pg_relation_size('reclaim_idx') / current_setting('block_size')::int
     <= :blocks_before_reuse AS reused_freed_pages_no_extension;
 
+-- VACUUM's own segment replacement/drop path must also park displaced
+-- pages instead of returning them to the FSM immediately (#413). Build a
+-- fresh index layout so the observation is independent of the merge case
+-- above.
+DROP INDEX reclaim_idx;
+TRUNCATE reclaim_docs;
+INSERT INTO reclaim_docs
+SELECT g, 'vacuum alpha beta term' || (g % 50)
+FROM generate_series(1, 1500) g;
+CREATE INDEX reclaim_idx ON reclaim_docs
+    USING bm25 (body) WITH (text_config = 'english');
+
+-- Add a second segment through the on-disk memtable, then delete exactly
+-- those rows so VACUUM drops that all-dead segment.  First create an FSM
+-- free-page pool: VACUUM's tombstone pages must not consume it while
+-- running under LW_SHARED, or they can race concurrent insert allocation.
+INSERT INTO reclaim_docs
+SELECT g, 'vacuum pool beta term' || (g % 50)
+FROM generate_series(1501, 3000) g;
+\pset format unaligned
+SELECT bm25_spill_index('reclaim_idx') > 0 AS vacuum_pool_spilled;
+SELECT bm25_force_merge('reclaim_idx');
+SELECT txid_current() IS NOT NULL AS vp1;
+SELECT txid_current() IS NOT NULL AS vp2;
+VACUUM reclaim_docs;
+SELECT bm25_pending_free_pages('reclaim_idx') AS pool_after_vacuum;
+
+INSERT INTO reclaim_docs
+SELECT g, 'vacuum dropped beta term' || (g % 50)
+FROM generate_series(3001, 3020) g;
+SELECT bm25_spill_index('reclaim_idx') > 0 AS vacuum_spilled;
+SELECT pg_relation_size('reclaim_idx') / current_setting('block_size')::int
+    AS blocks_before_vacuum_drop \gset
+DELETE FROM reclaim_docs WHERE id BETWEEN 3001 AND 3020;
+VACUUM reclaim_docs;
+SELECT pg_relation_size('reclaim_idx') / current_setting('block_size')::int
+    > :blocks_before_vacuum_drop AS vacuum_tombstone_extended;
+
+-- VACUUM should park the dropped segment's pages, not recycle them yet.
+SELECT bm25_pending_free_pages('reclaim_idx') > 0 AS parked_after_vacuum_drop;
+
+-- Once the xid horizon advances, a later VACUUM drains the parked pages.
+SELECT txid_current() IS NOT NULL AS vt1;
+SELECT txid_current() IS NOT NULL AS vt2;
+VACUUM reclaim_docs;
+SELECT bm25_pending_free_pages('reclaim_idx') AS parked_after_vacuum_drain;
+
+-- The drained pages must be reusable from the FSM without extending the
+-- index relation.
+SELECT pg_relation_size('reclaim_idx') / current_setting('block_size')::int
+    AS blocks_before_vacuum_reuse \gset
+INSERT INTO reclaim_docs
+SELECT g, 'vacuum reuse beta term' || (g % 50)
+FROM generate_series(3021, 3720) g;
+SELECT bm25_spill_index('reclaim_idx') > 0 AS vacuum_reuse_spilled;
+SELECT pg_relation_size('reclaim_idx') / current_setting('block_size')::int
+    <= :blocks_before_vacuum_reuse AS vacuum_reused_freed_pages_no_extension;
+\pset format aligned
+
 DROP TABLE reclaim_docs;
 DROP EXTENSION pg_textsearch CASCADE;

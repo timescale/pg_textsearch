@@ -43,6 +43,9 @@ typedef struct TpScanOpaqueData
 
 	/* Faceted-search filter pushdown (NULL if none) */
 	struct TpFacetFilter *facet;
+
+	/* CTIDs already emitted; used across limit-doubling re-execs. */
+	struct HTAB *returned_ctids;
 } TpScanOpaqueData;
 
 typedef TpScanOpaqueData *TpScanOpaque;

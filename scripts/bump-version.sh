@@ -11,9 +11,8 @@
 #
 # Updates the SQL files, Makefile DATA list, control file, mod.c,
 # README, CLAUDE.md, test scripts, and the msmarco benchmark check.
-# Does NOT regenerate the banner image, edit the upgrade-tests
-# matrix, author the upgrade SQL, run tests, or open a PR — those
-# are listed in the "next steps" output.
+# Does NOT edit the upgrade-tests matrix, author the upgrade SQL, run
+# tests, or open a PR — those are listed in the "next steps" output.
 
 set -euo pipefail
 
@@ -129,8 +128,8 @@ elif [[ $MODE == release ]]; then
     DST_UPGRADE=${SRC_UPGRADE//$OLD.sql/$NEW.sql}
 
     # Extract PREV (last released version) from the upgrade filename
-    # `sql/pg_textsearch--PREV--OLD.sql`. Used for the README image-ref
-    # rewrite (the dev-cycle README points at the PREV banner image).
+    # `sql/pg_textsearch--PREV--OLD.sql`. Used for the upgrade-SQL
+    # audit diff in the release next-steps output.
     PREV=${SRC_UPGRADE#sql/pg_textsearch--}
     PREV=${PREV%%--*}
 
@@ -169,33 +168,17 @@ for f in "${common_files[@]}"; do
     fi
 done
 
-# README needs mode-aware handling for the banner-image ref.
-#
-# Dev mode skips the image line so README keeps pointing at the
-# last-released banner: dev cycles don't ship banner images, and
-# rewriting the line would 404 the README on GitHub for the entire
-# cycle.
-#
-# Release mode rewrites the image ref from PREV (the last-released
-# banner the dev cycle was pointing at) to NEW. The human drops in
-# the new image file as a follow-up; release-mode next-steps
-# reminds them.
-if [[ $MODE == release ]]; then
-    perl -i -pe "s/\Q$OLD\E/$NEW/g" README.md
-    perl -i -pe "s|tapir_and_friends_v\Q$PREV\E\.png|tapir_and_friends_v$NEW.png|g" README.md
-else
-    perl -i -pe "s/\Q$OLD\E/$NEW/g unless m{tapir_and_friends}" README.md
-fi
+# README: bump the version references. The banner image
+# (images/banner.png) is version-independent, so a plain literal
+# substitution never touches it.
+perl -i -pe "s/\Q$OLD\E/$NEW/g" README.md
 
 # --- straggler check -----------------------------------------------
 
 # Find any remaining references to OLD outside known-safe locations.
 # Excluded: this script, expected outputs, older upgrade SQL files,
 # RELEASING.md (carries the historical upgrade chain), the
-# upgrade-tests workflow (carries phase-history comments). The
-# `grep -v` drops the README banner-image line, which legitimately
-# retains OLD in dev mode (the dev cycle keeps pointing at the
-# last-released banner; release mode rewrites it via PREV above).
+# upgrade-tests workflow (carries phase-history comments).
 stragglers=$(git grep --fixed-strings "$OLD" -- \
     ':!scripts/bump-version.sh' \
     ':!test/expected/' \
@@ -203,7 +186,6 @@ stragglers=$(git grep --fixed-strings "$OLD" -- \
     ':!RELEASING.md' \
     ':!.github/workflows/upgrade-tests.yml' \
     ':!docs/' \
-    | grep -v "tapir_and_friends_v${OLD}\.png" \
     | cut -d: -f1 | sort -u \
     || true)
 
@@ -222,19 +204,14 @@ echo
 if [[ $MODE == release ]]; then
     cat <<EOF
 Next steps (release):
-  1. Add the new banner image at images/tapir_and_friends_v$NEW.png
-     and remove images/tapir_and_friends_v$PREV.png. (The dev cycle
-     left the README pointing at v$PREV.png; the rename above
-     repointed it to v$NEW.png, but the file itself doesn't exist
-     yet.)
-  2. Add $OLD to the old_version matrix in
+  1. Add $OLD to the old_version matrix in
      .github/workflows/upgrade-tests.yml.
-  3. Audit sql/pg_textsearch--$PREV--$NEW.sql against the diff:
+  2. Audit sql/pg_textsearch--$PREV--$NEW.sql against the diff:
        diff sql/pg_textsearch--$PREV.sql sql/pg_textsearch--$NEW.sql
      Every new CREATE FUNCTION / OPERATOR / OPERATOR CLASS / TYPE /
      CAST in the main file must have a matching statement in the
      upgrade file. See RELEASING.md for the full audit checklist.
-  4. Open a PR titled "Release v$NEW".
+  3. Open a PR titled "Release v$NEW".
 EOF
 else
     cat <<EOF

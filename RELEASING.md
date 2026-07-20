@@ -58,19 +58,13 @@ audit catches what the workflow can't.
 This renames the SQL files and updates every version reference across
 the tree. The script reports what's left for the human to do.
 
-### 3. Update the release banner image
-
-Replace `images/tapir_and_friends_vCURRENT-dev.png` with the new
-release banner at `images/tapir_and_friends_vCURRENT.png`. (The
-README reference is already updated by the bump script.)
-
-### 4. Add the previous release to the upgrade-tests matrix
+### 3. Add the previous release to the upgrade-tests matrix
 
 In `.github/workflows/upgrade-tests.yml`, add `PREV` to the
 `old_version` matrix so future releases are tested for upgrade
 compatibility from this version.
 
-### 5. Open the PR
+### 4. Open the PR
 
 ```sh
 git checkout -b release-CURRENT
@@ -82,7 +76,7 @@ gh pr create --draft --title "Release vCURRENT"
 CI runs the full test suite, including upgrade-tests against every
 matrix version.
 
-### 6. After PR merges
+### 5. After PR merges
 
 The `release.yml` workflow triggers on merge of any PR titled
 `Release v*`. It tags the commit, builds release artifacts for

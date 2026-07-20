@@ -1416,15 +1416,17 @@ write_pageviz_map(
 static void
 tp_debug_pageviz_to_file(const char *index_name, const char *filename)
 {
-	Oid				index_oid;
-	Relation		index_rel	 = NULL;
-	TpIndexMetaPage metap		 = NULL;
-	BlockNumber		total_blocks = 0;
-	PageMapEntry   *page_map	 = NULL;
-	SegmentInfo	   *segments	 = NULL;
-	int				num_segments = 0;
-	PageCounts		counts;
-	FILE		   *fp;
+	Oid				   index_oid;
+	Relation		   index_rel = NULL;
+	TpIndexMetaPage	   metap	 = NULL;
+	TpLocalIndexState *index_state;
+	bool			   acquired_lock = false;
+	BlockNumber		   total_blocks	 = 0;
+	PageMapEntry	  *page_map		 = NULL;
+	SegmentInfo		  *segments		 = NULL;
+	int				   num_segments	 = 0;
+	PageCounts		   counts;
+	FILE			  *fp;
 
 	/* Open output file */
 	fp = fopen(filename, "w");
@@ -1448,6 +1450,20 @@ tp_debug_pageviz_to_file(const char *index_name, const char *filename)
 	index_rel	 = index_open(index_oid, AccessShareLock);
 	total_blocks = RelationGetNumberOfBlocks(index_rel);
 	metap		 = tp_get_metapage(index_rel);
+	index_state	 = tp_get_local_index_state(index_oid);
+	if (index_state != NULL && !index_state->lock_held)
+	{
+		tp_acquire_index_lock(index_state, LW_SHARED);
+		acquired_lock = true;
+	}
+	if (index_state != NULL)
+	{
+		TpIndexMetaPage fresh = tp_get_metapage(index_rel);
+
+		if (metap)
+			pfree(metap);
+		metap = fresh;
+	}
 
 	if (total_blocks == 0)
 	{
@@ -1476,6 +1492,8 @@ tp_debug_pageviz_to_file(const char *index_name, const char *filename)
 	write_pageviz_map(fp, page_map, total_blocks, &counts);
 
 cleanup:
+	if (acquired_lock)
+		tp_release_index_lock(index_state);
 	if (segments)
 		pfree(segments);
 	if (page_map)

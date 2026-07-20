@@ -18,7 +18,7 @@ Modern ranked text search for Postgres.
 
 🚀 **Status**: v1.4.0-dev - Production ready.
 
-![Tapir and Friends](images/tapir_and_friends_v1.3.0.png)
+![pg_textsearch](images/banner.png)
 
 ## Historical note
 
@@ -652,13 +652,13 @@ chunk gets word-level tokenization:
 
 ```sql
 CREATE EXTENSION zhparser;
-CREATE TEXT SEARCH CONFIGURATION chinese_zh (PARSER = zhparser);
-ALTER TEXT SEARCH CONFIGURATION chinese_zh
+CREATE TEXT SEARCH CONFIGURATION public.chinese_zh (PARSER = zhparser);
+ALTER TEXT SEARCH CONFIGURATION public.chinese_zh
     ADD MAPPING FOR n,v,a,i,e,l WITH simple;
 
 CREATE TABLE docs (id bigserial PRIMARY KEY, content text[]);
 CREATE INDEX docs_bm25 ON docs USING bm25(content)
-    WITH (text_config='chinese_zh');
+    WITH (text_config='public.chinese_zh');
 ```
 
 ### PL/pgSQL and Stored Procedures
@@ -757,7 +757,53 @@ Available configurations depend on your Postgres installation:
  yiddish
 (29 rows)
 ```
-Further language support is available via extensions such as [zhparser](https://github.com/amutu/zhparser).
+Further language support is available via extensions — see
+[Chinese full-text search](#chinese-full-text-search) below.
+
+### Chinese full-text search
+
+pg_textsearch tokenizes both documents and queries through the index's
+`text_config` (a standard PostgreSQL text search configuration), so
+Chinese support is a matter of choosing a Chinese-aware configuration;
+pg_textsearch itself needs no language-specific code. PostgreSQL's
+built-in parser does not split Chinese text into words, so pair
+pg_textsearch with a Chinese word segmenter such as
+[zhparser](https://github.com/amutu/zhparser), which builds on the SCWS
+segmentation library. On a managed platform the extension must be
+allow-listed (for example, zhparser is not on the Azure Database for
+PostgreSQL Flexible Server allow-list).
+
+zhparser is packaged as a text search parser, so a configuration built on
+it plugs directly into a `bm25` index. `CREATE EXTENSION zhparser` also
+registers the parser; map the token types you want to index and reference
+the configuration by a schema-qualified name.
+
+```sql
+CREATE EXTENSION zhparser;
+
+-- Map zhparser's content token types (nouns, verbs, adjectives, idioms,
+-- interjections, set phrases). Schema-qualify the configuration so the
+-- bm25 index build can resolve it by name.
+CREATE TEXT SEARCH CONFIGURATION public.chinese (PARSER = zhparser);
+ALTER TEXT SEARCH CONFIGURATION public.chinese
+    ADD MAPPING FOR n, v, a, i, e, l WITH simple;
+
+CREATE TABLE docs (id bigserial PRIMARY KEY, content text);
+CREATE INDEX docs_bm25 ON docs USING bm25 (content)
+    WITH (text_config='public.chinese');
+
+-- The query string is tokenized with the same configuration:
+SELECT id FROM docs
+ORDER BY content <@> to_bm25query('机器学习', 'docs_bm25')
+LIMIT 10;
+```
+
+An end-to-end regression test for this setup lives in
+`test/sql/chinese.sql` and runs via `make test-chinese` (see the
+`Chinese CI` workflow). For large Chinese documents, the
+[large-document workaround](#large-documents-and-chunked-tokenization)
+above applies the same `n,v,a,i,e,l` zhparser mapping to a chunked
+`text[]` column.
 
 ### Development Functions
 
