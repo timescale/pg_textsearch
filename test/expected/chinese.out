@@ -11,9 +11,16 @@
 -- `make test-chinese` in an environment where zhparser is available.
 CREATE EXTENSION IF NOT EXISTS pg_textsearch;
 CREATE EXTENSION IF NOT EXISTS zhparser;
+-- Pin zhparser's segmentation GUCs to their defaults so tokenization is
+-- deterministic regardless of any cluster-level configuration.
+SET zhparser.multi_short = off;
+SET zhparser.multi_duality = off;
+SET zhparser.multi_zmain = off;
+SET zhparser.multi_zall = off;
+SET zhparser.seg_with_duality = off;
 -- CREATE EXTENSION zhparser also registers the zhparser parser. Define a
 -- configuration that maps zhparser's content token types (nouns, verbs,
--- adjectives, idioms, foreign words, temporal words). The configuration
+-- adjectives, idioms, interjections, set phrases). The configuration
 -- must be schema-qualified so the bm25 index build can resolve it.
 CREATE TEXT SEARCH CONFIGURATION public.chinese (PARSER = zhparser);
 ALTER TEXT SEARCH CONFIGURATION public.chinese

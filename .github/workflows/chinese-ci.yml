@@ -13,6 +13,7 @@ on:
       - 'src/**'
       - 'sql/**'
       - 'Makefile'
+      - 'pg_textsearch.control'
       - 'test/sql/chinese.sql'
       - 'test/expected/chinese.out'
       - '.github/workflows/chinese-ci.yml'
@@ -22,17 +23,22 @@ on:
       - 'src/**'
       - 'sql/**'
       - 'Makefile'
+      - 'pg_textsearch.control'
       - 'test/sql/chinese.sql'
       - 'test/expected/chinese.out'
       - '.github/workflows/chinese-ci.yml'
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 env:
-  # Pinned third-party versions for reproducible CI. zhparser v2.3 bundles
-  # dict.utf8.xdb, so pinning it pins the segmentation dictionary and keeps
-  # the expected test output deterministic.
-  SCWS_REF: "1.2.3"
-  ZHPARSER_REF: v2.3
+  # Pinned third-party commit SHAs for reproducible CI. Pinning zhparser to
+  # its exact v2.3 commit pins the bundled dict.utf8.xdb — and thus the
+  # segmentation dictionary and the expected test output. A commit SHA (not
+  # a tag, which can be re-pointed upstream) is what makes this immutable.
+  SCWS_REF: a04ef5e655213eb6b07fb57761d0eac72c281ad4      # SCWS 1.2.3
+  ZHPARSER_REF: dd292fd591edbcb7ebee79d3c3cdc969e9cddced  # zhparser v2.3
 
 jobs:
   chinese:
@@ -68,8 +74,9 @@ jobs:
 
     - name: Build and install SCWS (pinned)
       run: |
-        git clone --depth 1 --branch "$SCWS_REF" https://github.com/hightman/scws.git /tmp/scws
+        git clone https://github.com/hightman/scws.git /tmp/scws
         cd /tmp/scws
+        git checkout "$SCWS_REF"
         autoreconf -fi
         ./configure --prefix=/usr/local
         make
@@ -79,8 +86,9 @@ jobs:
     - name: Build and install zhparser (pinned)
       run: |
         export PATH="/usr/lib/postgresql/${{ matrix.pg_version }}/bin:$PATH"
-        git clone --depth 1 --branch "$ZHPARSER_REF" https://github.com/amutu/zhparser.git /tmp/zhparser
+        git clone https://github.com/amutu/zhparser.git /tmp/zhparser
         cd /tmp/zhparser
+        git checkout "$ZHPARSER_REF"
         SCWS_HOME=/usr/local make
         sudo env "PATH=$PATH" SCWS_HOME=/usr/local make install
 

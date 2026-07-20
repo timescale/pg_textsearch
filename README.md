@@ -624,13 +624,13 @@ chunk gets word-level tokenization:
 
 ```sql
 CREATE EXTENSION zhparser;
-CREATE TEXT SEARCH CONFIGURATION chinese_zh (PARSER = zhparser);
-ALTER TEXT SEARCH CONFIGURATION chinese_zh
+CREATE TEXT SEARCH CONFIGURATION public.chinese_zh (PARSER = zhparser);
+ALTER TEXT SEARCH CONFIGURATION public.chinese_zh
     ADD MAPPING FOR n,v,a,i,e,l WITH simple;
 
 CREATE TABLE docs (id bigserial PRIMARY KEY, content text[]);
 CREATE INDEX docs_bm25 ON docs USING bm25(content)
-    WITH (text_config='chinese_zh');
+    WITH (text_config='public.chinese_zh');
 ```
 
 ### PL/pgSQL and Stored Procedures
@@ -741,7 +741,9 @@ pg_textsearch itself needs no language-specific code. PostgreSQL's
 built-in parser does not split Chinese text into words, so pair
 pg_textsearch with a Chinese word segmenter such as
 [zhparser](https://github.com/amutu/zhparser), which builds on the SCWS
-segmentation library.
+segmentation library. On a managed platform the extension must be
+allow-listed (for example, zhparser is not on the Azure Database for
+PostgreSQL Flexible Server allow-list).
 
 zhparser is packaged as a text search parser, so a configuration built on
 it plugs directly into a `bm25` index. `CREATE EXTENSION zhparser` also
@@ -752,7 +754,7 @@ the configuration by a schema-qualified name.
 CREATE EXTENSION zhparser;
 
 -- Map zhparser's content token types (nouns, verbs, adjectives, idioms,
--- foreign words, temporal words). Schema-qualify the configuration so the
+-- interjections, set phrases). Schema-qualify the configuration so the
 -- bm25 index build can resolve it by name.
 CREATE TEXT SEARCH CONFIGURATION public.chinese (PARSER = zhparser);
 ALTER TEXT SEARCH CONFIGURATION public.chinese
@@ -772,22 +774,8 @@ An end-to-end regression test for this setup lives in
 `test/sql/chinese.sql` and runs via `make test-chinese` (see the
 `Chinese CI` workflow). For large Chinese documents, the
 [large-document workaround](#large-documents-and-chunked-tokenization)
-above applies the same zhparser configuration to a chunked `text[]`
-column.
-
-**Caveats.**
-
-- **No phrase search.** The BM25 index stores no term positions, so
-  matching is bag-of-words; post-filter in the application if exact
-  phrases matter.
-- **One `text_config` per index.** A single index cannot mix per-field
-  or per-language analyzers; use a separate index (or expression index)
-  per language. Other non-whitespace-delimited languages work the same
-  way, paired with a parser for that language (for example, a MeCab-based
-  parser for Japanese).
-- **Managed platforms.** The parser extension must be installed and
-  allow-listed on the server (for example, `zhparser` is not on the
-  Azure Database for PostgreSQL Flexible Server allow-list).
+above applies the same `n,v,a,i,e,l` zhparser mapping to a chunked
+`text[]` column.
 
 ### Development Functions
 
