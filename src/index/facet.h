@@ -23,8 +23,10 @@
 
 #include <postgres.h>
 
+#include <nodes/pg_list.h>
 #include <storage/itemptr.h>
 #include <utils/rel.h>
+#include <utils/snapmgr.h>
 
 /* GUCs */
 extern bool	  tp_enable_facet_pushdown;
@@ -37,8 +39,10 @@ extern bool	  tp_log_facet;
  */
 typedef struct TpFacetFilter
 {
-	ItemPointerData *tids;	/* sorted ascending */
-	int				 count; /* number of TIDs */
+	ItemPointerData *tids;		/* sorted ascending */
+	int				 count;		/* number of TIDs */
+	bool			 via_index; /* built via facet index vs heap scan */
+	char			 idxname[NAMEDATALEN]; /* facet index name if via_index */
 } TpFacetFilter;
 
 /*
@@ -55,15 +59,18 @@ void tp_store_query_facet(
 		Oid		   collation,
 		bool	   var_on_left,
 		Datum	   value,
+		Oid		   consttype,
 		int16	   typlen,
 		bool	   typbyval);
 
 /*
- * Execution side: if a spec was stashed for this index, scan the heap and
- * build the allow-list in the given memory context. Returns NULL when no spec
- * is present or pushdown is disabled. The spec is consumed (one-shot).
+ * Execution side: if a spec was stashed for this index, scan the heap under
+ * the given snapshot and build the allow-list in the given memory context.
+ * Returns NULL when no spec is present or pushdown is disabled. The spec is
+ * consumed (one-shot).
  */
-TpFacetFilter *tp_build_query_facet(Relation bm25_index, MemoryContext ctx);
+TpFacetFilter *tp_build_query_facet(
+		Relation bm25_index, Snapshot snapshot, MemoryContext ctx);
 
 /* Clear any stashed spec (transaction end / safety). */
 void tp_cleanup_query_facets(void);
@@ -74,6 +81,17 @@ void tp_cleanup_query_facets(void);
  * lifetime to a single statement.
  */
 void tp_reset_pending_facet(void);
+
+/*
+ * Pending-spec introspection for the ExecutorRun sanitizer (mod.c). Because
+ * the AM consumes the spec keyed only by index OID, the executor must first
+ * confirm the running plan has exactly one BM25 scan on that index that
+ * carries the spec's clause; otherwise the spec is cleared. These expose just
+ * enough of the private spec for that check without leaking its layout.
+ */
+bool tp_pending_facet_valid(void);
+Oid	 tp_pending_facet_index_oid(void);
+bool tp_pending_facet_qual_matches(Index scanrelid, List *qual);
 
 /*
  * Active-filter helpers consulted by BMW. The active filter is set around the

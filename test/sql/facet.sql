@@ -285,4 +285,99 @@ SELECT count(*) AS b_all FROM (
 COMMIT;
 DROP TABLE facet_stale;
 
+-- Layered engagement: the pushdown must apply across BOTH on-disk segments and
+-- the in-memory memtable, matching the post-filter path in every layer. Build
+-- an index, spill twice to force multiple segments, then INSERT more rows that
+-- stay in the memtable, so one faceted scan spans segments + memtable.
+SET enable_bitmapscan = false;
+CREATE TABLE facet_layers (id INT PRIMARY KEY, facet INT, content TEXT);
+INSERT INTO facet_layers
+SELECT g, g % 5, 'alpha beta gamma ' || g FROM generate_series(1, 100) g;
+CREATE INDEX facet_layers_facet ON facet_layers (facet);
+CREATE INDEX facet_layers_bm25 ON facet_layers USING bm25(content)
+    WITH (text_config='english');
+SELECT bm25_spill_index('facet_layers_bm25') IS NOT NULL AS spill1;
+INSERT INTO facet_layers
+SELECT g, g % 5, 'alpha beta delta ' || g FROM generate_series(101, 200) g;
+SELECT bm25_spill_index('facet_layers_bm25') IS NOT NULL AS spill2;
+-- Batch 3 stays in the memtable (no spill).
+INSERT INTO facet_layers
+SELECT g, g % 5, 'alpha epsilon zeta ' || g FROM generate_series(201, 300) g;
+ANALYZE facet_layers;
+
+SET pg_textsearch.facet_selectivity_threshold = 1.0;
+SET pg_textsearch.log_facet = on;
+-- Pushdown engages (NOTICE) and spans segments + memtable.
+SELECT count(*) AS layers_on_hits FROM (
+    SELECT id FROM facet_layers WHERE facet < 1
+    ORDER BY content <@> to_bm25query('alpha', 'facet_layers_bm25') LIMIT 100
+) s;
+SET pg_textsearch.log_facet = off;
+
+-- Parity across all layers: pushdown on vs off must be byte-identical.
+DO $$
+DECLARE on_ids int[]; off_ids int[];
+BEGIN
+    PERFORM set_config('pg_textsearch.enable_facet_pushdown', 'on', true);
+    PERFORM set_config('pg_textsearch.facet_selectivity_threshold', '1.0', true);
+    SELECT array_agg(id ORDER BY id) INTO on_ids FROM (
+        SELECT id FROM facet_layers WHERE facet < 1
+        ORDER BY content <@> to_bm25query('alpha', 'facet_layers_bm25'), id
+        LIMIT 100) s;
+    PERFORM set_config('pg_textsearch.enable_facet_pushdown', 'off', true);
+    SELECT array_agg(id ORDER BY id) INTO off_ids FROM (
+        SELECT id FROM facet_layers WHERE facet < 1
+        ORDER BY content <@> to_bm25query('alpha', 'facet_layers_bm25'), id
+        LIMIT 100) s;
+    IF on_ids IS DISTINCT FROM off_ids THEN
+        RAISE EXCEPTION 'facet_layers parity mismatch';
+    END IF;
+    RAISE NOTICE 'facet_layers parity OK (% rows over segments+memtable)',
+        cardinality(on_ids);
+END $$;
+
+-- Two BM25 scans on the SAME index with DIFFERENT facets in ONE statement: each
+-- must get its own facet, not the other's. The ExecutorRun sanitizer disables
+-- the ambiguous pushdown so both fall to the correct post-filter path; before
+-- it, whichever scan rescanned first stole the single stashed spec and the
+-- other silently returned wrong rows.
+SET pg_textsearch.enable_facet_pushdown = on;
+SET pg_textsearch.facet_selectivity_threshold = 1.0;
+SELECT
+    (SELECT count(*) FROM (SELECT id FROM facet_layers WHERE facet < 1
+        ORDER BY content <@> to_bm25query('alpha', 'facet_layers_bm25')
+        LIMIT 100) a) AS two_scan_lt1,
+    (SELECT count(*) FROM (SELECT id FROM facet_layers WHERE facet >= 4
+        ORDER BY content <@> to_bm25query('alpha', 'facet_layers_bm25')
+        LIMIT 100) b) AS two_scan_ge4;
+
+-- Concurrent cursors on the same index: a no-facet cursor must not be confined
+-- by a faceted cursor opened alongside it (the spec is bound to neither at the
+-- AM, so the sanitizer clears it for the interleaved case).
+DO $$
+DECLARE c1 refcursor; c2 refcursor; r record; maxf int := -1; n int := 0;
+BEGIN
+    PERFORM set_config('pg_textsearch.enable_facet_pushdown', 'on', true);
+    PERFORM set_config('pg_textsearch.facet_selectivity_threshold', '1.0', true);
+    OPEN c1 FOR SELECT facet FROM facet_layers
+        ORDER BY content <@> to_bm25query('alpha', 'facet_layers_bm25') LIMIT 100;
+    OPEN c2 FOR SELECT id FROM facet_layers WHERE facet < 1
+        ORDER BY content <@> to_bm25query('alpha', 'facet_layers_bm25') LIMIT 100;
+    LOOP
+        FETCH c1 INTO r; EXIT WHEN NOT FOUND;
+        n := n + 1;
+        IF r.facet > maxf THEN maxf := r.facet; END IF;
+    END LOOP;
+    CLOSE c1; CLOSE c2;
+    IF maxf < 4 THEN
+        RAISE EXCEPTION 'cursor facet leak: c1 confined to facet <= % (n=%)',
+            maxf, n;
+    END IF;
+    RAISE NOTICE 'cursor isolation OK (c1 spans facet 0..%, n=%)', maxf, n;
+END $$;
+RESET enable_bitmapscan;
+RESET pg_textsearch.facet_selectivity_threshold;
+RESET pg_textsearch.enable_facet_pushdown;
+DROP TABLE facet_layers;
+
 DROP EXTENSION pg_textsearch CASCADE;

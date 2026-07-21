@@ -8,15 +8,24 @@
 
 #include <access/relation.h>
 #include <access/reloptions.h>
+#include <access/relscan.h>
 #include <access/xact.h>
 #include <catalog/dependency.h>
 #include <catalog/objectaccess.h>
 #include <catalog/pg_class_d.h>
+#if PG_VERSION_NUM >= 180000
+#include <commands/defrem.h>
+#include <commands/explain.h>
+#include <commands/explain_format.h>
+#include <commands/explain_state.h>
+#endif
 #include <executor/executor.h>
 #include <fmgr.h>
 #include <limits.h>
 #include <miscadmin.h>
+#include <nodes/nodeFuncs.h>
 #include <nodes/parsenodes.h>
+#include <nodes/plannodes.h>
 #include <pg_config.h>
 #include <storage/ipc.h>
 #include <storage/shmem.h>
@@ -117,6 +126,22 @@ static ProcessUtility_hook_type prev_process_utility_hook = NULL;
 /* Previous ExecutorEnd hook */
 static ExecutorEnd_hook_type prev_executor_end_hook = NULL;
 
+/* Previous ExecutorRun hook */
+static ExecutorRun_hook_type prev_executor_run_hook = NULL;
+
+#if PG_VERSION_NUM >= 180000
+/* Previous per-node EXPLAIN hook (PG18+). */
+static explain_per_node_hook_type prev_explain_per_node_hook = NULL;
+
+/* Per-node EXPLAIN hook: surface facet-pushdown engagement (defined below). */
+static void tp_explain_per_node(
+		PlanState	 *planstate,
+		List		 *ancestors,
+		const char	 *relationship,
+		const char	 *plan_name,
+		ExplainState *es);
+#endif
+
 /* Shared memory size calculation */
 static void tp_shmem_request(void);
 
@@ -136,6 +161,22 @@ static void tp_xact_callback(XactEvent event, void *arg);
 
 /* ExecutorEnd hook to bound the faceted-search spec to a single statement */
 static void tp_executor_end(QueryDesc *queryDesc);
+
+/*
+ * ExecutorRun hook. Sanitizes the pending facet spec against the running plan
+ * before execution, so the AM (which consumes the spec keyed only by index
+ * OID) can never apply it to the wrong same-index scan.
+ */
+#if PG_VERSION_NUM >= 180000
+static void
+tp_executor_run(QueryDesc *queryDesc, ScanDirection direction, uint64 count);
+#else
+static void tp_executor_run(
+		QueryDesc	 *queryDesc,
+		ScanDirection direction,
+		uint64		  count,
+		bool		  execute_once);
+#endif
 
 /* Subtransaction callback for savepoint rollback cleanup */
 static void tp_subxact_callback(
@@ -480,6 +521,21 @@ _PG_init(void)
 	 */
 	prev_executor_end_hook = ExecutorEnd_hook;
 	ExecutorEnd_hook	   = tp_executor_end;
+
+	/*
+	 * Install ExecutorRun hook to sanitize the pending facet spec against the
+	 * plan actually being executed, so the AM cannot bind it to the wrong
+	 * same-index scan (two scans in one statement, or a spec outliving its
+	 * statement via an open cursor).
+	 */
+	prev_executor_run_hook = ExecutorRun_hook;
+	ExecutorRun_hook	   = tp_executor_run;
+
+#if PG_VERSION_NUM >= 180000
+	/* Surface facet-pushdown engagement in EXPLAIN (PG18+ per-node hook). */
+	prev_explain_per_node_hook = explain_per_node_hook;
+	explain_per_node_hook	   = tp_explain_per_node;
+#endif
 }
 
 /*
@@ -563,6 +619,159 @@ tp_executor_end(QueryDesc *queryDesc)
 
 	tp_reset_pending_facet();
 }
+
+/*
+ * planstate walker for the ExecutorRun sanitizer. Over the plan being
+ * executed it counts, for the pending spec's BM25 index: how many IndexScan
+ * nodes read that index (total_on_index) and how many of those carry the
+ * spec's facet clause (matching). Used to decide whether the AM may safely
+ * consume the spec (see tp_executor_run).
+ */
+typedef struct TpFacetSanitizeCtx
+{
+	Oid target_index;	/* the pending spec's BM25 index OID */
+	int total_on_index; /* IndexScan nodes reading target_index */
+	int matching;		/* of those, ones whose qual has the facet clause */
+} TpFacetSanitizeCtx;
+
+static bool
+tp_facet_sanitize_walker(PlanState *planstate, void *context)
+{
+	TpFacetSanitizeCtx *ctx = (TpFacetSanitizeCtx *)context;
+
+	if (planstate == NULL)
+		return false;
+
+	if (IsA(planstate, IndexScanState))
+	{
+		IndexScan *plan = (IndexScan *)planstate->plan;
+
+		if (plan->indexid == ctx->target_index)
+		{
+			ctx->total_on_index++;
+			if (tp_pending_facet_qual_matches(
+						plan->scan.scanrelid, plan->scan.plan.qual))
+				ctx->matching++;
+		}
+	}
+
+	return planstate_tree_walker(planstate, tp_facet_sanitize_walker, context);
+}
+
+/*
+ * ExecutorRun hook. The AM consumes the pending facet spec keyed only by the
+ * BM25 index OID, so before any scan runs we must confirm the spec is
+ * unambiguously bound to a single scan in THIS plan. Keep the spec only when
+ * the plan has exactly one IndexScan on the spec's index and that scan carries
+ * the spec's clause; otherwise clear it, leaving those scans to the correct
+ * post-filter path. Guards against:
+ *   - two BM25 scans on one index in a single statement (whichever rescans
+ *     first would otherwise steal the other's allow-list), and
+ *   - a spec outliving its statement (e.g. an open cursor) and being consumed
+ *     by an unrelated scan on the same index.
+ */
+static void
+tp_facet_sanitize_run(QueryDesc *queryDesc)
+{
+	TpFacetSanitizeCtx ctx;
+
+	if (!tp_enable_facet_pushdown || !tp_pending_facet_valid() ||
+		queryDesc == NULL || queryDesc->planstate == NULL)
+		return;
+
+	ctx.target_index   = tp_pending_facet_index_oid();
+	ctx.total_on_index = 0;
+	ctx.matching	   = 0;
+	(void)tp_facet_sanitize_walker(queryDesc->planstate, &ctx);
+
+	if (!(ctx.total_on_index == 1 && ctx.matching == 1))
+		tp_reset_pending_facet();
+}
+
+#if PG_VERSION_NUM >= 180000
+static void
+tp_executor_run(QueryDesc *queryDesc, ScanDirection direction, uint64 count)
+{
+	tp_facet_sanitize_run(queryDesc);
+
+	if (prev_executor_run_hook)
+		prev_executor_run_hook(queryDesc, direction, count);
+	else
+		standard_ExecutorRun(queryDesc, direction, count);
+}
+#else
+static void
+tp_executor_run(
+		QueryDesc	 *queryDesc,
+		ScanDirection direction,
+		uint64		  count,
+		bool		  execute_once)
+{
+	tp_facet_sanitize_run(queryDesc);
+
+	if (prev_executor_run_hook)
+		prev_executor_run_hook(queryDesc, direction, count, execute_once);
+	else
+		standard_ExecutorRun(queryDesc, direction, count, execute_once);
+}
+#endif
+
+#if PG_VERSION_NUM >= 180000
+/*
+ * Per-node EXPLAIN hook (PG18+). For a BM25 index scan that engaged the facet
+ * pushdown, print how the allow-list was built. The line is emitted only when
+ * the scan actually ran (EXPLAIN ANALYZE) and the pushdown engaged, so its
+ * presence distinguishes "BM25 index + facet index used" from a plain BM25
+ * scan whose facet was left to the post-filter. Nothing is printed on PG17
+ * (no per-node hook); there, log_facet reports the same information.
+ */
+static void
+tp_explain_per_node(
+		PlanState	 *planstate,
+		List		 *ancestors,
+		const char	 *relationship,
+		const char	 *plan_name,
+		ExplainState *es)
+{
+	if (prev_explain_per_node_hook)
+		prev_explain_per_node_hook(
+				planstate, ancestors, relationship, plan_name, es);
+
+	if (IsA(planstate, IndexScanState))
+	{
+		IndexScanState *iss	 = (IndexScanState *)planstate;
+		Relation		irel = iss->iss_RelationDesc;
+
+		if (irel != NULL && irel->rd_rel->relam == get_am_oid("bm25", true) &&
+			iss->iss_ScanDesc != NULL)
+		{
+			TpScanOpaque so = (TpScanOpaque)iss->iss_ScanDesc->opaque;
+
+			if (so != NULL && so->facet != NULL)
+			{
+				TpFacetFilter *f = so->facet;
+				char		   buf[NAMEDATALEN + 64];
+
+				if (f->via_index)
+					snprintf(
+							buf,
+							sizeof(buf),
+							"allow-list via index \"%s\" (%d tids)",
+							f->idxname,
+							f->count);
+				else
+					snprintf(
+							buf,
+							sizeof(buf),
+							"allow-list via heap scan (%d tids)",
+							f->count);
+
+				ExplainPropertyText("BM25 Facet Pushdown", buf, es);
+			}
+		}
+	}
+}
+#endif
 
 /*
  * Transaction callback - release index locks at transaction end

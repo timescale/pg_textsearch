@@ -561,6 +561,13 @@ column is enough). Without such an index the allow-list falls back to a full
 table scan, so create one on the facet column for the pushdown to scale on
 large tables.
 
+On PostgreSQL 18+, `EXPLAIN (ANALYZE)` reports pushdown engagement as a
+`BM25 Facet Pushdown:` line on the BM25 index scan — `allow-list via index
+"..."` or `via heap scan`, with the allow-list size. The line is absent when
+the pushdown did not engage, so it distinguishes a facet-index-backed scan from
+a plain BM25 scan whose facet is left to the post-filter. PostgreSQL 17 has no
+per-node `EXPLAIN` hook; use `log_facet` there.
+
 ### Insert/Update Performance
 
 The memtable architecture is designed to support efficient writes, but

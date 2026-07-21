@@ -270,9 +270,11 @@ tp_rescan(
 
 	/*
 	 * Build the faceted-search allow-list, if the planner stashed a facet
-	 * spec for this index. Built once per rescan into the scan context.
+	 * spec for this index. Built once per rescan into the scan context, under
+	 * the scan's own snapshot so visibility matches the BM25 scan.
 	 */
-	so->facet = tp_build_query_facet(scan->indexRelation, so->scan_context);
+	so->facet = tp_build_query_facet(
+			scan->indexRelation, scan->xs_snapshot, so->scan_context);
 
 	/* Reset scan state */
 	if (so)

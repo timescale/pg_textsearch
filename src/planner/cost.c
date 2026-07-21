@@ -135,6 +135,7 @@ tp_try_store_facet(PlannerInfo *root, IndexPath *path)
 				opexpr->inputcollid,
 				var_on_left,
 				con->constvalue,
+				con->consttype,
 				typlen,
 				typbyval);
 

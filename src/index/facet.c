@@ -22,6 +22,8 @@
 #include <access/transam.h>
 #include <executor/tuptable.h>
 #include <fmgr.h>
+#include <nodes/nodeFuncs.h>
+#include <nodes/primnodes.h>
 #include <storage/bufmgr.h>
 #include <storage/bufpage.h>
 #include <utils/datum.h>
@@ -53,6 +55,7 @@ typedef struct TpFacetSpec
 	Oid		   collation;
 	bool	   var_on_left;
 	Datum	   value;
+	Oid		   consttype;
 	int16	   typlen;
 	bool	   typbyval;
 } TpFacetSpec;
@@ -62,11 +65,15 @@ static TpFacetSpec tp_pending_facet = {0};
 /* Active allow-list consulted by BMW during a scoring run. */
 static TpFacetFilter *tp_active_facet = NULL;
 
-/* Drop any by-reference value held by the pending spec. */
+/*
+ * Drop any by-reference value held by the pending spec. Not gated on
+ * is_valid: after the spec is consumed (is_valid cleared) the copied value
+ * still needs reclaiming, so freeing keys on the pointer itself.
+ */
 static void
 tp_facet_free_pending_value(void)
 {
-	if (tp_pending_facet.is_valid && !tp_pending_facet.typbyval &&
+	if (!tp_pending_facet.typbyval &&
 		DatumGetPointer(tp_pending_facet.value) != NULL)
 	{
 		pfree(DatumGetPointer(tp_pending_facet.value));
@@ -83,6 +90,7 @@ tp_store_query_facet(
 		Oid		   collation,
 		bool	   var_on_left,
 		Datum	   value,
+		Oid		   consttype,
 		int16	   typlen,
 		bool	   typbyval)
 {
@@ -100,6 +108,7 @@ tp_store_query_facet(
 	tp_pending_facet.opno			= opno;
 	tp_pending_facet.collation		= collation;
 	tp_pending_facet.var_on_left	= var_on_left;
+	tp_pending_facet.consttype		= consttype;
 	tp_pending_facet.typlen			= typlen;
 	tp_pending_facet.typbyval		= typbyval;
 
@@ -377,11 +386,10 @@ tp_build_facet_via_heap(
 }
 
 TpFacetFilter *
-tp_build_query_facet(Relation bm25_index, MemoryContext ctx)
+tp_build_query_facet(Relation bm25_index, Snapshot snapshot, MemoryContext ctx)
 {
 	TpFacetFilter	*filter;
 	Relation		 heap;
-	Snapshot		 snapshot;
 	MemoryContext	 oldcontext;
 	ItemPointerData *tids;
 	int				 count;
@@ -398,8 +406,15 @@ tp_build_query_facet(Relation bm25_index, MemoryContext ctx)
 	/* One-shot: consume the spec regardless of outcome below. */
 	tp_pending_facet.is_valid = false;
 
-	heap	 = table_open(tp_pending_facet.heap_oid, AccessShareLock);
-	snapshot = GetActiveSnapshot();
+	heap = table_open(tp_pending_facet.heap_oid, AccessShareLock);
+
+	/*
+	 * Build the allow-list under the scan's own snapshot so its visibility
+	 * matches the BM25 scan (the heap fallback applies MVCC visibility; using
+	 * a different snapshot could drop a row the scan can see).
+	 */
+	if (snapshot == NULL)
+		snapshot = GetActiveSnapshot();
 
 	/*
 	 * Prefer an index scan on the facet column (O(matching rows)); fall back
@@ -444,8 +459,13 @@ tp_build_query_facet(Relation bm25_index, MemoryContext ctx)
 	oldcontext = MemoryContextSwitchTo(ctx);
 	filter	   = palloc(sizeof(TpFacetFilter));
 	MemoryContextSwitchTo(oldcontext);
-	filter->tids  = tids;
-	filter->count = count;
+	filter->tids	  = tids;
+	filter->count	  = count;
+	filter->via_index = used_index;
+	if (used_index)
+		strlcpy(filter->idxname, idxname, NAMEDATALEN);
+	else
+		filter->idxname[0] = '\0';
 
 	return filter;
 }
@@ -470,6 +490,86 @@ tp_reset_pending_facet(void)
 {
 	tp_facet_free_pending_value();
 	tp_pending_facet.is_valid = false;
+}
+
+/* Whether a planner-stashed spec is currently pending. */
+bool
+tp_pending_facet_valid(void)
+{
+	return tp_pending_facet.is_valid;
+}
+
+/* The BM25 index OID the pending spec targets (InvalidOid if none). */
+Oid
+tp_pending_facet_index_oid(void)
+{
+	return tp_pending_facet.is_valid ? tp_pending_facet.bm25_index_oid
+									 : InvalidOid;
+}
+
+/*
+ * True if the given scan's filter quals contain the pending spec's clause:
+ * an OpExpr on the spec's operator with the spec's column (Var of scanrelid)
+ * on one side and the spec's exact constant on the other. Used by the
+ * ExecutorRun sanitizer to confirm a scan genuinely carries this facet before
+ * the AM (which keys only by index OID) is allowed to consume it.
+ */
+bool
+tp_pending_facet_qual_matches(Index scanrelid, List *qual)
+{
+	ListCell *lc;
+
+	if (!tp_pending_facet.is_valid)
+		return false;
+
+	foreach (lc, qual)
+	{
+		Node   *clause = (Node *)lfirst(lc);
+		OpExpr *op;
+		Node   *leftop;
+		Node   *rightop;
+		Var	   *var;
+		Const  *con;
+
+		if (!IsA(clause, OpExpr))
+			continue;
+
+		op = (OpExpr *)clause;
+		if (op->opno != tp_pending_facet.opno || list_length(op->args) != 2)
+			continue;
+
+		leftop	= strip_implicit_coercions((Node *)linitial(op->args));
+		rightop = strip_implicit_coercions((Node *)lsecond(op->args));
+
+		if (IsA(leftop, Var) && IsA(rightop, Const))
+		{
+			var = (Var *)leftop;
+			con = (Const *)rightop;
+		}
+		else if (IsA(leftop, Const) && IsA(rightop, Var))
+		{
+			con = (Const *)leftop;
+			var = (Var *)rightop;
+		}
+		else
+			continue;
+
+		if ((Index)var->varno != scanrelid ||
+			var->varattno != tp_pending_facet.attno)
+			continue;
+
+		if (con->constisnull || con->consttype != tp_pending_facet.consttype)
+			continue;
+
+		if (datumIsEqual(
+					con->constvalue,
+					tp_pending_facet.value,
+					tp_pending_facet.typbyval,
+					tp_pending_facet.typlen))
+			return true;
+	}
+
+	return false;
 }
 
 void
