@@ -175,4 +175,36 @@ BEGIN
 END $$;
 DROP TABLE fb_rescan;
 
+-- ============================================================
+-- indcheckxmin: a facet index built over broken HOT chains (its indcheckxmin
+-- is set and its xmin is not yet old enough under the query snapshot) must be
+-- skipped for the allow-list, falling back to the heap scan -- mirroring the
+-- planner's own rule in plancat.c. Build the BM25 index first (so it stays
+-- usable), then in one transaction HOT-update the facet column and create the
+-- facet index: the same-transaction faceted query must report "heap scan",
+-- not an index scan via the just-built facet index.
+-- ============================================================
+CREATE TABLE fb_xmin (id INT PRIMARY KEY, facet INT, content TEXT);
+INSERT INTO fb_xmin
+SELECT g, g % 4, 'alpha beta ' || g FROM generate_series(1, 50) g;
+CREATE INDEX fb_xmin_bm25 ON fb_xmin USING bm25(content)
+    WITH (text_config='english');
+ANALYZE fb_xmin;
+BEGIN;
+-- HOT update (content unchanged, facet not yet indexed) -> broken HOT chains.
+UPDATE fb_xmin SET facet = facet WHERE id <= 20;
+CREATE INDEX fb_xmin_facet ON fb_xmin (facet);   -- indcheckxmin is set
+SET LOCAL pg_textsearch.facet_selectivity_threshold = 1.0;
+SET LOCAL pg_textsearch.log_facet = on;
+-- indcheckxmin blocks fb_xmin_facet under this snapshot -> "heap scan".
+SELECT count(*) AS xmin_hits FROM (
+    SELECT id FROM fb_xmin WHERE facet < 1
+    ORDER BY content <@> to_bm25query('alpha', 'fb_xmin_bm25') LIMIT 20) s;
+SET LOCAL pg_textsearch.log_facet = off;
+COMMIT;
+-- Confirm the facet index really carried indcheckxmin (guard precondition).
+SELECT indcheckxmin AS facet_index_indcheckxmin
+FROM pg_index WHERE indexrelid = 'fb_xmin_facet'::regclass;
+DROP TABLE fb_xmin;
+
 DROP EXTENSION pg_textsearch CASCADE;
