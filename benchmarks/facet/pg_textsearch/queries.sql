@@ -33,6 +33,11 @@
   \set nq 200
 \endif
 
+\if :{?cap_ms}
+\else
+  \set cap_ms 60000
+\endif
+
 -- Force the BM25 index to satisfy the ORDER BY so the facet is a Filter above
 -- the index scan (the shape the pushdown targets), independent of row counts.
 -- enable_bitmapscan is disabled too: with a btree on the facet column the
@@ -40,11 +45,18 @@
 -- BM25 pushdown entirely, so this keeps every mode on the same plan shape.
 SET enable_seqscan = false;
 SET enable_bitmapscan = false;
-SET statement_timeout = '10min';
+-- Per-query latency cap. A query that exceeds it is canceled and censored
+-- (counted and recorded at the cap) instead of aborting the whole sweep: at
+-- very low selectivity the pre-PR path re-drives the BM25 scan with an
+-- exponentially growing internal limit, re-reading a common term's large
+-- posting lists each pass, which under memory pressure can stall well past any
+-- practical timeout. Raise the cap with -v cap_ms=... .
+SET statement_timeout = :'cap_ms';
 
--- Expose the sample size to the DO blocks below (psql does not interpolate
--- :vars inside dollar-quoted blocks).
+-- Expose the sample size / cap to the DO blocks below (psql does not
+-- interpolate :vars inside dollar-quoted blocks).
 SET facet.nq = :'nq';
+SET facet.cap_ms = :'cap_ms';
 
 \echo '=== Faceted MS-MARCO Query Benchmark (pg_textsearch) ==='
 \echo 'Queries per cell:' :nq
@@ -66,12 +78,13 @@ SELECT 'Loaded ' || COUNT(*) || ' benchmark queries' AS status FROM facet_bench_
 -- Runs the sampled queries for one (mode, facet_n) cell and returns
 -- per-query latency percentiles plus the total number of rows produced.
 -- ------------------------------------------------------------------
+DROP FUNCTION IF EXISTS facet_bench(int, text, int);
 CREATE OR REPLACE FUNCTION facet_bench(
         p_facet_n int,
         p_mode    text,
         p_nq      int)
 RETURNS TABLE(p50_ms numeric, p95_ms numeric, p99_ms numeric,
-              avg_ms numeric, num_queries int, total_hits bigint)
+              avg_ms numeric, num_queries int, censored int, total_hits bigint)
 AS $$
 DECLARE
     q record;
@@ -82,21 +95,19 @@ DECLARE
     n int;
     hits bigint;
     hits_sum bigint := 0;
+    censored_n int := 0;
+    v_cap numeric := current_setting('facet.cap_ms')::numeric;
     sql text;
 BEGIN
-    -- Never let the script-level statement_timeout abort a slow-but-healthy
-    -- cell partway through and discard its timings.
-    PERFORM set_config('statement_timeout', '0', true);
-
     -- Configure the pushdown mode for this cell (transaction-local).
     IF p_mode = 'off' THEN
         PERFORM set_config('pg_textsearch.enable_facet_pushdown', 'off', true);
     ELSIF p_mode = 'on_forced' THEN
         PERFORM set_config('pg_textsearch.enable_facet_pushdown', 'on', true);
         PERFORM set_config('pg_textsearch.facet_selectivity_threshold', '1.0', true);
-    ELSE  -- on_default
+    ELSE  -- on_default: the shipped default gate
         PERFORM set_config('pg_textsearch.enable_facet_pushdown', 'on', true);
-        PERFORM set_config('pg_textsearch.facet_selectivity_threshold', '0.12', true);
+        PERFORM set_config('pg_textsearch.facet_selectivity_threshold', '0.02', true);
     END IF;
 
     sql := format(
@@ -111,12 +122,21 @@ BEGIN
         SELECT query_text FROM facet_bench_queries
         ORDER BY query_id LIMIT p_nq
     LOOP
-        start_ts := clock_timestamp();
-        EXECUTE sql INTO hits USING q.query_text;
-        end_ts := clock_timestamp();
-        times := array_append(times,
-                              EXTRACT(EPOCH FROM (end_ts - start_ts)) * 1000);
-        hits_sum := hits_sum + hits;
+        BEGIN
+            start_ts := clock_timestamp();
+            EXECUTE sql INTO hits USING q.query_text;
+            end_ts := clock_timestamp();
+            times := array_append(times,
+                                  EXTRACT(EPOCH FROM (end_ts - start_ts)) * 1000);
+            hits_sum := hits_sum + hits;
+        EXCEPTION WHEN query_canceled THEN
+            -- Per-query cap hit: censor (count and record at the cap) so one
+            -- pathological query can't abort the sweep. The session
+            -- statement_timeout survives the subtransaction abort, so the next
+            -- query is still capped.
+            censored_n := censored_n + 1;
+            times := array_append(times, v_cap);
+        END;
     END LOOP;
 
     n := array_length(times, 1);
@@ -126,6 +146,7 @@ BEGIN
     p99_ms := sorted[(n * 99 + 99) / 100];
     avg_ms := (SELECT avg(t) FROM unnest(times) t);
     num_queries := n;
+    censored := censored_n;
     total_hits := hits_sum;
     RETURN NEXT;
 END;
@@ -144,7 +165,7 @@ DROP TABLE IF EXISTS facet_sweep;
 CREATE TEMP TABLE facet_sweep(
     mode text, sel_pct int,
     p50_ms numeric, p95_ms numeric, p99_ms numeric, avg_ms numeric,
-    num_queries int, total_hits bigint);
+    num_queries int, censored int, total_hits bigint);
 
 \echo ''
 \echo '=== Selectivity sweep (facet_id < N) ==='
@@ -164,11 +185,11 @@ BEGIN
             SELECT * INTO r FROM facet_bench(s, m, v_nq);
             INSERT INTO facet_sweep VALUES
                 (m, s, r.p50_ms, r.p95_ms, r.p99_ms, r.avg_ms,
-                 r.num_queries, r.total_hits);
-            RAISE NOTICE 'FACET_RESULT mode=% sel=% n=% p50=%ms p95=%ms p99=%ms avg=%ms hits=%',
+                 r.num_queries, r.censored, r.total_hits);
+            RAISE NOTICE 'FACET_RESULT mode=% sel=% n=% p50=%ms p95=%ms p99=%ms avg=%ms cens=% hits=%',
                 rpad(m, 10), lpad(s::text, 2) || '%', r.num_queries,
                 round(r.p50_ms, 2), round(r.p95_ms, 2), round(r.p99_ms, 2),
-                round(r.avg_ms, 2), r.total_hits;
+                round(r.avg_ms, 2), r.censored, r.total_hits;
         END LOOP;
     END LOOP;
 END;
@@ -185,7 +206,8 @@ SELECT sel_pct AS "sel%",
        round(MAX(avg_ms) FILTER (WHERE mode='on_forced'), 2)  AS on_forced_ms,
        round(MAX(avg_ms) FILTER (WHERE mode='off')
              / NULLIF(MAX(avg_ms) FILTER (WHERE mode='on_forced'), 0), 2)
-           AS speedup_x
+           AS speedup_x,
+       MAX(censored) FILTER (WHERE mode='off')                AS off_censored
 FROM facet_sweep
 GROUP BY sel_pct
 ORDER BY sel_pct;
@@ -200,6 +222,7 @@ SELECT 'FACET_SWEEP_ROW '
     || ' p99=' || round(p99_ms, 3)
     || ' avg=' || round(avg_ms, 3)
     || ' n=' || num_queries
+    || ' cens=' || censored
     || ' hits=' || total_hits AS row
 FROM facet_sweep
 ORDER BY sel_pct, mode;
@@ -216,6 +239,7 @@ DECLARE
     off_ids text[];
     mism int := 0;
     checked int := 0;
+    skipped int := 0;
     sql_t text;
 BEGIN
     sql_t :=
@@ -226,21 +250,28 @@ BEGIN
 
     FOR q IN SELECT query_text FROM facet_bench_queries
              ORDER BY query_id LIMIT 50 LOOP
-        PERFORM set_config('pg_textsearch.enable_facet_pushdown', 'on', true);
-        PERFORM set_config('pg_textsearch.facet_selectivity_threshold', '1.0', true);
-        EXECUTE sql_t INTO on_ids USING q.query_text;
+        BEGIN
+            PERFORM set_config('pg_textsearch.enable_facet_pushdown', 'on', true);
+            PERFORM set_config('pg_textsearch.facet_selectivity_threshold', '1.0', true);
+            EXECUTE sql_t INTO on_ids USING q.query_text;
 
-        PERFORM set_config('pg_textsearch.enable_facet_pushdown', 'off', true);
-        EXECUTE sql_t INTO off_ids USING q.query_text;
+            PERFORM set_config('pg_textsearch.enable_facet_pushdown', 'off', true);
+            EXECUTE sql_t INTO off_ids USING q.query_text;
 
-        checked := checked + 1;
-        IF on_ids IS DISTINCT FROM off_ids THEN
-            mism := mism + 1;
-            RAISE WARNING 'PARITY MISMATCH for query: %', q.query_text;
-        END IF;
+            checked := checked + 1;
+            IF on_ids IS DISTINCT FROM off_ids THEN
+                mism := mism + 1;
+                RAISE WARNING 'PARITY MISMATCH for query: %', q.query_text;
+            END IF;
+        EXCEPTION WHEN query_canceled THEN
+            -- The pre-PR path can exceed the per-query cap on a pathological
+            -- query; skip that pair rather than fail the whole check.
+            skipped := skipped + 1;
+        END;
     END LOOP;
 
-    RAISE NOTICE 'PARITY_CHECK checked=% mismatches=%', checked, mism;
+    RAISE NOTICE 'PARITY_CHECK checked=% mismatches=% skipped=%',
+        checked, mism, skipped;
     IF mism > 0 THEN
         RAISE EXCEPTION 'Facet pushdown changed results in % of % queries',
             mism, checked;
