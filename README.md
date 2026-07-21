@@ -550,11 +550,16 @@ It is controlled by two GUCs:
 | GUC | Default | Description |
 | --- | --- | --- |
 | `pg_textsearch.enable_facet_pushdown` | `true` | Enable/disable facet pushdown. |
-| `pg_textsearch.facet_selectivity_threshold` | `0.12` | Maximum estimated selectivity for which pushdown is attempted. Facets less selective than this fall back to post-filtering. Run `ANALYZE` so the estimate is accurate. |
+| `pg_textsearch.facet_selectivity_threshold` | `0.02` | Maximum estimated selectivity for which pushdown is attempted. The pushdown pays off only for selective facets, and the crossover shifts lower as the table grows, so tune this for your data. Facets less selective than this fall back to post-filtering. Run `ANALYZE` so the estimate is accurate. |
+| `pg_textsearch.log_facet` | `false` | Log whether the allow-list was built via an index scan on the facet column or a full table scan. |
 
-The current allow-list is collected by scanning the table once and evaluating
-the filter operator directly; a production implementation would instead reuse
-the access path the planner already chose for the clause.
+When an index exists on the facet column, the allow-list is collected with an
+index scan on it — proportional to the number of matching rows. A suitable
+index is valid, non-partial, uses the facet column as its leading key, and its
+opclass supports the operator with a matching collation (a plain btree on the
+column is enough). Without such an index the allow-list falls back to a full
+table scan, so create one on the facet column for the pushdown to scale on
+large tables.
 
 ### Insert/Update Performance
 
