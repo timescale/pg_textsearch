@@ -62,6 +62,27 @@ typedef struct TpFacetSpec
 
 static TpFacetSpec tp_pending_facet = {0};
 
+/*
+ * Dedicated context for the pending spec's by-reference constant, so its
+ * lifetime is observable in pg_backend_memory_contexts (name below) and a
+ * failure to free it on replace/reset shows up as unbounded growth there.
+ * Created lazily under TopMemoryContext on first use.
+ */
+static MemoryContext tp_facet_spec_context = NULL;
+
+#define TP_FACET_SPEC_CONTEXT_NAME "pg_textsearch facet spec"
+
+static MemoryContext
+tp_facet_spec_cxt(void)
+{
+	if (tp_facet_spec_context == NULL)
+		tp_facet_spec_context = AllocSetContextCreate(
+				TopMemoryContext,
+				TP_FACET_SPEC_CONTEXT_NAME,
+				ALLOCSET_SMALL_SIZES);
+	return tp_facet_spec_context;
+}
+
 /* Active allow-list consulted by BMW during a scoring run. */
 static TpFacetFilter *tp_active_facet = NULL;
 
@@ -112,9 +133,9 @@ tp_store_query_facet(
 	tp_pending_facet.typlen			= typlen;
 	tp_pending_facet.typbyval		= typbyval;
 
-	/* Copy the constant into a persistent context (planning context is short).
-	 */
-	oldcontext			   = MemoryContextSwitchTo(TopMemoryContext);
+	/* Copy the constant into a dedicated persistent context (the planning
+	 * context is short-lived). */
+	oldcontext			   = MemoryContextSwitchTo(tp_facet_spec_cxt());
 	tp_pending_facet.value = datumCopy(value, typbyval, typlen);
 	MemoryContextSwitchTo(oldcontext);
 

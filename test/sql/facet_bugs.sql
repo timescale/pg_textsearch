@@ -1,0 +1,178 @@
+-- Regression tests for correctness bugs found in the facet-pushdown review.
+--
+--   F2  the pending spec's by-reference constant was leaked (the free was
+--       gated on is_valid, already cleared by consumption), so it accumulated
+--       in a persistent context.
+--   F3  the heap-fallback allow-list was built under GetActiveSnapshot()
+--       instead of the scan's own snapshot.
+--   plus NULL facet values (strict operator excludes them) and rescan / re-
+--       execution correctness (the spec is one-shot per statement).
+
+CREATE EXTENSION IF NOT EXISTS pg_textsearch;
+SET client_min_messages = notice;
+SET enable_seqscan = off;
+SET enable_bitmapscan = off;
+
+-- ============================================================
+-- F2: the by-reference facet constant must be reclaimed, not leaked. Run many
+-- faceted queries with DISTINCT text constants (forced to real Consts via
+-- EXECUTE) and assert the dedicated spec context stays bounded. Before the fix
+-- every consumed spec's constant was retained, so the context grew ~linearly.
+-- ============================================================
+CREATE TABLE fb_leak (id INT PRIMARY KEY, category TEXT, content TEXT);
+INSERT INTO fb_leak
+SELECT g, 'c' || (g % 4), 'alpha beta gamma ' || g
+FROM generate_series(1, 40) g;
+CREATE INDEX fb_leak_bm25 ON fb_leak USING bm25(content)
+    WITH (text_config='english');
+ANALYZE fb_leak;
+
+DO $$
+DECLARE
+    i	  int;
+    bytes bigint;
+BEGIN
+    PERFORM set_config('pg_textsearch.facet_selectivity_threshold', '1.0', true);
+    FOR i IN 1..2000 LOOP
+        -- A distinct ~200-byte text constant each iteration: a fresh
+        -- by-reference Const the planner copies into the spec context.
+        EXECUTE format($f$
+            SELECT count(*) FROM (
+                SELECT id FROM fb_leak WHERE category = %L
+                ORDER BY content <@> to_bm25query('alpha', 'fb_leak_bm25')
+                LIMIT 5) s
+        $f$, repeat('z', 200) || i::text);
+    END LOOP;
+
+    SELECT total_bytes INTO bytes FROM pg_backend_memory_contexts
+     WHERE name = 'pg_textsearch facet spec' LIMIT 1;
+    IF bytes IS NULL THEN
+        RAISE EXCEPTION 'F2: spec context missing (no faceted query stashed)';
+    ELSIF bytes > 131072 THEN
+        RAISE EXCEPTION
+            'F2: spec context grew to % bytes over 2000 queries (leak)', bytes;
+    END IF;
+    RAISE NOTICE 'F2 OK: facet spec context bounded after 2000 queries';
+END $$;
+DROP TABLE fb_leak;
+
+-- ============================================================
+-- F3: the heap-fallback allow-list (no index on the facet column) is built
+-- under the scan's own snapshot. Exercise it through a cursor (a distinct
+-- snapshot) and assert the result matches the post-filter path.
+-- ============================================================
+CREATE TABLE fb_snap (id INT PRIMARY KEY, facet INT, content TEXT);
+INSERT INTO fb_snap
+SELECT g, g % 4, 'alpha beta ' || g FROM generate_series(1, 60) g;
+-- No index on facet -> heap fallback builds the allow-list.
+CREATE INDEX fb_snap_bm25 ON fb_snap USING bm25(content)
+    WITH (text_config='english');
+ANALYZE fb_snap;
+
+DO $$
+DECLARE
+    cur		refcursor;
+    r		record;
+    on_ids	int[] := '{}';
+    off_ids int[];
+BEGIN
+    PERFORM set_config('pg_textsearch.enable_facet_pushdown', 'on', true);
+    PERFORM set_config('pg_textsearch.facet_selectivity_threshold', '1.0', true);
+    OPEN cur FOR
+        SELECT id FROM fb_snap WHERE facet < 1
+        ORDER BY content <@> to_bm25query('alpha', 'fb_snap_bm25'), id LIMIT 100;
+    LOOP
+        FETCH cur INTO r; EXIT WHEN NOT FOUND;
+        on_ids := on_ids || r.id;
+    END LOOP;
+    CLOSE cur;
+
+    PERFORM set_config('pg_textsearch.enable_facet_pushdown', 'off', true);
+    SELECT array_agg(id ORDER BY id) INTO off_ids FROM (
+        SELECT id FROM fb_snap WHERE facet < 1
+        ORDER BY content <@> to_bm25query('alpha', 'fb_snap_bm25'), id
+        LIMIT 100) s;
+
+    IF (SELECT array_agg(x ORDER BY x) FROM unnest(on_ids) x)
+       IS DISTINCT FROM off_ids THEN
+        RAISE EXCEPTION 'F3: heap-fallback cursor differs from post-filter';
+    END IF;
+    RAISE NOTICE 'F3 OK: heap-fallback cursor matches post-filter (% rows)',
+        cardinality(off_ids);
+END $$;
+DROP TABLE fb_snap;
+
+-- ============================================================
+-- NULL facet values: a strict comparison operator excludes NULLs, and the
+-- pushdown must agree with the post-filter path on both the index and heap
+-- build paths.
+-- ============================================================
+CREATE TABLE fb_null (id INT PRIMARY KEY, facet INT, content TEXT);
+INSERT INTO fb_null
+SELECT g, CASE WHEN g % 3 = 0 THEN NULL ELSE g % 4 END, 'alpha delta ' || g
+FROM generate_series(1, 60) g;
+CREATE INDEX fb_null_facet ON fb_null (facet);
+CREATE INDEX fb_null_bm25 ON fb_null USING bm25(content)
+    WITH (text_config='english');
+ANALYZE fb_null;
+
+CREATE OR REPLACE FUNCTION fb_null_parity(label text) RETURNS void AS $$
+DECLARE on_ids int[]; off_ids int[];
+BEGIN
+    PERFORM set_config('pg_textsearch.facet_selectivity_threshold', '1.0', true);
+    PERFORM set_config('pg_textsearch.enable_facet_pushdown', 'on', true);
+    SELECT array_agg(id ORDER BY id) INTO on_ids FROM (
+        SELECT id FROM fb_null WHERE facet < 2
+        ORDER BY content <@> to_bm25query('alpha', 'fb_null_bm25'), id
+        LIMIT 100) s;
+    PERFORM set_config('pg_textsearch.enable_facet_pushdown', 'off', true);
+    SELECT array_agg(id ORDER BY id) INTO off_ids FROM (
+        SELECT id FROM fb_null WHERE facet < 2
+        ORDER BY content <@> to_bm25query('alpha', 'fb_null_bm25'), id
+        LIMIT 100) s;
+    IF on_ids IS DISTINCT FROM off_ids THEN
+        RAISE EXCEPTION 'NULL facet (%): results differ from post-filter', label;
+    END IF;
+    RAISE NOTICE 'NULL facet OK (%, % rows)', label, cardinality(off_ids);
+END $$ LANGUAGE plpgsql;
+
+SELECT fb_null_parity('index path');
+DROP INDEX fb_null_facet;               -- force heap fallback
+SELECT fb_null_parity('heap path');
+DROP FUNCTION fb_null_parity(text);
+DROP TABLE fb_null;
+
+-- ============================================================
+-- Rescan / re-execution: the spec is one-shot per statement, so the pushdown
+-- engages only on the first rescan; every re-execution must still return the
+-- correct rows (via the pushdown then the post-filter).
+-- ============================================================
+CREATE TABLE fb_rescan (id INT PRIMARY KEY, facet INT, content TEXT);
+INSERT INTO fb_rescan
+SELECT g, g % 4, 'alpha beta ' || g FROM generate_series(1, 40) g;
+CREATE INDEX fb_rescan_facet ON fb_rescan (facet);
+CREATE INDEX fb_rescan_bm25 ON fb_rescan USING bm25(content)
+    WITH (text_config='english');
+ANALYZE fb_rescan;
+
+DO $$
+DECLARE d int; cnt int; bad int := 0;
+BEGIN
+    PERFORM set_config('pg_textsearch.enable_facet_pushdown', 'on', true);
+    PERFORM set_config('pg_textsearch.facet_selectivity_threshold', '1.0', true);
+    FOR d IN 1..5 LOOP
+        SELECT count(*) INTO cnt FROM (
+            SELECT id FROM fb_rescan WHERE facet < 1
+            ORDER BY content <@> to_bm25query('alpha', 'fb_rescan_bm25')
+            LIMIT 100) s;
+        IF cnt <> 10 THEN bad := bad + 1; END IF;  -- facet 0 = 10 of 40
+    END LOOP;
+    IF bad > 0 THEN
+        RAISE EXCEPTION 'rescan: % of 5 re-executions returned a wrong count',
+            bad;
+    END IF;
+    RAISE NOTICE 'rescan OK (5 re-executions, each 10 rows)';
+END $$;
+DROP TABLE fb_rescan;
+
+DROP EXTENSION pg_textsearch CASCADE;
