@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1784707239549,
+  "lastUpdate": 1784793689075,
   "repoUrl": "https://github.com/timescale/pg_textsearch",
   "entries": {
     "Concurrent INSERT (ParadeDB)": [
@@ -6824,6 +6824,68 @@ window.BENCHMARK_DATA = {
           {
             "name": "ParadeDB INSERT latency (c=8)",
             "value": 0.627,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tjgreen@gmail.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "3b2f2baabb22d4742e886331d6cb459d0c7d43c6",
+          "message": "Add Chinese tokenization docs and end-to-end CI test (#428)\n\n## Summary\n\npg_textsearch tokenizes both documents and queries through the index's\n`text_config`, so Chinese support is a matter of choosing a\nChinese-aware\ntext search configuration — no extension changes required. This PR\ndocuments\nthat and adds an end-to-end test + CI job using zhparser.\n\n## Changes\n\n- **README**: new \"Chinese full-text search\" section covering the\n  `text_config` delegation model and a worked recipe with\n[zhparser](https://github.com/amutu/zhparser) (an SCWS dictionary-based\nChinese word segmenter) wired into a `bm25` index, plus caveats (no\nphrase\n  search, one config per index, managed-platform allow-listing).\n- **`test/sql/chinese.sql` + `test/expected/chinese.out`**: end-to-end\ntest\n  that indexes Chinese documents through zhparser and asserts dictionary\n  segmentation and ranked BM25 retrieval. Deterministic (zhparser v2.3\n  bundles `dict.utf8.xdb`, SCWS 1.2.3 pinned, `COLLATE \"C\"` ordering,\n  distinct-score rankings).\n- **`make test-chinese`**: runs only the `chinese` test. Intentionally\nkept\n**out of the default `REGRESS` schedule** so environments without\nzhparser\n  are unaffected.\n- **`.github/workflows/chinese-ci.yml`**: standalone workflow\n(PostgreSQL 17\n  & 18) that builds pinned SCWS 1.2.3 + zhparser v2.3 and runs\n  `make test-chinese`.\n\n## Testing\n\n- Built pg_textsearch, SCWS, and zhparser against PostgreSQL 17 and 18\nand\n  ran `make test-chinese` → passes, byte-identical output on both.\n- `chinese (17)` and `chinese (18)` CI jobs pass.\n- Verified `chinese` is excluded from the default `REGRESS` list, so\nexisting\n  pipelines are unaffected.",
+          "timestamp": "2026-07-20T18:26:40Z",
+          "url": "https://github.com/timescale/pg_textsearch/commit/3b2f2baabb22d4742e886331d6cb459d0c7d43c6"
+        },
+        "date": 1784793669255,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "ParadeDB INSERT TPS (c=1)",
+            "value": 2795.228162,
+            "unit": "tps"
+          },
+          {
+            "name": "ParadeDB INSERT latency (c=1)",
+            "value": 0.358,
+            "unit": "ms"
+          },
+          {
+            "name": "ParadeDB INSERT TPS (c=2)",
+            "value": 4600.4999,
+            "unit": "tps"
+          },
+          {
+            "name": "ParadeDB INSERT latency (c=2)",
+            "value": 0.435,
+            "unit": "ms"
+          },
+          {
+            "name": "ParadeDB INSERT TPS (c=4)",
+            "value": 8221.361402,
+            "unit": "tps"
+          },
+          {
+            "name": "ParadeDB INSERT latency (c=4)",
+            "value": 0.487,
+            "unit": "ms"
+          },
+          {
+            "name": "ParadeDB INSERT TPS (c=8)",
+            "value": 13188.724204,
+            "unit": "tps"
+          },
+          {
+            "name": "ParadeDB INSERT latency (c=8)",
+            "value": 0.607,
             "unit": "ms"
           }
         ]
