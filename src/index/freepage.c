@@ -114,13 +114,36 @@ tp_fsm_claim_free_buffer(Relation index)
 BlockNumber
 tp_fsm_claim_free_block(Relation index)
 {
-	Buffer		buf = tp_fsm_claim_free_buffer(index);
-	BlockNumber blk;
+	Buffer			  buf = tp_fsm_claim_free_buffer(index);
+	BlockNumber		  blk;
+	GenericXLogState *state;
+	Page			  page;
+	TpFreePageData	 *f;
 
 	if (!BufferIsValid(buf))
 		return InvalidBlockNumber;
 
 	blk = BufferGetBlockNumber(buf);
+
+	/*
+	 * This variant releases the buffer lock before returning the block —
+	 * the caller reinitializes the page later, under a fresh lock.  To
+	 * keep the claim atomic against a concurrent allocator that the
+	 * non-atomic GetFreeIndexPage() handed the same block, clear the free
+	 * stamp under the lock now (WAL-logged).  That concurrent allocator
+	 * blocks on this buffer lock, then observes a page that is no longer
+	 * recyclable and skips it, so it cannot double-allocate the block.
+	 * A crash between here and the caller's reinitialization only leaks
+	 * the block (reclaimed by REINDEX); it is out of the FSM and linked
+	 * into no structure.  pd_lower is already BLCKSZ from the stamp, so
+	 * the cleared magic lands in GenericXLog's logged region.
+	 */
+	state	 = GenericXLogStart(index);
+	page	 = GenericXLogRegisterBuffer(state, buf, 0);
+	f		 = (TpFreePageData *)PageGetContents(page);
+	f->magic = 0;
+	GenericXLogFinish(state);
 	UnlockReleaseBuffer(buf);
+
 	return blk;
 }

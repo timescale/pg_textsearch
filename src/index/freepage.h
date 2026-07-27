@@ -74,9 +74,13 @@ extern Buffer tp_fsm_claim_free_buffer(Relation index);
 
 /*
  * Block-returning wrapper over tp_fsm_claim_free_buffer for callers
- * that reopen the block later under their own lock AND hold the
- * per-index lock EXCLUSIVE across allocation + write (merge, build),
- * so no concurrent allocator can claim the block in between.  Returns
- * InvalidBlockNumber when the FSM offers no reusable page.
+ * that reopen the block later under their own lock (the segment
+ * writer buffers pages and flushes them afterward).  Because the lock
+ * is dropped before the block is returned, this variant clears the
+ * free stamp under the claim lock so the claim stays atomic even when
+ * the caller holds the per-index lock only in SHARED mode and races a
+ * concurrent allocator (e.g. VACUUM's pre-V5 segment rebuild vs. a
+ * memtable insert).  Returns InvalidBlockNumber when the FSM offers no
+ * reusable page.
  */
 extern BlockNumber tp_fsm_claim_free_block(Relation index);
