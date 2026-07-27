@@ -1,0 +1,80 @@
+-- Recycled-page corruption of the deferred-free tombstone chain
+-- (issues #426, #427).
+--
+-- The deferred-free tombstone chain (metap.pending_free_head) parks
+-- displaced segment pages until a later VACUUM returns them to the FSM.
+-- The chain links are WAL-logged, but the index FSM that guards those
+-- pages is NOT crash-safe and its GetFreeIndexPage() claim is not
+-- atomic.  Either can offer a block that is still referenced by the
+-- tombstone chain.  If an allocator then reuses that block, it
+-- overwrites a live tombstone page, and the next tombstone drain
+-- fails with "corrupt tombstone page ..." — permanently wedging every
+-- write path for the index (issue #427).
+--
+-- This test reproduces that hazard deterministically with an
+-- internal-only scaffold that returns the live head tombstone page to
+-- the FSM, then drives a normal allocation.  A correct allocator must
+-- refuse to reuse a block that is still a live pg_textsearch structure
+-- page.
+--
+-- autovacuum + auto-spill are disabled so the only allocations and
+-- drains are the explicit ones below, keeping FSM state deterministic.
+CREATE EXTENSION IF NOT EXISTS pg_textsearch;
+SET pg_textsearch.memtable_pages_threshold = 0;
+SET pg_textsearch.bulk_load_threshold = 0;
+
+CREATE TABLE reuse_docs (id int, body text)
+    WITH (autovacuum_enabled = false);
+INSERT INTO reuse_docs
+SELECT g, 'alpha beta gamma delta term' || (g % 50)
+FROM generate_series(1, 2000) g;
+
+CREATE INDEX reuse_idx ON reuse_docs
+    USING bm25 (body) WITH (text_config = 'english');
+
+-- Build wrote a segment directly, so the memtable is empty here; the
+-- next batch fills it so the following spill produces a second segment.
+INSERT INTO reuse_docs
+SELECT g, 'alpha beta term' || (g % 50)
+FROM generate_series(2001, 4000) g;
+SELECT bm25_spill_index('reuse_idx') > 0 AS spilled;
+
+-- Merge the L0 segments into one L1 segment; this displaces the source
+-- segments' pages, which are parked in the tombstone chain (not freed).
+SELECT bm25_force_merge('reuse_idx');
+SELECT bm25_pending_free_pages('reuse_idx') > 0 AS parked_after_merge;
+
+-- Drain any incidental FSM free pages left by build/merge by allocating
+-- a fresh segment, so the block recycled below is the single
+-- deterministic allocation target.  Parked pages are not in the FSM, so
+-- the tombstone chain is untouched by this step.
+INSERT INTO reuse_docs
+SELECT g, 'alpha beta term' || (g % 50)
+FROM generate_series(4001, 6000) g;
+SELECT bm25_spill_index('reuse_idx') > 0 AS drain_spilled;
+SELECT bm25_pending_free_pages('reuse_idx') > 0 AS still_parked;
+
+-- Hand the still-live head tombstone page back to the (now empty) FSM.
+SELECT bm25_test_recycle_tombstone_head('reuse_idx') > 0 AS recycled;
+
+-- The memtable is empty (last op was a spill), so this single insert
+-- bootstraps a fresh memtable page and allocates it from the FSM —
+-- picking up the recycled block.  A correct allocator must NOT reuse
+-- that block, because it is still a live tombstone page.
+INSERT INTO reuse_docs VALUES (999001, 'alpha beta gamma probe');
+
+-- Walking the tombstone chain must still succeed.  With a broken
+-- allocator the insert above overwrote the live tombstone page, so
+-- this raises: ERROR: pg_textsearch: corrupt tombstone page ...
+SELECT bm25_pending_free_pages('reuse_idx') >= 0 AS chain_intact;
+
+-- Sanity: the index still answers queries and the probe row is found.
+SELECT count(*) > 0 AS has_hits
+FROM (
+    SELECT 1 FROM reuse_docs
+    ORDER BY body <@> to_bm25query('probe', 'reuse_idx')
+    LIMIT 10
+) s;
+
+DROP TABLE reuse_docs;
+DROP EXTENSION pg_textsearch CASCADE;

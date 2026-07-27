@@ -28,6 +28,7 @@
 #include <utils/timestamp.h>
 
 #include "debug/dump.h"
+#include "index/freepage.h"
 #include "index/metapage.h"
 #include "index/state.h"
 #include "segment/alive_bitset.h"
@@ -763,8 +764,14 @@ allocate_segment_page(Relation index)
 	Buffer		buffer;
 	BlockNumber block;
 
-	/* Try to get a free page from FSM (recycled from compaction) */
-	block = GetFreeIndexPage(index);
+	/*
+	 * Reuse a recyclable free page from the FSM (recycled from a
+	 * compaction/vacuum drain).  tp_fsm_claim_free_block skips any
+	 * block the non-crash-safe FSM offers that is still a live
+	 * structure page, so we never reinitialize a page another
+	 * structure still owns (issues #426, #427).
+	 */
+	block = tp_fsm_claim_free_block(index);
 	if (block != InvalidBlockNumber)
 		return block;
 
@@ -1586,7 +1593,7 @@ tp_segment_free_pages(Relation index, BlockNumber *pages, uint32 num_pages)
 		if (pages[i] == 0)
 			elog(ERROR, "attempted to free metapage (block 0)");
 
-		RecordFreeIndexPage(index, pages[i]);
+		tp_record_free_index_page(index, pages[i]);
 	}
 }
 
