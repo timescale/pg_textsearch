@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1785918180955,
+  "lastUpdate": 1785918184563,
   "repoUrl": "https://github.com/timescale/pg_textsearch",
   "entries": {
     "cranfield Benchmarks": [
@@ -235966,6 +235966,88 @@ window.BENCHMARK_DATA = {
           {
             "name": "paradedb_msmarco_concurrent - Throughput (avg ms/query)",
             "value": 97.37,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tjgreen@gmail.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "3b2f2baabb22d4742e886331d6cb459d0c7d43c6",
+          "message": "Add Chinese tokenization docs and end-to-end CI test (#428)\n\n## Summary\n\npg_textsearch tokenizes both documents and queries through the index's\n`text_config`, so Chinese support is a matter of choosing a\nChinese-aware\ntext search configuration — no extension changes required. This PR\ndocuments\nthat and adds an end-to-end test + CI job using zhparser.\n\n## Changes\n\n- **README**: new \"Chinese full-text search\" section covering the\n  `text_config` delegation model and a worked recipe with\n[zhparser](https://github.com/amutu/zhparser) (an SCWS dictionary-based\nChinese word segmenter) wired into a `bm25` index, plus caveats (no\nphrase\n  search, one config per index, managed-platform allow-listing).\n- **`test/sql/chinese.sql` + `test/expected/chinese.out`**: end-to-end\ntest\n  that indexes Chinese documents through zhparser and asserts dictionary\n  segmentation and ranked BM25 retrieval. Deterministic (zhparser v2.3\n  bundles `dict.utf8.xdb`, SCWS 1.2.3 pinned, `COLLATE \"C\"` ordering,\n  distinct-score rankings).\n- **`make test-chinese`**: runs only the `chinese` test. Intentionally\nkept\n**out of the default `REGRESS` schedule** so environments without\nzhparser\n  are unaffected.\n- **`.github/workflows/chinese-ci.yml`**: standalone workflow\n(PostgreSQL 17\n  & 18) that builds pinned SCWS 1.2.3 + zhparser v2.3 and runs\n  `make test-chinese`.\n\n## Testing\n\n- Built pg_textsearch, SCWS, and zhparser against PostgreSQL 17 and 18\nand\n  ran `make test-chinese` → passes, byte-identical output on both.\n- `chinese (17)` and `chinese (18)` CI jobs pass.\n- Verified `chinese` is excluded from the default `REGRESS` list, so\nexisting\n  pipelines are unaffected.",
+          "timestamp": "2026-07-20T18:26:40Z",
+          "url": "https://github.com/timescale/pg_textsearch/commit/3b2f2baabb22d4742e886331d6cb459d0c7d43c6"
+        },
+        "date": 1785918183748,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "paradedb_msmarco_concurrent - Index Build Time",
+            "value": 5.137,
+            "unit": "ms"
+          },
+          {
+            "name": "paradedb_msmarco_concurrent - Insert Time",
+            "value": 0.4,
+            "unit": "ms"
+          },
+          {
+            "name": "paradedb_msmarco_concurrent - Concurrent Insert Time",
+            "value": 1292740.049084,
+            "unit": "ms"
+          },
+          {
+            "name": "paradedb_msmarco_concurrent - 1 Token Query (p50)",
+            "value": 203.15,
+            "unit": "ms"
+          },
+          {
+            "name": "paradedb_msmarco_concurrent - 2 Token Query (p50)",
+            "value": 204.65,
+            "unit": "ms"
+          },
+          {
+            "name": "paradedb_msmarco_concurrent - 3 Token Query (p50)",
+            "value": 210.24,
+            "unit": "ms"
+          },
+          {
+            "name": "paradedb_msmarco_concurrent - 4 Token Query (p50)",
+            "value": 212.52,
+            "unit": "ms"
+          },
+          {
+            "name": "paradedb_msmarco_concurrent - 5 Token Query (p50)",
+            "value": 214.95,
+            "unit": "ms"
+          },
+          {
+            "name": "paradedb_msmarco_concurrent - 6 Token Query (p50)",
+            "value": 224.35,
+            "unit": "ms"
+          },
+          {
+            "name": "paradedb_msmarco_concurrent - 7 Token Query (p50)",
+            "value": 223.69,
+            "unit": "ms"
+          },
+          {
+            "name": "paradedb_msmarco_concurrent - 8+ Token Query (p50)",
+            "value": 233.99,
+            "unit": "ms"
+          },
+          {
+            "name": "paradedb_msmarco_concurrent - Throughput (avg ms/query)",
+            "value": 216.24,
             "unit": "ms"
           }
         ]
