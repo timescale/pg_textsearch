@@ -118,6 +118,14 @@ tp_costestimate(
 			 * any Filter above this scan, so filtered top-k queries
 			 * avoid the executor's backoff re-drives (no-op when there
 			 * is no filter).  See docs/filtered_topk_seed.md.
+			 *
+			 * NOTE: tp_store_query_limit uses a single per-backend slot
+			 * keyed only by index_oid, so multiple BM25 scans of the
+			 * SAME index in one statement (e.g. a faceted UNION ALL)
+			 * share it and may not each receive their own seed.  This
+			 * is a pre-existing limitation of the limit stash;
+			 * correctness is unaffected (executor Filter + backoff).
+			 * Tracked in #435.
 			 */
 			int seeded = tp_seed_limit_for_filter(root, path, limit);
 

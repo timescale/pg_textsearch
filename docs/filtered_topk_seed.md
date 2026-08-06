@@ -147,3 +147,12 @@ no pushdown/baseline crossover (seeded-K wins throughout).
   score. A strongly anti-correlated filter inflates the needed depth; the
   backoff still guarantees correctness, and the margin can be raised. Worth a
   spot-check but not a blocker.
+- **Multiple scans of the same index in one statement**: the seed is handed
+  from planner to executor through a single per-backend, per-`index_oid` slot
+  (`tp_current_limit`, pre-existing infrastructure). When one statement runs
+  several BM25 scans over the *same* index with differing filter selectivities
+  (e.g. a faceted `UNION ALL`, a self-join, or a CTE referenced twice), those
+  seeds share the slot, so some arms may fall back to `default_limit` or
+  over-score. Correctness is unaffected (executor Filter + backoff); only the
+  seed is applied sub-optimally. A proper fix keys the stash by scan identity —
+  tracked in #435.
