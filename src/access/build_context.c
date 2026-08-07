@@ -224,8 +224,9 @@ tp_build_context_get_sorted_terms(TpBuildContext *ctx, uint32 *num_terms)
 		return NULL;
 	}
 
-	terms = palloc(count * sizeof(TpBuildTermInfo));
-	i	  = 0;
+	terms = palloc_extended(
+			(Size)count * sizeof(TpBuildTermInfo), MCXT_ALLOC_HUGE);
+	i = 0;
 
 	hash_seq_init(&status, ctx->terms_ht);
 	while ((entry = hash_seq_search(&status)) != NULL)
@@ -328,8 +329,10 @@ tp_write_segment_from_build_ctx(TpBuildContext *ctx, Relation index)
 			&writer, &dict, offsetof(TpDictionary, string_offsets));
 
 	/* Build string offsets */
-	string_offsets = palloc0(num_terms * sizeof(uint32));
-	string_pos	   = 0;
+	string_offsets = palloc_extended(
+			(Size)num_terms * sizeof(uint32),
+			MCXT_ALLOC_HUGE | MCXT_ALLOC_ZERO);
+	string_pos = 0;
 	for (i = 0; i < num_terms; i++)
 	{
 		string_offsets[i] = string_pos;
@@ -369,11 +372,15 @@ tp_write_segment_from_build_ctx(TpBuildContext *ctx, Relation index)
 	header.postings_offset = writer.current_offset;
 
 	/* Initialize per-term tracking and skip entry accumulator */
-	term_blocks = palloc0(num_terms * sizeof(TermBlockInfo));
+	term_blocks = palloc_extended(
+			(Size)num_terms * sizeof(TermBlockInfo),
+			MCXT_ALLOC_HUGE | MCXT_ALLOC_ZERO);
 
 	skip_entries_capacity = 1024;
 	skip_entries_count	  = 0;
-	all_skip_entries = palloc(skip_entries_capacity * sizeof(TpSkipEntry));
+	all_skip_entries	  = palloc_extended(
+			 (Size)skip_entries_capacity * sizeof(TpSkipEntry),
+			 MCXT_ALLOC_HUGE);
 
 	/*
 	 * Streaming pass: for each term, read postings from EXPULL
@@ -470,9 +477,9 @@ tp_write_segment_from_build_ctx(TpBuildContext *ctx, Relation index)
 			if (skip_entries_count >= skip_entries_capacity)
 			{
 				skip_entries_capacity *= 2;
-				all_skip_entries = repalloc(
+				all_skip_entries = repalloc_huge(
 						all_skip_entries,
-						skip_entries_capacity * sizeof(TpSkipEntry));
+						(Size)skip_entries_capacity * sizeof(TpSkipEntry));
 			}
 			all_skip_entries[skip_entries_count++] = skip;
 		}
@@ -791,8 +798,10 @@ tp_write_segment_to_buffile(TpBuildContext *ctx, BufFile *file)
 	current_offset += offsetof(TpDictionary, string_offsets);
 
 	/* Build string offsets */
-	string_offsets = palloc0(num_terms * sizeof(uint32));
-	string_pos	   = 0;
+	string_offsets = palloc_extended(
+			(Size)num_terms * sizeof(uint32),
+			MCXT_ALLOC_HUGE | MCXT_ALLOC_ZERO);
+	string_pos = 0;
 	for (i = 0; i < num_terms; i++)
 	{
 		string_offsets[i] = string_pos;
@@ -835,11 +844,15 @@ tp_write_segment_to_buffile(TpBuildContext *ctx, BufFile *file)
 	header.postings_offset = current_offset;
 
 	/* Initialize per-term tracking and skip entry accumulator */
-	term_blocks = palloc0(num_terms * sizeof(TermBlockInfo));
+	term_blocks = palloc_extended(
+			(Size)num_terms * sizeof(TermBlockInfo),
+			MCXT_ALLOC_HUGE | MCXT_ALLOC_ZERO);
 
 	skip_entries_capacity = 1024;
 	skip_entries_count	  = 0;
-	all_skip_entries = palloc(skip_entries_capacity * sizeof(TpSkipEntry));
+	all_skip_entries	  = palloc_extended(
+			 (Size)skip_entries_capacity * sizeof(TpSkipEntry),
+			 MCXT_ALLOC_HUGE);
 
 	/* Streaming pass: write posting blocks */
 	for (i = 0; i < num_terms; i++)
@@ -924,9 +937,9 @@ tp_write_segment_to_buffile(TpBuildContext *ctx, BufFile *file)
 			if (skip_entries_count >= skip_entries_capacity)
 			{
 				skip_entries_capacity *= 2;
-				all_skip_entries = repalloc(
+				all_skip_entries = repalloc_huge(
 						all_skip_entries,
-						skip_entries_capacity * sizeof(TpSkipEntry));
+						(Size)skip_entries_capacity * sizeof(TpSkipEntry));
 			}
 			all_skip_entries[skip_entries_count++] = skip;
 		}
@@ -995,7 +1008,8 @@ tp_write_segment_to_buffile(TpBuildContext *ctx, BufFile *file)
 		/* Save end position */
 		BufFileTell(file, &end_fileno, &end_file_offset);
 
-		dict_entries = palloc(num_terms * sizeof(TpDictEntry));
+		dict_entries = palloc_extended(
+				(Size)num_terms * sizeof(TpDictEntry), MCXT_ALLOC_HUGE);
 		for (i = 0; i < num_terms; i++)
 		{
 			dict_entries[i].skip_index_offset =

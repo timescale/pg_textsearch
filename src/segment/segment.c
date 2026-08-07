@@ -1048,8 +1048,10 @@ tp_write_segment(
 			&writer, &dict, offsetof(TpDictionary, string_offsets));
 
 	/* Build string offsets */
-	string_offsets = palloc0(num_terms * sizeof(uint32));
-	string_pos	   = 0;
+	string_offsets = palloc_extended(
+			(Size)num_terms * sizeof(uint32),
+			MCXT_ALLOC_HUGE | MCXT_ALLOC_ZERO);
+	string_pos = 0;
 	for (i = 0; i < num_terms; i++)
 	{
 		string_offsets[i] = string_pos;
@@ -1088,11 +1090,15 @@ tp_write_segment(
 	header.postings_offset = writer.current_offset;
 
 	/* Initialize per-term tracking and skip entry accumulator */
-	term_blocks = palloc0(num_terms * sizeof(TermBlockInfo));
+	term_blocks = palloc_extended(
+			(Size)num_terms * sizeof(TermBlockInfo),
+			MCXT_ALLOC_HUGE | MCXT_ALLOC_ZERO);
 
 	skip_entries_capacity = 1024;
 	skip_entries_count	  = 0;
-	all_skip_entries = palloc(skip_entries_capacity * sizeof(TpSkipEntry));
+	all_skip_entries	  = palloc_extended(
+			 (Size)skip_entries_capacity * sizeof(TpSkipEntry),
+			 MCXT_ALLOC_HUGE);
 
 	/*
 	 * Streaming pass: for each term, convert postings and write immediately.
@@ -1836,7 +1842,8 @@ tp_dump_segment_to_output(
 				sizeof(dict_header.num_terms));
 
 		/* Read string offsets */
-		string_offsets = palloc(sizeof(uint32) * dict_header.num_terms);
+		string_offsets = palloc_extended(
+				sizeof(uint32) * (Size)dict_header.num_terms, MCXT_ALLOC_HUGE);
 		tp_segment_read(
 				reader,
 				header.dictionary_offset + sizeof(dict_header.num_terms),

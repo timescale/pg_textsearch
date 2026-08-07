@@ -198,7 +198,8 @@ merge_source_init(TpMergeSource *source, Relation index, BlockNumber root)
 			sizeof(dict_header.num_terms));
 
 	/* Cache all string offsets for this segment */
-	source->string_offsets = palloc(sizeof(uint32) * source->num_terms);
+	source->string_offsets = palloc_extended(
+			sizeof(uint32) * (Size)source->num_terms, MCXT_ALLOC_HUGE);
 	tp_segment_read(
 			source->reader,
 			header->dictionary_offset + sizeof(dict_header.num_terms),
@@ -256,7 +257,8 @@ merge_source_init_from_reader(TpMergeSource *source, TpSegmentReader *reader)
 			sizeof(dict_header.num_terms));
 
 	/* Cache all string offsets for this segment */
-	source->string_offsets = palloc(sizeof(uint32) * source->num_terms);
+	source->string_offsets = palloc_extended(
+			sizeof(uint32) * (Size)source->num_terms, MCXT_ALLOC_HUGE);
 	tp_segment_read(
 			source->reader,
 			header->dictionary_offset + sizeof(dict_header.num_terms),
@@ -1050,8 +1052,10 @@ write_merged_segment_to_sink(
 	merge_sink_write(sink, &dict, offsetof(TpDictionary, string_offsets));
 
 	/* Calculate string offsets */
-	string_offsets = palloc0(num_terms * sizeof(uint32));
-	string_pos	   = 0;
+	string_offsets = palloc_extended(
+			(Size)num_terms * sizeof(uint32),
+			MCXT_ALLOC_HUGE | MCXT_ALLOC_ZERO);
+	string_pos = 0;
 	for (i = 0; i < num_terms; i++)
 	{
 		string_offsets[i] = string_pos;
@@ -1088,11 +1092,15 @@ write_merged_segment_to_sink(
 	header.postings_offset = sink->current_offset;
 
 	/* Initialize per-term tracking and skip entry accumulator */
-	term_blocks = palloc0(num_terms * sizeof(MergeTermBlockInfo));
+	term_blocks = palloc_extended(
+			(Size)num_terms * sizeof(MergeTermBlockInfo),
+			MCXT_ALLOC_HUGE | MCXT_ALLOC_ZERO);
 
 	skip_entries_capacity = 1024;
 	skip_entries_count	  = 0;
-	all_skip_entries = palloc(skip_entries_capacity * sizeof(TpSkipEntry));
+	all_skip_entries	  = palloc_extended(
+			 (Size)skip_entries_capacity * sizeof(TpSkipEntry),
+			 MCXT_ALLOC_HUGE);
 
 	/*
 	 * Helper macro: flush a full or partial block_buf to the sink.
@@ -1364,7 +1372,8 @@ write_merged_segment_to_sink(
 	{
 		TpDictEntry *dict_entries;
 
-		dict_entries = palloc(num_terms * sizeof(TpDictEntry));
+		dict_entries = palloc_extended(
+				(Size)num_terms * sizeof(TpDictEntry), MCXT_ALLOC_HUGE);
 		for (i = 0; i < num_terms; i++)
 		{
 			dict_entries[i].skip_index_offset =
