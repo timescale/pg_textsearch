@@ -39,6 +39,27 @@ CREATE TABLE v1_reject (id int, v bm25vector);
 SELECT count(*) AS rows_after_rejection FROM v1_reject;
 
 -- ========================================================================
+-- Embedded-NUL lexeme rejection
+--
+-- Lexemes are rendered verbatim into a cstring by tpvector_out, so an
+-- embedded NUL byte would truncate the text output at that byte and
+-- drop every following entry. A NUL can never come from tokenized text
+-- or the text input parser (both operate on NUL-terminated cstrings),
+-- so such a value is only reachable via crafted binary input. It must
+-- be rejected at the boundary, not silently accepted.
+-- ========================================================================
+
+CREATE TABLE nul_reject (id int, v bm25vector);
+
+-- Should fail: entry 0 lexeme contains an embedded NUL byte.
+\set VERBOSITY terse
+\copy nul_reject FROM PROGRAM 'python3 test/scripts/gen_nul_lexeme_bm25vector.py' WITH (FORMAT binary)
+\set VERBOSITY default
+
+-- Confirm nothing was inserted.
+SELECT count(*) AS rows_after_nul_rejection FROM nul_reject;
+
+-- ========================================================================
 -- Varint encoding boundary coverage
 --
 -- The v2 per-entry header uses LEB128 varint for both `frequency`
@@ -102,5 +123,6 @@ SELECT ('compat_idx:{' || s || '}')::bm25vector::text
 
 -- Cleanup
 DROP TABLE v1_reject;
+DROP TABLE nul_reject;
 DROP TABLE compat_docs CASCADE;
 DROP EXTENSION pg_textsearch CASCADE;

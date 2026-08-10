@@ -212,6 +212,10 @@ tpvector_validate_v2(TpVector *v)
 		uint32 freq;
 		uint32 lex_len;
 
+		/* Keep validation of long streams cancellable */
+		if (i > 0 && (i % 1000) == 0)
+			CHECK_FOR_INTERRUPTS();
+
 		if (cursor >= end)
 			ereport(ERROR,
 					(errcode(ERRCODE_DATA_CORRUPTED),
@@ -227,6 +231,22 @@ tpvector_validate_v2(TpVector *v)
 					 errmsg("v2 bm25vector entry %d lexeme "
 							"extends beyond buffer",
 							i)));
+
+		/*
+		 * Lexemes are rendered verbatim into a cstring by
+		 * tpvector_out; an embedded NUL would truncate the text
+		 * output at that byte. A NUL can never come from tokenized
+		 * text or the text input parser (both NUL-terminated), so a
+		 * lexeme carrying one can only arrive via crafted binary
+		 * input. Reject it here rather than emit a malformed value.
+		 */
+		if (memchr(cursor, '\0', lex_len) != NULL)
+			ereport(ERROR,
+					(errcode(ERRCODE_DATA_CORRUPTED),
+					 errmsg("v2 bm25vector entry %d lexeme "
+							"contains an embedded NUL byte",
+							i)));
+
 		cursor += lex_len;
 	}
 }
@@ -653,11 +673,18 @@ tpvector_eq(PG_FUNCTION_ARGS)
 			bool			  found_match = false;
 			int				  j;
 
+			/* Outer scan is O(n*m); keep it cancellable */
+			if (i > 0 && (i % 1000) == 0)
+				CHECK_FOR_INTERRUPTS();
+
 			tpvector_entry_decode(e1, &v1);
 
 			for (j = 0; j < vec2->entry_count && e2; j++)
 			{
 				TpVectorEntryView v2;
+
+				if (j > 0 && (j % 1000) == 0)
+					CHECK_FOR_INTERRUPTS();
 
 				tpvector_entry_decode(e2, &v2);
 				if (v1.lexeme_len == v2.lexeme_len &&
