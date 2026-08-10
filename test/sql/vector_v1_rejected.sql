@@ -84,6 +84,22 @@ SELECT length(literal)               AS literal_bytes,
        literal::bm25vector::text = literal AS roundtrip_200char_lex
     FROM s;
 
+-- ========================================================================
+-- Large entry counts
+--
+-- entry_count is caller-controlled and bounded only by the varlena
+-- size, so tpvector_out must not consume stack per entry: a
+-- per-entry alloca() is released when the function returns, not at
+-- end of block, and grew the frame until the backend took SIGSEGV.
+-- Lexemes are zero-padded so input order matches the canonical
+-- (byte-sorted) entry order.
+-- ========================================================================
+
+SELECT ('compat_idx:{' || s || '}')::bm25vector::text
+           = 'compat_idx:{' || s || '}' AS roundtrip_1m_entries
+    FROM (SELECT string_agg('l' || lpad(g::text, 7, '0') || ':1', ',' ORDER BY g)
+              FROM generate_series(1, 1000000) g) t(s);
+
 -- Cleanup
 DROP TABLE v1_reject;
 DROP TABLE compat_docs CASCADE;

@@ -12,6 +12,7 @@
 #include <lib/stringinfo.h>
 #include <libpq/pqformat.h>
 #include <math.h>
+#include <miscadmin.h>
 #include <nodes/pg_list.h>
 #include <nodes/value.h>
 #include <stdlib.h>
@@ -525,27 +526,18 @@ tpvector_out(PG_FUNCTION_ARGS)
 	for (i = 0; i < tpvec->entry_count; i++)
 	{
 		TpVectorEntryView v;
-		char			 *lexeme;
-		bool			  use_heap;
+
+		/* Keep long outputs cancellable; entry_count is uncapped */
+		if (i > 0 && (i % 1000) == 0)
+			CHECK_FOR_INTERRUPTS();
 
 		tpvector_entry_decode(entry, &v);
 
 		if (i > 0)
 			appendStringInfoChar(&result, ',');
 
-		use_heap = v.lexeme_len >= 256;
-		if (use_heap)
-			lexeme = palloc(v.lexeme_len + 1);
-		else
-			lexeme = alloca(v.lexeme_len + 1);
-
-		memcpy(lexeme, v.lexeme, v.lexeme_len);
-		lexeme[v.lexeme_len] = '\0';
-
-		appendStringInfo(&result, "%s:%u", lexeme, v.frequency);
-
-		if (use_heap)
-			pfree(lexeme);
+		appendBinaryStringInfo(&result, v.lexeme, (int)v.lexeme_len);
+		appendStringInfo(&result, ":%u", v.frequency);
 
 		entry = get_tpvector_next_entry(entry);
 	}
