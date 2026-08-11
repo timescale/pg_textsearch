@@ -1,4 +1,4 @@
-# pg_textsearch
+![pg_textsearch](images/banner.png)
 
 [![CI](https://github.com/timescale/pg_textsearch/actions/workflows/ci.yml/badge.svg)](https://github.com/timescale/pg_textsearch/actions/workflows/ci.yml)
 [![Benchmarks](https://github.com/timescale/pg_textsearch/actions/workflows/benchmark.yml/badge.svg)](https://timescale.github.io/pg_textsearch/benchmarks/)
@@ -17,8 +17,6 @@ Modern ranked text search for Postgres.
 - Best in class performance and scalability
 
 🚀 **Status**: v1.4.0-dev - Production ready.
-
-![pg_textsearch](images/banner.png)
 
 ## Historical note
 
