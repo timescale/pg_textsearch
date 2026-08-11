@@ -6,7 +6,7 @@ permissions:
 
 env:
   # ParadeDB (competitive baseline) version for benchmarking
-  PARADEDB_VERSION: "0.21.6"
+  PARADEDB_VERSION: "0.25.2"
 
 on:
   # Nightly benchmark

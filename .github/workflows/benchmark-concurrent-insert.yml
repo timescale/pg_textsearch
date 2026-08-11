@@ -5,7 +5,7 @@ permissions:
   deployments: write
 
 env:
-  PARADEDB_VERSION: "0.21.6"
+  PARADEDB_VERSION: "0.25.2"
 
 on:
   # TODO: remove push trigger before merging
