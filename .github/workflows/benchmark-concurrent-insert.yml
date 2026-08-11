@@ -285,6 +285,7 @@ jobs:
         checkpoint_completion_target = 0.9
         wal_buffers = 16MB
         max_parallel_maintenance_workers = $NCPUS
+        shared_preload_libraries = 'pg_search'
         EOF
 
         pg_ctl start -D tmp_bench/data -l tmp_bench/postgres.log -w
