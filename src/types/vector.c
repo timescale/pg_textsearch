@@ -551,15 +551,14 @@ tpvector_out(PG_FUNCTION_ARGS)
 		if (i > 0 && (i % 1000) == 0)
 			CHECK_FOR_INTERRUPTS();
 
-		tpvector_entry_decode(entry, &v);
+		/* Decode this entry and advance in a single varint pass */
+		entry = tpvector_entry_decode_advance(entry, &v);
 
 		if (i > 0)
 			appendStringInfoChar(&result, ',');
 
 		appendBinaryStringInfo(&result, v.lexeme, (int)v.lexeme_len);
 		appendStringInfo(&result, ":%u", v.frequency);
-
-		entry = get_tpvector_next_entry(entry);
 	}
 
 	appendStringInfoChar(&result, '}');
