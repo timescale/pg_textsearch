@@ -247,8 +247,8 @@ tp_beginscan(Relation index, int nkeys, int norderbys)
 void
 tp_rescan(
 		IndexScanDesc scan,
-		ScanKey		  keys __attribute__((unused)),
-		int			  nkeys __attribute__((unused)),
+		ScanKey keys  pg_attribute_unused(),
+		int nkeys	  pg_attribute_unused(),
 		ScanKey		  orderbys,
 		int			  norderbys)
 {

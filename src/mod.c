@@ -528,7 +528,7 @@ tp_shmem_startup(void)
  * and check for bulk load auto-spill at pre-commit
  */
 static void
-tp_xact_callback(XactEvent event, void *arg __attribute__((unused)))
+tp_xact_callback(XactEvent event, void *arg pg_attribute_unused())
 {
 	switch (event)
 	{
@@ -584,7 +584,7 @@ tp_subxact_callback(
 		SubXactEvent	 event,
 		SubTransactionId mySubid,
 		SubTransactionId parentSubid,
-		void			*arg __attribute__((unused)))
+		void *arg		 pg_attribute_unused())
 {
 	switch (event)
 	{

@@ -82,7 +82,7 @@ float8 tp_get_cached_score(void);
 /*
  * Access method handler
  */
-Datum tp_handler(PG_FUNCTION_ARGS);
+PGDLLEXPORT Datum tp_handler(PG_FUNCTION_ARGS);
 
 /*
  * Build utilities (am/build.c)
