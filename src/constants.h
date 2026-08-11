@@ -82,9 +82,9 @@
 #define TP_DEFAULT_BULK_LOAD_THRESHOLD 100000 /* terms/xact trigger spill */
 
 /*
- * Selectivity-seeded top-K for filtered BM25 search (see
- * docs/filtered_topk_seed.md).  When a filter ("facet") sits above the
- * BM25 index scan, seed the pushed-down internal top-K to
+ * Selectivity-seeded top-K for filtered BM25 search.  When a filter
+ * ("facet") sits above the BM25 index scan, seed the pushed-down
+ * internal top-K to
  * ceil(margin * user_limit / filter_selectivity) so a single scoring
  * pass usually surfaces enough Filter-matching rows, avoiding the
  * executor's backoff re-drives.  The margin absorbs variance around the

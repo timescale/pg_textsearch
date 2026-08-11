@@ -69,9 +69,9 @@ int tp_segments_per_level = TP_DEFAULT_SEGMENTS_PER_LEVEL;
 bool tp_compress_segments = true;
 
 /*
- * Selectivity-seeded top-K for filtered BM25 search (see
- * docs/filtered_topk_seed.md).  tp_filtered_seed gates the optimization
- * in tp_costestimate; tp_filtered_seed_margin scales the seed
+ * Selectivity-seeded top-K for filtered BM25 search.
+ * tp_filtered_seed gates the optimization in tp_costestimate;
+ * tp_filtered_seed_margin scales the seed
  * (ceil(margin * user_limit / filter_selectivity)).
  */
 bool   tp_filtered_seed		   = true;
@@ -299,8 +299,7 @@ _PG_init(void)
 			"ceil(margin * LIMIT / selectivity) so a single scoring pass "
 			"usually surfaces enough matching rows, avoiding the executor's "
 			"backoff re-drives.  Results are identical either way; the "
-			"backoff remains the correctness safety net.  See "
-			"docs/filtered_topk_seed.md.",
+			"backoff remains the correctness safety net.",
 			&tp_filtered_seed,
 			true, /* default on */
 			PGC_USERSET,

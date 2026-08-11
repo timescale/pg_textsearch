@@ -36,8 +36,7 @@
  * ceil(margin * k / s) up front lets a single scoring pass usually
  * suffice; the existing backoff remains the correctness safety net when
  * the estimate under-shoots.  The seed only changes scan depth, never
- * which rows win, so results are identical to the un-seeded plan.  See
- * docs/filtered_topk_seed.md.
+ * which rows win, so results are identical to the un-seeded plan.
  *
  * Returns the (possibly seeded) limit: always >= user_limit and capped
  * at TP_MAX_QUERY_LIMIT.  With seeding disabled, no restriction clauses
@@ -117,7 +116,7 @@ tp_costestimate(
 			 * Seed the internal top-K from the estimated selectivity of
 			 * any Filter above this scan, so filtered top-k queries
 			 * avoid the executor's backoff re-drives (no-op when there
-			 * is no filter).  See docs/filtered_topk_seed.md.
+			 * is no filter).
 			 *
 			 * NOTE: tp_store_query_limit uses a single per-backend slot
 			 * keyed only by index_oid, so multiple BM25 scans of the

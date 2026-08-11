@@ -7,7 +7,7 @@
 -- single scoring pass usually surfaces enough matching rows, avoiding
 -- the executor's backoff re-drives.  The seed only changes scan depth,
 -- never which rows win, so results must be IDENTICAL to the un-seeded
--- plan.  See docs/filtered_topk_seed.md.
+-- plan.
 --
 -- This test asserts correctness, not latency:
 --   * parity     - seeded result == un-seeded result (same code path,
