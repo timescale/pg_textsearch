@@ -82,7 +82,7 @@ PG_CPPFLAGS += -Wno-unknown-warning-option -Wno-clobbered -Wno-packed-not-aligne
 # PG_CPPFLAGS += -DDEBUG_DUMP_INDEX
 
 # Test configuration
-REGRESS = abort aerodocs basic binary_io bmw bmw_skip_advance bulk_load cache_apply cache_memory_cap cache_source cache_spill catalog_stats chain_source compression concurrent_build coverage deletion vacuum vacuum_bitmap vacuum_extended vacuum_rebuild dropped empty explicit_index expression_index force_merge implicit index inheritance large_documents limits lock manyterms memory memtable_append memtable_page memtable_spill memtable_spill_dead memtable_reclaim merge mixed parallel_build parallel_bmw partitioned partitioned_many partial_index pgstats queries quoted_identifiers rescan schema scoring1 scoring2 scoring3 scoring4 scoring5 scoring6 security segment segment_integrity segment_reclaim strings temp_table text_array text_config unsupported updates vector vector_v1_rejected unlogged_index wand
+REGRESS = abort aerodocs basic binary_io bmw bmw_skip_advance bulk_load cache_apply cache_memory_cap cache_source cache_spill catalog_stats chain_source compression concurrent_build coverage deletion vacuum vacuum_bitmap vacuum_extended vacuum_rebuild dropped empty explicit_index expression_index filtered_seed force_merge implicit index inheritance large_documents limits lock manyterms memory memtable_append memtable_page memtable_spill memtable_spill_dead memtable_reclaim merge mixed parallel_build parallel_bmw partitioned partitioned_many partial_index pgstats queries quoted_identifiers rescan schema scoring1 scoring2 scoring3 scoring4 scoring5 scoring6 security segment segment_integrity segment_reclaim strings temp_table text_array text_config unsupported updates vector vector_v1_rejected unlogged_index wand
 REGRESS_OPTS = --inputdir=test --outputdir=test
 
 PG_CONFIG ?= pg_config
@@ -144,6 +144,14 @@ test-stress:
 test-cic:
 	@echo "Running CREATE INDEX CONCURRENTLY tests..."
 	@cd test/scripts && ./cic.sh
+
+# Chinese tokenization end-to-end test. Optional and NOT part of the
+# default REGRESS schedule: it requires the third-party zhparser extension
+# (https://github.com/amutu/zhparser) and its SCWS library. Run it
+# explicitly, e.g. from a CI job that installs zhparser first.
+test-chinese:
+	@echo "Running Chinese tokenization test (requires zhparser)..."
+	@$(pg_regress_installcheck) $(REGRESS_OPTS) chinese
 
 # Replication tests (not in test-shell: each spawns two Postgres instances)
 test-replication:
@@ -341,6 +349,7 @@ help:
 	@echo "  make test-segment     - Run multi-backend segment tests"
 	@echo "  make test-stress      - Run long-running stress tests"
 	@echo "  make test-cic         - Run CREATE INDEX CONCURRENTLY tests"
+	@echo "  make test-chinese     - Run Chinese tokenization test (needs zhparser)"
 	@echo "  make test-reindex     - Run multi-backend reindex regression tests (issue #390)"
 	@echo "  make expected     - Generate expected output files from test results"
 	@echo ""
@@ -365,4 +374,4 @@ help:
 	@echo "  make test-all"
 	@echo "  make format"
 
-.PHONY: test clean-test-dirs installcheck test-concurrency test-recovery test-segment test-stress test-cic test-replication test-replication-extended test-logical-replication test-multi-index test-reindex test-shell test-all expected lint-format format format-check format-diff format-single coverage coverage-build coverage-clean coverage-report help
+.PHONY: test clean-test-dirs installcheck test-concurrency test-recovery test-segment test-stress test-cic test-chinese test-replication test-replication-extended test-logical-replication test-multi-index test-reindex test-shell test-all expected lint-format format format-check format-diff format-single coverage coverage-build coverage-clean coverage-report help

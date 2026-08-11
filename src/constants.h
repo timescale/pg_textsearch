@@ -82,6 +82,19 @@
 #define TP_DEFAULT_BULK_LOAD_THRESHOLD 100000 /* terms/xact trigger spill */
 
 /*
+ * Selectivity-seeded top-K for filtered BM25 search.  When a filter
+ * ("facet") sits above the BM25 index scan, seed the pushed-down
+ * internal top-K to
+ * ceil(margin * user_limit / filter_selectivity) so a single scoring
+ * pass usually surfaces enough Filter-matching rows, avoiding the
+ * executor's backoff re-drives.  The margin absorbs variance around the
+ * expected rank; the existing backoff remains the correctness net.
+ */
+#define TP_DEFAULT_FILTERED_SEED_MARGIN 3.0
+#define TP_MIN_FILTERED_SEED_MARGIN		1.0
+#define TP_MAX_FILTERED_SEED_MARGIN		1000.0
+
+/*
  * Default for pg_textsearch.memtable_pages_threshold (on-disk
  * memtable auto-spill trigger).  64 chain pages * 8 KiB = ~512
  * KiB of memtable per index before the next insert spills to an
@@ -176,7 +189,9 @@
  * Note: tp_relopt_kind is declared in index.c as it requires
  * access/reloptions.h
  */
-extern bool tp_log_scores;
-extern int	tp_bulk_load_threshold;
-extern int	tp_memtable_pages_threshold;
-extern int	tp_segments_per_level;
+extern bool	  tp_log_scores;
+extern int	  tp_bulk_load_threshold;
+extern int	  tp_memtable_pages_threshold;
+extern int	  tp_segments_per_level;
+extern bool	  tp_filtered_seed;
+extern double tp_filtered_seed_margin;
