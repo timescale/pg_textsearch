@@ -570,6 +570,9 @@ jobs:
         sudo apt-get update
         sudo apt-get install -y postgresql-17 postgresql-server-dev-17
 
+        # pg_search (>= 0.24) requires the vector (pgvector) extension
+        sudo apt-get install -y postgresql-17-pgvector
+
         # Install ParadeDB extension from GitHub releases
         # ubuntu-latest is Ubuntu 24.04 (Noble)
         wget -q "https://github.com/paradedb/paradedb/releases/download/v${PARADEDB_VERSION}/postgresql-17-pg-search_${PARADEDB_VERSION}-1PARADEDB-noble_amd64.deb"
@@ -608,7 +611,7 @@ jobs:
         fi
         export PGHOST="$PWD/tmp_bench/socket"
         createdb bench_test
-        psql -d bench_test -c "CREATE EXTENSION pg_search"
+        psql -d bench_test -c "CREATE EXTENSION pg_search CASCADE"
         echo "PGHOST=$PWD/tmp_bench/socket" >> $GITHUB_ENV
 
     - name: Determine datasets to run

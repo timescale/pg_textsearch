@@ -260,6 +260,9 @@ jobs:
         sudo apt-get update
         sudo apt-get install -y postgresql-17 postgresql-server-dev-17
 
+        # pg_search (>= 0.24) requires the vector (pgvector) extension
+        sudo apt-get install -y postgresql-17-pgvector
+
         # Install ParadeDB
         wget -q "https://github.com/paradedb/paradedb/releases/download/v${PARADEDB_VERSION}/postgresql-17-pg-search_${PARADEDB_VERSION}-1PARADEDB-noble_amd64.deb"
         sudo apt-get install -y "./postgresql-17-pg-search_${PARADEDB_VERSION}-1PARADEDB-noble_amd64.deb"
@@ -287,7 +290,7 @@ jobs:
         pg_ctl start -D tmp_bench/data -l tmp_bench/postgres.log -w
         export PGHOST="$PWD/tmp_bench/socket"
         createdb bench_test
-        psql -d bench_test -c "CREATE EXTENSION pg_search"
+        psql -d bench_test -c "CREATE EXTENSION pg_search CASCADE"
         echo "PGHOST=$PWD/tmp_bench/socket" >> $GITHUB_ENV
 
     - name: Download MS MARCO dataset
