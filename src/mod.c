@@ -31,7 +31,7 @@
 #include "scoring/bm25.h"
 
 #if PG_VERSION_NUM >= 180000
-PG_MODULE_MAGIC_EXT(.name = "pg_textsearch", .version = "1.3.1");
+PG_MODULE_MAGIC_EXT(.name = "pg_textsearch", .version = "1.4.0-dev");
 #else
 PG_MODULE_MAGIC;
 #endif
@@ -67,6 +67,15 @@ int tp_segments_per_level = TP_DEFAULT_SEGMENTS_PER_LEVEL;
  * compression improves both size and query performance)
  */
 bool tp_compress_segments = true;
+
+/*
+ * Selectivity-seeded top-K for filtered BM25 search.
+ * tp_filtered_seed gates the optimization in tp_costestimate;
+ * tp_filtered_seed_margin scales the seed
+ * (ceil(margin * user_limit / filter_selectivity)).
+ */
+bool   tp_filtered_seed		   = true;
+double tp_filtered_seed_margin = TP_DEFAULT_FILTERED_SEED_MARGIN;
 
 /*
  * Memtable shared-memory cache enable flag.  Gates the read-path
@@ -277,6 +286,40 @@ _PG_init(void)
 			&tp_compress_segments,
 			true,		 /* default on - benchmarks show net benefit */
 			PGC_USERSET, /* Can be changed per session */
+			0,
+			NULL,
+			NULL,
+			NULL);
+
+	DefineCustomBoolVariable(
+			"pg_textsearch.filtered_seed",
+			"Seed the BM25 top-K from estimated filter selectivity.",
+			"When a filter (e.g. a facet WHERE clause) sits above a BM25 "
+			"top-k index scan, seed the scan's internal top-K to "
+			"ceil(margin * LIMIT / selectivity) so a single scoring pass "
+			"usually surfaces enough matching rows, avoiding the executor's "
+			"backoff re-drives.  Results are identical either way; the "
+			"backoff remains the correctness safety net.",
+			&tp_filtered_seed,
+			true, /* default on */
+			PGC_USERSET,
+			0,
+			NULL,
+			NULL,
+			NULL);
+
+	DefineCustomRealVariable(
+			"pg_textsearch.filtered_seed_margin",
+			"Margin applied when seeding the BM25 top-K from selectivity.",
+			"Seed = ceil(margin * LIMIT / selectivity).  A higher margin "
+			"captures the true top-k matching rows in one scoring pass more "
+			"often, at the cost of scoring deeper.  Only used when "
+			"pg_textsearch.filtered_seed is on.",
+			&tp_filtered_seed_margin,
+			TP_DEFAULT_FILTERED_SEED_MARGIN, /* default 3.0 */
+			TP_MIN_FILTERED_SEED_MARGIN,	 /* min 1.0 */
+			TP_MAX_FILTERED_SEED_MARGIN,	 /* max 1000.0 */
+			PGC_USERSET,
 			0,
 			NULL,
 			NULL,

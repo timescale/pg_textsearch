@@ -39,6 +39,27 @@ CREATE TABLE v1_reject (id int, v bm25vector);
 SELECT count(*) AS rows_after_rejection FROM v1_reject;
 
 -- ========================================================================
+-- Embedded-NUL lexeme rejection
+--
+-- Lexemes are rendered verbatim into a cstring by tpvector_out, so an
+-- embedded NUL byte would truncate the text output at that byte and
+-- drop every following entry. A NUL can never come from tokenized text
+-- or the text input parser (both operate on NUL-terminated cstrings),
+-- so such a value is only reachable via crafted binary input. It must
+-- be rejected at the boundary, not silently accepted.
+-- ========================================================================
+
+CREATE TABLE nul_reject (id int, v bm25vector);
+
+-- Should fail: entry 0 lexeme contains an embedded NUL byte.
+\set VERBOSITY terse
+\copy nul_reject FROM PROGRAM 'python3 test/scripts/gen_nul_lexeme_bm25vector.py' WITH (FORMAT binary)
+\set VERBOSITY default
+
+-- Confirm nothing was inserted.
+SELECT count(*) AS rows_after_nul_rejection FROM nul_reject;
+
+-- ========================================================================
 -- Varint encoding boundary coverage
 --
 -- The v2 per-entry header uses LEB128 varint for both `frequency`
@@ -84,7 +105,24 @@ SELECT length(literal)               AS literal_bytes,
        literal::bm25vector::text = literal AS roundtrip_200char_lex
     FROM s;
 
+-- ========================================================================
+-- Large entry counts
+--
+-- entry_count is caller-controlled and bounded only by the varlena
+-- size, so tpvector_out must not consume stack per entry: a
+-- per-entry alloca() is released when the function returns, not at
+-- end of block, and grew the frame until the backend took SIGSEGV.
+-- Lexemes are zero-padded so input order matches the canonical
+-- (byte-sorted) entry order.
+-- ========================================================================
+
+SELECT ('compat_idx:{' || s || '}')::bm25vector::text
+           = 'compat_idx:{' || s || '}' AS roundtrip_1m_entries
+    FROM (SELECT string_agg('l' || lpad(g::text, 7, '0') || ':1', ',' ORDER BY g)
+              FROM generate_series(1, 1000000) g) t(s);
+
 -- Cleanup
 DROP TABLE v1_reject;
+DROP TABLE nul_reject;
 DROP TABLE compat_docs CASCADE;
 DROP EXTENSION pg_textsearch CASCADE;

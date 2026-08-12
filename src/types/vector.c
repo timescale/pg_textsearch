@@ -12,6 +12,7 @@
 #include <lib/stringinfo.h>
 #include <libpq/pqformat.h>
 #include <math.h>
+#include <miscadmin.h>
 #include <nodes/pg_list.h>
 #include <nodes/value.h>
 #include <stdlib.h>
@@ -211,6 +212,10 @@ tpvector_validate_v2(TpVector *v)
 		uint32 freq;
 		uint32 lex_len;
 
+		/* Keep validation of long streams cancellable */
+		if (i > 0 && (i % 1000) == 0)
+			CHECK_FOR_INTERRUPTS();
+
 		if (cursor >= end)
 			ereport(ERROR,
 					(errcode(ERRCODE_DATA_CORRUPTED),
@@ -226,6 +231,22 @@ tpvector_validate_v2(TpVector *v)
 					 errmsg("v2 bm25vector entry %d lexeme "
 							"extends beyond buffer",
 							i)));
+
+		/*
+		 * Lexemes are rendered verbatim into a cstring by
+		 * tpvector_out; an embedded NUL would truncate the text
+		 * output at that byte. A NUL can never come from tokenized
+		 * text or the text input parser (both NUL-terminated), so a
+		 * lexeme carrying one can only arrive via crafted binary
+		 * input. Reject it here rather than emit a malformed value.
+		 */
+		if (memchr(cursor, '\0', lex_len) != NULL)
+			ereport(ERROR,
+					(errcode(ERRCODE_DATA_CORRUPTED),
+					 errmsg("v2 bm25vector entry %d lexeme "
+							"contains an embedded NUL byte",
+							i)));
+
 		cursor += lex_len;
 	}
 }
@@ -525,29 +546,19 @@ tpvector_out(PG_FUNCTION_ARGS)
 	for (i = 0; i < tpvec->entry_count; i++)
 	{
 		TpVectorEntryView v;
-		char			 *lexeme;
-		bool			  use_heap;
 
-		tpvector_entry_decode(entry, &v);
+		/* Keep long outputs cancellable; entry_count is uncapped */
+		if (i > 0 && (i % 1000) == 0)
+			CHECK_FOR_INTERRUPTS();
+
+		/* Decode this entry and advance in a single varint pass */
+		entry = tpvector_entry_decode_advance(entry, &v);
 
 		if (i > 0)
 			appendStringInfoChar(&result, ',');
 
-		use_heap = v.lexeme_len >= 256;
-		if (use_heap)
-			lexeme = palloc(v.lexeme_len + 1);
-		else
-			lexeme = alloca(v.lexeme_len + 1);
-
-		memcpy(lexeme, v.lexeme, v.lexeme_len);
-		lexeme[v.lexeme_len] = '\0';
-
-		appendStringInfo(&result, "%s:%u", lexeme, v.frequency);
-
-		if (use_heap)
-			pfree(lexeme);
-
-		entry = get_tpvector_next_entry(entry);
+		appendBinaryStringInfo(&result, v.lexeme, (int)v.lexeme_len);
+		appendStringInfo(&result, ":%u", v.frequency);
 	}
 
 	appendStringInfoChar(&result, '}');
@@ -661,11 +672,18 @@ tpvector_eq(PG_FUNCTION_ARGS)
 			bool			  found_match = false;
 			int				  j;
 
+			/* Outer scan is O(n*m); keep it cancellable */
+			if (i > 0 && (i % 1000) == 0)
+				CHECK_FOR_INTERRUPTS();
+
 			tpvector_entry_decode(e1, &v1);
 
 			for (j = 0; j < vec2->entry_count && e2; j++)
 			{
 				TpVectorEntryView v2;
+
+				if (j > 0 && (j % 1000) == 0)
+					CHECK_FOR_INTERRUPTS();
 
 				tpvector_entry_decode(e2, &v2);
 				if (v1.lexeme_len == v2.lexeme_len &&

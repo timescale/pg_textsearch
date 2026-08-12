@@ -63,8 +63,8 @@ check_tapir_version() {
     local ver
     ver=$(psql -t -c "SELECT default_version FROM pg_available_extensions WHERE name = 'pg_textsearch';" 2>/dev/null | tr -d ' ')
     echo "pg_textsearch version: $ver"
-    if [ "$ver" != "1.3.1" ]; then
-        echo "WARNING: Expected 1.3.1, got '$ver'"
+    if [ "$ver" != "1.4.0-dev" ]; then
+        echo "WARNING: Expected 1.4.0-dev, got '$ver'"
     fi
 }
 
