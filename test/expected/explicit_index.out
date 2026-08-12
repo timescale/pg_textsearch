@@ -95,7 +95,7 @@ LIMIT 10;
 -- Positive test: without explicit index, implicit resolution works
 -- (uses first found index, with a warning about multiple indexes)
 EXPLAIN (COSTS OFF)
-SELECT id, content <@> 'ressources' AS score
+SELECT content <@> 'ressources' AS score
 FROM multi_index_test
 WHERE category_id = 1
 ORDER BY score
@@ -112,24 +112,22 @@ HINT:  If this is not desired, use a planner hint to force a specific index, or 
          Filter: (category_id = 1)
 (4 rows)
 
--- All rows contain the same text, so BM25 scores tie and the ids returned
--- by the index scan are not deterministic. Count the index-ordered rows
--- instead of printing them; the subquery keeps the BM25 index scan (proved
--- by the EXPLAIN above) on the query path. Warnings are silenced here
--- because the EXPLAIN above already asserts both of them.
+-- All matching rows contain the same text, so the score is deterministic
+-- even though the tied tuple ids are not. Re-run the exact statement with
+-- warnings silenced and assert the repeated BM25 score values.
 SET client_min_messages = error;
-SELECT count(*) AS rows_returned FROM (
-    SELECT id
-    FROM multi_index_test
-    WHERE category_id = 1
-    ORDER BY content <@> 'ressources'
-    LIMIT 3
-) sub;
- rows_returned 
----------------
-             3
-(1 row)
-
+\pset format unaligned
+SELECT content <@> 'ressources' AS score
+FROM multi_index_test
+WHERE category_id = 1
+ORDER BY score
+LIMIT 3;
+score
+-0.0004996252828277647
+-0.0004996252828277647
+-0.0004996252828277647
+(3 rows)
+\pset format aligned
 RESET client_min_messages;
 -- Positive test: explicit index matching the scanned index works
 -- Drop the simple index so french is the only choice
