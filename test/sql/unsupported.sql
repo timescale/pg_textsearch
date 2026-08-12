@@ -71,6 +71,7 @@ SELECT COALESCE(
 \gset
 
 \if :force_unsupported_seqscan
+\echo 'Test-only: forcing seqscan for implicit multi-index block'
 SET enable_indexscan = off;
 SET enable_bitmapscan = off;
 \endif
