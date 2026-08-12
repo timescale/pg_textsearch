@@ -71,8 +71,17 @@ NOTICE:  BM25 index build started for relation docs_bm25_simple_idx
 NOTICE:  Using text search configuration: simple
 NOTICE:  Using index options: k1=1.20, b=0.75
 NOTICE:  BM25 index build completed: 3 documents, avg_length=3.33
--- Implicit resolution picks first index found
--- Note: Score projection requires explicit index, so just use ORDER BY
+SELECT COALESCE(
+           current_setting('pg_textsearch_test.force_unsupported_seqscan', true),
+           'off'
+       ) AS force_unsupported_seqscan
+\gset
+\if :force_unsupported_seqscan
+SET enable_indexscan = off;
+SET enable_bitmapscan = off;
+\endif
+-- Implicit resolution picks first index found.
+-- The test-only seqscan switch applies only here.
 EXPLAIN (COSTS OFF)
 SELECT id
 FROM docs
@@ -89,6 +98,10 @@ HINT:  If this is not desired, use a planner hint to force a specific index, or 
          Order By: (content <@> 'docs_bm25_idx:database'::bm25query)
 (3 rows)
 
+\if :force_unsupported_seqscan
+RESET enable_indexscan;
+RESET enable_bitmapscan;
+\endif
 -- Explicit index selection gives user control
 EXPLAIN (COSTS OFF)
 SELECT id, content <@> to_bm25query('database', 'docs_bm25_simple_idx') as score
@@ -117,14 +130,13 @@ FROM docs;
 (1 row)
 
 -- =============================================================================
--- LIMITATION 4: text <@> text operator doesn't use index scans
--- The planner hook transforms text <@> text to text <@> bm25query, but the
--- transformed expression doesn't match for index ordered scans.
--- Workaround: Use to_bm25query() function (with or without index name).
+-- LIMITATION 4: text <@> text operator still uses the implicit index choice
+-- The planner hook transforms text <@> text to text <@> bm25query, so this
+-- block remains an index-scan control case alongside to_bm25query().
 -- =============================================================================
 \echo 'Test: text <@> text operator vs to_bm25query()'
 Test: text <@> text operator vs to_bm25query()
--- text <@> text: planner transforms but doesn't use index scan
+-- text <@> text: planner transforms and still uses an index scan
 EXPLAIN (COSTS OFF)
 SELECT id, content <@> 'database' as score
 FROM docs
