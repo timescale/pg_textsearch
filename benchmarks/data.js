@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1786520425803,
+  "lastUpdate": 1786520429528,
   "repoUrl": "https://github.com/timescale/pg_textsearch",
   "entries": {
     "cranfield Benchmarks": [
@@ -88606,6 +88606,43 @@ window.BENCHMARK_DATA = {
           {
             "name": "wikipedia_gin_insert - Insert Time",
             "value": 24642.791,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia_gin_insert - Index Size",
+            "value": 41.88,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tjgreen@gmail.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "68baccdf82bd3fb3dbee596bbe8ba0400d081d45",
+          "message": "docs: lead the README with the banner image (#424)\n\nReplaces the top-level `# pg_textsearch` heading with the banner image\nso the README opens with the banner, and removes the now-duplicate\nbanner that previously sat below the status line.\n\nDocs-only change; no functional impact.",
+          "timestamp": "2026-08-11T22:54:02Z",
+          "url": "https://github.com/timescale/pg_textsearch/commit/68baccdf82bd3fb3dbee596bbe8ba0400d081d45"
+        },
+        "date": 1786520428664,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "wikipedia_gin_insert - Index Build Time",
+            "value": 0.395,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia_gin_insert - Insert Time",
+            "value": 23311.249,
             "unit": "ms"
           },
           {
