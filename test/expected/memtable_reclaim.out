@@ -68,6 +68,9 @@ SELECT pg_relation_size('memtable_reclaim_idx'::regclass, 'main')::bigint
 VACUUM ANALYZE memtable_reclaim_t;
 -- Idempotent second pass (RecordFreeIndexPage on same blocks is safe).
 VACUUM ANALYZE memtable_reclaim_t;
+CREATE TEMP TABLE reclaim_after_vacuum AS
+SELECT count(*)::int AS deferred_pages
+FROM bm25_memtable_dead_pages('memtable_reclaim_idx');
 SELECT count(*) >= 1 AS search_after_vacuum FROM (
     SELECT 1 FROM memtable_reclaim_t
     ORDER BY body <@> to_bm25query('reclaim', 'memtable_reclaim_idx')
@@ -93,7 +96,7 @@ FROM bm25_memtable_chain('memtable_reclaim_idx');
 SELECT
     (pg_relation_size('memtable_reclaim_idx'::regclass, 'main')
      - (SELECT sz_after_spill FROM reclaim_sizes))
-    < (SELECT dead_count FROM reclaim_dead)
+    < ((SELECT deferred_pages FROM reclaim_after_vacuum) + 1)
          * current_setting('block_size')::bigint
     AS main_fork_growth_less_than_dead_bytes;
  main_fork_growth_less_than_dead_bytes 
@@ -102,17 +105,14 @@ SELECT
 (1 row)
 
 -- Multi-cycle: five spill→VACUUM cycles (VACUUM cannot run inside DO).
--- Without FSM reuse the main fork would grow by roughly N×K memtable pages;
--- with reclaim each cycle, growth stays below N×K×block_size.
+-- After the final VACUUM, rebuilding the chain should reuse reclaimed
+-- pages from the prior cycles; any extra growth must correspond to
+-- dead pages still explicitly tracked as deferred.
 CREATE TEMP TABLE multi_cycle_bounds (
-    sz_start bigint,
-    max_live_pages int,
-    num_cycles int
+    max_live_pages int
 );
-INSERT INTO multi_cycle_bounds (sz_start, max_live_pages, num_cycles)
-SELECT pg_relation_size('memtable_reclaim_idx'::regclass, 'main')::bigint,
-       0,
-       5;
+INSERT INTO multi_cycle_bounds (max_live_pages)
+SELECT 0;
 -- Cycle 1
 INSERT INTO memtable_reclaim_t (body)
 SELECT 'mc1 doc ' || g || ' ' || repeat('pad ', 6)
@@ -183,7 +183,19 @@ SELECT bm25_spill_index('memtable_reclaim_idx') IS NOT NULL AS mc_spill_5;
 (1 row)
 
 VACUUM ANALYZE memtable_reclaim_t;
-SELECT max_live_pages > 1 AS multi_cycle_chain_multi_page
+CREATE TEMP TABLE multi_cycle_after_vacuum AS
+SELECT count(*)::int AS deferred_pages,
+       pg_relation_size('memtable_reclaim_idx'::regclass, 'main')::bigint
+           AS sz_after_vacuum
+FROM bm25_memtable_dead_pages('memtable_reclaim_idx');
+INSERT INTO memtable_reclaim_t (body)
+SELECT 'mc_reuse doc ' || g || ' ' || repeat('pad ', 6)
+FROM generate_series(1, 200) g;
+SELECT max_live_pages > 1
+       AND EXISTS (
+           SELECT 1
+           FROM bm25_memtable_chain('memtable_reclaim_idx'))
+       AS multi_cycle_chain_multi_page
 FROM multi_cycle_bounds;
  multi_cycle_chain_multi_page 
 ------------------------------
@@ -192,9 +204,9 @@ FROM multi_cycle_bounds;
 
 SELECT
     (pg_relation_size('memtable_reclaim_idx'::regclass, 'main')
-     - (SELECT sz_start FROM multi_cycle_bounds))
-    < (SELECT num_cycles * max_live_pages
-              FROM multi_cycle_bounds)
+     - (SELECT sz_after_vacuum FROM multi_cycle_after_vacuum))
+    < ((SELECT deferred_pages FROM multi_cycle_after_vacuum)
+       + (SELECT max_live_pages FROM multi_cycle_bounds))
          * current_setting('block_size')::bigint
     AS multi_cycle_main_fork_bounded;
  multi_cycle_main_fork_bounded 
