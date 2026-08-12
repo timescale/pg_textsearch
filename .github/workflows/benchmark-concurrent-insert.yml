@@ -5,7 +5,7 @@ permissions:
   deployments: write
 
 env:
-  PARADEDB_VERSION: "0.21.6"
+  PARADEDB_VERSION: "0.25.2"
 
 on:
   # TODO: remove push trigger before merging
@@ -260,9 +260,12 @@ jobs:
         sudo apt-get update
         sudo apt-get install -y postgresql-17 postgresql-server-dev-17
 
+        # pg_search (>= 0.24) requires the vector (pgvector) extension
+        sudo apt-get install -y postgresql-17-pgvector
+
         # Install ParadeDB
         wget -q "https://github.com/paradedb/paradedb/releases/download/v${PARADEDB_VERSION}/postgresql-17-pg-search_${PARADEDB_VERSION}-1PARADEDB-noble_amd64.deb"
-        sudo dpkg -i "postgresql-17-pg-search_${PARADEDB_VERSION}-1PARADEDB-noble_amd64.deb"
+        sudo apt-get install -y "./postgresql-17-pg-search_${PARADEDB_VERSION}-1PARADEDB-noble_amd64.deb"
 
     - name: Configure and start PostgreSQL
       run: |
@@ -282,12 +285,13 @@ jobs:
         checkpoint_completion_target = 0.9
         wal_buffers = 16MB
         max_parallel_maintenance_workers = $NCPUS
+        shared_preload_libraries = 'pg_search'
         EOF
 
         pg_ctl start -D tmp_bench/data -l tmp_bench/postgres.log -w
         export PGHOST="$PWD/tmp_bench/socket"
         createdb bench_test
-        psql -d bench_test -c "CREATE EXTENSION pg_search"
+        psql -d bench_test -c "CREATE EXTENSION pg_search CASCADE"
         echo "PGHOST=$PWD/tmp_bench/socket" >> $GITHUB_ENV
 
     - name: Download MS MARCO dataset
