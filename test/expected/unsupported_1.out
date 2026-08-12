@@ -79,6 +79,7 @@ SELECT COALESCE(
 \if :force_unsupported_seqscan
 \echo 'Test-only: forcing seqscan for implicit multi-index block'
 Test-only: forcing seqscan for implicit multi-index block
+SET enable_seqscan = on;
 SET enable_indexscan = off;
 SET enable_bitmapscan = off;
 \endif
@@ -97,10 +98,10 @@ HINT:  Use explicit to_bm25query('query', 'index_name') to specify which index t
    ->  Sort
          Sort Key: ((content <@> 'docs_bm25_idx:database'::bm25query))
          ->  Seq Scan on docs
-               Disabled: true
-(5 rows)
+(4 rows)
 
 \if :force_unsupported_seqscan
+SET enable_seqscan = off;
 RESET enable_indexscan;
 RESET enable_bitmapscan;
 \endif

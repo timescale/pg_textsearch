@@ -72,6 +72,7 @@ SELECT COALESCE(
 
 \if :force_unsupported_seqscan
 \echo 'Test-only: forcing seqscan for implicit multi-index block'
+SET enable_seqscan = on;
 SET enable_indexscan = off;
 SET enable_bitmapscan = off;
 \endif
@@ -85,6 +86,7 @@ ORDER BY content <@> 'database'
 LIMIT 3;
 
 \if :force_unsupported_seqscan
+SET enable_seqscan = off;
 RESET enable_indexscan;
 RESET enable_bitmapscan;
 \endif
