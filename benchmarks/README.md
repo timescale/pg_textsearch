@@ -64,7 +64,7 @@ The main runner script is `runner/run_benchmark.sh`:
 ### Prerequisites
 
 1. PostgreSQL with pg_textsearch installed
-2. For Wikipedia: `pip install wikiextractor`
+2. For Wikipedia: `pip install 'wikiextractor==3.0.6'`
 3. For best results, use a release build of Postgres (port 5433)
 
 ### Download Data

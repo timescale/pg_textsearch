@@ -47,7 +47,7 @@ else
 fi
 
 # Build the output array using jq
-jq --arg dataset "$DATASET_LABEL" '[
+RESULT=$(jq --arg dataset "$DATASET_LABEL" '[
     # Index build time
     (if .metrics.index_build_time_ms != null then
         {
@@ -248,7 +248,18 @@ jq --arg dataset "$DATASET_LABEL" '[
             value: .metrics.vacuum.update_query_avg_ms
         }
     else empty end)
-]' "$INPUT_FILE" > "$OUTPUT_FILE"
+]' "$INPUT_FILE")
 
-echo "Converted $INPUT_FILE to github-action-benchmark format:"
-cat "$OUTPUT_FILE"
+# github-action-benchmark errors out on an empty array ("Benchmark output
+# was '[]'"). When no metrics were parsed -- e.g. an upstream benchmark
+# step was skipped or produced no output -- do not write an output file at
+# all. The publish steps gate on hashFiles('..._action.json') != '', so a
+# missing file is skipped cleanly instead of failing the job.
+if [ "$(printf '%s' "$RESULT" | jq 'length')" -gt 0 ]; then
+    printf '%s\n' "$RESULT" > "$OUTPUT_FILE"
+    echo "Converted $INPUT_FILE to github-action-benchmark format:"
+    cat "$OUTPUT_FILE"
+else
+    echo "No metrics parsed from $INPUT_FILE; not writing $OUTPUT_FILE (nothing to publish)"
+    rm -f "$OUTPUT_FILE"
+fi

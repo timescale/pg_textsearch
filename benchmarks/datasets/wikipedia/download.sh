@@ -65,12 +65,14 @@ if [ "$SUBSET_SIZE" = "full" ]; then
     fi
 
     echo "Processing Wikipedia XML dump..."
-    echo "This requires WikiExtractor: python3.10 -m pip install wikiextractor"
+    echo "This requires WikiExtractor: python3.10 -m pip install 'wikiextractor==3.0.6'"
 
-    if ! "$PYTHON_BIN" -c "import wikiextractor" &> /dev/null; then
-        echo "Installing wikiextractor..."
-        "$PYTHON_BIN" -m pip install wikiextractor
-    fi
+    # Always (re)install the pinned version. An importability check would
+    # skip the pin on a persistent/self-hosted env that already has a
+    # different (e.g. drift-inducing 3.0.8+) wikiextractor; pip with an
+    # exact pin is idempotent when satisfied and downgrades otherwise.
+    echo "Installing wikiextractor==3.0.6..."
+    "$PYTHON_BIN" -m pip install 'wikiextractor==3.0.6'
 
     # Extract to JSON format
     if [ ! -d "extracted" ]; then
@@ -148,6 +150,13 @@ else
     # makes the ground truth go stale every time Wikimedia publishes
     # a new dump. When bumping SIMPLE_WIKI_DUMP_DATE, regenerate the
     # ground truth with precompute_ground_truth.sql in the same PR.
+    #
+    # For the same reason, wikiextractor is pinned to 3.0.6 everywhere
+    # it is installed (here and in .github/workflows/benchmark.yml):
+    # 3.0.8 (released 2026-07-23) changed extraction output, which
+    # shifts doc_ids and BM25 scores and broke the committed
+    # ground_truth.tsv. Bumping the wikiextractor pin likewise requires
+    # regenerating the ground truth in the same PR.
     SIMPLE_WIKI_DUMP_DATE="${SIMPLE_WIKI_DUMP_DATE:-20260501}"
     DUMP_FILE="simplewiki-${SIMPLE_WIKI_DUMP_DATE}-pages-articles.xml.bz2"
     DUMP_URL="https://dumps.wikimedia.org/simplewiki/${SIMPLE_WIKI_DUMP_DATE}/${DUMP_FILE}"
@@ -157,10 +166,11 @@ else
         wget -q --show-progress -O "$DUMP_FILE" "$DUMP_URL"
     fi
 
-    if ! "$PYTHON_BIN" -c "import wikiextractor" &> /dev/null; then
-        echo "Installing wikiextractor..."
-        "$PYTHON_BIN" -m pip install wikiextractor
-    fi
+    # Always (re)install the pinned version (see note above); do not gate
+    # on importability, which would skip the pin when a different version
+    # is already present.
+    echo "Installing wikiextractor==3.0.6..."
+    "$PYTHON_BIN" -m pip install 'wikiextractor==3.0.6'
 
     if [ ! -d "simple_extracted" ]; then
         echo "Extracting Simple Wikipedia..."
