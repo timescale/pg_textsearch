@@ -561,7 +561,7 @@ jobs:
       run: |
         sudo apt-get update
         sudo apt-get install -y wget ca-certificates build-essential bc
-        pip install wikiextractor
+        pip install 'wikiextractor==3.0.6'
 
         # Install PostgreSQL 17
         wget --quiet -O - https://www.postgresql.org/media/keys/ACCC4CF8.asc | sudo apt-key add -
@@ -1091,7 +1091,9 @@ jobs:
         echo "After cleanup:"
         df -h /
 
-    # wikiextractor requires Python 3.10 (unmaintained, breaks on newer versions)
+    # wikiextractor requires Python 3.10 (unmaintained, breaks on newer versions).
+    # Pinned to 3.0.6: 3.0.8+ changes extraction output and breaks the committed
+    # Wikipedia ground_truth.tsv (see benchmarks/datasets/wikipedia/download.sh).
     - name: Set up Python 3.10
       uses: actions/setup-python@v5
       with:
@@ -1101,7 +1103,7 @@ jobs:
       run: |
         sudo apt-get update
         sudo apt-get install -y wget ca-certificates build-essential bc
-        pip install wikiextractor
+        pip install 'wikiextractor==3.0.6'
 
         # PostgreSQL
         wget --quiet -O - https://www.postgresql.org/media/keys/ACCC4CF8.asc | \
@@ -1681,7 +1683,7 @@ jobs:
       run: |
         sudo apt-get update
         sudo apt-get install -y wget ca-certificates build-essential bc gdb
-        pip install wikiextractor
+        pip install 'wikiextractor==3.0.6'
 
         # PostgreSQL
         wget --quiet -O - https://www.postgresql.org/media/keys/ACCC4CF8.asc | \
@@ -2353,7 +2355,7 @@ jobs:
       run: |
         sudo apt-get update
         sudo apt-get install -y wget ca-certificates build-essential bc
-        pip install wikiextractor
+        pip install 'wikiextractor==3.0.6'
 
         # PostgreSQL
         wget --quiet -O - https://www.postgresql.org/media/keys/ACCC4CF8.asc | \
