@@ -67,10 +67,12 @@ if [ "$SUBSET_SIZE" = "full" ]; then
     echo "Processing Wikipedia XML dump..."
     echo "This requires WikiExtractor: python3.10 -m pip install 'wikiextractor==3.0.6'"
 
-    if ! "$PYTHON_BIN" -c "import wikiextractor" &> /dev/null; then
-        echo "Installing wikiextractor..."
-        "$PYTHON_BIN" -m pip install 'wikiextractor==3.0.6'
-    fi
+    # Always (re)install the pinned version. An importability check would
+    # skip the pin on a persistent/self-hosted env that already has a
+    # different (e.g. drift-inducing 3.0.8+) wikiextractor; pip with an
+    # exact pin is idempotent when satisfied and downgrades otherwise.
+    echo "Installing wikiextractor==3.0.6..."
+    "$PYTHON_BIN" -m pip install 'wikiextractor==3.0.6'
 
     # Extract to JSON format
     if [ ! -d "extracted" ]; then
@@ -164,10 +166,11 @@ else
         wget -q --show-progress -O "$DUMP_FILE" "$DUMP_URL"
     fi
 
-    if ! "$PYTHON_BIN" -c "import wikiextractor" &> /dev/null; then
-        echo "Installing wikiextractor..."
-        "$PYTHON_BIN" -m pip install 'wikiextractor==3.0.6'
-    fi
+    # Always (re)install the pinned version (see note above); do not gate
+    # on importability, which would skip the pin when a different version
+    # is already present.
+    echo "Installing wikiextractor==3.0.6..."
+    "$PYTHON_BIN" -m pip install 'wikiextractor==3.0.6'
 
     if [ ! -d "simple_extracted" ]; then
         echo "Extracting Simple Wikipedia..."
