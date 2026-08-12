@@ -43,10 +43,37 @@ CREATE TEMP TABLE reclaim_sizes AS
 SELECT pg_relation_size('memtable_reclaim_idx'::regclass, 'main')::bigint
        AS sz_after_spill;
 
+CREATE TEMP TABLE reclaim_blocker_state (
+    blocked_by_other_backend bool
+);
+
+INSERT INTO reclaim_blocker_state (blocked_by_other_backend)
+SELECT false;
+
 -- Horizon: spill xact is committed (autocommit per statement).
+UPDATE reclaim_blocker_state
+SET blocked_by_other_backend = blocked_by_other_backend
+    OR EXISTS (
+        SELECT 1
+        FROM pg_stat_activity
+        WHERE pid <> pg_backend_pid()
+          AND datname = current_database()
+          AND backend_type = 'client backend'
+          AND backend_xmin IS NOT NULL
+    );
 VACUUM ANALYZE memtable_reclaim_t;
 
 -- Idempotent second pass (RecordFreeIndexPage on same blocks is safe).
+UPDATE reclaim_blocker_state
+SET blocked_by_other_backend = blocked_by_other_backend
+    OR EXISTS (
+        SELECT 1
+        FROM pg_stat_activity
+        WHERE pid <> pg_backend_pid()
+          AND datname = current_database()
+          AND backend_type = 'client backend'
+          AND backend_xmin IS NOT NULL
+    );
 VACUUM ANALYZE memtable_reclaim_t;
 
 SELECT count(*) >= 1 AS search_after_vacuum FROM (
@@ -64,12 +91,8 @@ FROM generate_series(1, 200) i;
 
 CREATE TEMP TABLE reclaim_after_rebuild AS
 SELECT count(*)::int AS deferred_pages,
-       EXISTS (
-           SELECT 1
-           FROM pg_stat_activity
-           WHERE pid <> pg_backend_pid()
-             AND backend_xmin IS NOT NULL
-       ) AS blocked_by_other_backend
+       (SELECT blocked_by_other_backend
+        FROM reclaim_blocker_state) AS blocked_by_other_backend
 FROM bm25_memtable_dead_pages('memtable_reclaim_idx');
 
 SELECT count(*)::int > 0 AS chain_rebuilt
@@ -92,7 +115,6 @@ SELECT
     END
     AS single_cycle_growth_valid;
 \pset format aligned
-\unset QUIET
 
 -- Multi-cycle: five spill→VACUUM cycles (VACUUM cannot run inside DO).
 -- Rebuilding the chain after repeated spill→VACUUM cycles should keep
@@ -110,6 +132,13 @@ SELECT pg_relation_size('memtable_reclaim_idx'::regclass, 'main')::bigint,
        0,
        5;
 
+CREATE TEMP TABLE multi_cycle_blocker_state (
+    blocked_by_other_backend bool
+);
+
+INSERT INTO multi_cycle_blocker_state (blocked_by_other_backend)
+SELECT false;
+
 -- Cycle 1
 INSERT INTO memtable_reclaim_t (body)
 SELECT 'mc1 doc ' || g || ' ' || repeat('pad ', 6)
@@ -118,6 +147,16 @@ UPDATE multi_cycle_bounds SET max_live_pages = GREATEST(
     max_live_pages,
     (SELECT count(*)::int FROM bm25_memtable_chain('memtable_reclaim_idx')));
 SELECT bm25_spill_index('memtable_reclaim_idx') IS NOT NULL AS mc_spill_1;
+UPDATE multi_cycle_blocker_state
+SET blocked_by_other_backend = blocked_by_other_backend
+    OR EXISTS (
+        SELECT 1
+        FROM pg_stat_activity
+        WHERE pid <> pg_backend_pid()
+          AND datname = current_database()
+          AND backend_type = 'client backend'
+          AND backend_xmin IS NOT NULL
+    );
 VACUUM ANALYZE memtable_reclaim_t;
 
 -- Cycle 2
@@ -128,6 +167,16 @@ UPDATE multi_cycle_bounds SET max_live_pages = GREATEST(
     max_live_pages,
     (SELECT count(*)::int FROM bm25_memtable_chain('memtable_reclaim_idx')));
 SELECT bm25_spill_index('memtable_reclaim_idx') IS NOT NULL AS mc_spill_2;
+UPDATE multi_cycle_blocker_state
+SET blocked_by_other_backend = blocked_by_other_backend
+    OR EXISTS (
+        SELECT 1
+        FROM pg_stat_activity
+        WHERE pid <> pg_backend_pid()
+          AND datname = current_database()
+          AND backend_type = 'client backend'
+          AND backend_xmin IS NOT NULL
+    );
 VACUUM ANALYZE memtable_reclaim_t;
 
 -- Cycle 3
@@ -138,6 +187,16 @@ UPDATE multi_cycle_bounds SET max_live_pages = GREATEST(
     max_live_pages,
     (SELECT count(*)::int FROM bm25_memtable_chain('memtable_reclaim_idx')));
 SELECT bm25_spill_index('memtable_reclaim_idx') IS NOT NULL AS mc_spill_3;
+UPDATE multi_cycle_blocker_state
+SET blocked_by_other_backend = blocked_by_other_backend
+    OR EXISTS (
+        SELECT 1
+        FROM pg_stat_activity
+        WHERE pid <> pg_backend_pid()
+          AND datname = current_database()
+          AND backend_type = 'client backend'
+          AND backend_xmin IS NOT NULL
+    );
 VACUUM ANALYZE memtable_reclaim_t;
 
 -- Cycle 4
@@ -148,6 +207,16 @@ UPDATE multi_cycle_bounds SET max_live_pages = GREATEST(
     max_live_pages,
     (SELECT count(*)::int FROM bm25_memtable_chain('memtable_reclaim_idx')));
 SELECT bm25_spill_index('memtable_reclaim_idx') IS NOT NULL AS mc_spill_4;
+UPDATE multi_cycle_blocker_state
+SET blocked_by_other_backend = blocked_by_other_backend
+    OR EXISTS (
+        SELECT 1
+        FROM pg_stat_activity
+        WHERE pid <> pg_backend_pid()
+          AND datname = current_database()
+          AND backend_type = 'client backend'
+          AND backend_xmin IS NOT NULL
+    );
 VACUUM ANALYZE memtable_reclaim_t;
 
 -- Cycle 5
@@ -158,6 +227,16 @@ UPDATE multi_cycle_bounds SET max_live_pages = GREATEST(
     max_live_pages,
     (SELECT count(*)::int FROM bm25_memtable_chain('memtable_reclaim_idx')));
 SELECT bm25_spill_index('memtable_reclaim_idx') IS NOT NULL AS mc_spill_5;
+UPDATE multi_cycle_blocker_state
+SET blocked_by_other_backend = blocked_by_other_backend
+    OR EXISTS (
+        SELECT 1
+        FROM pg_stat_activity
+        WHERE pid <> pg_backend_pid()
+          AND datname = current_database()
+          AND backend_type = 'client backend'
+          AND backend_xmin IS NOT NULL
+    );
 VACUUM ANALYZE memtable_reclaim_t;
 
 INSERT INTO memtable_reclaim_t (body)
@@ -166,12 +245,8 @@ FROM generate_series(1, 200) g;
 
 CREATE TEMP TABLE multi_cycle_after_rebuild AS
 SELECT count(*)::int AS deferred_pages,
-       EXISTS (
-           SELECT 1
-           FROM pg_stat_activity
-           WHERE pid <> pg_backend_pid()
-             AND backend_xmin IS NOT NULL
-       ) AS blocked_by_other_backend
+       (SELECT blocked_by_other_backend
+        FROM multi_cycle_blocker_state) AS blocked_by_other_backend
 FROM bm25_memtable_dead_pages('memtable_reclaim_idx');
 
 SELECT max_live_pages > 1 AS multi_cycle_chain_multi_page
@@ -203,7 +278,6 @@ SELECT
     END
     AS multi_cycle_growth_valid;
 \pset format aligned
-\unset QUIET
 
 DROP TABLE memtable_reclaim_t;
 DROP EXTENSION pg_textsearch CASCADE;
