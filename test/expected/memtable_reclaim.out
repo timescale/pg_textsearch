@@ -93,20 +93,19 @@ FROM bm25_memtable_chain('memtable_reclaim_idx');
  t
 (1 row)
 
-COPY (
-    SELECT format(
-               'single_cycle_growth_valid=%s',
-               (
-                   (pg_relation_size('memtable_reclaim_idx'::regclass,
-                                     'main')
-                    - (SELECT sz_after_spill FROM reclaim_sizes))
-                   < ((SELECT deferred_pages
-                       FROM reclaim_after_rebuild) + 1)
-                        * current_setting('block_size')::bigint
-               )
-           )
-) TO STDOUT;
-single_cycle_growth_valid=t
+\set QUIET 1
+\pset format unaligned
+SELECT
+    (pg_relation_size('memtable_reclaim_idx'::regclass, 'main')
+     - (SELECT sz_after_spill FROM reclaim_sizes))
+    < ((SELECT deferred_pages FROM reclaim_after_rebuild) + 1)
+         * current_setting('block_size')::bigint
+    AS single_cycle_growth_valid;
+single_cycle_growth_valid
+t
+(1 row)
+\pset format aligned
+\set QUIET 0
 -- Multi-cycle: five spill→VACUUM cycles (VACUUM cannot run inside DO).
 -- Rebuilding the chain after repeated spill→VACUUM cycles should keep
 -- cumulative growth bounded by the live memtable work per cycle, with
@@ -114,20 +113,24 @@ single_cycle_growth_valid=t
 -- the final rebuild.
 CREATE TEMP TABLE multi_cycle_bounds (
     sz_start bigint,
-    num_cycles int,
-    max_live_pages int
+    max_live_pages int,
+    num_cycles int
 );
-INSERT INTO multi_cycle_bounds (sz_start, num_cycles, max_live_pages)
+CREATE TABLE
+INSERT INTO multi_cycle_bounds (sz_start, max_live_pages, num_cycles)
 SELECT pg_relation_size('memtable_reclaim_idx'::regclass, 'main')::bigint,
-       5,
-       0;
+       0,
+       5;
+INSERT 0 1
 -- Cycle 1
 INSERT INTO memtable_reclaim_t (body)
 SELECT 'mc1 doc ' || g || ' ' || repeat('pad ', 6)
 FROM generate_series(1, 200) g;
+INSERT 0 200
 UPDATE multi_cycle_bounds SET max_live_pages = GREATEST(
     max_live_pages,
     (SELECT count(*)::int FROM bm25_memtable_chain('memtable_reclaim_idx')));
+UPDATE 1
 SELECT bm25_spill_index('memtable_reclaim_idx') IS NOT NULL AS mc_spill_1;
  mc_spill_1 
 ------------
@@ -135,13 +138,16 @@ SELECT bm25_spill_index('memtable_reclaim_idx') IS NOT NULL AS mc_spill_1;
 (1 row)
 
 VACUUM ANALYZE memtable_reclaim_t;
+VACUUM
 -- Cycle 2
 INSERT INTO memtable_reclaim_t (body)
 SELECT 'mc2 doc ' || g || ' ' || repeat('pad ', 6)
 FROM generate_series(1, 200) g;
+INSERT 0 200
 UPDATE multi_cycle_bounds SET max_live_pages = GREATEST(
     max_live_pages,
     (SELECT count(*)::int FROM bm25_memtable_chain('memtable_reclaim_idx')));
+UPDATE 1
 SELECT bm25_spill_index('memtable_reclaim_idx') IS NOT NULL AS mc_spill_2;
  mc_spill_2 
 ------------
@@ -149,13 +155,16 @@ SELECT bm25_spill_index('memtable_reclaim_idx') IS NOT NULL AS mc_spill_2;
 (1 row)
 
 VACUUM ANALYZE memtable_reclaim_t;
+VACUUM
 -- Cycle 3
 INSERT INTO memtable_reclaim_t (body)
 SELECT 'mc3 doc ' || g || ' ' || repeat('pad ', 6)
 FROM generate_series(1, 200) g;
+INSERT 0 200
 UPDATE multi_cycle_bounds SET max_live_pages = GREATEST(
     max_live_pages,
     (SELECT count(*)::int FROM bm25_memtable_chain('memtable_reclaim_idx')));
+UPDATE 1
 SELECT bm25_spill_index('memtable_reclaim_idx') IS NOT NULL AS mc_spill_3;
  mc_spill_3 
 ------------
@@ -163,13 +172,16 @@ SELECT bm25_spill_index('memtable_reclaim_idx') IS NOT NULL AS mc_spill_3;
 (1 row)
 
 VACUUM ANALYZE memtable_reclaim_t;
+VACUUM
 -- Cycle 4
 INSERT INTO memtable_reclaim_t (body)
 SELECT 'mc4 doc ' || g || ' ' || repeat('pad ', 6)
 FROM generate_series(1, 200) g;
+INSERT 0 200
 UPDATE multi_cycle_bounds SET max_live_pages = GREATEST(
     max_live_pages,
     (SELECT count(*)::int FROM bm25_memtable_chain('memtable_reclaim_idx')));
+UPDATE 1
 SELECT bm25_spill_index('memtable_reclaim_idx') IS NOT NULL AS mc_spill_4;
  mc_spill_4 
 ------------
@@ -177,13 +189,16 @@ SELECT bm25_spill_index('memtable_reclaim_idx') IS NOT NULL AS mc_spill_4;
 (1 row)
 
 VACUUM ANALYZE memtable_reclaim_t;
+VACUUM
 -- Cycle 5
 INSERT INTO memtable_reclaim_t (body)
 SELECT 'mc5 doc ' || g || ' ' || repeat('pad ', 6)
 FROM generate_series(1, 200) g;
+INSERT 0 200
 UPDATE multi_cycle_bounds SET max_live_pages = GREATEST(
     max_live_pages,
     (SELECT count(*)::int FROM bm25_memtable_chain('memtable_reclaim_idx')));
+UPDATE 1
 SELECT bm25_spill_index('memtable_reclaim_idx') IS NOT NULL AS mc_spill_5;
  mc_spill_5 
 ------------
@@ -191,12 +206,15 @@ SELECT bm25_spill_index('memtable_reclaim_idx') IS NOT NULL AS mc_spill_5;
 (1 row)
 
 VACUUM ANALYZE memtable_reclaim_t;
+VACUUM
 INSERT INTO memtable_reclaim_t (body)
 SELECT 'mc_reuse doc ' || g || ' ' || repeat('pad ', 6)
 FROM generate_series(1, 200) g;
+INSERT 0 200
 CREATE TEMP TABLE multi_cycle_after_rebuild AS
 SELECT count(*)::int AS deferred_pages
 FROM bm25_memtable_dead_pages('memtable_reclaim_idx');
+SELECT 1
 SELECT max_live_pages > 1 AS multi_cycle_chain_multi_page
 FROM multi_cycle_bounds;
  multi_cycle_chain_multi_page 
@@ -204,21 +222,25 @@ FROM multi_cycle_bounds;
  t
 (1 row)
 
-COPY (
-    SELECT format(
-               'multi_cycle_growth_valid=%s',
-               (
-                   (pg_relation_size('memtable_reclaim_idx'::regclass,
-                                     'main')
-                    - (SELECT sz_start FROM multi_cycle_bounds))
-                   < ((SELECT num_cycles * max_live_pages
-                       FROM multi_cycle_bounds)
-                      + (SELECT deferred_pages
-                         FROM multi_cycle_after_rebuild))
-                        * current_setting('block_size')::bigint
-               )
-           )
-) TO STDOUT;
-multi_cycle_growth_valid=t
+-- Budget one live-chain's worth of segment/main-fork growth per cycle
+-- (`num_cycles * max_live_pages`) plus any pages still tracked as DEAD
+-- after the final rebuild.
+\set QUIET 1
+\pset format unaligned
+SELECT
+    (pg_relation_size('memtable_reclaim_idx'::regclass, 'main')
+     - (SELECT sz_start FROM multi_cycle_bounds))
+    < ((SELECT num_cycles * max_live_pages
+        FROM multi_cycle_bounds)
+       + (SELECT deferred_pages FROM multi_cycle_after_rebuild))
+         * current_setting('block_size')::bigint
+    AS multi_cycle_growth_valid;
+multi_cycle_growth_valid
+t
+(1 row)
+\pset format aligned
+\set QUIET 0
 DROP TABLE memtable_reclaim_t;
+DROP TABLE
 DROP EXTENSION pg_textsearch CASCADE;
+DROP EXTENSION

@@ -69,19 +69,16 @@ FROM bm25_memtable_dead_pages('memtable_reclaim_idx');
 SELECT count(*)::int > 0 AS chain_rebuilt
 FROM bm25_memtable_chain('memtable_reclaim_idx');
 
-COPY (
-    SELECT format(
-               'single_cycle_growth_valid=%s',
-               (
-                   (pg_relation_size('memtable_reclaim_idx'::regclass,
-                                     'main')
-                    - (SELECT sz_after_spill FROM reclaim_sizes))
-                   < ((SELECT deferred_pages
-                       FROM reclaim_after_rebuild) + 1)
-                        * current_setting('block_size')::bigint
-               )
-           )
-) TO STDOUT;
+\set QUIET 1
+\pset format unaligned
+SELECT
+    (pg_relation_size('memtable_reclaim_idx'::regclass, 'main')
+     - (SELECT sz_after_spill FROM reclaim_sizes))
+    < ((SELECT deferred_pages FROM reclaim_after_rebuild) + 1)
+         * current_setting('block_size')::bigint
+    AS single_cycle_growth_valid;
+\pset format aligned
+\set QUIET 0
 
 -- Multi-cycle: five spill→VACUUM cycles (VACUUM cannot run inside DO).
 -- Rebuilding the chain after repeated spill→VACUUM cycles should keep
@@ -90,14 +87,14 @@ COPY (
 -- the final rebuild.
 CREATE TEMP TABLE multi_cycle_bounds (
     sz_start bigint,
-    num_cycles int,
-    max_live_pages int
+    max_live_pages int,
+    num_cycles int
 );
 
-INSERT INTO multi_cycle_bounds (sz_start, num_cycles, max_live_pages)
+INSERT INTO multi_cycle_bounds (sz_start, max_live_pages, num_cycles)
 SELECT pg_relation_size('memtable_reclaim_idx'::regclass, 'main')::bigint,
-       5,
-       0;
+       0,
+       5;
 
 -- Cycle 1
 INSERT INTO memtable_reclaim_t (body)
@@ -160,21 +157,21 @@ FROM bm25_memtable_dead_pages('memtable_reclaim_idx');
 SELECT max_live_pages > 1 AS multi_cycle_chain_multi_page
 FROM multi_cycle_bounds;
 
-COPY (
-    SELECT format(
-               'multi_cycle_growth_valid=%s',
-               (
-                   (pg_relation_size('memtable_reclaim_idx'::regclass,
-                                     'main')
-                    - (SELECT sz_start FROM multi_cycle_bounds))
-                   < ((SELECT num_cycles * max_live_pages
-                       FROM multi_cycle_bounds)
-                      + (SELECT deferred_pages
-                         FROM multi_cycle_after_rebuild))
-                        * current_setting('block_size')::bigint
-               )
-           )
-) TO STDOUT;
+-- Budget one live-chain's worth of segment/main-fork growth per cycle
+-- (`num_cycles * max_live_pages`) plus any pages still tracked as DEAD
+-- after the final rebuild.
+\set QUIET 1
+\pset format unaligned
+SELECT
+    (pg_relation_size('memtable_reclaim_idx'::regclass, 'main')
+     - (SELECT sz_start FROM multi_cycle_bounds))
+    < ((SELECT num_cycles * max_live_pages
+        FROM multi_cycle_bounds)
+       + (SELECT deferred_pages FROM multi_cycle_after_rebuild))
+         * current_setting('block_size')::bigint
+    AS multi_cycle_growth_valid;
+\pset format aligned
+\set QUIET 0
 
 DROP TABLE memtable_reclaim_t;
 DROP EXTENSION pg_textsearch CASCADE;
