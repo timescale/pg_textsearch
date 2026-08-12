@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1786520429528,
+  "lastUpdate": 1786520433497,
   "repoUrl": "https://github.com/timescale/pg_textsearch",
   "entries": {
     "cranfield Benchmarks": [
@@ -94281,6 +94281,38 @@ window.BENCHMARK_DATA = {
           {
             "name": "cranfield_gin_concurrent - Concurrent Insert Time",
             "value": 332.786502,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tjgreen@gmail.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "68baccdf82bd3fb3dbee596bbe8ba0400d081d45",
+          "message": "docs: lead the README with the banner image (#424)\n\nReplaces the top-level `# pg_textsearch` heading with the banner image\nso the README opens with the banner, and removes the now-duplicate\nbanner that previously sat below the status line.\n\nDocs-only change; no functional impact.",
+          "timestamp": "2026-08-11T22:54:02Z",
+          "url": "https://github.com/timescale/pg_textsearch/commit/68baccdf82bd3fb3dbee596bbe8ba0400d081d45"
+        },
+        "date": 1786520432607,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "cranfield_gin_concurrent - Index Build Time",
+            "value": 0.414,
+            "unit": "ms"
+          },
+          {
+            "name": "cranfield_gin_concurrent - Concurrent Insert Time",
+            "value": 244.836731,
             "unit": "ms"
           }
         ]
