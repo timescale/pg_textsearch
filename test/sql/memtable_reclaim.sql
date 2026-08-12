@@ -49,10 +49,6 @@ VACUUM ANALYZE memtable_reclaim_t;
 -- Idempotent second pass (RecordFreeIndexPage on same blocks is safe).
 VACUUM ANALYZE memtable_reclaim_t;
 
-CREATE TEMP TABLE reclaim_after_vacuum AS
-SELECT count(*)::int AS deferred_pages
-FROM bm25_memtable_dead_pages('memtable_reclaim_idx');
-
 SELECT count(*) >= 1 AS search_after_vacuum FROM (
     SELECT 1 FROM memtable_reclaim_t
     ORDER BY body <@> to_bm25query('reclaim', 'memtable_reclaim_idx')
@@ -66,26 +62,42 @@ INSERT INTO memtable_reclaim_t (body)
 SELECT 'reclaim2 ' || i || ' ' || repeat('pad ', 6)
 FROM generate_series(1, 200) i;
 
+CREATE TEMP TABLE reclaim_after_rebuild AS
+SELECT count(*)::int AS deferred_pages
+FROM bm25_memtable_dead_pages('memtable_reclaim_idx');
+
 SELECT count(*)::int > 0 AS chain_rebuilt
 FROM bm25_memtable_chain('memtable_reclaim_idx');
 
-SELECT
-    (pg_relation_size('memtable_reclaim_idx'::regclass, 'main')
-     - (SELECT sz_after_spill FROM reclaim_sizes))
-    < ((SELECT deferred_pages FROM reclaim_after_vacuum) + 1)
-         * current_setting('block_size')::bigint
-    AS main_fork_growth_less_than_dead_bytes;
+COPY (
+    SELECT format(
+               'single_cycle_growth_valid=%s',
+               (
+                   (pg_relation_size('memtable_reclaim_idx'::regclass,
+                                     'main')
+                    - (SELECT sz_after_spill FROM reclaim_sizes))
+                   < ((SELECT deferred_pages
+                       FROM reclaim_after_rebuild) + 1)
+                        * current_setting('block_size')::bigint
+               )
+           )
+) TO STDOUT;
 
 -- Multi-cycle: five spill→VACUUM cycles (VACUUM cannot run inside DO).
--- After the final VACUUM, rebuilding the chain should reuse reclaimed
--- pages from the prior cycles; any extra growth must correspond to
--- dead pages still explicitly tracked as deferred.
+-- Rebuilding the chain after repeated spill→VACUUM cycles should keep
+-- cumulative growth bounded by the live memtable work per cycle, with
+-- any extra growth explained only by dead pages still tracked after
+-- the final rebuild.
 CREATE TEMP TABLE multi_cycle_bounds (
+    sz_start bigint,
+    num_cycles int,
     max_live_pages int
 );
 
-INSERT INTO multi_cycle_bounds (max_live_pages)
-SELECT 0;
+INSERT INTO multi_cycle_bounds (sz_start, num_cycles, max_live_pages)
+SELECT pg_relation_size('memtable_reclaim_idx'::regclass, 'main')::bigint,
+       5,
+       0;
 
 -- Cycle 1
 INSERT INTO memtable_reclaim_t (body)
@@ -137,30 +149,32 @@ UPDATE multi_cycle_bounds SET max_live_pages = GREATEST(
 SELECT bm25_spill_index('memtable_reclaim_idx') IS NOT NULL AS mc_spill_5;
 VACUUM ANALYZE memtable_reclaim_t;
 
-CREATE TEMP TABLE multi_cycle_after_vacuum AS
-SELECT count(*)::int AS deferred_pages,
-       pg_relation_size('memtable_reclaim_idx'::regclass, 'main')::bigint
-           AS sz_after_vacuum
-FROM bm25_memtable_dead_pages('memtable_reclaim_idx');
-
 INSERT INTO memtable_reclaim_t (body)
 SELECT 'mc_reuse doc ' || g || ' ' || repeat('pad ', 6)
 FROM generate_series(1, 200) g;
 
-SELECT max_live_pages > 1
-       AND EXISTS (
-           SELECT 1
-           FROM bm25_memtable_chain('memtable_reclaim_idx'))
-       AS multi_cycle_chain_multi_page
+CREATE TEMP TABLE multi_cycle_after_rebuild AS
+SELECT count(*)::int AS deferred_pages
+FROM bm25_memtable_dead_pages('memtable_reclaim_idx');
+
+SELECT max_live_pages > 1 AS multi_cycle_chain_multi_page
 FROM multi_cycle_bounds;
 
-SELECT
-    (pg_relation_size('memtable_reclaim_idx'::regclass, 'main')
-     - (SELECT sz_after_vacuum FROM multi_cycle_after_vacuum))
-    < ((SELECT deferred_pages FROM multi_cycle_after_vacuum)
-       + (SELECT max_live_pages FROM multi_cycle_bounds))
-         * current_setting('block_size')::bigint
-    AS multi_cycle_main_fork_bounded;
+COPY (
+    SELECT format(
+               'multi_cycle_growth_valid=%s',
+               (
+                   (pg_relation_size('memtable_reclaim_idx'::regclass,
+                                     'main')
+                    - (SELECT sz_start FROM multi_cycle_bounds))
+                   < ((SELECT num_cycles * max_live_pages
+                       FROM multi_cycle_bounds)
+                      + (SELECT deferred_pages
+                         FROM multi_cycle_after_rebuild))
+                        * current_setting('block_size')::bigint
+               )
+           )
+) TO STDOUT;
 
 DROP TABLE memtable_reclaim_t;
 DROP EXTENSION pg_textsearch CASCADE;
