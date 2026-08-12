@@ -63,7 +63,13 @@ SELECT 'reclaim2 ' || i || ' ' || repeat('pad ', 6)
 FROM generate_series(1, 200) i;
 
 CREATE TEMP TABLE reclaim_after_rebuild AS
-SELECT count(*)::int AS deferred_pages
+SELECT count(*)::int AS deferred_pages,
+       EXISTS (
+           SELECT 1
+           FROM pg_stat_activity
+           WHERE pid <> pg_backend_pid()
+             AND backend_xmin IS NOT NULL
+       ) AS blocked_by_other_backend
 FROM bm25_memtable_dead_pages('memtable_reclaim_idx');
 
 SELECT count(*)::int > 0 AS chain_rebuilt
@@ -72,13 +78,21 @@ FROM bm25_memtable_chain('memtable_reclaim_idx');
 \set QUIET 1
 \pset format unaligned
 SELECT
-    (pg_relation_size('memtable_reclaim_idx'::regclass, 'main')
-     - (SELECT sz_after_spill FROM reclaim_sizes))
-    < ((SELECT deferred_pages FROM reclaim_after_rebuild) + 1)
-         * current_setting('block_size')::bigint
+    CASE
+        WHEN (SELECT blocked_by_other_backend FROM reclaim_after_rebuild)
+            THEN (pg_relation_size('memtable_reclaim_idx'::regclass, 'main')
+                  - (SELECT sz_after_spill FROM reclaim_sizes))
+                 <= (SELECT deferred_pages
+                     FROM reclaim_after_rebuild)
+                    * current_setting('block_size')::bigint
+        ELSE (pg_relation_size('memtable_reclaim_idx'::regclass, 'main')
+              - (SELECT sz_after_spill FROM reclaim_sizes))
+             = 0
+             AND (SELECT deferred_pages FROM reclaim_after_rebuild) = 0
+    END
     AS single_cycle_growth_valid;
 \pset format aligned
-\set QUIET 0
+\unset QUIET
 
 -- Multi-cycle: five spill→VACUUM cycles (VACUUM cannot run inside DO).
 -- Rebuilding the chain after repeated spill→VACUUM cycles should keep
@@ -151,27 +165,45 @@ SELECT 'mc_reuse doc ' || g || ' ' || repeat('pad ', 6)
 FROM generate_series(1, 200) g;
 
 CREATE TEMP TABLE multi_cycle_after_rebuild AS
-SELECT count(*)::int AS deferred_pages
+SELECT count(*)::int AS deferred_pages,
+       EXISTS (
+           SELECT 1
+           FROM pg_stat_activity
+           WHERE pid <> pg_backend_pid()
+             AND backend_xmin IS NOT NULL
+       ) AS blocked_by_other_backend
 FROM bm25_memtable_dead_pages('memtable_reclaim_idx');
 
 SELECT max_live_pages > 1 AS multi_cycle_chain_multi_page
 FROM multi_cycle_bounds;
 
--- Budget one live-chain's worth of segment/main-fork growth per cycle
--- (`num_cycles * max_live_pages`) plus any pages still tracked as DEAD
--- after the final rebuild.
+-- Unblocked runs must fit within the cumulative live-work budget:
+-- one live chain's worth of segment/main-fork growth per cycle
+-- (`num_cycles * max_live_pages`).  Only an external backend_xmin
+-- blocker may add the pages still tracked as DEAD after the rebuild.
 \set QUIET 1
 \pset format unaligned
 SELECT
-    (pg_relation_size('memtable_reclaim_idx'::regclass, 'main')
-     - (SELECT sz_start FROM multi_cycle_bounds))
-    < ((SELECT num_cycles * max_live_pages
-        FROM multi_cycle_bounds)
-       + (SELECT deferred_pages FROM multi_cycle_after_rebuild))
-         * current_setting('block_size')::bigint
+    CASE
+        WHEN (SELECT blocked_by_other_backend
+              FROM multi_cycle_after_rebuild)
+            THEN (pg_relation_size('memtable_reclaim_idx'::regclass,
+                                   'main')
+                  - (SELECT sz_start FROM multi_cycle_bounds))
+                 <= ((SELECT num_cycles * max_live_pages
+                      FROM multi_cycle_bounds)
+                     + (SELECT deferred_pages
+                        FROM multi_cycle_after_rebuild))
+                    * current_setting('block_size')::bigint
+        ELSE (pg_relation_size('memtable_reclaim_idx'::regclass, 'main')
+              - (SELECT sz_start FROM multi_cycle_bounds))
+             <= (SELECT num_cycles * max_live_pages
+                 FROM multi_cycle_bounds)
+                * current_setting('block_size')::bigint
+    END
     AS multi_cycle_growth_valid;
 \pset format aligned
-\set QUIET 0
+\unset QUIET
 
 DROP TABLE memtable_reclaim_t;
 DROP EXTENSION pg_textsearch CASCADE;
