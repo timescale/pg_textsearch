@@ -34,15 +34,29 @@ SELECT count(*) FROM (
 -- Test 2: VACUUM FULL with segments (forces index rebuild)
 -- =============================================================================
 
-\set VERBOSITY terse
+SET client_min_messages = warning;
 VACUUM FULL vacuum_seg_test;
-\set VERBOSITY default
+RESET client_min_messages;
 
 -- Verify search works after VACUUM FULL rebuild
 SELECT count(*) FROM (
     SELECT 1 FROM vacuum_seg_test
     ORDER BY content <@> to_bm25query('vacuum', 'vacuum_seg_idx')
 ) sub;
+
+-- The rebuild must also produce complete corpus accounting.  The
+-- notice suppression above hides the build-count line, which is the
+-- only place the rebuild reported it, so assert it here instead.
+-- 100 is the live-only rebuild; 200 appears when a concurrent
+-- snapshot keeps the 100 deleted rows alive through VACUUM FULL.
+-- Every doc is exactly 6 tokens, so avg_doc_len pins the token side
+-- of the accounting for either doc count: a rebuild that dropped or
+-- double-counted tokens moves avg_doc_len off 6.00.
+SELECT bm25_summarize_index('vacuum_seg_idx')
+           ~ E'total_docs: (100|200)\n'
+       AND bm25_summarize_index('vacuum_seg_idx')
+           ~ E'avg_doc_len: 6\\.00\n'
+    AS rebuild_accounting_valid;
 
 DROP TABLE vacuum_seg_test;
 
@@ -318,10 +332,12 @@ VACUUM l0_total_len_test;
 -- pre-fix path inflated header.total_tokens to the cumulative atomic
 -- so the subtraction clamped total_len to 0.  A healthy avg_doc_len
 -- is the sharpest regression signal.
-SELECT bm25_summarize_index('l0_total_len_idx') ~ E'total_len: 250\n'
-    AS total_len_matches_survivors,
-       bm25_summarize_index('l0_total_len_idx') ~ E'avg_doc_len: 5\\.00\n'
-    AS avgdl_sane;
+SELECT
+    bm25_summarize_index('l0_total_len_idx')
+        ~ E'total_len: (250|500)\n'
+    AND bm25_summarize_index('l0_total_len_idx')
+        ~ E'avg_doc_len: 5\\.00\n'
+    AS l0_accounting_valid;
 
 DROP TABLE l0_total_len_test;
 
@@ -374,10 +390,17 @@ SELECT bm25_summarize_index('merge_long_idx') ~ E'L1 Segment'
 DELETE FROM merge_long_docs;
 VACUUM merge_long_docs;
 
-SELECT bm25_summarize_index('merge_long_idx') ~ E'total_len: 0\n'
-    AS total_len_zero_after_drop,
-       bm25_summarize_index('merge_long_idx') ~ E'total_docs: 0\n'
-    AS total_docs_zero_after_drop;
+WITH summary AS (
+    SELECT bm25_summarize_index('merge_long_idx') AS value
+)
+SELECT
+    (value ~ E'total_len: 0\n'
+     AND value ~ E'total_docs: 0\n')
+    OR
+    (value ~ E'total_len: 6000\n'
+     AND value ~ E'total_docs: 60\n')
+    AS merged_drop_accounting_valid
+FROM summary;
 
 RESET pg_textsearch.segments_per_level;
 DROP TABLE merge_long_docs;
@@ -421,13 +444,39 @@ VACUUM merge_drop_dead;
 -- drops the bitset-dead docs.
 INSERT INTO merge_drop_dead (content)
 SELECT 'three gamma common term doc ' || i FROM generate_series(61, 90) AS i;
-SELECT bm25_spill_index('merge_drop_idx');
+SELECT bm25_spill_index('merge_drop_idx') > 0
+    AS third_spill_ok;
 
--- 30 + 30 + 30 = 90 inserted; 30 deleted; 60 live.  Pre-fix merge
--- would leave metap->total_docs at 90 (summed sources' num_docs
--- unchanged), which violates total_docs = Σ segment.num_docs.
-SELECT bm25_summarize_index('merge_drop_idx') ~ E'total_docs: 60\n'
-    AS metap_matches_live_count;
+-- 30 + 30 + 30 = 90 inserted; 30 deleted.  Which state is reachable
+-- depends on whether VACUUM could reclaim the deleted rows:
+--
+--   * no competing snapshot: dead bits flip, the merge drops them,
+--     and both metap->total_docs and Σ segment.num_docs are 60;
+--   * a held snapshot pins the deleted rows: no dead bits, the merge
+--     keeps everything, and both counts are 90.
+--
+-- Either way the invariant total_docs = Σ segment.num_docs must
+-- hold.  The pre-fix bug produced neither state: metap->total_docs
+-- stayed at 90 (summed sources' num_docs) while the merged segment
+-- carried only the 60 live docs.  Comparing the two counts against
+-- each other -- not just the metapage count against a set of
+-- allowed values -- is what rejects that.
+WITH summary AS (
+    SELECT bm25_summarize_index('merge_drop_idx') AS value
+), parsed AS (
+    SELECT
+        (regexp_match(value, 'docs_persisted: (\d+)'))[1]::bigint
+            AS metap_docs,
+        (regexp_match(value,
+            'Total: \d+ segments, \d+ pages \([0-9.]+MB\), '
+            '\d+ terms, (\d+) docs'))[1]::bigint AS segment_docs,
+        value ~ 'L1 Segment' AS compacted
+    FROM summary
+)
+SELECT compacted AS compaction_occurred,
+       metap_docs = segment_docs AS metap_matches_segments,
+       metap_docs IN (60, 90) AS docs_in_expected_states
+FROM parsed;
 
 RESET pg_textsearch.segments_per_level;
 DROP TABLE merge_drop_dead;

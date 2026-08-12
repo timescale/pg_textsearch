@@ -6,7 +6,7 @@ permissions:
 
 env:
   # ParadeDB (competitive baseline) version for benchmarking
-  PARADEDB_VERSION: "0.21.6"
+  PARADEDB_VERSION: "0.25.2"
 
 on:
   # Nightly benchmark
@@ -570,10 +570,13 @@ jobs:
         sudo apt-get update
         sudo apt-get install -y postgresql-17 postgresql-server-dev-17
 
+        # pg_search (>= 0.24) requires the vector (pgvector) extension
+        sudo apt-get install -y postgresql-17-pgvector
+
         # Install ParadeDB extension from GitHub releases
         # ubuntu-latest is Ubuntu 24.04 (Noble)
         wget -q "https://github.com/paradedb/paradedb/releases/download/v${PARADEDB_VERSION}/postgresql-17-pg-search_${PARADEDB_VERSION}-1PARADEDB-noble_amd64.deb"
-        sudo dpkg -i "postgresql-17-pg-search_${PARADEDB_VERSION}-1PARADEDB-noble_amd64.deb"
+        sudo apt-get install -y "./postgresql-17-pg-search_${PARADEDB_VERSION}-1PARADEDB-noble_amd64.deb"
 
     - name: Configure PostgreSQL
       run: |
@@ -586,6 +589,7 @@ jobs:
         # (ubuntu-latest: 2-4 vCPUs, ~7GB RAM)
         NCPUS=$(nproc)
         cat >> tmp_bench/data/postgresql.conf << EOF
+        shared_preload_libraries = 'pg_search'
         unix_socket_directories = '$PWD/tmp_bench/socket'
         shared_buffers = 1GB
         effective_cache_size = 4GB
@@ -608,7 +612,7 @@ jobs:
         fi
         export PGHOST="$PWD/tmp_bench/socket"
         createdb bench_test
-        psql -d bench_test -c "CREATE EXTENSION pg_search"
+        psql -d bench_test -c "CREATE EXTENSION pg_search CASCADE"
         echo "PGHOST=$PWD/tmp_bench/socket" >> $GITHUB_ENV
 
     - name: Determine datasets to run
