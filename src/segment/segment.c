@@ -19,7 +19,6 @@
 #include <stdio.h>
 #include <storage/bufmgr.h>
 #include <storage/bufpage.h>
-#include <storage/indexfsm.h>
 #include <storage/lock.h>
 #include <unistd.h>
 #include <utils/lsyscache.h>
@@ -28,6 +27,7 @@
 #include <utils/timestamp.h>
 
 #include "debug/dump.h"
+#include "index/freepage.h"
 #include "index/metapage.h"
 #include "index/state.h"
 #include "segment/alive_bitset.h"
@@ -760,24 +760,15 @@ tp_segment_release_direct(TpSegmentDirectAccess *access)
 static BlockNumber
 allocate_segment_page(Relation index)
 {
-	Buffer		buffer;
-	BlockNumber block;
-
-	/* Try to get a free page from FSM (recycled from compaction) */
-	block = GetFreeIndexPage(index);
-	if (block != InvalidBlockNumber)
-		return block;
-
 	/*
-	 * No free pages available, extend the relation.  RBM_ZERO_AND_LOCK
-	 * gives us a zero-filled page; the first content writer will overwrite
-	 * the header and content area before logging it.
+	 * Reuse a recyclable free page from the FSM (recycled from a
+	 * compaction/vacuum drain), extending the relation only when the
+	 * FSM offers none.  tp_fsm_claim_or_extend_block skips any block
+	 * the non-crash-safe FSM offers that is still a live structure
+	 * page, so we never reinitialize a page another structure still
+	 * owns (issues #426, #427).
 	 */
-	buffer = ReadBufferExtended(
-			index, MAIN_FORKNUM, P_NEW, RBM_ZERO_AND_LOCK, NULL);
-	block = BufferGetBlockNumber(buffer);
-	UnlockReleaseBuffer(buffer);
-	return block;
+	return tp_fsm_claim_or_extend_block(index);
 }
 
 /*
@@ -1586,7 +1577,7 @@ tp_segment_free_pages(Relation index, BlockNumber *pages, uint32 num_pages)
 		if (pages[i] == 0)
 			elog(ERROR, "attempted to free metapage (block 0)");
 
-		RecordFreeIndexPage(index, pages[i]);
+		tp_record_free_index_page(index, pages[i]);
 	}
 }
 

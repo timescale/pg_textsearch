@@ -32,6 +32,7 @@
 
 #include "access/am.h"
 #include "access/build_context.h"
+#include "index/freepage.h"
 #include "index/metapage.h"
 #include "index/state.h"
 #include "memtable/page.h"
@@ -1277,8 +1278,20 @@ tp_reclaim_dead_memtable_pages(Relation indexrel, Relation heaprel)
 			hash_search(reachable, &blk, HASH_FIND, &found);
 			if (!found)
 			{
-				RecordFreeIndexPage(indexrel, blk);
+				/*
+				 * Release the SHARE lock before returning the page to
+				 * the FSM: tp_record_free_index_page re-locks
+				 * EXCLUSIVE to write the recyclable free stamp so a
+				 * later allocator can tell this deliberately-freed
+				 * page from a live one.  The page is DEAD (unlinked)
+				 * and unreachable, and is not yet in the FSM, so no
+				 * concurrent backend can allocate or resurrect it
+				 * between the release and the stamp.
+				 */
+				UnlockReleaseBuffer(buf);
+				tp_record_free_index_page(indexrel, blk);
 				reclaimed_pages++;
+				continue;
 			}
 		}
 

@@ -82,7 +82,8 @@ extern BlockNumber tp_tombstone_enqueue(
 
 /*
  * Variant for callers that do not serialize against concurrent FSM
- * allocators.  Extends the relation instead of calling GetFreeIndexPage().
+ * allocators.  Extends the relation instead of reusing an FSM free
+ * page.
  */
 extern BlockNumber tp_tombstone_enqueue_extend(
 		Relation		  index,
@@ -93,8 +94,8 @@ extern BlockNumber tp_tombstone_enqueue_extend(
 
 /*
  * Drain past-horizon tombstones.  For each tombstone whose
- * merged_fxid < `horizon`, WAL-unlink it then RecordFreeIndexPage its
- * listed blocks and its own page.
+ * merged_fxid < `horizon`, WAL-unlink it then tp_record_free_index_page
+ * its listed blocks and its own page.
  *
  * `own_lock` selects locking discipline:
  *   - true  (vacuum path): acquire/release the per-index LWLock

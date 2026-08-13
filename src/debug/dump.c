@@ -7,11 +7,14 @@
 #include <postgres.h>
 
 #include <access/genam.h>
+#include <access/generic_xlog.h>
 #include <access/htup_details.h>
 #include <catalog/namespace.h>
 #include <fmgr.h>
 #include <miscadmin.h>
 #include <storage/bufmgr.h>
+#include <storage/freespace.h>
+#include <storage/indexfsm.h>
 #include <utils/builtins.h>
 #include <utils/dsa.h>
 #include <utils/lsyscache.h>
@@ -827,6 +830,126 @@ tp_pending_free_pages(PG_FUNCTION_ARGS)
 	index_close(index_rel, AccessShareLock);
 
 	PG_RETURN_INT64((int64)count);
+}
+
+/*
+ * bm25_test_recycle_tombstone_head(index_name) -> block number
+ *
+ * INTERNAL-ONLY test scaffold (issues #426, #427).  Returns the
+ * still-live head tombstone page's block to the index FSM, then
+ * rebuilds the FSM upper levels so GetFreeIndexPage() can hand the
+ * block back out.  This reproduces — without an actual crash — the
+ * stale-FSM / non-atomic-claim hazard that lets an allocator pick up
+ * a block that is still referenced by the deferred-free tombstone
+ * chain (or, symmetrically, the on-disk memtable chain).
+ *
+ * Superuser-only; signature and existence are subject to change or
+ * removal in ANY release without notice.  Not part of the public API.
+ */
+PG_FUNCTION_INFO_V1(tp_test_recycle_tombstone_head);
+
+Datum
+tp_test_recycle_tombstone_head(PG_FUNCTION_ARGS)
+{
+	text	   *index_name_text = PG_GETARG_TEXT_PP(0);
+	char	   *index_name		= text_to_cstring(index_name_text);
+	Oid			index_oid;
+	Relation	index_rel;
+	BlockNumber head;
+
+	if (!superuser())
+		ereport(ERROR,
+				(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
+				 errmsg("must be superuser to recycle tombstone head")));
+
+	index_oid = tp_resolve_index_name_shared(index_name);
+	if (!OidIsValid(index_oid))
+		ereport(ERROR,
+				(errcode(ERRCODE_UNDEFINED_OBJECT),
+				 errmsg("index \"%s\" not found", index_name)));
+
+	index_rel = index_open(index_oid, RowExclusiveLock);
+
+	head = tp_tombstone_read_head(index_rel);
+	if (head == InvalidBlockNumber)
+	{
+		index_close(index_rel, RowExclusiveLock);
+		ereport(ERROR,
+				(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
+				 errmsg("index \"%s\" has no tombstone chain to recycle",
+						index_name)));
+	}
+
+	RecordFreeIndexPage(index_rel, head);
+	IndexFreeSpaceMapVacuum(index_rel);
+
+	index_close(index_rel, RowExclusiveLock);
+
+	PG_RETURN_INT64((int64)head);
+}
+
+/*
+ * bm25_test_corrupt_tombstone_head(index_name) -> block number
+ *
+ * INTERNAL-ONLY test scaffold (issue #427).  Overwrites the head
+ * tombstone page's magic (WAL-logged) so it no longer validates as a
+ * tombstone page, simulating a chain node that a page-reuse bug
+ * already clobbered in production.  Used to exercise the drain's
+ * self-healing recovery path on an already-corrupt chain.
+ *
+ * Superuser-only; signature and existence are subject to change or
+ * removal in ANY release without notice.  Not part of the public API.
+ */
+PG_FUNCTION_INFO_V1(tp_test_corrupt_tombstone_head);
+
+Datum
+tp_test_corrupt_tombstone_head(PG_FUNCTION_ARGS)
+{
+	text			 *index_name_text = PG_GETARG_TEXT_PP(0);
+	char			 *index_name	  = text_to_cstring(index_name_text);
+	Oid				  index_oid;
+	Relation		  index_rel;
+	BlockNumber		  head;
+	Buffer			  buf;
+	Page			  page;
+	GenericXLogState *state;
+	TpTombstonePage	  t;
+
+	if (!superuser())
+		ereport(ERROR,
+				(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
+				 errmsg("must be superuser to corrupt tombstone head")));
+
+	index_oid = tp_resolve_index_name_shared(index_name);
+	if (!OidIsValid(index_oid))
+		ereport(ERROR,
+				(errcode(ERRCODE_UNDEFINED_OBJECT),
+				 errmsg("index \"%s\" not found", index_name)));
+
+	index_rel = index_open(index_oid, RowExclusiveLock);
+
+	head = tp_tombstone_read_head(index_rel);
+	if (head == InvalidBlockNumber)
+	{
+		index_close(index_rel, RowExclusiveLock);
+		ereport(ERROR,
+				(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
+				 errmsg("index \"%s\" has no tombstone chain to corrupt",
+						index_name)));
+	}
+
+	buf = ReadBuffer(index_rel, head);
+	LockBuffer(buf, BUFFER_LOCK_EXCLUSIVE);
+	state	 = GenericXLogStart(index_rel);
+	page	 = GenericXLogRegisterBuffer(state, buf, GENERIC_XLOG_FULL_IMAGE);
+	t		 = tp_tombstone_page(page);
+	t->magic = 0; /* no longer a valid tombstone page */
+	GenericXLogFinish(state);
+	UnlockReleaseBuffer(buf);
+
+	index_close(index_rel, RowExclusiveLock);
+
+	PG_RETURN_INT64((int64)head);
 }
 
 /*
