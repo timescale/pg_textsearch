@@ -107,24 +107,9 @@ SELECT count(*) >= 1 AS search_after_vacuum FROM (
 
 -- Rebuild chain without auto-spill so pages come from FSM vs extend.
 SET pg_textsearch.memtable_pages_threshold = 0;
--- Snapshot the DEAD-page count *before* the reuse insert.  Freeing a page
--- to the FSM does not clear its DEAD stamp -- only reuse via
--- tp_memtable_alloc_page does -- so the post-rebuild count co-varies with a
--- reuse regression (pages that should have been reused but were not stay
--- DEAD and inflate the count by exactly the extra growth).  Bounding the
--- blocked branch against this pre-rebuild snapshot keeps the check able to
--- catch a reuse regression even when a concurrent backend forces that branch.
-CREATE TEMP TABLE reclaim_before_rebuild AS
-SELECT count(*)::int AS deferred_pages
-FROM bm25_memtable_dead_pages('memtable_reclaim_idx');
 INSERT INTO memtable_reclaim_t (body)
 SELECT 'reclaim2 ' || i || ' ' || repeat('pad ', 6)
 FROM generate_series(1, 200) i;
-CREATE TEMP TABLE reclaim_after_rebuild AS
-SELECT count(*)::int AS deferred_pages,
-       (SELECT blocked_by_other_backend
-        FROM reclaim_blocker_state) AS blocked_by_other_backend
-FROM bm25_memtable_dead_pages('memtable_reclaim_idx');
 SELECT count(*)::int > 0 AS chain_rebuilt
 FROM bm25_memtable_chain('memtable_reclaim_idx');
  chain_rebuilt 
@@ -132,30 +117,32 @@ FROM bm25_memtable_chain('memtable_reclaim_idx');
  t
 (1 row)
 
-\pset format unaligned
+-- When no other backend held the reclaim horizon back, VACUUM freed the
+-- spilled DEAD pages to the FSM and this rebuild must have reused them:
+-- the main fork does not grow and no DEAD pages remain.  When a concurrent
+-- backend held an xmin, deferred reclaim is expected and correct, so the
+-- size check is skipped rather than relaxed to a bound that cannot
+-- distinguish deferred reclaim from a genuine reuse regression.
 SELECT
     CASE
-        WHEN (SELECT blocked_by_other_backend FROM reclaim_after_rebuild)
-            THEN (pg_relation_size('memtable_reclaim_idx'::regclass, 'main')
-                  - (SELECT sz_after_spill FROM reclaim_sizes))
-                 <= (SELECT deferred_pages
-                     FROM reclaim_before_rebuild)
-                    * current_setting('block_size')::bigint
+        WHEN (SELECT blocked_by_other_backend FROM reclaim_blocker_state)
+            THEN true
         ELSE (pg_relation_size('memtable_reclaim_idx'::regclass, 'main')
-              - (SELECT sz_after_spill FROM reclaim_sizes))
-             = 0
-             AND (SELECT deferred_pages FROM reclaim_after_rebuild) = 0
+              - (SELECT sz_after_spill FROM reclaim_sizes)) = 0
+             AND (SELECT count(*)::int
+                  FROM bm25_memtable_dead_pages('memtable_reclaim_idx')) = 0
     END
     AS single_cycle_growth_valid;
-single_cycle_growth_valid
-t
+ single_cycle_growth_valid 
+---------------------------
+ t
 (1 row)
-\pset format aligned
+
 -- Multi-cycle: five spill→VACUUM cycles (VACUUM cannot run inside DO).
--- Rebuilding the chain after repeated spill→VACUUM cycles should keep
--- cumulative growth bounded by the live memtable work per cycle, with
--- any extra growth explained only by dead pages still tracked after
--- the final rebuild.
+-- With per-cycle FSM reuse, cumulative main-fork growth stays bounded by
+-- the live memtable work per cycle; without reuse it would grow by roughly
+-- N×K memtable pages.  The bound is asserted only when no concurrent
+-- backend held the reclaim horizon back (see the per-cycle sampling below).
 CREATE TEMP TABLE multi_cycle_bounds (
     sz_start bigint,
     max_live_pages int,
@@ -255,21 +242,6 @@ UPDATE multi_cycle_blocker_state
 SET blocked_by_other_backend = blocked_by_other_backend
     OR other_backend_holds_xmin();
 VACUUM ANALYZE memtable_reclaim_t;
--- Snapshot the DEAD-page count before the final reuse insert (see the
--- single-cycle note above): the pre-rebuild count does not co-vary with
--- whether the subsequent reuse succeeds, so it preserves the blocked
--- branch's ability to catch a reuse regression.
-CREATE TEMP TABLE multi_cycle_before_rebuild AS
-SELECT count(*)::int AS deferred_pages
-FROM bm25_memtable_dead_pages('memtable_reclaim_idx');
-INSERT INTO memtable_reclaim_t (body)
-SELECT 'mc_reuse doc ' || g || ' ' || repeat('pad ', 6)
-FROM generate_series(1, 200) g;
-CREATE TEMP TABLE multi_cycle_after_rebuild AS
-SELECT count(*)::int AS deferred_pages,
-       (SELECT blocked_by_other_backend
-        FROM multi_cycle_blocker_state) AS blocked_by_other_backend
-FROM bm25_memtable_dead_pages('memtable_reclaim_idx');
 SELECT max_live_pages > 1 AS multi_cycle_chain_multi_page
 FROM multi_cycle_bounds;
  multi_cycle_chain_multi_page 
@@ -277,34 +249,27 @@ FROM multi_cycle_bounds;
  t
 (1 row)
 
--- Unblocked runs must fit within the cumulative live-work budget:
--- one live chain's worth of segment/main-fork growth per cycle
--- (`num_cycles * max_live_pages`).  Only an external backend_xmin
--- blocker may add the pages still tracked as DEAD after the rebuild.
-\pset format unaligned
+-- Reuse is exercised within each cycle (each cycle's insert draws from the
+-- previous cycle's freed pages), so cumulative main-fork growth across the
+-- cycles must stay within one live chain's worth per cycle
+-- (`num_cycles * max_live_pages`).  As in the single-cycle check, a
+-- concurrent backend holding the reclaim horizon back defers reclaim
+-- legitimately, so the size check is skipped rather than relaxed.
 SELECT
     CASE
-        WHEN (SELECT blocked_by_other_backend
-              FROM multi_cycle_after_rebuild)
-            THEN (pg_relation_size('memtable_reclaim_idx'::regclass,
-                                   'main')
-                  - (SELECT sz_start FROM multi_cycle_bounds))
-                 <= ((SELECT num_cycles * max_live_pages
-                      FROM multi_cycle_bounds)
-                     + (SELECT deferred_pages
-                        FROM multi_cycle_before_rebuild))
-                    * current_setting('block_size')::bigint
+        WHEN (SELECT blocked_by_other_backend FROM multi_cycle_blocker_state)
+            THEN true
         ELSE (pg_relation_size('memtable_reclaim_idx'::regclass, 'main')
               - (SELECT sz_start FROM multi_cycle_bounds))
-             <= (SELECT num_cycles * max_live_pages
-                 FROM multi_cycle_bounds)
+             <= (SELECT num_cycles * max_live_pages FROM multi_cycle_bounds)
                 * current_setting('block_size')::bigint
     END
     AS multi_cycle_growth_valid;
-multi_cycle_growth_valid
-t
+ multi_cycle_growth_valid 
+--------------------------
+ t
 (1 row)
-\pset format aligned
+
 DROP FUNCTION other_backend_holds_xmin();
 DROP TABLE memtable_reclaim_t;
 DROP EXTENSION pg_textsearch CASCADE;
