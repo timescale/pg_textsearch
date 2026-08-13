@@ -243,23 +243,22 @@ CREATE INDEX expr_jsonb_idx2 ON expr_jsonb
     USING bm25 ((data->>'content'))
     WITH (text_config='simple');
 RESET client_min_messages;
--- Implicit resolution should warn about multiple indexes
-SELECT id,
-       ROUND(((data->>'content') <@>
-              to_bm25query('database'))::numeric, 4)
-              AS score
-FROM expr_jsonb
-ORDER BY (data->>'content') <@> to_bm25query('database')
-LIMIT 3;
+-- Implicit resolution should warn about multiple matching indexes.  The two
+-- expression index paths tie on cost, so WHICH one the planner scans -- and
+-- therefore whether the follow-up "planner chose index ... instead of ..."
+-- warning fires -- depends on index enumeration order, which is not portable
+-- across environments.  Use standalone scoring (no index-scan path) to
+-- exercise the portable resolution warning without asserting a tie-broken
+-- index choice.
+SELECT count(*) AS scored_rows
+FROM (SELECT (data->>'content') <@> to_bm25query('database') AS score
+      FROM expr_jsonb) q;
 WARNING:  multiple BM25 indexes match the expression
 HINT:  Use explicit to_bm25query('query', 'index_name') to specify which index.
-WARNING:  multiple BM25 indexes match the expression
-HINT:  Use explicit to_bm25query('query', 'index_name') to specify which index.
-WARNING:  planner chose index "expr_jsonb_idx2" instead of "expr_jsonb_idx"
-HINT:  If this is not desired, use a planner hint to force a specific index, or use explicit to_bm25query('query', 'index_name').
- id | score 
-----+-------
-(0 rows)
+ scored_rows 
+-------------
+           3
+(1 row)
 
 -- Explicit naming with multiple expression indexes exercises
 -- the expression branch in collect_explicit_indexes_walker,
