@@ -35,7 +35,6 @@
 #include <storage/block.h>
 #include <storage/bufmgr.h>
 #include <storage/bufpage.h>
-#include <storage/indexfsm.h>
 #include <storage/itemptr.h>
 #include <storage/lwlock.h>
 #include <utils/builtins.h>
@@ -45,6 +44,7 @@
 #include <utils/varlena.h>
 
 #include "constants.h"
+#include "index/freepage.h"
 #include "index/metapage.h"
 #include "index/resolve.h"
 #include "index/state.h"
@@ -73,32 +73,27 @@ memtable_read_tail_blkno(Relation rel)
 }
 
 /*
- * Allocate a memtable chain page: try the index FSM first, else
+ * Allocate a memtable chain page: reuse a recyclable FSM page, else
  * extend the relation.  Returns a pinned buffer with
  * BUFFER_LOCK_EXCLUSIVE (same as ExtendBufferedRel EB_LOCK_FIRST).
  * Caller must UnlockReleaseBuffer when done.
+ *
+ * tp_fsm_claim_free_buffer holds the returned buffer's lock from the
+ * recyclability check onward, so the caller's page_init (under that
+ * same lock) atomically claims the block: a concurrent insert handed
+ * the same block by the non-atomic FSM blocks on the lock, then sees
+ * the now-live memtable page and skips it (issue #426).  It also
+ * refuses any block the FSM offers that is still a live structure
+ * page, so a stale/crash FSM entry can't clobber the tombstone chain
+ * or another memtable page (issues #380, #427).
  */
 static Buffer
 tp_memtable_alloc_page(Relation rel)
 {
-	BlockNumber block;
+	Buffer buf = tp_fsm_claim_free_buffer(rel);
 
-	block = GetFreeIndexPage(rel);
-	if (BlockNumberIsValid(block))
-	{
-		if (block == TP_METAPAGE_BLKNO)
-			elog(ERROR, "pg_textsearch: FSM returned metapage for memtable");
-
-		if (block >= RelationGetNumberOfBlocks(rel))
-			elog(ERROR,
-				 "pg_textsearch: FSM returned block %u beyond relation "
-				 "size for index \"%s\"",
-				 block,
-				 RelationGetRelationName(rel));
-
-		return ReadBufferExtended(
-				rel, MAIN_FORKNUM, block, RBM_ZERO_AND_LOCK, NULL);
-	}
+	if (BufferIsValid(buf))
+		return buf;
 
 	return ExtendBufferedRel(BMR_REL(rel), MAIN_FORKNUM, NULL, EB_LOCK_FIRST);
 }

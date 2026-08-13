@@ -9,10 +9,9 @@
 #include <access/generic_xlog.h>
 #include <miscadmin.h>
 #include <storage/bufmgr.h>
-#include <storage/freespace.h>
-#include <storage/indexfsm.h>
 
 #include "constants.h"
+#include "index/freepage.h"
 #include "index/metapage.h"
 #include "index/state.h"
 #include "segment/io.h"
@@ -53,10 +52,11 @@ tp_tombstone_page_is_valid(Page page)
 }
 
 /*
- * Allocate one zero/extend index page via the FSM-or-extend path.
- * Mirrors allocate_segment_page() but is local to this module; the
- * page is fully overwritten by the GenericXLog image below, so its
- * pre-existing contents are irrelevant.
+ * Allocate one index page for a tombstone page.  With use_fsm, reuse
+ * a recyclable free page from the FSM (skipping any live-structure
+ * block the non-crash-safe FSM offers); otherwise extend the
+ * relation.  The page is fully overwritten by the GenericXLog image
+ * below, so its prior contents are irrelevant.
  */
 static BlockNumber
 tombstone_alloc_page(Relation index, bool use_fsm)
@@ -65,11 +65,7 @@ tombstone_alloc_page(Relation index, bool use_fsm)
 	BlockNumber block;
 
 	if (use_fsm)
-	{
-		block = GetFreeIndexPage(index);
-		if (block != InvalidBlockNumber)
-			return block;
-	}
+		return tp_fsm_claim_or_extend_block(index);
 
 	buffer = ReadBufferExtended(
 			index, MAIN_FORKNUM, P_NEW, RBM_ZERO_AND_LOCK, NULL);
@@ -250,6 +246,9 @@ tp_tombstone_drain(
 		BlockNumber	 victim_next   = InvalidBlockNumber;
 		BlockNumber *victim_blocks = NULL;
 		uint32		 victim_count  = 0;
+		bool		 corrupt	   = false;
+		BlockNumber	 corrupt_at	   = InvalidBlockNumber;
+		BlockNumber	 corrupt_prev  = InvalidBlockNumber;
 
 		CHECK_FOR_INTERRUPTS();
 
@@ -271,12 +270,10 @@ tp_tombstone_drain(
 			if (!tp_tombstone_page_is_valid(page))
 			{
 				UnlockReleaseBuffer(buf);
-				ereport(ERROR,
-						(errcode(ERRCODE_DATA_CORRUPTED),
-						 errmsg("pg_textsearch: corrupt tombstone page %u "
-								"in index \"%s\"",
-								cur,
-								RelationGetRelationName(index))));
+				corrupt		 = true;
+				corrupt_at	 = cur;
+				corrupt_prev = prev;
+				break;
 			}
 
 			t = tp_tombstone_page(page);
@@ -296,25 +293,62 @@ tp_tombstone_drain(
 
 					if (b == 0 || b >= nblocks || b == cur)
 					{
-						UnlockReleaseBuffer(buf);
-						ereport(ERROR,
-								(errcode(ERRCODE_DATA_CORRUPTED),
-								 errmsg("pg_textsearch: tombstone page %u "
-										"lists invalid block %u in index "
-										"\"%s\"",
-										cur,
-										b,
-										RelationGetRelationName(index))));
+						corrupt		 = true;
+						corrupt_at	 = cur;
+						corrupt_prev = prev;
+						break;
 					}
 					victim_blocks[k] = b;
 				}
 				UnlockReleaseBuffer(buf);
+				if (corrupt)
+				{
+					pfree(victim_blocks);
+					victim_blocks = NULL;
+					victim		  = InvalidBlockNumber;
+				}
 				break;
 			}
 
 			prev = cur;
 			cur	 = t->next_page;
 			UnlockReleaseBuffer(buf);
+		}
+
+		/*
+		 * Self-heal an already-corrupt chain instead of wedging every
+		 * writer (issue #427).  An older page-reuse bug (or a crash
+		 * with a stale FSM) can leave a chain node that no longer
+		 * validates, or a valid node that lists an impossible block.
+		 * We cannot trust such a node's next_page, so drop it and the
+		 * unverifiable remainder by pointing its predecessor — a
+		 * still-valid tombstone page, or the metapage head when the
+		 * corruption is at the head — at InvalidBlockNumber.  The
+		 * still-drainable prefix ahead of the corruption is preserved;
+		 * the dropped tail leaks pages that a REINDEX reclaims.  We
+		 * never free the corrupt node's listed blocks, so if the block
+		 * was double-owned by a live structure, healing cannot corrupt
+		 * that structure.
+		 */
+		if (corrupt)
+		{
+			tombstone_unlink(
+					index, corrupt_prev, corrupt_at, InvalidBlockNumber);
+
+			if (own_lock)
+				tp_release_index_lock(state);
+
+			ereport(WARNING,
+					(errcode(ERRCODE_DATA_CORRUPTED),
+					 errmsg("pg_textsearch: recovered from corrupt tombstone "
+							"page %u in index \"%s\"",
+							corrupt_at,
+							RelationGetRelationName(index)),
+					 errdetail(
+							 "Dropped the deferred-free chain from that "
+							 "page onward; leaked index pages are "
+							 "reclaimed by REINDEX.")));
+			break;
 		}
 
 		if (victim == InvalidBlockNumber)
@@ -335,8 +369,8 @@ tp_tombstone_drain(
 			uint32 k;
 
 			for (k = 0; k < victim_count; k++)
-				RecordFreeIndexPage(index, victim_blocks[k]);
-			RecordFreeIndexPage(index, victim);
+				tp_record_free_index_page(index, victim_blocks[k]);
+			tp_record_free_index_page(index, victim);
 			freed += victim_count + 1;
 		}
 		if (victim_blocks)

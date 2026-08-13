@@ -20,6 +20,10 @@
 	0x5450544F /* "TPTO" - Tapir Tombstone: parks displaced segment pages \
 				* for deferred, standby-safe FSM reclaim (issue #380) */
 #define TP_TOMBSTONE_VERSION 1
+#define TP_FREE_PAGE_MAGIC                                                 \
+	0x54504650 /* "TPFP" - Tapir Free Page: a page deliberately returned   \
+				* to the index FSM and safe to recycle (issues #426, #427) \
+				*/
 
 /*
  * Page format versions - bump when on-disk format changes.

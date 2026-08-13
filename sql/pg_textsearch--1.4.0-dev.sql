@@ -259,11 +259,35 @@ CREATE FUNCTION @extschema@.bm25_pending_free_pages(index_name text)
     AS 'MODULE_PATHNAME', 'tp_pending_free_pages'
     LANGUAGE C STRICT STABLE;
 
+-- INTERNAL-ONLY test scaffold (issues #426, #427): return the live
+-- head tombstone page to the index FSM so the next allocator can pick
+-- it up, reproducing the stale-FSM / non-atomic-claim page-reuse
+-- hazard without an actual crash.  Superuser-only; not a supported API.
+CREATE FUNCTION @extschema@.bm25_test_recycle_tombstone_head(
+    index_name text)
+    RETURNS bigint
+    AS 'MODULE_PATHNAME', 'tp_test_recycle_tombstone_head'
+    LANGUAGE C VOLATILE STRICT;
+
+-- INTERNAL-ONLY test scaffold (issue #427): overwrite the head
+-- tombstone page's magic so the chain node is corrupt, simulating a
+-- page-reuse clobber, to exercise the drain's self-healing recovery.
+-- Superuser-only; not a supported API.
+CREATE FUNCTION @extschema@.bm25_test_corrupt_tombstone_head(
+    index_name text)
+    RETURNS bigint
+    AS 'MODULE_PATHNAME', 'tp_test_corrupt_tombstone_head'
+    LANGUAGE C VOLATILE STRICT;
+
 -- Revoke public execute on debug functions (superuser-only).
 REVOKE EXECUTE ON FUNCTION @extschema@.bm25_dump_index(text) FROM PUBLIC;
 REVOKE EXECUTE ON FUNCTION @extschema@.bm25_summarize_index(text) FROM PUBLIC;
 REVOKE EXECUTE ON FUNCTION @extschema@.bm25_pending_free_pages(text)
     FROM PUBLIC;
+REVOKE EXECUTE ON FUNCTION
+    @extschema@.bm25_test_recycle_tombstone_head(text) FROM PUBLIC;
+REVOKE EXECUTE ON FUNCTION
+    @extschema@.bm25_test_corrupt_tombstone_head(text) FROM PUBLIC;
 
 -- The bm25_test_memtable_page / bm25_test_memtable_append /
 -- bm25_test_chain_source / bm25_memtable_chain /
