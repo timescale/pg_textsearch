@@ -6,11 +6,8 @@
 
 CREATE EXTENSION IF NOT EXISTS pg_textsearch;
 
--- Detect whether another same-database client backend is holding an xmin
--- (which pins the reclaim horizon back).  Sampled around each VACUUM so the
--- growth bounds below can tolerate deferred reclaim when a concurrent
--- snapshot -- e.g. autovacuum or a parallel regression session -- keeps
--- GetOldestNonRemovableTransactionId from advancing.
+-- True when another same-database client backend holds an xmin, which
+-- pins the reclaim horizon back and can defer FSM reclaim.
 CREATE FUNCTION other_backend_holds_xmin() RETURNS boolean
 LANGUAGE sql STABLE AS $$
     SELECT EXISTS (
@@ -95,12 +92,9 @@ FROM generate_series(1, 200) i;
 SELECT count(*)::int > 0 AS chain_rebuilt
 FROM bm25_memtable_chain('memtable_reclaim_idx');
 
--- When no other backend held the reclaim horizon back, VACUUM freed the
--- spilled DEAD pages to the FSM and this rebuild must have reused them:
--- the main fork does not grow and no DEAD pages remain.  When a concurrent
--- backend held an xmin, deferred reclaim is expected and correct, so the
--- size check is skipped rather than relaxed to a bound that cannot
--- distinguish deferred reclaim from a genuine reuse regression.
+-- Unblocked: VACUUM freed the DEAD pages and this rebuild reused them, so
+-- the main fork does not grow and no DEAD pages remain.  Blocked: reclaim
+-- is legitimately deferred, so skip the check rather than relax it.
 SELECT
     CASE
         WHEN (SELECT blocked_by_other_backend FROM reclaim_blocker_state)
@@ -113,10 +107,8 @@ SELECT
     AS single_cycle_growth_valid;
 
 -- Multi-cycle: five spill→VACUUM cycles (VACUUM cannot run inside DO).
--- With per-cycle FSM reuse, cumulative main-fork growth stays bounded by
--- the live memtable work per cycle; without reuse it would grow by roughly
--- N×K memtable pages.  The bound is asserted only when no concurrent
--- backend held the reclaim horizon back (see the per-cycle sampling below).
+-- With per-cycle FSM reuse, cumulative growth stays bounded by the live
+-- memtable work per cycle; without reuse it would grow ~N×K pages.
 CREATE TEMP TABLE multi_cycle_bounds (
     sz_start bigint,
     max_live_pages int,
@@ -203,12 +195,9 @@ VACUUM ANALYZE memtable_reclaim_t;
 SELECT max_live_pages > 1 AS multi_cycle_chain_multi_page
 FROM multi_cycle_bounds;
 
--- Reuse is exercised within each cycle (each cycle's insert draws from the
--- previous cycle's freed pages), so cumulative main-fork growth across the
--- cycles must stay within one live chain's worth per cycle
--- (`num_cycles * max_live_pages`).  As in the single-cycle check, a
--- concurrent backend holding the reclaim horizon back defers reclaim
--- legitimately, so the size check is skipped rather than relaxed.
+-- Cumulative growth must stay within one live chain per cycle
+-- (num_cycles * max_live_pages).  As above, skip when a blocker held the
+-- horizon.
 SELECT
     CASE
         WHEN (SELECT blocked_by_other_backend FROM multi_cycle_blocker_state)
