@@ -60,7 +60,7 @@ merge_sink_init_pages(TpMergeSink *sink, Relation index)
  * Sequential append to sink.
  */
 static void
-merge_sink_write(TpMergeSink *sink, const void *data, uint32 size)
+merge_sink_write(TpMergeSink *sink, const void *data, Size size)
 {
 	tp_segment_writer_write(&sink->writer, data, size);
 	sink->current_offset = sink->writer.current_offset;
@@ -198,7 +198,8 @@ merge_source_init(TpMergeSource *source, Relation index, BlockNumber root)
 			sizeof(dict_header.num_terms));
 
 	/* Cache all string offsets for this segment */
-	source->string_offsets = palloc(sizeof(uint32) * source->num_terms);
+	source->string_offsets = palloc_extended(
+			sizeof(uint32) * source->num_terms, MCXT_ALLOC_HUGE);
 	tp_segment_read(
 			source->reader,
 			header->dictionary_offset + sizeof(dict_header.num_terms),
@@ -256,7 +257,8 @@ merge_source_init_from_reader(TpMergeSource *source, TpSegmentReader *reader)
 			sizeof(dict_header.num_terms));
 
 	/* Cache all string offsets for this segment */
-	source->string_offsets = palloc(sizeof(uint32) * source->num_terms);
+	source->string_offsets = palloc_extended(
+			sizeof(uint32) * source->num_terms, MCXT_ALLOC_HUGE);
 	tp_segment_read(
 			source->reader,
 			header->dictionary_offset + sizeof(dict_header.num_terms),
@@ -696,7 +698,8 @@ build_merged_docmap(
 		}
 
 		total_docs += ms->num_docs;
-		mapping->old_to_new[i] = palloc(ms->num_docs * sizeof(uint32));
+		mapping->old_to_new[i] = palloc_extended(
+				ms->num_docs * sizeof(uint32), MCXT_ALLOC_HUGE);
 
 		/* CTID arrays: use cached if available, else bulk-read */
 		if (sources[i].reader->cached_ctid_pages != NULL)
@@ -707,14 +710,16 @@ build_merged_docmap(
 		}
 		else
 		{
-			ms->ctid_pages = palloc(ms->num_docs * sizeof(BlockNumber));
+			ms->ctid_pages = palloc_extended(
+					ms->num_docs * sizeof(BlockNumber), MCXT_ALLOC_HUGE);
 			tp_segment_read(
 					sources[i].reader,
 					header->ctid_pages_offset,
 					ms->ctid_pages,
 					ms->num_docs * sizeof(BlockNumber));
 
-			ms->ctid_offsets = palloc(ms->num_docs * sizeof(OffsetNumber));
+			ms->ctid_offsets = palloc_extended(
+					ms->num_docs * sizeof(OffsetNumber), MCXT_ALLOC_HUGE);
 			tp_segment_read(
 					sources[i].reader,
 					header->ctid_offsets_offset,
@@ -724,7 +729,8 @@ build_merged_docmap(
 		}
 
 		/* Fieldnorms: always bulk-read (not cached by reader) */
-		ms->fieldnorms = palloc(ms->num_docs * sizeof(uint8));
+		ms->fieldnorms =
+				palloc_extended(ms->num_docs * sizeof(uint8), MCXT_ALLOC_HUGE);
 		tp_segment_read(
 				sources[i].reader,
 				header->fieldnorm_offset,
@@ -733,9 +739,12 @@ build_merged_docmap(
 	}
 
 	/* Step 2: Allocate output arrays (palloc(0) is valid in PG) */
-	out_pages	   = palloc(total_docs * sizeof(BlockNumber));
-	out_offsets	   = palloc(total_docs * sizeof(OffsetNumber));
-	out_fieldnorms = palloc(total_docs * sizeof(uint8));
+	out_pages =
+			palloc_extended(total_docs * sizeof(BlockNumber), MCXT_ALLOC_HUGE);
+	out_offsets = palloc_extended(
+			total_docs * sizeof(OffsetNumber), MCXT_ALLOC_HUGE);
+	out_fieldnorms =
+			palloc_extended(total_docs * sizeof(uint8), MCXT_ALLOC_HUGE);
 
 	/*
 	 * Step 3: Merge docmaps.
@@ -992,7 +1001,7 @@ write_merged_segment_to_sink(
 	TpMergeDocMapping	doc_mapping;
 	MergeTermBlockInfo *term_blocks;
 	uint32			   *string_offsets;
-	uint32				string_pos;
+	uint64				string_pos;
 	uint32				i;
 
 	/* Accumulated skip entries for all terms */
@@ -1050,12 +1059,29 @@ write_merged_segment_to_sink(
 	merge_sink_write(sink, &dict, offsetof(TpDictionary, string_offsets));
 
 	/* Calculate string offsets */
-	string_offsets = palloc0(num_terms * sizeof(uint32));
-	string_pos	   = 0;
+	string_offsets = palloc_extended(
+			num_terms * sizeof(uint32), MCXT_ALLOC_HUGE | MCXT_ALLOC_ZERO);
+	string_pos = 0;
 	for (i = 0; i < num_terms; i++)
 	{
-		string_offsets[i] = string_pos;
-		string_pos += sizeof(uint32) + terms[i].term_len + sizeof(uint32);
+		/*
+		 * String-pool offsets are stored as uint32 in the segment
+		 * format.  Fail loudly before writing rather than silently
+		 * wrapping and producing a segment that reads from the wrong
+		 * place (issue #432).
+		 */
+		if (string_pos > PG_UINT32_MAX)
+			ereport(ERROR,
+					(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
+					 errmsg("pg_textsearch: merged segment string pool "
+							"exceeds the %u-byte format limit",
+							PG_UINT32_MAX),
+					 errhint("The corpus vocabulary is too large for a "
+							 "single segment.")));
+
+		string_offsets[i] = (uint32)string_pos;
+		string_pos += (uint64)sizeof(uint32) + terms[i].term_len +
+					  sizeof(uint32);
 	}
 
 	/* Write string offsets array */
@@ -1088,7 +1114,9 @@ write_merged_segment_to_sink(
 	header.postings_offset = sink->current_offset;
 
 	/* Initialize per-term tracking and skip entry accumulator */
-	term_blocks = palloc0(num_terms * sizeof(MergeTermBlockInfo));
+	term_blocks = palloc_extended(
+			num_terms * sizeof(MergeTermBlockInfo),
+			MCXT_ALLOC_HUGE | MCXT_ALLOC_ZERO);
 
 	skip_entries_capacity = 1024;
 	skip_entries_count	  = 0;

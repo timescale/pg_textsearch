@@ -1481,7 +1481,13 @@ tp_build(Relation heap, Relation index, IndexInfo *indexInfo)
 				RelationGetRelid(index), RelationGetRelid(heap));
 
 		/* Budget: maintenance_work_mem (in KB) -> bytes */
-		budget	  = (Size)maintenance_work_mem * 1024L;
+		budget = (Size)maintenance_work_mem * 1024L;
+		/*
+		 * Clamp to the arena's addressable capacity so a large
+		 * maintenance_work_mem still spills instead of overrunning
+		 * the 4 GiB arena (issue #433).
+		 */
+		budget	  = tp_arena_clamp_budget(budget);
 		build_ctx = tp_build_context_create(budget);
 
 		/* Initialize callback state */

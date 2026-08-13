@@ -2052,16 +2052,16 @@ tp_segment_writer_init(TpSegmentWriter *writer, Relation index)
 }
 
 void
-tp_segment_writer_write(TpSegmentWriter *writer, const void *data, uint32 len)
+tp_segment_writer_write(TpSegmentWriter *writer, const void *data, Size len)
 {
 	const char *src			  = (const char *)data;
-	uint32		bytes_written = 0;
+	Size		bytes_written = 0;
 
 	while (bytes_written < len)
 	{
 		/* Calculate how much we can write to current page */
 		uint32 page_space = BLCKSZ - writer->buffer_pos;
-		uint32 to_write	  = Min(page_space, len - bytes_written);
+		uint32 to_write	  = (uint32)Min((Size)page_space, len - bytes_written);
 
 		/* Copy data to buffer */
 		memcpy(writer->buffer + writer->buffer_pos,

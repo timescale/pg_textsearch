@@ -106,7 +106,7 @@ tp_segment_posting_iterator_init(
 		TpStringEntry string_entry;
 		int			  cmp;
 		uint32		  string_offset_value;
-		uint32		  string_offset;
+		uint64		  string_offset;
 
 		mid = left + (right - left) / 2;
 
@@ -618,7 +618,7 @@ tp_segment_get_doc_freq(
 			TpStringEntry string_entry;
 			int			  cmp;
 			uint32		  string_offset_value;
-			uint32		  string_offset;
+			uint64		  string_offset;
 			int			  mid = left + (right - left) / 2;
 
 			tp_segment_read(
@@ -747,7 +747,7 @@ tp_batch_get_segment_doc_freq(
 			{
 				int	   mid = left + (right - left) / 2;
 				uint32 string_offset_value;
-				uint32 string_offset;
+				uint64 string_offset;
 				uint32 string_length;
 				int	   cmp;
 

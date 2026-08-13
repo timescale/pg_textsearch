@@ -265,6 +265,14 @@ tp_parallel_build_worker_main(dsm_segment *seg, shm_toc *toc)
 	if (budget < 64L * 1024 * 1024)
 		budget = 64L * 1024 * 1024;
 
+	/*
+	 * Clamp to the arena's addressable capacity: with few workers
+	 * launched, maintenance_work_mem / nworkers can still exceed the
+	 * 4 GiB arena, so the worker would overrun instead of spilling
+	 * (issue #433).
+	 */
+	budget = tp_arena_clamp_budget(budget);
+
 	build_ctx = tp_build_context_create(budget);
 	tracker_init(&tracker);
 
@@ -423,9 +431,13 @@ tp_parallel_build_worker_main(dsm_segment *seg, shm_toc *toc)
 							worker_id,
 							tracker.count,
 							TP_MAX_WORKER_SEGMENTS),
-					 errhint("Increase maintenance_work_mem or "
-							 "reduce "
-							 "max_parallel_maintenance_workers.")));
+					 errhint("Increase maintenance_work_mem so each "
+							 "worker flushes fewer, larger segments "
+							 "(the per-worker budget is bounded by the "
+							 "arena's ~4 GiB capacity). Reducing "
+							 "max_parallel_maintenance_workers makes this "
+							 "worse, as each remaining worker then scans a "
+							 "larger share of the table.")));
 
 		for (i = 0; i < tracker.count; i++)
 		{
