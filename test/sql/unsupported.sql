@@ -64,15 +64,51 @@ LIMIT 5;
 CREATE INDEX docs_bm25_simple_idx ON docs USING bm25(content)
     WITH (text_config='simple');
 
--- Implicit resolution picks first index found
--- Note: Score projection requires explicit index, so just use ORDER BY
-EXPLAIN (COSTS OFF)
-SELECT id
-FROM docs
-ORDER BY content <@> 'database'
-LIMIT 3;
+-- With two equal-cost BM25 indexes on the same column, implicit resolution
+-- warns that multiple indexes match.  The two index paths tie on cost, so
+-- WHICH one the planner scans -- and therefore whether the follow-up
+-- "planner chose index ... instead of ..." warning fires -- depends on index
+-- enumeration order, which is not portable across environments.  Assert only
+-- the portable facts: the resolution warning fires, and the implicit query
+-- still plans as a BM25 index scan rather than falling back to a seq scan.
 
--- Explicit index selection gives user control
+-- Portable resolution warning, via standalone scoring (no index-scan path,
+-- so no tie-dependent index choice is asserted).
+SELECT count(*) AS scored_rows
+FROM (SELECT content <@> 'database' AS score FROM docs) q;
+
+-- Portable index-scan assertion: matches the BM25 index family (either tied
+-- index) but not a pkey-scan fallback, so it still fails if the BM25 ordered
+-- scan regresses to a seq/sort plan.  Warnings are silenced because the
+-- tie-dependent "planner chose index" warning is not portable.
+CREATE FUNCTION bm25_query_uses_index_scan(sql text) RETURNS boolean
+LANGUAGE plpgsql AS $$
+DECLARE
+    ln   text;
+    seen boolean := false;
+BEGIN
+    FOR ln IN EXECUTE 'EXPLAIN (COSTS OFF) ' || sql
+    LOOP
+        IF ln LIKE '%Index Scan using docs_bm25%' THEN
+            seen := true;
+        END IF;
+    END LOOP;
+    RETURN seen;
+END;
+$$;
+
+SET client_min_messages = error;
+SELECT bm25_query_uses_index_scan(
+    'SELECT id FROM docs ORDER BY content <@> ''database'' LIMIT 3'
+) AS implicit_uses_index_scan;
+RESET client_min_messages;
+
+DROP FUNCTION bm25_query_uses_index_scan(text);
+
+-- Explicit index selection deterministically pins the scanned index:
+-- fix_bm25_indexpaths rewrites every BM25 path's indexinfo to the named
+-- index, so which tied index the planner enumerated first does not matter.
+-- This holds regardless of environment.
 EXPLAIN (COSTS OFF)
 SELECT id, content <@> to_bm25query('database', 'docs_bm25_simple_idx') as score
 FROM docs
