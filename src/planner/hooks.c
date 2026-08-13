@@ -1803,25 +1803,24 @@ validate_indexscan_explicit_index(IndexScan *indexscan, BM25OidCache *oids)
 	/* Validate they match */
 	if (specified_index_oid != indexscan->indexid)
 	{
-		char *specified_name;
-		char *scan_name;
-
 		/*
 		 * Allow partitioned indexes: if specified is parent and scan is child
 		 */
 		if (is_child_partition_index(specified_index_oid, indexscan->indexid))
 			return; /* Child partition index - allowed */
 
-		specified_name = get_rel_name(specified_index_oid);
-		scan_name	   = get_rel_name(indexscan->indexid);
-
 		/*
-		 * Check if the index was explicitly specified by the user via
-		 * to_bm25query(text, index_name). If so, error. If it was implicitly
-		 * resolved (e.g., from text <@> text syntax), just warn.
+		 * When the user names an index explicitly via
+		 * to_bm25query(text, index_name), that index must be used for the
+		 * scan to ensure consistent tokenization; error if the planner chose
+		 * a different one. Implicitly resolved indexes (e.g. text <@> text)
+		 * impose no such constraint, so no diagnostic is emitted.
 		 */
 		if (tpquery_is_explicit_index(tpquery))
 		{
+			char *specified_name = get_rel_name(specified_index_oid);
+			char *scan_name		 = get_rel_name(indexscan->indexid);
+
 			ereport(ERROR,
 					(errcode(ERRCODE_WRONG_OBJECT_TYPE),
 					 errmsg("query specifies index \"%s\" but planner chose "
@@ -1835,16 +1834,6 @@ validate_indexscan_explicit_index(IndexScan *indexscan, BM25OidCache *oids)
 					 errhint("Use a planner hint to force the specified "
 							 "index, or remove the explicit index name to let "
 							 "the planner choose automatically.")));
-		}
-		else
-		{
-			ereport(WARNING,
-					(errmsg("planner chose index \"%s\" instead of \"%s\"",
-							scan_name ? scan_name : "(unknown)",
-							specified_name ? specified_name : "(unknown)"),
-					 errhint("If this is not desired, use a planner hint to "
-							 "force a specific index, or use explicit "
-							 "to_bm25query('query', 'index_name').")));
 		}
 	}
 }
@@ -2006,8 +1995,9 @@ tp_planner_hook(
 		/*
 		 * Validate implicit index resolution - for explicit indexes, the
 		 * set_rel_pathlist_hook should have already forced the correct index.
-		 * This validation catches cases where implicit resolution picked a
-		 * different index than the planner chose.
+		 * This validation errors when an explicitly named index differs from
+		 * the one the planner scanned; implicit resolution mismatches are
+		 * allowed and emit no diagnostic.
 		 */
 		validate_explicit_index_usage(result->planTree, &oid_cache);
 

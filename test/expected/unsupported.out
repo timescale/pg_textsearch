@@ -60,8 +60,8 @@ LIMIT 5;
 
 -- =============================================================================
 -- LIMITATION 2: Multiple BM25 indexes on same column
--- The planner hook picks the first matching index. Use explicit to_bm25query()
--- for control over which index is used.
+-- Implicit resolution warns and uses one of the indexes; name one
+-- explicitly with to_bm25query() for control.
 -- =============================================================================
 \echo 'Test: Multiple BM25 indexes on same column'
 Test: Multiple BM25 indexes on same column
@@ -71,25 +71,17 @@ NOTICE:  BM25 index build started for relation docs_bm25_simple_idx
 NOTICE:  Using text search configuration: simple
 NOTICE:  Using index options: k1=1.20, b=0.75
 NOTICE:  BM25 index build completed: 3 documents, avg_length=3.33
--- Implicit resolution picks first index found
--- Note: Score projection requires explicit index, so just use ORDER BY
-EXPLAIN (COSTS OFF)
-SELECT id
-FROM docs
-ORDER BY content <@> 'database'
-LIMIT 3;
+-- Implicit resolution warns; the matched row is the same whichever tied
+-- index the planner picks.
+SELECT id FROM docs ORDER BY content <@> 'database' LIMIT 3;
 WARNING:  multiple BM25 indexes exist on the same column
 HINT:  Use explicit to_bm25query('query', 'index_name') to specify which index to use.
-WARNING:  planner chose index "docs_bm25_simple_idx" instead of "docs_bm25_idx"
-HINT:  If this is not desired, use a planner hint to force a specific index, or use explicit to_bm25query('query', 'index_name').
-                             QUERY PLAN                              
----------------------------------------------------------------------
- Limit
-   ->  Index Scan using docs_bm25_simple_idx on docs
-         Order By: (content <@> 'docs_bm25_idx:database'::bm25query)
-(3 rows)
+ id 
+----
+  1
+(1 row)
 
--- Explicit index selection gives user control
+-- Explicit naming pins a specific index.
 EXPLAIN (COSTS OFF)
 SELECT id, content <@> to_bm25query('database', 'docs_bm25_simple_idx') as score
 FROM docs
