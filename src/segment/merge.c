@@ -1392,7 +1392,8 @@ write_merged_segment_to_sink(
 	{
 		TpDictEntry *dict_entries;
 
-		dict_entries = palloc(num_terms * sizeof(TpDictEntry));
+		dict_entries = palloc_extended(
+				num_terms * sizeof(TpDictEntry), MCXT_ALLOC_HUGE);
 		for (i = 0; i < num_terms; i++)
 		{
 			dict_entries[i].skip_index_offset =
