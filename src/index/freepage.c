@@ -93,7 +93,19 @@ tp_fsm_claim_free_buffer(Relation index)
 			continue;
 
 		buf = ReadBuffer(index, blk);
-		LockBuffer(buf, BUFFER_LOCK_EXCLUSIVE);
+		if (!ConditionalLockBuffer(buf))
+		{
+			/*
+			 * Someone already holds this buffer's content lock — a
+			 * concurrent claimer mid-flight, or (under a stale FSM
+			 * offer) this very backend still holding the block as its
+			 * live memtable tail.  Blocking here would risk a
+			 * self-deadlock in the latter case, so treat it like a
+			 * non-recyclable page and try the next candidate.
+			 */
+			ReleaseBuffer(buf);
+			continue;
+		}
 		page = BufferGetPage(buf);
 
 		if (tp_page_is_recyclable(page))
@@ -131,8 +143,8 @@ tp_fsm_claim_free_block(Relation index)
 	 * keep the claim atomic against a concurrent allocator that the
 	 * non-atomic GetFreeIndexPage() handed the same block, clear the free
 	 * stamp under the lock now (WAL-logged).  That concurrent allocator
-	 * blocks on this buffer lock, then observes a page that is no longer
-	 * recyclable and skips it, so it cannot double-allocate the block.
+	 * fails the conditional lock, or observes a page that is no longer
+	 * recyclable, and skips it, so it cannot double-allocate the block.
 	 * A crash between here and the caller's reinitialization only leaks
 	 * the block (reclaimed by REINDEX); it is out of the FSM and linked
 	 * into no structure.  pd_lower is already BLCKSZ from the stamp, so
@@ -146,4 +158,25 @@ tp_fsm_claim_free_block(Relation index)
 	UnlockReleaseBuffer(buf);
 
 	return blk;
+}
+
+BlockNumber
+tp_fsm_claim_or_extend_block(Relation index)
+{
+	Buffer		buffer;
+	BlockNumber block = tp_fsm_claim_free_block(index);
+
+	if (block != InvalidBlockNumber)
+		return block;
+
+	/*
+	 * FSM has no reusable page: extend the relation.  RBM_ZERO_AND_LOCK
+	 * gives a zero-filled page; the first content writer overwrites the
+	 * header and body before logging it.
+	 */
+	buffer = ReadBufferExtended(
+			index, MAIN_FORKNUM, P_NEW, RBM_ZERO_AND_LOCK, NULL);
+	block = BufferGetBlockNumber(buffer);
+	UnlockReleaseBuffer(buffer);
+	return block;
 }

@@ -25,7 +25,7 @@
  * pages.
  *
  * Crash safety: a crash between page allocation
- * (ExtendBufferedRel or FSM reuse via GetFreeIndexPage) and
+ * (ExtendBufferedRel or FSM reuse via tp_fsm_claim_free_buffer) and
  * GenericXLogFinish() leaves a block on disk that is unreachable
  * via meta.head → next chain and usually without a DEAD stamp.
  * No code may sequentially scan the relation without first
@@ -101,7 +101,7 @@ extern BlockNumber tp_memtable_append(
  * old chain via a metapage snapshot they already latched complete
  * safely; new scans see the new metapage and skip the orphans.
  * `tp_vacuumcleanup` returns them to the index FSM via
- * `RecordFreeIndexPage`; `tp_memtable_alloc_page` reuses them.
+ * `tp_record_free_index_page`; `tp_memtable_alloc_page` reuses them.
  *
  * Caller MUST already hold the per-index LWLock in EXCLUSIVE mode.
  *

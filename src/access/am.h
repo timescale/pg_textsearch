@@ -179,11 +179,11 @@ void tp_spill_memtable_if_needed(
 
 /*
  * Recycle memtable pages stamped DEAD during spill: scan the index
- * main fork, RecordFreeIndexPage when dead_fxid is older than the
- * global visibility horizon for heaprel.  Returns the number of
+ * main fork, tp_record_free_index_page when dead_fxid is older than
+ * the global visibility horizon for heaprel.  Returns the number of
  * blocks freed.  Caller must hold per-index LW_SHARED or stronger
- * (tp_vacuumcleanup).  FSM updates are not WAL-logged (same as
- * segment page free).
+ * (tp_vacuumcleanup).  Each freed page is WAL-stamped recyclable
+ * before it returns to the FSM (same as segment page free).
  */
 int tp_reclaim_dead_memtable_pages(Relation indexrel, Relation heaprel);
 

@@ -65,10 +65,12 @@ extern void tp_record_free_index_page(Relation index, BlockNumber blk);
  *
  * Holding the buffer lock from the recyclability check through the
  * caller's reinitialization makes the claim atomic: a second backend
- * handed the same block by a non-atomic GetFreeIndexPage() blocks on
- * the lock, then observes the now-live page and skips it.  This is the
- * path memtable inserts use (they run under the per-index lock only in
- * SHARED mode, so they race each other — issue #426).
+ * handed the same block by a non-atomic GetFreeIndexPage() fails the
+ * conditional lock (or observes the now-live page) and skips it.  The
+ * conditional lock also avoids a self-deadlock when a stale FSM offer
+ * hands back a block the caller itself already holds locked.  This is
+ * the path memtable inserts use (they run under the per-index lock
+ * only in SHARED mode, so they race each other — issue #426).
  */
 extern Buffer tp_fsm_claim_free_buffer(Relation index);
 
@@ -84,3 +86,12 @@ extern Buffer tp_fsm_claim_free_buffer(Relation index);
  * reusable page.
  */
 extern BlockNumber tp_fsm_claim_free_block(Relation index);
+
+/*
+ * Claim a recyclable free page via tp_fsm_claim_free_block, falling
+ * back to extending the relation (a zero-filled P_NEW page) when the
+ * FSM offers none.  Always returns a valid block number.  Shared by
+ * the block-oriented allocators (segment and tombstone pages) that
+ * reopen the block later under their own lock.
+ */
+extern BlockNumber tp_fsm_claim_or_extend_block(Relation index);

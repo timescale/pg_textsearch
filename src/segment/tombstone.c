@@ -65,11 +65,7 @@ tombstone_alloc_page(Relation index, bool use_fsm)
 	BlockNumber block;
 
 	if (use_fsm)
-	{
-		block = tp_fsm_claim_free_block(index);
-		if (block != InvalidBlockNumber)
-			return block;
-	}
+		return tp_fsm_claim_or_extend_block(index);
 
 	buffer = ReadBufferExtended(
 			index, MAIN_FORKNUM, P_NEW, RBM_ZERO_AND_LOCK, NULL);
