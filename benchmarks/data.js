@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1786606003683,
+  "lastUpdate": 1786606006670,
   "repoUrl": "https://github.com/timescale/pg_textsearch",
   "entries": {
     "cranfield Benchmarks": [
@@ -138393,6 +138393,93 @@ window.BENCHMARK_DATA = {
           {
             "name": "msmarco_insert (0 docs) - Weighted Throughput (avg ms/query)",
             "value": 12.88,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco_insert (0 docs) - Index Size",
+            "value": 9485.84,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tjgreen@gmail.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "d3e00e04c64d31ce79e1085d893d6da9ab817378",
+          "message": "planner: drop non-deterministic implicit multi-index warning (#448)\n\n## Summary\n\nWhen two BM25 indexes exist on the same column (or two expression\nindexes match the same expression), the planner faces a genuine cost\ntie — `tp_costestimate` derives cost only from `total_docs`, which is\nidentical for indexes on the same column. Which tied index the planner\nscans then depends on relcache `indexlist` enumeration order, which is\nnot guaranteed stable across environments.\n\n`validate_indexscan_explicit_index()` emitted a per-scan\n`WARNING: planner chose index \"X\" instead of \"Y\"` in the *implicit*\nresolution case. Because X/Y depend on that enumeration order, the\nwarning text was non-deterministic across environments, making the\nmulti-index regression tests fragile. It was also non-actionable: the\ngeneric `multiple BM25 indexes ...` warning already advises naming an\nindex explicitly, and the returned rows are identical regardless of\nwhich tied index is scanned.\n\nThis PR removes the implicit-case WARNING/HINT. The explicit-case\n`ERROR` (raised when `to_bm25query()` names an index the planner did\nnot use) is a real tokenization-correctness guarantee and is kept\nunchanged, as are the generic multiple-index warnings.\n\n## Test changes\n\nThe multi-index test sections are updated to use portable index-scan\nqueries that don't print the tie-dependent chosen index, and their\ncomments are trimmed:\n\n- **unsupported**: the implicit query returns rows instead of\n  `EXPLAIN` (only doc 1 matches, so the result is stable); the\n  explicit `EXPLAIN` pins a deterministic index.\n- **explicit_index**: drops the implicit `EXPLAIN` whose plan line\n  named the tied index, keeping the existing deterministic-score\n  assertion that already covers the implicit path.\n- **expression_index**: no query change (the implicit query returns 0\n  rows); expected output regenerated without the removed warning.\n\n## Verification\n\nFull regression suite green on PostgreSQL 17 and 18 (72/72). Code\nformatting checked with `clang-format`.",
+          "timestamp": "2026-08-13T04:33:42Z",
+          "url": "https://github.com/timescale/pg_textsearch/commit/d3e00e04c64d31ce79e1085d893d6da9ab817378"
+        },
+        "date": 1786606006190,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "msmarco_insert (0 docs) - Index Build Time",
+            "value": 1.418,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco_insert (0 docs) - Insert Time",
+            "value": 926803.362,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco_insert (0 docs) - 1 Token Query (p50)",
+            "value": 6.19,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco_insert (0 docs) - 2 Token Query (p50)",
+            "value": 7.7,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco_insert (0 docs) - 3 Token Query (p50)",
+            "value": 10.98,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco_insert (0 docs) - 4 Token Query (p50)",
+            "value": 14.78,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco_insert (0 docs) - 5 Token Query (p50)",
+            "value": 15.97,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco_insert (0 docs) - 6 Token Query (p50)",
+            "value": 19.5,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco_insert (0 docs) - 7 Token Query (p50)",
+            "value": 23.22,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco_insert (0 docs) - 8+ Token Query (p50)",
+            "value": 30.95,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco_insert (0 docs) - Weighted Latency (p50, ms)",
+            "value": 13.06,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco_insert (0 docs) - Weighted Throughput (avg ms/query)",
+            "value": 14.02,
             "unit": "ms"
           },
           {
