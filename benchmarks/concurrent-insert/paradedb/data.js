@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1786520637685,
+  "lastUpdate": 1786607148234,
   "repoUrl": "https://github.com/timescale/pg_textsearch",
   "entries": {
     "Concurrent INSERT (ParadeDB)": [
@@ -8126,6 +8126,68 @@ window.BENCHMARK_DATA = {
           {
             "name": "ParadeDB INSERT latency (c=8)",
             "value": 0.675,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tjgreen@gmail.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "d3e00e04c64d31ce79e1085d893d6da9ab817378",
+          "message": "planner: drop non-deterministic implicit multi-index warning (#448)\n\n## Summary\n\nWhen two BM25 indexes exist on the same column (or two expression\nindexes match the same expression), the planner faces a genuine cost\ntie — `tp_costestimate` derives cost only from `total_docs`, which is\nidentical for indexes on the same column. Which tied index the planner\nscans then depends on relcache `indexlist` enumeration order, which is\nnot guaranteed stable across environments.\n\n`validate_indexscan_explicit_index()` emitted a per-scan\n`WARNING: planner chose index \"X\" instead of \"Y\"` in the *implicit*\nresolution case. Because X/Y depend on that enumeration order, the\nwarning text was non-deterministic across environments, making the\nmulti-index regression tests fragile. It was also non-actionable: the\ngeneric `multiple BM25 indexes ...` warning already advises naming an\nindex explicitly, and the returned rows are identical regardless of\nwhich tied index is scanned.\n\nThis PR removes the implicit-case WARNING/HINT. The explicit-case\n`ERROR` (raised when `to_bm25query()` names an index the planner did\nnot use) is a real tokenization-correctness guarantee and is kept\nunchanged, as are the generic multiple-index warnings.\n\n## Test changes\n\nThe multi-index test sections are updated to use portable index-scan\nqueries that don't print the tie-dependent chosen index, and their\ncomments are trimmed:\n\n- **unsupported**: the implicit query returns rows instead of\n  `EXPLAIN` (only doc 1 matches, so the result is stable); the\n  explicit `EXPLAIN` pins a deterministic index.\n- **explicit_index**: drops the implicit `EXPLAIN` whose plan line\n  named the tied index, keeping the existing deterministic-score\n  assertion that already covers the implicit path.\n- **expression_index**: no query change (the implicit query returns 0\n  rows); expected output regenerated without the removed warning.\n\n## Verification\n\nFull regression suite green on PostgreSQL 17 and 18 (72/72). Code\nformatting checked with `clang-format`.",
+          "timestamp": "2026-08-13T04:33:42Z",
+          "url": "https://github.com/timescale/pg_textsearch/commit/d3e00e04c64d31ce79e1085d893d6da9ab817378"
+        },
+        "date": 1786607120529,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "ParadeDB INSERT TPS (c=1)",
+            "value": 1339.844491,
+            "unit": "tps"
+          },
+          {
+            "name": "ParadeDB INSERT latency (c=1)",
+            "value": 0.746,
+            "unit": "ms"
+          },
+          {
+            "name": "ParadeDB INSERT TPS (c=2)",
+            "value": 2634.179333,
+            "unit": "tps"
+          },
+          {
+            "name": "ParadeDB INSERT latency (c=2)",
+            "value": 0.759,
+            "unit": "ms"
+          },
+          {
+            "name": "ParadeDB INSERT TPS (c=4)",
+            "value": 4784.328295,
+            "unit": "tps"
+          },
+          {
+            "name": "ParadeDB INSERT latency (c=4)",
+            "value": 0.836,
+            "unit": "ms"
+          },
+          {
+            "name": "ParadeDB INSERT TPS (c=8)",
+            "value": 6732.345918,
+            "unit": "tps"
+          },
+          {
+            "name": "ParadeDB INSERT latency (c=8)",
+            "value": 1.188,
             "unit": "ms"
           }
         ]
