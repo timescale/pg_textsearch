@@ -1803,17 +1803,11 @@ validate_indexscan_explicit_index(IndexScan *indexscan, BM25OidCache *oids)
 	/* Validate they match */
 	if (specified_index_oid != indexscan->indexid)
 	{
-		char *specified_name;
-		char *scan_name;
-
 		/*
 		 * Allow partitioned indexes: if specified is parent and scan is child
 		 */
 		if (is_child_partition_index(specified_index_oid, indexscan->indexid))
 			return; /* Child partition index - allowed */
-
-		specified_name = get_rel_name(specified_index_oid);
-		scan_name	   = get_rel_name(indexscan->indexid);
 
 		/*
 		 * When the user names an index explicitly via
@@ -1824,6 +1818,9 @@ validate_indexscan_explicit_index(IndexScan *indexscan, BM25OidCache *oids)
 		 */
 		if (tpquery_is_explicit_index(tpquery))
 		{
+			char *specified_name = get_rel_name(specified_index_oid);
+			char *scan_name		 = get_rel_name(indexscan->indexid);
+
 			ereport(ERROR,
 					(errcode(ERRCODE_WRONG_OBJECT_TYPE),
 					 errmsg("query specifies index \"%s\" but planner chose "
@@ -1998,8 +1995,9 @@ tp_planner_hook(
 		/*
 		 * Validate implicit index resolution - for explicit indexes, the
 		 * set_rel_pathlist_hook should have already forced the correct index.
-		 * This validation catches cases where implicit resolution picked a
-		 * different index than the planner chose.
+		 * This validation errors when an explicitly named index differs from
+		 * the one the planner scanned; implicit resolution mismatches are
+		 * allowed and emit no diagnostic.
 		 */
 		validate_explicit_index_usage(result->planTree, &oid_cache);
 
