@@ -1816,9 +1816,11 @@ validate_indexscan_explicit_index(IndexScan *indexscan, BM25OidCache *oids)
 		scan_name	   = get_rel_name(indexscan->indexid);
 
 		/*
-		 * Check if the index was explicitly specified by the user via
-		 * to_bm25query(text, index_name). If so, error. If it was implicitly
-		 * resolved (e.g., from text <@> text syntax), just warn.
+		 * When the user names an index explicitly via
+		 * to_bm25query(text, index_name), that index must be used for the
+		 * scan to ensure consistent tokenization; error if the planner chose
+		 * a different one. Implicitly resolved indexes (e.g. text <@> text)
+		 * impose no such constraint, so no diagnostic is emitted.
 		 */
 		if (tpquery_is_explicit_index(tpquery))
 		{
@@ -1835,16 +1837,6 @@ validate_indexscan_explicit_index(IndexScan *indexscan, BM25OidCache *oids)
 					 errhint("Use a planner hint to force the specified "
 							 "index, or remove the explicit index name to let "
 							 "the planner choose automatically.")));
-		}
-		else
-		{
-			ereport(WARNING,
-					(errmsg("planner chose index \"%s\" instead of \"%s\"",
-							scan_name ? scan_name : "(unknown)",
-							specified_name ? specified_name : "(unknown)"),
-					 errhint("If this is not desired, use a planner hint to "
-							 "force a specific index, or use explicit "
-							 "to_bm25query('query', 'index_name').")));
 		}
 	}
 }

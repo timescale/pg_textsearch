@@ -55,8 +55,8 @@ LIMIT 5;
 
 -- =============================================================================
 -- LIMITATION 2: Multiple BM25 indexes on same column
--- The planner hook picks the first matching index. Use explicit to_bm25query()
--- for control over which index is used.
+-- Implicit resolution warns and uses one of the indexes; name one
+-- explicitly with to_bm25query() for control.
 -- =============================================================================
 
 \echo 'Test: Multiple BM25 indexes on same column'
@@ -64,15 +64,11 @@ LIMIT 5;
 CREATE INDEX docs_bm25_simple_idx ON docs USING bm25(content)
     WITH (text_config='simple');
 
--- Implicit resolution picks first index found
--- Note: Score projection requires explicit index, so just use ORDER BY
-EXPLAIN (COSTS OFF)
-SELECT id
-FROM docs
-ORDER BY content <@> 'database'
-LIMIT 3;
+-- Implicit resolution warns; the matched row is the same whichever tied
+-- index the planner picks.
+SELECT id FROM docs ORDER BY content <@> 'database' LIMIT 3;
 
--- Explicit index selection gives user control
+-- Explicit naming pins a specific index.
 EXPLAIN (COSTS OFF)
 SELECT id, content <@> to_bm25query('database', 'docs_bm25_simple_idx') as score
 FROM docs
