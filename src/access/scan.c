@@ -215,6 +215,13 @@ tp_beginscan(Relation index, int nkeys, int norderbys)
 	IndexScanDesc scan;
 	TpScanOpaque  so;
 
+	/*
+	 * Surface the durable "results may be incomplete" marker left by
+	 * an in-place pre-v1.3 upgrade (BUG-001) so read-only workloads
+	 * see it; throttled to once per index per session.
+	 */
+	tp_warn_if_pending_docid(index);
+
 	scan = RelationGetIndexScan(index, nkeys, norderbys);
 
 	/* Allocate and initialize scan opaque data */

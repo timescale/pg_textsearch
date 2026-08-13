@@ -72,9 +72,14 @@ typedef struct TpIndexMetaPageData
 	BlockNumber _unused_docid_page; /* Reserved: was first_docid_page,
 									 * retired by issue #374 (the
 									 * on-disk memtable obsoletes
-									 * docid pages).  Kept to preserve
-									 * metapage offsets; always
-									 * InvalidBlockNumber. */
+									 * docid pages).  Normally
+									 * InvalidBlockNumber, but on an
+									 * index upgraded in place from a
+									 * pre-v1.3 (v6) format that still
+									 * held unspilled docs it retains
+									 * the legacy pointer as a durable
+									 * "results may be incomplete"
+									 * marker until REINDEX (BUG-001). */
 
 	/* Hierarchical segment storage (LSM-style) */
 	BlockNumber level_heads[TP_MAX_LEVELS]; /* Head of segment chain per level
@@ -174,9 +179,12 @@ extern BlockNumber tp_metapage_read_memtable_tail(Page page);
  * helper:
  *   - initializes memtable_head_blkno = memtable_tail_blkno =
  *     InvalidBlockNumber,
- *   - clears any stale _unused_docid_page pointer (and emits a
- *     LOG-level forensic message if it was non-Invalid; see the
- *     rationale block in tp_metapage_upgrade_to_current()),
+ *   - PRESERVES any non-Invalid _unused_docid_page pointer as a
+ *     durable "results may be incomplete" marker and emits a
+ *     client-visible WARNING (see the rationale block in
+ *     tp_metapage_upgrade_to_current()); the marker persists in
+ *     v8 and is re-surfaced on every scan by
+ *     tp_warn_if_pending_docid() until a REINDEX clears it,
  *   - bumps the version field to TP_METAPAGE_VERSION,
  *   - bumps pd_lower to cover the new fields so GenericXLog
  *     records them in the page image.
@@ -186,8 +194,17 @@ extern BlockNumber tp_metapage_read_memtable_tail(Page page);
  * the upgrade — the EXCLUSIVE buffer lock serializes them, and a
  * later writer simply observes v7 and the helper is a no-op.
  *
- * The Relation is only used to format the orphan-pointer LOG
- * message with the index name; the function does not otherwise
- * touch it.
+ * The Relation is only used to format the marker WARNING with the
+ * index name; the function does not otherwise touch it.
  */
 extern void tp_metapage_upgrade_to_current(Relation index, Page page);
+
+/*
+ * Emit a client-visible WARNING (at most once per index per backend
+ * session) when the index carries the durable "results may be
+ * incomplete" marker left by an in-place pre-v1.3 (v6) upgrade that
+ * still held unspilled documents (BUG-001).  Called on the scan path
+ * so read-only workloads also learn a REINDEX is required.  No-op on
+ * a clean index and during recovery.
+ */
+extern void tp_warn_if_pending_docid(Relation index);

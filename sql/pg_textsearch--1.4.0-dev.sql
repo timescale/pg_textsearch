@@ -279,6 +279,28 @@ CREATE FUNCTION @extschema@.bm25_test_corrupt_tombstone_head(
     AS 'MODULE_PATHNAME', 'tp_test_corrupt_tombstone_head'
     LANGUAGE C VOLATILE STRICT;
 
+-- INTERNAL-ONLY test scaffold (BUG-001): rewrite the metapage to look
+-- like a pre-v1.3 (v6) page still carrying a non-Invalid docid-chain
+-- pointer, i.e. the on-disk state a v0.5.1-v1.2.x index is left in
+-- when unspilled memtable data is present at binary swap.  Drives the
+-- client-visible "results may be incomplete; REINDEX" warning path
+-- without an actual old binary.  Superuser-only; not a supported API.
+CREATE FUNCTION @extschema@.bm25_test_downgrade_metapage_v6(
+    index_name text, docid_blkno bigint)
+    RETURNS void
+    AS 'MODULE_PATHNAME', 'tp_test_downgrade_metapage_v6'
+    LANGUAGE C VOLATILE STRICT;
+
+-- INTERNAL-ONLY test scaffold (BUG-001): return the metapage's
+-- durable "results may be incomplete; REINDEX" marker
+-- (_unused_docid_page), or -1 when Invalid.  Lets a single-session
+-- test assert marker preservation into v8 and REINDEX clearing.
+-- Superuser-only; not a supported API.
+CREATE FUNCTION @extschema@.bm25_test_pending_docid(index_name text)
+    RETURNS bigint
+    AS 'MODULE_PATHNAME', 'tp_test_pending_docid'
+    LANGUAGE C VOLATILE STRICT;
+
 -- Revoke public execute on debug functions (superuser-only).
 REVOKE EXECUTE ON FUNCTION @extschema@.bm25_dump_index(text) FROM PUBLIC;
 REVOKE EXECUTE ON FUNCTION @extschema@.bm25_summarize_index(text) FROM PUBLIC;
@@ -288,6 +310,10 @@ REVOKE EXECUTE ON FUNCTION
     @extschema@.bm25_test_recycle_tombstone_head(text) FROM PUBLIC;
 REVOKE EXECUTE ON FUNCTION
     @extschema@.bm25_test_corrupt_tombstone_head(text) FROM PUBLIC;
+REVOKE EXECUTE ON FUNCTION
+    @extschema@.bm25_test_downgrade_metapage_v6(text, bigint) FROM PUBLIC;
+REVOKE EXECUTE ON FUNCTION
+    @extschema@.bm25_test_pending_docid(text) FROM PUBLIC;
 
 -- The bm25_test_memtable_page / bm25_test_memtable_append /
 -- bm25_test_chain_source / bm25_memtable_chain /

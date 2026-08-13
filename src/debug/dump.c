@@ -953,6 +953,123 @@ tp_test_corrupt_tombstone_head(PG_FUNCTION_ARGS)
 }
 
 /*
+ * bm25_test_downgrade_metapage_v6(index_name, docid_blkno) -> void
+ *
+ * INTERNAL-ONLY test scaffold (BUG-001).  Rewrites the metapage
+ * (WAL-logged) to look like a pre-v1.3 (metapage v6) page that still
+ * carries a non-Invalid _unused_docid_page pointer -- the exact
+ * on-disk state a v0.5.1-v1.2.x index is left in when it holds
+ * unspilled memtable (docid-chain) data at the moment its binary is
+ * swapped for a v1.3+ build.  Lets a self-contained SQL regression
+ * test exercise the client-visible "results may be incomplete;
+ * REINDEX" warning path without shipping an actual old binary.
+ *
+ * The version field is set to v6 and pd_lower shrunk to the historical
+ * v6 extent so the first subsequent write drives the real
+ * tp_metapage_upgrade_to_current() v6->v8 path.  Callers must spill
+ * the index first (bm25_spill_index) so the on-disk memtable chain is
+ * empty; otherwise the v6 prefix shrink would hide live memtable
+ * head/tail fields.
+ *
+ * Superuser-only; signature and existence are subject to change or
+ * removal in ANY release without notice.  Not part of the public API.
+ */
+PG_FUNCTION_INFO_V1(tp_test_downgrade_metapage_v6);
+
+Datum
+tp_test_downgrade_metapage_v6(PG_FUNCTION_ARGS)
+{
+	text			 *index_name_text = PG_GETARG_TEXT_PP(0);
+	char			 *index_name	  = text_to_cstring(index_name_text);
+	int64			  docid_blkno	  = PG_GETARG_INT64(1);
+	Oid				  index_oid;
+	Relation		  index_rel;
+	Buffer			  buf;
+	Page			  page;
+	GenericXLogState *state;
+	TpIndexMetaPage	  metap;
+	PageHeader		  phdr;
+
+	if (!superuser())
+		ereport(ERROR,
+				(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
+				 errmsg("must be superuser to downgrade metapage")));
+
+	index_oid = tp_resolve_index_name_shared(index_name);
+	if (!OidIsValid(index_oid))
+		ereport(ERROR,
+				(errcode(ERRCODE_UNDEFINED_OBJECT),
+				 errmsg("index \"%s\" not found", index_name)));
+
+	index_rel = index_open(index_oid, RowExclusiveLock);
+
+	buf = ReadBuffer(index_rel, TP_METAPAGE_BLKNO);
+	LockBuffer(buf, BUFFER_LOCK_EXCLUSIVE);
+	state = GenericXLogStart(index_rel);
+	page  = GenericXLogRegisterBuffer(state, buf, GENERIC_XLOG_FULL_IMAGE);
+	metap = (TpIndexMetaPage)PageGetContents(page);
+
+	metap->version			  = TP_METAPAGE_VERSION_V6;
+	metap->_unused_docid_page = (BlockNumber)docid_blkno;
+
+	/* Shrink pd_lower to the historical v6 extent. */
+	phdr		   = (PageHeader)page;
+	phdr->pd_lower = SizeOfPageHeaderData + TP_INDEX_METAPAGE_DATA_SIZE_V6;
+
+	GenericXLogFinish(state);
+	UnlockReleaseBuffer(buf);
+
+	index_close(index_rel, RowExclusiveLock);
+
+	PG_RETURN_VOID();
+}
+
+/*
+ * bm25_test_pending_docid(index_name) -> bigint
+ *
+ * INTERNAL-ONLY test scaffold (BUG-001).  Returns the metapage's
+ * _unused_docid_page value: the durable "results may be incomplete,
+ * REINDEX to recover" marker preserved across the v6->v8 upgrade.
+ * Returns -1 when the marker is Invalid (a clean index).  Lets a
+ * single-session regression test assert marker preservation into v8
+ * and its clearing by REINDEX without opening a second backend.
+ *
+ * Superuser-only; not a supported API.
+ */
+PG_FUNCTION_INFO_V1(tp_test_pending_docid);
+
+Datum
+tp_test_pending_docid(PG_FUNCTION_ARGS)
+{
+	text		   *index_name_text = PG_GETARG_TEXT_PP(0);
+	char		   *index_name		= text_to_cstring(index_name_text);
+	Oid				index_oid;
+	Relation		index_rel;
+	TpIndexMetaPage metap;
+	BlockNumber		docid;
+
+	if (!superuser())
+		ereport(ERROR,
+				(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
+				 errmsg("must be superuser to read pending docid marker")));
+
+	index_oid = tp_resolve_index_name_shared(index_name);
+	if (!OidIsValid(index_oid))
+		ereport(ERROR,
+				(errcode(ERRCODE_UNDEFINED_OBJECT),
+				 errmsg("index \"%s\" not found", index_name)));
+
+	index_rel = index_open(index_oid, AccessShareLock);
+	metap	  = tp_get_metapage(index_rel);
+	docid	  = metap->_unused_docid_page;
+	index_close(index_rel, AccessShareLock);
+
+	if (!BlockNumberIsValid(docid))
+		PG_RETURN_INT64(-1);
+	PG_RETURN_INT64((int64)docid);
+}
+
+/*
  * Page visualization support - only available in debug builds.
  * These functions write to arbitrary file paths, so they are gated
  * behind DEBUG_DUMP_INDEX to reduce attack surface in release builds.
