@@ -6,6 +6,23 @@
 
 CREATE EXTENSION IF NOT EXISTS pg_textsearch;
 
+-- Detect whether another same-database client backend is holding an xmin
+-- (which pins the reclaim horizon back).  Sampled around each VACUUM so the
+-- growth bounds below can tolerate deferred reclaim when a concurrent
+-- snapshot -- e.g. autovacuum or a parallel regression session -- keeps
+-- GetOldestNonRemovableTransactionId from advancing.
+CREATE FUNCTION other_backend_holds_xmin() RETURNS boolean
+LANGUAGE sql STABLE AS $$
+    SELECT EXISTS (
+        SELECT 1
+        FROM pg_stat_activity
+        WHERE pid <> pg_backend_pid()
+          AND datname = current_database()
+          AND backend_type = 'client backend'
+          AND backend_xmin IS NOT NULL
+    );
+$$;
+
 CREATE TABLE memtable_reclaim_t (id serial PRIMARY KEY, body text);
 CREATE INDEX memtable_reclaim_idx ON memtable_reclaim_t
     USING bm25(body) WITH (text_config = 'english');
@@ -53,27 +70,13 @@ SELECT false;
 -- Horizon: spill xact is committed (autocommit per statement).
 UPDATE reclaim_blocker_state
 SET blocked_by_other_backend = blocked_by_other_backend
-    OR EXISTS (
-        SELECT 1
-        FROM pg_stat_activity
-        WHERE pid <> pg_backend_pid()
-          AND datname = current_database()
-          AND backend_type = 'client backend'
-          AND backend_xmin IS NOT NULL
-    );
+    OR other_backend_holds_xmin();
 VACUUM ANALYZE memtable_reclaim_t;
 
 -- Idempotent second pass (RecordFreeIndexPage on same blocks is safe).
 UPDATE reclaim_blocker_state
 SET blocked_by_other_backend = blocked_by_other_backend
-    OR EXISTS (
-        SELECT 1
-        FROM pg_stat_activity
-        WHERE pid <> pg_backend_pid()
-          AND datname = current_database()
-          AND backend_type = 'client backend'
-          AND backend_xmin IS NOT NULL
-    );
+    OR other_backend_holds_xmin();
 VACUUM ANALYZE memtable_reclaim_t;
 
 SELECT count(*) >= 1 AS search_after_vacuum FROM (
@@ -84,6 +87,17 @@ SELECT count(*) >= 1 AS search_after_vacuum FROM (
 
 -- Rebuild chain without auto-spill so pages come from FSM vs extend.
 SET pg_textsearch.memtable_pages_threshold = 0;
+
+-- Snapshot the DEAD-page count *before* the reuse insert.  Freeing a page
+-- to the FSM does not clear its DEAD stamp -- only reuse via
+-- tp_memtable_alloc_page does -- so the post-rebuild count co-varies with a
+-- reuse regression (pages that should have been reused but were not stay
+-- DEAD and inflate the count by exactly the extra growth).  Bounding the
+-- blocked branch against this pre-rebuild snapshot keeps the check able to
+-- catch a reuse regression even when a concurrent backend forces that branch.
+CREATE TEMP TABLE reclaim_before_rebuild AS
+SELECT count(*)::int AS deferred_pages
+FROM bm25_memtable_dead_pages('memtable_reclaim_idx');
 
 INSERT INTO memtable_reclaim_t (body)
 SELECT 'reclaim2 ' || i || ' ' || repeat('pad ', 6)
@@ -98,7 +112,6 @@ FROM bm25_memtable_dead_pages('memtable_reclaim_idx');
 SELECT count(*)::int > 0 AS chain_rebuilt
 FROM bm25_memtable_chain('memtable_reclaim_idx');
 
-\set QUIET 1
 \pset format unaligned
 SELECT
     CASE
@@ -106,7 +119,7 @@ SELECT
             THEN (pg_relation_size('memtable_reclaim_idx'::regclass, 'main')
                   - (SELECT sz_after_spill FROM reclaim_sizes))
                  <= (SELECT deferred_pages
-                     FROM reclaim_after_rebuild)
+                     FROM reclaim_before_rebuild)
                     * current_setting('block_size')::bigint
         ELSE (pg_relation_size('memtable_reclaim_idx'::regclass, 'main')
               - (SELECT sz_after_spill FROM reclaim_sizes))
@@ -149,14 +162,7 @@ UPDATE multi_cycle_bounds SET max_live_pages = GREATEST(
 SELECT bm25_spill_index('memtable_reclaim_idx') IS NOT NULL AS mc_spill_1;
 UPDATE multi_cycle_blocker_state
 SET blocked_by_other_backend = blocked_by_other_backend
-    OR EXISTS (
-        SELECT 1
-        FROM pg_stat_activity
-        WHERE pid <> pg_backend_pid()
-          AND datname = current_database()
-          AND backend_type = 'client backend'
-          AND backend_xmin IS NOT NULL
-    );
+    OR other_backend_holds_xmin();
 VACUUM ANALYZE memtable_reclaim_t;
 
 -- Cycle 2
@@ -169,14 +175,7 @@ UPDATE multi_cycle_bounds SET max_live_pages = GREATEST(
 SELECT bm25_spill_index('memtable_reclaim_idx') IS NOT NULL AS mc_spill_2;
 UPDATE multi_cycle_blocker_state
 SET blocked_by_other_backend = blocked_by_other_backend
-    OR EXISTS (
-        SELECT 1
-        FROM pg_stat_activity
-        WHERE pid <> pg_backend_pid()
-          AND datname = current_database()
-          AND backend_type = 'client backend'
-          AND backend_xmin IS NOT NULL
-    );
+    OR other_backend_holds_xmin();
 VACUUM ANALYZE memtable_reclaim_t;
 
 -- Cycle 3
@@ -189,14 +188,7 @@ UPDATE multi_cycle_bounds SET max_live_pages = GREATEST(
 SELECT bm25_spill_index('memtable_reclaim_idx') IS NOT NULL AS mc_spill_3;
 UPDATE multi_cycle_blocker_state
 SET blocked_by_other_backend = blocked_by_other_backend
-    OR EXISTS (
-        SELECT 1
-        FROM pg_stat_activity
-        WHERE pid <> pg_backend_pid()
-          AND datname = current_database()
-          AND backend_type = 'client backend'
-          AND backend_xmin IS NOT NULL
-    );
+    OR other_backend_holds_xmin();
 VACUUM ANALYZE memtable_reclaim_t;
 
 -- Cycle 4
@@ -209,14 +201,7 @@ UPDATE multi_cycle_bounds SET max_live_pages = GREATEST(
 SELECT bm25_spill_index('memtable_reclaim_idx') IS NOT NULL AS mc_spill_4;
 UPDATE multi_cycle_blocker_state
 SET blocked_by_other_backend = blocked_by_other_backend
-    OR EXISTS (
-        SELECT 1
-        FROM pg_stat_activity
-        WHERE pid <> pg_backend_pid()
-          AND datname = current_database()
-          AND backend_type = 'client backend'
-          AND backend_xmin IS NOT NULL
-    );
+    OR other_backend_holds_xmin();
 VACUUM ANALYZE memtable_reclaim_t;
 
 -- Cycle 5
@@ -229,15 +214,16 @@ UPDATE multi_cycle_bounds SET max_live_pages = GREATEST(
 SELECT bm25_spill_index('memtable_reclaim_idx') IS NOT NULL AS mc_spill_5;
 UPDATE multi_cycle_blocker_state
 SET blocked_by_other_backend = blocked_by_other_backend
-    OR EXISTS (
-        SELECT 1
-        FROM pg_stat_activity
-        WHERE pid <> pg_backend_pid()
-          AND datname = current_database()
-          AND backend_type = 'client backend'
-          AND backend_xmin IS NOT NULL
-    );
+    OR other_backend_holds_xmin();
 VACUUM ANALYZE memtable_reclaim_t;
+
+-- Snapshot the DEAD-page count before the final reuse insert (see the
+-- single-cycle note above): the pre-rebuild count does not co-vary with
+-- whether the subsequent reuse succeeds, so it preserves the blocked
+-- branch's ability to catch a reuse regression.
+CREATE TEMP TABLE multi_cycle_before_rebuild AS
+SELECT count(*)::int AS deferred_pages
+FROM bm25_memtable_dead_pages('memtable_reclaim_idx');
 
 INSERT INTO memtable_reclaim_t (body)
 SELECT 'mc_reuse doc ' || g || ' ' || repeat('pad ', 6)
@@ -256,7 +242,6 @@ FROM multi_cycle_bounds;
 -- one live chain's worth of segment/main-fork growth per cycle
 -- (`num_cycles * max_live_pages`).  Only an external backend_xmin
 -- blocker may add the pages still tracked as DEAD after the rebuild.
-\set QUIET 1
 \pset format unaligned
 SELECT
     CASE
@@ -268,7 +253,7 @@ SELECT
                  <= ((SELECT num_cycles * max_live_pages
                       FROM multi_cycle_bounds)
                      + (SELECT deferred_pages
-                        FROM multi_cycle_after_rebuild))
+                        FROM multi_cycle_before_rebuild))
                     * current_setting('block_size')::bigint
         ELSE (pg_relation_size('memtable_reclaim_idx'::regclass, 'main')
               - (SELECT sz_start FROM multi_cycle_bounds))
@@ -279,5 +264,6 @@ SELECT
     AS multi_cycle_growth_valid;
 \pset format aligned
 
+DROP FUNCTION other_backend_holds_xmin();
 DROP TABLE memtable_reclaim_t;
 DROP EXTENSION pg_textsearch CASCADE;
