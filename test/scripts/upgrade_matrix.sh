@@ -2,45 +2,28 @@
 #
 # Upgrade data-integrity matrix for pg_textsearch.
 #
-# Motivation
-# ----------
-# The existing upgrade tests (.github/workflows/upgrade-tests.yml)
-# exercise a SINGLE on-disk data shape (CREATE INDEX on batch 1, then
-# spill batch 2) and capture their "baseline" from the ALREADY-UPGRADED
-# new binary.  That oracle can only prove "some results still come back
-# with negative scores"; it cannot detect silently-dropped documents,
-# and it never builds an index whose L0 memtable still holds unspilled
-# documents at upgrade time.
+# For each old release, this harness builds several distinct on-disk
+# index states (single segment, two segments, many segments, and an
+# index with unspilled L0 memtable data), upgrades to the current
+# binary, and checks recall against heap ground truth.
 #
-# This harness closes both gaps:
-#   * It builds several distinct on-disk STATES per old version
-#     (single segment, two segments, many segments, and — crucially —
-#     an index with UNSPILLED memtable data).
-#   * It uses a TRUE ground-truth oracle: a rare sentinel token is
-#     planted in a known subset of rows, and recall is measured as
-#     "how many of the heap's sentinel rows does the BM25 index scan
-#     actually return in its top-K".  Recall is captured under the OLD
-#     binary (pre-upgrade), under the NEW binary (post-upgrade), and
-#     again after REINDEX.
+# Ground-truth oracle: a rare sentinel token is planted in a known
+# subset of rows, and recall is measured as how many of the heap's
+# sentinel rows the BM25 index scan returns in its top-K.  Recall is
+# captured under the old binary (pre-upgrade), the new binary
+# (post-upgrade), and again after REINDEX.
 #
-# What it asserts (all pass on current code, so CI stays green):
-#   * The old binary itself has perfect recall (oracle sanity).
-#   * For segment-backed shapes, the new binary preserves 100% recall
-#     across the upgrade (HARD).
-#   * REINDEX restores 100% recall for EVERY shape — the safety net
-#     (HARD).
+# Hard assertions (fail the build):
+#   * The old binary has perfect recall (oracle sanity).
+#   * Segment-backed shapes preserve 100% recall across the upgrade.
+#   * REINDEX restores 100% recall for every shape.
 #   * Legacy (metapage v5, <= 0.5.0) indexes ERROR cleanly without a
-#     REINDEX (no crash, no silent wrong answer) and REINDEX recovers
-#     (HARD).
+#     REINDEX (no crash, no silent wrong answer) and REINDEX recovers.
 #
-# Known-bug surfacing (does NOT fail the build):
-#   * The "memtable_unspilled" shape loses exactly the unspilled
-#     documents when upgrading from a pre-1.3 (metapage v6) release.
-#     This is issue BUG-001 (see docs/upgrade-audit/).  The harness
-#     emits a GitHub ::warning:: annotation quantifying the loss but
-#     does not hard-fail, because it reproduces on main today.  When
-#     BUG-001 is fixed, flip STRICT_UNSPILLED=1 to turn this into a
-#     hard assertion.
+# The "memtable_unspilled" shape loses the unspilled documents when
+# upgrading from a pre-1.3 (metapage v6) release; REINDEX recovers.
+# By default this is surfaced as a non-fatal ::warning:: annotation so
+# CI stays green; set STRICT_UNSPILLED=1 to make it a hard assertion.
 #
 # Usage:
 #   PG_CONFIG=/usr/lib/postgresql/17/bin/pg_config \
@@ -210,7 +193,7 @@ is_legacy() { [[ "$1" =~ ^0\.[0-4]\. ]] || [[ "$1" == 0.5.0 ]]; }
 
 run_compat_shape() { # $1=version $2=shape
   local v="$1" st="$2"
-  fresh_cluster || return
+  fresh_cluster || { fail "$v/$st: cluster init failed"; return; }
   start_pg || { fail "$v/$st: old server failed to start"; return; }
   createdb_upg
   runsql "CREATE EXTENSION pg_textsearch;"
@@ -237,12 +220,12 @@ run_compat_shape() { # $1=version $2=shape
   if [ "$st" = "memtable_unspilled" ]; then
     if [ "$post" != "$truth" ]; then
       if [ "$STRICT_UNSPILLED" = "1" ]; then
-        fail "$v/$st: BUG-001 unspilled data loss: post=$post truth=$truth"
+        fail "$v/$st: unspilled data loss: post=$post truth=$truth"
       else
-        annotate_warn "BUG-001 reproduced upgrading v$v: unspilled memtable data lost (recall $post/$truth). REINDEX recovers ($reidx). See docs/upgrade-audit/BUG-001-*.md"
+        annotate_warn "upgrading v$v lost unspilled memtable data (recall $post/$truth); REINDEX recovers ($reidx)"
       fi
     else
-      log "  [$v/$st] no loss (BUG-001 appears FIXED for v$v — consider STRICT_UNSPILLED=1)"
+      log "  [$v/$st] no unspilled loss for v$v (consider STRICT_UNSPILLED=1)"
     fi
   else
     # Segment-backed shapes must survive the upgrade losslessly.
@@ -255,7 +238,7 @@ run_compat_shape() { # $1=version $2=shape
 
 run_legacy() { # $1=version
   local v="$1"
-  fresh_cluster || return
+  fresh_cluster || { fail "$v(legacy): cluster init failed"; return; }
   start_pg || { fail "$v(legacy): old server failed to start"; return; }
   createdb_upg
   runsql "CREATE EXTENSION pg_textsearch;"
@@ -298,10 +281,14 @@ for v in $OLD_VERSIONS; do
   if is_legacy "$v"; then
     run_legacy "$v"
   else
-    for st in single_seg two_seg multi_seg memtable_unspilled; do
+    shapes="single_seg two_seg multi_seg memtable_unspilled"
+    last_shape="${shapes##* }"
+    for st in $shapes; do
       run_compat_shape "$v" "$st"
-      # Restore the old binary before the next shape (current was
-      # installed over it during the scenario).
+      # Each scenario installs the current binary over the old one, so
+      # restore the old binary before the next shape.  Skip after the
+      # last shape — nothing else uses this old binary.
+      [ "$st" = "$last_shape" ] && break
       build_install_old "$v" || { fail "$v: could not reinstall old binary"; break; }
     done
   fi

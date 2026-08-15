@@ -11,8 +11,13 @@ on:
     paths:
       - 'sql/**'
       - 'src/segment/**'
+      - 'src/index/**'
+      - 'test/scripts/upgrade_matrix.sh'
       - 'pg_textsearch.control'
       - '.github/workflows/upgrade-tests.yml'
+  push:
+    tags:
+      - 'v*'
   schedule:
     # Run weekly on Sundays at 2 AM UTC
     - cron: '0 2 * * 0'
@@ -836,13 +841,12 @@ jobs:
         pg_ctl -D $PGDATA stop -m immediate
         rm -rf $PGDATA
 
-  # Data-integrity upgrade matrix (issue: silent data loss after
-  # upgrade).  Unlike test-upgrades above — which exercises a single
-  # data shape and captures its baseline from the already-upgraded
-  # binary — this job builds several distinct on-disk STATES per old
-  # release and checks recall against heap ground truth captured BOTH
-  # before and after the binary swap.  See
-  # test/scripts/upgrade_matrix.sh and docs/upgrade-audit/.
+  # Data-integrity upgrade matrix.  Unlike test-upgrades above — which
+  # exercises a single data shape and captures its baseline from the
+  # already-upgraded binary — this job builds several distinct on-disk
+  # states per old release and checks recall against heap ground truth
+  # captured both before and after the binary swap.  See
+  # test/scripts/upgrade_matrix.sh.
   upgrade-matrix:
     runs-on: ubuntu-latest
     strategy:

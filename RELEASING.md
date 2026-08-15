@@ -83,6 +83,12 @@ The `release.yml` workflow triggers on merge of any PR titled
 PG17/PG18 on Linux/macOS (amd64/arm64), and publishes a GitHub
 release.
 
+Pushing the `v*` release tag also triggers `upgrade-tests.yml`,
+including the `upgrade-matrix` data-integrity job
+(`test/scripts/upgrade_matrix.sh`), so every release is checked for
+silent upgrade data loss against the representative old-version
+matrix on PG 17/18.
+
 ## Bumping to the Next Dev Version
 
 After a release is published, open a follow-up PR:
