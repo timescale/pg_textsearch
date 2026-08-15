@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1786776753675,
+  "lastUpdate": 1786776756875,
   "repoUrl": "https://github.com/timescale/pg_textsearch",
   "entries": {
     "cranfield Benchmarks": [
@@ -251503,6 +251503,43 @@ window.BENCHMARK_DATA = {
           {
             "name": "paradedb_wikipedia_concurrent - Concurrent Insert Time",
             "value": 20406.583092,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tjgreen@gmail.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "e8ffde5f2f380301423fbcb0460286b53dd123a0",
+          "message": "test: make memtable_reclaim horizon-safe (#449)\n\n## Summary\n- `memtable_reclaim` asserts dead memtable pages become reclaimable\nbefore its size checks. That assumption fails whenever another backend\nholds back `GetOldestNonRemovableTransactionId` (a long-lived reclaim\nhorizon), so the test fails on both reclaim bounds.\n- Sample whether a same-database client backend holds an xmin *across\nthe reclaim/VACUUM windows*. When unblocked, keep the strict bound\n(reuse must occur, no unexplained deferred pages). When a real external\nblocker exists, permit only growth explicitly accounted by post-rebuild\nDEAD pages. Cumulative multi-cycle coverage is retained.\n\n## Context\nReproducible on stock PostgreSQL by holding a `REPEATABLE READ`\nsnapshot. No product code change — deferred reclaim is correct behavior;\nthe test needed to account for it without masking a genuine reuse\nregression.\n\n## Verification\n- `memtable_reclaim` passes on PostgreSQL 17.9 and 18.4\n- Passes with a persistent same-DB held snapshot and with a transient\nholder that leaves after VACUUM\n- Unrelated-database / vacuum-worker backends do not relax the strict\ncheck\n- The strict no-blocker branch still fails when reuse is broken\n(verified via pinned-horizon mutation)\n\n\n\n---\n\nSupersedes #445 (that PR was auto-closed when its branch was renamed;\nidentical commit `dc7bed57`).",
+          "timestamp": "2026-08-13T20:37:05Z",
+          "url": "https://github.com/timescale/pg_textsearch/commit/e8ffde5f2f380301423fbcb0460286b53dd123a0"
+        },
+        "date": 1786776756182,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "paradedb_wikipedia_concurrent - Index Build Time",
+            "value": 3.496,
+            "unit": "ms"
+          },
+          {
+            "name": "paradedb_wikipedia_concurrent - Insert Time",
+            "value": 14.833,
+            "unit": "ms"
+          },
+          {
+            "name": "paradedb_wikipedia_concurrent - Concurrent Insert Time",
+            "value": 15595.734209,
             "unit": "ms"
           }
         ]
