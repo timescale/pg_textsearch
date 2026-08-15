@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1786776981718,
+  "lastUpdate": 1786776985402,
   "repoUrl": "https://github.com/timescale/pg_textsearch",
   "entries": {
     "cranfield Benchmarks": [
@@ -171062,6 +171062,93 @@ window.BENCHMARK_DATA = {
           {
             "name": "msmarco_concurrent (0 docs) - Index Build Time",
             "value": 265.374,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tjgreen@gmail.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "e8ffde5f2f380301423fbcb0460286b53dd123a0",
+          "message": "test: make memtable_reclaim horizon-safe (#449)\n\n## Summary\n- `memtable_reclaim` asserts dead memtable pages become reclaimable\nbefore its size checks. That assumption fails whenever another backend\nholds back `GetOldestNonRemovableTransactionId` (a long-lived reclaim\nhorizon), so the test fails on both reclaim bounds.\n- Sample whether a same-database client backend holds an xmin *across\nthe reclaim/VACUUM windows*. When unblocked, keep the strict bound\n(reuse must occur, no unexplained deferred pages). When a real external\nblocker exists, permit only growth explicitly accounted by post-rebuild\nDEAD pages. Cumulative multi-cycle coverage is retained.\n\n## Context\nReproducible on stock PostgreSQL by holding a `REPEATABLE READ`\nsnapshot. No product code change — deferred reclaim is correct behavior;\nthe test needed to account for it without masking a genuine reuse\nregression.\n\n## Verification\n- `memtable_reclaim` passes on PostgreSQL 17.9 and 18.4\n- Passes with a persistent same-DB held snapshot and with a transient\nholder that leaves after VACUUM\n- Unrelated-database / vacuum-worker backends do not relax the strict\ncheck\n- The strict no-blocker branch still fails when reuse is broken\n(verified via pinned-horizon mutation)\n\n\n\n---\n\nSupersedes #445 (that PR was auto-closed when its branch was renamed;\nidentical commit `dc7bed57`).",
+          "timestamp": "2026-08-13T20:37:05Z",
+          "url": "https://github.com/timescale/pg_textsearch/commit/e8ffde5f2f380301423fbcb0460286b53dd123a0"
+        },
+        "date": 1786776984493,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "msmarco_concurrent (0 docs) - Index Build Time",
+            "value": 1.467,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco_concurrent (0 docs) - Insert Time",
+            "value": 1.634,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco_concurrent (0 docs) - Concurrent Insert Time",
+            "value": 1527304.628147,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco_concurrent (0 docs) - 1 Token Query (p50)",
+            "value": 0.98,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco_concurrent (0 docs) - 2 Token Query (p50)",
+            "value": 2.02,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco_concurrent (0 docs) - 3 Token Query (p50)",
+            "value": 3.58,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco_concurrent (0 docs) - 4 Token Query (p50)",
+            "value": 5.58,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco_concurrent (0 docs) - 5 Token Query (p50)",
+            "value": 8.86,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco_concurrent (0 docs) - 6 Token Query (p50)",
+            "value": 12.46,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco_concurrent (0 docs) - 7 Token Query (p50)",
+            "value": 18.51,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco_concurrent (0 docs) - 8+ Token Query (p50)",
+            "value": 27.76,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco_concurrent (0 docs) - Weighted Latency (p50, ms)",
+            "value": 5.73,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco_concurrent (0 docs) - Weighted Throughput (avg ms/query)",
+            "value": 7.09,
             "unit": "ms"
           }
         ]
