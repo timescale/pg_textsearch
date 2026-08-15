@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1786774873123,
+  "lastUpdate": 1786774876877,
   "repoUrl": "https://github.com/timescale/pg_textsearch",
   "entries": {
     "cranfield Benchmarks": [
@@ -37642,6 +37642,133 @@ window.BENCHMARK_DATA = {
           {
             "name": "msmarco (8.8M docs) - Query Latency After Update VACUUM",
             "value": 9.17,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tjgreen@gmail.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "e8ffde5f2f380301423fbcb0460286b53dd123a0",
+          "message": "test: make memtable_reclaim horizon-safe (#449)\n\n## Summary\n- `memtable_reclaim` asserts dead memtable pages become reclaimable\nbefore its size checks. That assumption fails whenever another backend\nholds back `GetOldestNonRemovableTransactionId` (a long-lived reclaim\nhorizon), so the test fails on both reclaim bounds.\n- Sample whether a same-database client backend holds an xmin *across\nthe reclaim/VACUUM windows*. When unblocked, keep the strict bound\n(reuse must occur, no unexplained deferred pages). When a real external\nblocker exists, permit only growth explicitly accounted by post-rebuild\nDEAD pages. Cumulative multi-cycle coverage is retained.\n\n## Context\nReproducible on stock PostgreSQL by holding a `REPEATABLE READ`\nsnapshot. No product code change — deferred reclaim is correct behavior;\nthe test needed to account for it without masking a genuine reuse\nregression.\n\n## Verification\n- `memtable_reclaim` passes on PostgreSQL 17.9 and 18.4\n- Passes with a persistent same-DB held snapshot and with a transient\nholder that leaves after VACUUM\n- Unrelated-database / vacuum-worker backends do not relax the strict\ncheck\n- The strict no-blocker branch still fails when reuse is broken\n(verified via pinned-horizon mutation)\n\n\n\n---\n\nSupersedes #445 (that PR was auto-closed when its branch was renamed;\nidentical commit `dc7bed57`).",
+          "timestamp": "2026-08-13T20:37:05Z",
+          "url": "https://github.com/timescale/pg_textsearch/commit/e8ffde5f2f380301423fbcb0460286b53dd123a0"
+        },
+        "date": 1786774876112,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "msmarco (8.8M docs) - Index Build Time",
+            "value": 220002.075,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - 1 Token Query (p50)",
+            "value": 0.65,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - 2 Token Query (p50)",
+            "value": 1.31,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - 3 Token Query (p50)",
+            "value": 2.45,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - 4 Token Query (p50)",
+            "value": 4,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - 5 Token Query (p50)",
+            "value": 6.36,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - 6 Token Query (p50)",
+            "value": 9.32,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - 7 Token Query (p50)",
+            "value": 14.06,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - 8+ Token Query (p50)",
+            "value": 21.61,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - Weighted Latency (p50, ms)",
+            "value": 4.12,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - Weighted Throughput (avg ms/query)",
+            "value": 5.2,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - Index Size",
+            "value": 1216,
+            "unit": "MB"
+          },
+          {
+            "name": "msmarco (8.8M docs) - Partial VACUUM (concentrated delete)",
+            "value": 6869.396,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - Full VACUUM (uniform delete)",
+            "value": 7410.9,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - Full VACUUM (uniform update)",
+            "value": 4931.504,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - Index Size After Partial VACUUM",
+            "value": 2595.85,
+            "unit": "MB"
+          },
+          {
+            "name": "msmarco (8.8M docs) - Index Size After Full VACUUM",
+            "value": 2595.86,
+            "unit": "MB"
+          },
+          {
+            "name": "msmarco (8.8M docs) - Query Latency After Partial VACUUM",
+            "value": 8.31,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - Query Latency After Full VACUUM",
+            "value": 7.87,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - Index Size After Update VACUUM",
+            "value": 2595.86,
+            "unit": "MB"
+          },
+          {
+            "name": "msmarco (8.8M docs) - Query Latency After Update VACUUM",
+            "value": 8.41,
             "unit": "ms"
           }
         ]
