@@ -79,7 +79,7 @@ typedef struct TpIndexMetaPageData
 									 * held unspilled docs it retains
 									 * the legacy pointer as a durable
 									 * "results may be incomplete"
-									 * marker until REINDEX (BUG-001). */
+									 * marker until REINDEX. */
 
 	/* Hierarchical segment storage (LSM-style) */
 	BlockNumber level_heads[TP_MAX_LEVELS]; /* Head of segment chain per level
@@ -183,8 +183,9 @@ extern BlockNumber tp_metapage_read_memtable_tail(Page page);
  *     durable "results may be incomplete" marker and emits a
  *     client-visible WARNING (see the rationale block in
  *     tp_metapage_upgrade_to_current()); the marker persists in
- *     v8 and is re-surfaced on every scan by
- *     tp_warn_if_pending_docid() until a REINDEX clears it,
+ *     v8 and is re-surfaced on the scan path (at most once per
+ *     session) by tp_warn_if_pending_docid() until a REINDEX
+ *     clears it,
  *   - bumps the version field to TP_METAPAGE_VERSION,
  *   - bumps pd_lower to cover the new fields so GenericXLog
  *     records them in the page image.
@@ -203,8 +204,8 @@ extern void tp_metapage_upgrade_to_current(Relation index, Page page);
  * Emit a client-visible WARNING (at most once per index per backend
  * session) when the index carries the durable "results may be
  * incomplete" marker left by an in-place pre-v1.3 (v6) upgrade that
- * still held unspilled documents (BUG-001).  Called on the scan path
+ * still held unspilled documents.  Called on the scan path
  * so read-only workloads also learn a REINDEX is required.  No-op on
- * a clean index and during recovery.
+ * a clean index.
  */
 extern void tp_warn_if_pending_docid(Relation index);

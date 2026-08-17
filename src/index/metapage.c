@@ -293,11 +293,12 @@ tp_metapage_upgrade_to_current(Relation index, Page page)
 
 		/*
 		 * Preserve orphan_docid_page as a durable "results may be
-		 * incomplete" marker (BUG-001).  It rides through v8 in the
+		 * incomplete" marker.  It rides through v8 in the
 		 * _unused_docid_page slot and is re-surfaced to clients on
-		 * every scan by tp_warn_if_pending_docid() until a REINDEX
-		 * rebuilds the index from the heap and clears it.  Do NOT
-		 * reset it to InvalidBlockNumber here.
+		 * the scan path (at most once per session) by
+		 * tp_warn_if_pending_docid() until a REINDEX rebuilds the
+		 * index from the heap and clears it.  Do NOT reset it to
+		 * InvalidBlockNumber here.
 		 */
 	}
 
@@ -320,7 +321,7 @@ tp_metapage_upgrade_to_current(Relation index, Page page)
 }
 
 /*
- * Per-backend set of index OIDs already inspected for the BUG-001
+ * Per-backend set of index OIDs already inspected for the
  * "results may be incomplete" marker this session.  Lives in
  * TopMemoryContext so it survives the transient scan contexts.  An OID
  * is recorded on the FIRST inspection regardless of outcome, so a
@@ -333,8 +334,8 @@ static List *tp_pending_docid_seen = NIL;
 /*
  * tp_warn_if_pending_docid
  *
- * Read-path guard for BUG-001.  When a pre-v1.3 index was upgraded
- * while it still carried unspilled documents,
+ * Read-path guard for the pre-v1.3 upgrade marker.  When a pre-v1.3
+ * index was upgraded while it still carried unspilled documents,
  * tp_metapage_upgrade_to_current() preserves the legacy docid pointer
  * in _unused_docid_page as a durable "results may be incomplete"
  * marker.  This helper surfaces that marker to the client as a WARNING
@@ -342,8 +343,10 @@ static List *tp_pending_docid_seen = NIL;
  * write-path upgrade WARNING -- still learn that a REINDEX is needed.
  *
  * Inspects the metapage at most once per index per backend session
- * (see tp_pending_docid_seen).  Skipped during recovery, where REINDEX
- * cannot run and the marker is advisory only.
+ * (see tp_pending_docid_seen).  Runs during recovery too: a hot
+ * standby serving reads against an upgraded primary must still see the
+ * advisory, even though the REINDEX that clears it has to run on the
+ * primary.
  */
 void
 tp_warn_if_pending_docid(Relation index)
@@ -353,14 +356,12 @@ tp_warn_if_pending_docid(Relation index)
 	BlockNumber		marker;
 	MemoryContext	old;
 
-	if (RecoveryInProgress())
-		return;
-
 	if (list_member_oid(tp_pending_docid_seen, index_oid))
 		return;
 
 	metap  = tp_get_metapage(index);
 	marker = metap->_unused_docid_page;
+	pfree(metap);
 
 	/*
 	 * Record the index before (possibly) warning so a clean index is

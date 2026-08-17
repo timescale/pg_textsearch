@@ -1,7 +1,7 @@
--- BUG-002 read-path coverage for the STANDALONE scoring path.
+-- Read-path coverage for the STANDALONE scoring path.
 --
 -- The client-visible "results may be incomplete" WARNING for a
--- pre-v1.3 upgraded index (BUG-001) must also reach workloads that use
+-- pre-v1.3 upgraded index must also reach workloads that use
 -- standalone scoring -- text <@> bm25query evaluated per row (e.g. as
 -- a projection) -- not only ORDER BY ... LIMIT index scans, which go
 -- through tp_beginscan.  This runs in its own regression file so the

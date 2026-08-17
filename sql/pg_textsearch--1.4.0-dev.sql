@@ -279,7 +279,7 @@ CREATE FUNCTION @extschema@.bm25_test_corrupt_tombstone_head(
     AS 'MODULE_PATHNAME', 'tp_test_corrupt_tombstone_head'
     LANGUAGE C VOLATILE STRICT;
 
--- INTERNAL-ONLY test scaffold (BUG-001): rewrite the metapage to look
+-- INTERNAL-ONLY test scaffold: rewrite the metapage to look
 -- like a pre-v1.3 (v6) page still carrying a non-Invalid docid-chain
 -- pointer, i.e. the on-disk state a v0.5.1-v1.2.x index is left in
 -- when unspilled memtable data is present at binary swap.  Drives the
@@ -291,7 +291,7 @@ CREATE FUNCTION @extschema@.bm25_test_downgrade_metapage_v6(
     AS 'MODULE_PATHNAME', 'tp_test_downgrade_metapage_v6'
     LANGUAGE C VOLATILE STRICT;
 
--- INTERNAL-ONLY test scaffold (BUG-001): return the metapage's
+-- INTERNAL-ONLY test scaffold: return the metapage's
 -- durable "results may be incomplete; REINDEX" marker
 -- (_unused_docid_page), or -1 when Invalid.  Lets a single-session
 -- test assert marker preservation into v8 and REINDEX clearing.

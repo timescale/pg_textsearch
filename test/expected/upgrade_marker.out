@@ -1,4 +1,4 @@
--- Upgrade-marker warning tests (BUG-001 / BUG-002)
+-- Upgrade-marker warning tests
 --
 -- Reproduce the pre-v1.3 (metapage v6) on-disk state left behind when
 -- an index still holds unspilled memtable / docid-chain data at the

@@ -50,9 +50,9 @@
  * tp_metapage_upgrade_to_current) emits a client-visible
  * WARNING recording the possibly-incomplete state and PRESERVES
  * the pointer as a durable marker in v8, which
- * tp_warn_if_pending_docid() re-surfaces on every scan until a
- * REINDEX rebuilds the index from the heap and clears it
- * (BUG-001).  Indexes from a clean v1.2.x shutdown have
+ * tp_warn_if_pending_docid() re-surfaces on the scan path, at most
+ * once per session, until a REINDEX rebuilds the index from the heap
+ * and clears it.  Indexes from a clean v1.2.x shutdown have
  * _unused_docid_page == InvalidBlockNumber and upgrade silently
  * with no operator intervention.
  *

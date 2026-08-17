@@ -955,7 +955,7 @@ tp_test_corrupt_tombstone_head(PG_FUNCTION_ARGS)
 /*
  * bm25_test_downgrade_metapage_v6(index_name, docid_blkno) -> void
  *
- * INTERNAL-ONLY test scaffold (BUG-001).  Rewrites the metapage
+ * INTERNAL-ONLY test scaffold.  Rewrites the metapage
  * (WAL-logged) to look like a pre-v1.3 (metapage v6) page that still
  * carries a non-Invalid _unused_docid_page pointer -- the exact
  * on-disk state a v0.5.1-v1.2.x index is left in when it holds
@@ -1027,7 +1027,7 @@ tp_test_downgrade_metapage_v6(PG_FUNCTION_ARGS)
 /*
  * bm25_test_pending_docid(index_name) -> bigint
  *
- * INTERNAL-ONLY test scaffold (BUG-001).  Returns the metapage's
+ * INTERNAL-ONLY test scaffold.  Returns the metapage's
  * _unused_docid_page value: the durable "results may be incomplete,
  * REINDEX to recover" marker preserved across the v6->v8 upgrade.
  * Returns -1 when the marker is Invalid (a clean index).  Lets a

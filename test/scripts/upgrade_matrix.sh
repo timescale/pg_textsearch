@@ -207,7 +207,7 @@ run_compat_shape() { # $1=version $2=shape
   local mark; mark="$(log_marker)"
   runsql "INSERT INTO d(c) VALUES ('alpha beta gamma writeprobe token');"
   post="$(scalar "$RECALL_Q")"
-  forensic="$(log_since "$mark" | grep -c 'orphaning a non-empty docid chain')"
+  forensic="$(log_since "$mark" | grep -c 'that may have held unspilled documents')"
   runsql "REINDEX INDEX i;"
   reidx="$(scalar "$RECALL_Q")"
   stop_pg
