@@ -14,3 +14,4 @@ extern char *tp_get_qualified_index_name(Relation indexRelation);
 extern Oid	 tp_resolve_index_name_shared(const char *index_name);
 extern void
 tp_validate_query_index(Oid query_index_oid, Relation indexRelation);
+extern void tp_check_index_read_privilege(Oid index_oid);

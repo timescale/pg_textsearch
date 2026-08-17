@@ -562,6 +562,14 @@ validate_and_open_index(TpQuery *query, Oid *index_oid_out)
 	}
 
 	/*
+	 * Enforce the invoking role's SELECT privilege on the indexed relation
+	 * and column before reading any index-derived data. Standalone scoring
+	 * opens the index directly, bypassing the executor's range-table
+	 * permission checks.
+	 */
+	tp_check_index_read_privilege(index_oid);
+
+	/*
 	 * Check if this is a partitioned index. Partitioned indexes don't have
 	 * storage - they're just templates. We need to use a child index for
 	 * text config, but aggregate stats from all children.

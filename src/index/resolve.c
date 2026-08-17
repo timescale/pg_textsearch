@@ -8,11 +8,17 @@
 
 #include <access/genam.h>
 #include <access/htup_details.h>
+#include <access/sysattr.h>
 #include <access/table.h>
 #include <catalog/namespace.h>
+#include <catalog/objectaddress.h>
 #include <catalog/pg_am.h>
 #include <catalog/pg_index.h>
 #include <catalog/pg_inherits.h>
+#include <miscadmin.h>
+#include <nodes/bitmapset.h>
+#include <optimizer/optimizer.h>
+#include <utils/acl.h>
 #include <utils/builtins.h>
 #include <utils/fmgroids.h>
 #include <utils/lsyscache.h>
@@ -100,6 +106,108 @@ tp_resolve_index_name_shared(const char *index_name)
 	}
 
 	return index_oid;
+}
+
+/*
+ * Enforce that the current user may read the contents of the given BM25
+ * index before any index-derived data is returned.
+ *
+ * Standalone scoring (text <@> bm25query) and related helpers open a
+ * caller-named index relation directly via index_open(). That path
+ * bypasses the executor's range-table permission checks, so without this
+ * guard a role could obtain BM25 scores - and therefore infer term
+ * membership and corpus statistics - for an index whose underlying table
+ * or column it is not permitted to read.
+ *
+ * The check mirrors PostgreSQL's column-privilege semantics: the invoking
+ * role must hold SELECT on the indexed heap relation, or SELECT on every
+ * heap column the index reads (plain key columns plus any columns
+ * referenced by an expression index).
+ */
+void
+tp_check_index_read_privilege(Oid index_oid)
+{
+	HeapTuple	  indtup;
+	Form_pg_index indform;
+	Oid			  heap_oid;
+	Oid			  userid = GetUserId();
+	AclResult	  aclresult;
+	Bitmapset	 *attnos = NULL;
+	int			  i;
+	int			  nkeycols;
+	Datum		  exprs_datum;
+	bool		  exprs_isnull;
+
+	indtup = SearchSysCache1(INDEXRELID, ObjectIdGetDatum(index_oid));
+	if (!HeapTupleIsValid(indtup))
+		return; /* not an index; nothing to check */
+
+	indform	 = (Form_pg_index)GETSTRUCT(indtup);
+	heap_oid = indform->indrelid;
+
+	/* Table-level SELECT is sufficient. */
+	aclresult = pg_class_aclcheck(heap_oid, userid, ACL_SELECT);
+	if (aclresult == ACLCHECK_OK)
+	{
+		ReleaseSysCache(indtup);
+		return;
+	}
+
+	/*
+	 * No table-level SELECT: fall back to per-column checks. Collect the
+	 * set of heap attribute numbers the index reads, offsetting by
+	 * FirstLowInvalidHeapAttributeNumber so it can be stored in a
+	 * Bitmapset (matching pull_varattnos()).
+	 */
+	nkeycols = indform->indnkeyatts;
+	for (i = 0; i < nkeycols; i++)
+	{
+		AttrNumber attno = indform->indkey.values[i];
+
+		if (attno != 0)
+			attnos = bms_add_member(
+					attnos, attno - FirstLowInvalidHeapAttributeNumber);
+	}
+
+	/* Expression index columns, if any. */
+	exprs_datum = SysCacheGetAttr(
+			INDEXRELID, indtup, Anum_pg_index_indexprs, &exprs_isnull);
+	if (!exprs_isnull)
+	{
+		char *exprs_str = TextDatumGetCString(exprs_datum);
+		Node *exprs		= stringToNode(exprs_str);
+
+		pull_varattnos(exprs, 1, &attnos);
+		pfree(exprs_str);
+	}
+
+	ReleaseSysCache(indtup);
+
+	/*
+	 * If we could not determine any concrete columns, fail closed using the
+	 * table-level result.
+	 */
+	if (bms_is_empty(attnos))
+		aclcheck_error(
+				aclresult,
+				get_relkind_objtype(get_rel_relkind(heap_oid)),
+				get_rel_name(heap_oid));
+
+	i = -1;
+	while ((i = bms_next_member(attnos, i)) >= 0)
+	{
+		AttrNumber attno = i + FirstLowInvalidHeapAttributeNumber;
+
+		aclresult = pg_attribute_aclcheck(heap_oid, attno, userid, ACL_SELECT);
+		if (aclresult != ACLCHECK_OK)
+			aclcheck_error_col(
+					aclresult,
+					get_relkind_objtype(get_rel_relkind(heap_oid)),
+					get_rel_name(heap_oid),
+					get_attname(heap_oid, attno, false));
+	}
+
+	bms_free(attnos);
 }
 
 /*
