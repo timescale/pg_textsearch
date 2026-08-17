@@ -388,7 +388,12 @@ tpvector_entry_decode_advance(
 Datum
 tpvector_in(PG_FUNCTION_ARGS)
 {
-	char	 *str = PG_GETARG_CSTRING(0);
+	/*
+	 * Copy the input: parsing below writes NUL terminators into the string
+	 * in place. The argument cstring must not be mutated, or a re-evaluated
+	 * const-folded literal would see a truncated buffer.
+	 */
+	char	 *str = pstrdup(PG_GETARG_CSTRING(0));
 	char	 *colon_pos;
 	char	 *index_name;
 	char	 *entries_str;
