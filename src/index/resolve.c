@@ -15,6 +15,7 @@
 #include <catalog/pg_am.h>
 #include <catalog/pg_index.h>
 #include <catalog/pg_inherits.h>
+#include <catalog/pg_namespace.h>
 #include <miscadmin.h>
 #include <nodes/bitmapset.h>
 #include <optimizer/optimizer.h>
@@ -119,10 +120,11 @@ tp_resolve_index_name_shared(const char *index_name)
  * membership and corpus statistics - for an index whose underlying table
  * or column it is not permitted to read.
  *
- * The check mirrors PostgreSQL's column-privilege semantics: the invoking
- * role must hold SELECT on the indexed heap relation, or SELECT on every
- * heap column the index reads (plain key columns plus any columns
- * referenced by an expression index).
+ * The check mirrors PostgreSQL's index-scan authorization: the invoking
+ * role must hold USAGE on the schema containing the indexed table, and
+ * either SELECT on the table itself or SELECT on every heap column the
+ * index reads (plain key columns plus any columns referenced by an
+ * expression index or a partial-index predicate).
  */
 void
 tp_check_index_read_privilege(Oid index_oid)
@@ -130,13 +132,15 @@ tp_check_index_read_privilege(Oid index_oid)
 	HeapTuple	  indtup;
 	Form_pg_index indform;
 	Oid			  heap_oid;
+	Oid			  heap_nsp;
 	Oid			  userid = GetUserId();
 	AclResult	  aclresult;
-	Bitmapset	 *attnos = NULL;
+	Bitmapset	 *attnos   = NULL;
+	bool		  wholerow = false;
 	int			  i;
 	int			  nkeycols;
-	Datum		  exprs_datum;
-	bool		  exprs_isnull;
+	Datum		  datum;
+	bool		  isnull;
 
 	indtup = SearchSysCache1(INDEXRELID, ObjectIdGetDatum(index_oid));
 	if (!HeapTupleIsValid(indtup))
@@ -144,6 +148,21 @@ tp_check_index_read_privilege(Oid index_oid)
 
 	indform	 = (Form_pg_index)GETSTRUCT(indtup);
 	heap_oid = indform->indrelid;
+
+	/*
+	 * Reading through the index requires USAGE on the schema containing the
+	 * indexed table, exactly as a direct index scan would. Enforce it before
+	 * any table- or column-level decision so a withheld schema cannot be
+	 * probed via scoring.
+	 */
+	heap_nsp = get_rel_namespace(heap_oid);
+	aclresult =
+			object_aclcheck(NamespaceRelationId, heap_nsp, userid, ACL_USAGE);
+	if (aclresult != ACLCHECK_OK)
+	{
+		ReleaseSysCache(indtup);
+		aclcheck_error(aclresult, OBJECT_SCHEMA, get_namespace_name(heap_nsp));
+	}
 
 	/* Table-level SELECT is sufficient. */
 	aclresult = pg_class_aclcheck(heap_oid, userid, ACL_SELECT);
@@ -154,10 +173,11 @@ tp_check_index_read_privilege(Oid index_oid)
 	}
 
 	/*
-	 * No table-level SELECT: fall back to per-column checks. Collect the
-	 * set of heap attribute numbers the index reads, offsetting by
-	 * FirstLowInvalidHeapAttributeNumber so it can be stored in a
-	 * Bitmapset (matching pull_varattnos()).
+	 * No table-level SELECT: fall back to per-column checks. Collect every
+	 * heap attribute the index reads - plain key columns, plus any columns
+	 * referenced by an expression index or a partial-index predicate -
+	 * offsetting by FirstLowInvalidHeapAttributeNumber to match
+	 * pull_varattnos().
 	 */
 	nkeycols = indform->indnkeyatts;
 	for (i = 0; i < nkeycols; i++)
@@ -169,22 +189,34 @@ tp_check_index_read_privilege(Oid index_oid)
 					attnos, attno - FirstLowInvalidHeapAttributeNumber);
 	}
 
-	/* Expression index columns, if any. */
-	exprs_datum = SysCacheGetAttr(
-			INDEXRELID, indtup, Anum_pg_index_indexprs, &exprs_isnull);
-	if (!exprs_isnull)
+	/* Expression-index columns, if any. */
+	datum = SysCacheGetAttr(
+			INDEXRELID, indtup, Anum_pg_index_indexprs, &isnull);
+	if (!isnull)
 	{
-		char *exprs_str = TextDatumGetCString(exprs_datum);
-		Node *exprs		= stringToNode(exprs_str);
+		char *str  = TextDatumGetCString(datum);
+		Node *node = stringToNode(str);
 
-		pull_varattnos(exprs, 1, &attnos);
-		pfree(exprs_str);
+		pull_varattnos(node, 1, &attnos);
+		pfree(str);
+	}
+
+	/* Partial-index predicate columns, if any. */
+	datum = SysCacheGetAttr(
+			INDEXRELID, indtup, Anum_pg_index_indpred, &isnull);
+	if (!isnull)
+	{
+		char *str  = TextDatumGetCString(datum);
+		Node *node = stringToNode(str);
+
+		pull_varattnos(node, 1, &attnos);
+		pfree(str);
 	}
 
 	ReleaseSysCache(indtup);
 
 	/*
-	 * If we could not determine any concrete columns, fail closed using the
+	 * If we could not pin down any concrete column, fail closed using the
 	 * table-level result.
 	 */
 	if (bms_is_empty(attnos))
@@ -198,6 +230,18 @@ tp_check_index_read_privilege(Oid index_oid)
 	{
 		AttrNumber attno = i + FirstLowInvalidHeapAttributeNumber;
 
+		/*
+		 * A whole-row (attno == 0) or system-column (attno < 0) reference
+		 * cannot be resolved to a single named column; defer it and require
+		 * SELECT on every column below, matching core's whole-row handling
+		 * in ExecCheckOneRelPerms().
+		 */
+		if (attno <= InvalidAttrNumber)
+		{
+			wholerow = true;
+			continue;
+		}
+
 		aclresult = pg_attribute_aclcheck(heap_oid, attno, userid, ACL_SELECT);
 		if (aclresult != ACLCHECK_OK)
 			aclcheck_error_col(
@@ -205,6 +249,17 @@ tp_check_index_read_privilege(Oid index_oid)
 					get_relkind_objtype(get_rel_relkind(heap_oid)),
 					get_rel_name(heap_oid),
 					get_attname(heap_oid, attno, false));
+	}
+
+	if (wholerow)
+	{
+		aclresult = pg_attribute_aclcheck_all(
+				heap_oid, userid, ACL_SELECT, ACLMASK_ALL);
+		if (aclresult != ACLCHECK_OK)
+			aclcheck_error(
+					aclresult,
+					get_relkind_objtype(get_rel_relkind(heap_oid)),
+					get_rel_name(heap_oid));
 	}
 
 	bms_free(attnos);

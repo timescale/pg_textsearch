@@ -133,10 +133,16 @@ CREATE OPERATOR @extschema@.= (
 -- the same setup do not survive worker startup reliably (see follow-up
 -- issue).  Ranked queries should use ORDER BY <@> ... LIMIT n, which is an
 -- index scan and does not exercise this function in workers.
+-- STABLE, not IMMUTABLE: the returned score depends on corpus statistics
+-- that change as the indexed table is modified, so the result is only
+-- stable within a single scan.  STABLE also keeps the planner from
+-- constant-folding a fully-constant scoring expression at plan time, so the
+-- runtime privilege check on the named index always runs under the invoking
+-- role.
 CREATE FUNCTION @extschema@.bm25_text_bm25query_score(left_text text, right_query @extschema@.bm25query)
 RETURNS float8
 AS 'MODULE_PATHNAME', 'bm25_text_bm25query_score'
-LANGUAGE C IMMUTABLE STRICT PARALLEL UNSAFE COST 1000;
+LANGUAGE C STABLE STRICT PARALLEL UNSAFE COST 1000;
 
 -- bm25query equality function
 CREATE FUNCTION @extschema@.bm25query_eq(@extschema@.bm25query, @extschema@.bm25query)
@@ -201,7 +207,7 @@ CREATE FUNCTION @extschema@.bm25_textarray_bm25query_score(
     left_arr text[], right_query @extschema@.bm25query)
 RETURNS float8
 AS 'MODULE_PATHNAME', 'bm25_textarray_bm25query_score'
-LANGUAGE C IMMUTABLE STRICT PARALLEL UNSAFE COST 1000;
+LANGUAGE C STABLE STRICT PARALLEL UNSAFE COST 1000;
 
 -- Error stub for text[] <@> text (planner should rewrite to bm25query)
 CREATE FUNCTION @extschema@.bm25_textarray_text_score(text[], text)

@@ -14,3 +14,13 @@ BEGIN
             'Add pg_textsearch to shared_preload_libraries and restart.';
     END IF;
 END $$;
+
+-- Re-declare the standalone scoring functions as STABLE (previously
+-- IMMUTABLE). Their result depends on corpus statistics that change with
+-- the indexed table, and STABLE prevents plan-time constant folding so the
+-- runtime privilege check on the named index always runs under the invoking
+-- role.
+ALTER FUNCTION @extschema@.bm25_text_bm25query_score(text, @extschema@.bm25query)
+    STABLE;
+ALTER FUNCTION @extschema@.bm25_textarray_bm25query_score(text[], @extschema@.bm25query)
+    STABLE;
