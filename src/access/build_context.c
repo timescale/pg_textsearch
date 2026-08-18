@@ -104,12 +104,26 @@ build_term_match(const void *key1, const void *key2, Size keysize)
 static void
 build_context_grow_docs(TpBuildContext *ctx)
 {
-	uint32 new_capacity = ctx->docs_capacity * 2;
+	uint32 new_capacity;
 
-	ctx->fieldnorms =
-			repalloc_huge(ctx->fieldnorms, new_capacity * sizeof(uint8));
-	ctx->ctids =
-			repalloc_huge(ctx->ctids, new_capacity * sizeof(ItemPointerData));
+	/*
+	 * Prevent uint32 wraparound when doubling capacity; otherwise we could
+	 * "grow" to a smaller (or zero-length) array and then write past its
+	 * end.  UINT32_MAX is reserved as the doc_id sentinel, so cap the
+	 * capacity at UINT32_MAX - 1.
+	 */
+	if (ctx->docs_capacity > (UINT32_MAX - 1) / 2)
+		ereport(ERROR,
+				(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
+				 errmsg("too many documents in segment (max %u)",
+						UINT32_MAX - 1)));
+
+	new_capacity = ctx->docs_capacity * 2;
+
+	ctx->fieldnorms = repalloc_huge(
+			ctx->fieldnorms, mul_size((Size)new_capacity, sizeof(uint8)));
+	ctx->ctids = repalloc_huge(
+			ctx->ctids, mul_size((Size)new_capacity, sizeof(ItemPointerData)));
 	ctx->docs_capacity = new_capacity;
 }
 
@@ -335,12 +349,17 @@ tp_write_segment_from_build_ctx(TpBuildContext *ctx, Relation index)
 	string_pos = 0;
 	for (i = 0; i < num_terms; i++)
 	{
+		uint64 entry_size = (uint64)sizeof(uint32) + terms[i].term_len +
+							sizeof(uint32);
+
 		/*
 		 * String-pool offsets are stored as uint32 in the segment
-		 * format.  Fail loudly before writing rather than silently
-		 * wrapping (issue #432).
+		 * format.  Guard both the current offset and the increment so
+		 * the final term cannot push the pool past the representable
+		 * limit without raising an error (issue #432).
 		 */
-		if (string_pos > PG_UINT32_MAX)
+		if (string_pos > (uint64)PG_UINT32_MAX ||
+			entry_size > ((uint64)PG_UINT32_MAX + 1) - string_pos)
 			ereport(ERROR,
 					(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
 					 errmsg("pg_textsearch: segment string pool exceeds "
@@ -350,8 +369,7 @@ tp_write_segment_from_build_ctx(TpBuildContext *ctx, Relation index)
 							 "single segment.")));
 
 		string_offsets[i] = (uint32)string_pos;
-		string_pos += (uint64)sizeof(uint32) + terms[i].term_len +
-					  sizeof(uint32);
+		string_pos += entry_size;
 	}
 
 	/* Write string offsets array */
@@ -818,12 +836,17 @@ tp_write_segment_to_buffile(TpBuildContext *ctx, BufFile *file)
 	string_pos = 0;
 	for (i = 0; i < num_terms; i++)
 	{
+		uint64 entry_size = (uint64)sizeof(uint32) + terms[i].term_len +
+							sizeof(uint32);
+
 		/*
 		 * String-pool offsets are stored as uint32 in the segment
-		 * format.  Fail loudly before writing rather than silently
-		 * wrapping (issue #432).
+		 * format.  Guard both the current offset and the increment so
+		 * the final term cannot push the pool past the representable
+		 * limit without raising an error (issue #432).
 		 */
-		if (string_pos > PG_UINT32_MAX)
+		if (string_pos > (uint64)PG_UINT32_MAX ||
+			entry_size > ((uint64)PG_UINT32_MAX + 1) - string_pos)
 			ereport(ERROR,
 					(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
 					 errmsg("pg_textsearch: segment string pool exceeds "
@@ -833,8 +856,7 @@ tp_write_segment_to_buffile(TpBuildContext *ctx, BufFile *file)
 							 "single segment.")));
 
 		string_offsets[i] = (uint32)string_pos;
-		string_pos += (uint64)sizeof(uint32) + terms[i].term_len +
-					  sizeof(uint32);
+		string_pos += entry_size;
 	}
 
 	/* Write string offsets array */
