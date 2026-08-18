@@ -34,6 +34,51 @@ static TpGlobalRegistry *tapir_registry = NULL;
 /* Backend-local DSA area pointer */
 static dsa_area *tapir_dsa = NULL;
 
+#if PG_VERSION_NUM >= 190000
+/*
+ * PG19+ removed LWLockRegisterTranche(); tranche names can only be
+ * assigned when the ID is allocated via LWLockNewTrancheId().  Allocate
+ * one contiguous, name-registered block of TP_TRANCHE_COUNT IDs exactly
+ * once (first backend, under AddinShmemInitLock) and record them in
+ * shared memory so every backend resolves the same IDs.
+ */
+static void
+tp_init_tranche_ids(void)
+{
+	static const char *const tranche_names[TP_TRANCHE_COUNT] = {
+			"tapir_string_hash",	  /* TP_TRANCHE_STRING */
+			"tapir_posting",		  /* TP_TRANCHE_POSTING (reserved) */
+			"tapir_corpus",			  /* TP_TRANCHE_CORPUS (reserved) */
+			"tapir_doclength_hash",	  /* TP_TRANCHE_DOC_LENGTHS */
+			"tapir_index_lock",		  /* TP_TRANCHE_INDEX_LOCK */
+			"tapir_build_dsa",		  /* TP_TRANCHE_BUILD_DSA */
+			"tapir_global_dsa",		  /* TP_TRANCHE_GLOBAL_DSA */
+			"tapir_registry",		  /* TP_TRANCHE_REGISTRY */
+			"tapir_posting_lock",	  /* TP_TRANCHE_POSTING_LOCK */
+			"tapir_cache_apply_lock", /* TP_TRANCHE_CACHE_APPLY_LOCK */
+			"tapir_cache_lock",		  /* TP_TRANCHE_CACHE_LOCK */
+			"tapir_cache_eviction",	  /* TP_TRANCHE_EVICTION_MUTEX */
+	};
+
+	for (int i = 0; i < TP_TRANCHE_COUNT; i++)
+		tapir_registry->tranche_ids[i] = LWLockNewTrancheId(tranche_names[i]);
+}
+
+/*
+ * Resolve a fixed logical tranche constant to its runtime tranche ID.
+ * See constants.h for the PG17/18 (compile-time identity) counterpart.
+ */
+int
+tp_tranche_id(int fixed_tranche_id)
+{
+	int idx = fixed_tranche_id - TP_TRANCHE_FIRST;
+
+	Assert(tapir_registry != NULL);
+	Assert(idx >= 0 && idx < TP_TRANCHE_COUNT);
+	return tapir_registry->tranche_ids[idx];
+}
+#endif
+
 /*
  * Hash function for Oid keys
  */
@@ -86,7 +131,7 @@ get_registry_params(dshash_parameters *params)
 	params->compare_function = registry_compare_fn;
 	params->hash_function	 = registry_hash_fn;
 	params->copy_function	 = registry_copy_fn;
-	params->tranche_id		 = TP_REGISTRY_HASH_TRANCHE_ID;
+	params->tranche_id		 = tp_tranche_id(TP_REGISTRY_HASH_TRANCHE_ID);
 }
 
 /*
@@ -143,12 +188,22 @@ tp_registry_shmem_startup(void)
 		/* First time initialization */
 		memset(tapir_registry, 0, sizeof(TpGlobalRegistry));
 
+#if PG_VERSION_NUM >= 190000
 		/*
-		 * Initialize the registry lock using fixed tranche ID.
+		 * Allocate the runtime LWLock tranche-ID block before any lock
+		 * or DSA is initialized with a tranche ID (PG19 validates the
+		 * tranche ID in LWLockInitialize).
+		 */
+		tp_init_tranche_ids();
+#endif
+
+		/*
+		 * Initialize the registry lock using a fixed tranche ID.
 		 * Using a fixed ID avoids exhausting tranche IDs when creating many
 		 * indexes (e.g., partitioned tables with 500+ partitions).
 		 */
-		LWLockInitialize(&tapir_registry->lock, TP_TRANCHE_REGISTRY);
+		LWLockInitialize(
+				&tapir_registry->lock, tp_tranche_id(TP_TRANCHE_REGISTRY));
 
 		/*
 		 * In-memory memtable cache fields.  eviction_mutex
@@ -158,7 +213,8 @@ tp_registry_shmem_startup(void)
 		 * docs/memtable_cache.md §"Memory cap (3 tiers)".
 		 */
 		LWLockInitialize(
-				&tapir_registry->eviction_mutex, TP_TRANCHE_EVICTION_MUTEX);
+				&tapir_registry->eviction_mutex,
+				tp_tranche_id(TP_TRANCHE_EVICTION_MUTEX));
 		pg_atomic_init_u64(&tapir_registry->estimated_total_bytes, 0);
 
 		/* Initialize handles as invalid - DSA/dshash created on first use */
@@ -168,10 +224,17 @@ tp_registry_shmem_startup(void)
 
 	LWLockRelease(AddinShmemInitLock);
 
-	/* Register the lock tranches */
+#if PG_VERSION_NUM < 190000
+	/*
+	 * Register the lock tranche names.  On PG19+ the names are supplied
+	 * to LWLockNewTrancheId() at allocation time (see
+	 * tp_init_tranche_ids()) and LWLockRegisterTranche() no longer
+	 * exists.
+	 */
 	LWLockRegisterTranche(tapir_registry->lock.tranche, "tapir_registry");
 	LWLockRegisterTranche(
 			tapir_registry->eviction_mutex.tranche, "tapir_cache_eviction");
+#endif
 }
 
 /*
@@ -209,7 +272,7 @@ tp_registry_get_dsa(void)
 		 * exhausting tranche IDs when creating many indexes (e.g.,
 		 * partitioned tables with 500+ partitions).
 		 */
-		tapir_dsa = dsa_create(TP_TRANCHE_GLOBAL_DSA);
+		tapir_dsa = dsa_create(tp_tranche_id(TP_TRANCHE_GLOBAL_DSA));
 		MemoryContextSwitchTo(oldcontext);
 
 		if (tapir_dsa == NULL)

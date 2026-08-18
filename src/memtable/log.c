@@ -25,10 +25,13 @@
  */
 #include <postgres.h>
 
+#include <access/genam.h>
 #include <access/generic_xlog.h>
+#include <access/htup_details.h>
 #include <access/relation.h>
 #include <access/transam.h>
 #include <catalog/index.h>
+#include <catalog/pg_type.h>
 #include <fmgr.h>
 #include <funcapi.h>
 #include <miscadmin.h>
@@ -1596,6 +1599,10 @@ bm25_memtable_chain(PG_FUNCTION_ARGS)
 		TupleDescInitEntry(tupdesc, 3, "free_offset", INT4OID, -1, 0);
 		TupleDescInitEntry(tupdesc, 4, "next_block", INT8OID, -1, 0);
 		TupleDescInitEntry(tupdesc, 5, "flags", INT4OID, -1, 0);
+#if PG_VERSION_NUM >= 190000
+		/* PG19 requires finalizing a hand-built TupleDesc before use. */
+		TupleDescFinalize(tupdesc);
+#endif
 		funcctx->tuple_desc = BlessTupleDesc(tupdesc);
 		funcctx->user_fctx	= state;
 
@@ -1695,6 +1702,10 @@ bm25_memtable_dead_pages(PG_FUNCTION_ARGS)
 		TupleDescInitEntry(tupdesc, 2, "flags", INT4OID, -1, 0);
 		TupleDescInitEntry(tupdesc, 3, "dead_fxid", INT8OID, -1, 0);
 		TupleDescInitEntry(tupdesc, 4, "n_records", INT4OID, -1, 0);
+#if PG_VERSION_NUM >= 190000
+		/* PG19 requires finalizing a hand-built TupleDesc before use. */
+		TupleDescFinalize(tupdesc);
+#endif
 		funcctx->tuple_desc = BlessTupleDesc(tupdesc);
 		funcctx->user_fctx	= state;
 

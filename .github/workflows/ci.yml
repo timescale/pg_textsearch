@@ -26,9 +26,12 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
+    # PG19 is in beta: run it, but don't let beta breakage block merges.
+    continue-on-error: ${{ matrix.pg_version == 19 }}
     strategy:
+      fail-fast: false
       matrix:
-        pg_version: [17, 18]
+        pg_version: [17, 18, 19]
 
     steps:
     - uses: actions/checkout@v4
@@ -248,13 +251,18 @@ jobs:
 
   build-test-multiple-configs:
     runs-on: ubuntu-latest
+    # PG19 is in beta: build it, but don't let beta breakage block merges.
+    continue-on-error: ${{ matrix.config.pg_version == 19 }}
     strategy:
+      fail-fast: false
       matrix:
         config:
           - { cc: gcc, pg_version: 17 }
           - { cc: clang, pg_version: 17 }
           - { cc: gcc, pg_version: 18 }
           - { cc: clang, pg_version: 18 }
+          - { cc: gcc, pg_version: 19 }
+          - { cc: clang, pg_version: 19 }
 
     steps:
     - uses: actions/checkout@v4

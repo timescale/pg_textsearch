@@ -1016,9 +1016,13 @@ resolve_indexes_in_query(Query *query)
  */
 static void
 tp_post_parse_analyze_hook(
-		ParseState *pstate	pg_attribute_unused(),
-		Query			   *query,
+		ParseState *pstate pg_attribute_unused(),
+		Query			  *query,
+#if PG_VERSION_NUM >= 190000
+		const JumbleState *jstate pg_attribute_unused())
+#else
 		JumbleState *jstate pg_attribute_unused())
+#endif
 {
 	/* Reset flag for this query - will be set if BM25 operators found */
 	query_has_bm25_operators = false;
@@ -1911,13 +1915,26 @@ validate_explicit_index_usage(Plan *plan, BM25OidCache *oids)
  *
  * We set up the planning context BEFORE calling standard_planner so that
  * set_rel_pathlist_hook can filter out unwanted BM25 index paths.
+ *
+ * PG19 added a trailing ExplainState *es parameter to planner_hook,
+ * standard_planner() and prev planner hooks.  These macros splice that
+ * parameter into the signature and the pass-through calls only when
+ * building against PG19+.
  */
+#if PG_VERSION_NUM >= 190000
+#define TP_PLANNER_HOOK_DECL_EXTRA , ExplainState *es
+#define TP_PLANNER_HOOK_PASS_EXTRA , es
+#else
+#define TP_PLANNER_HOOK_DECL_EXTRA
+#define TP_PLANNER_HOOK_PASS_EXTRA
+#endif
+
 static PlannedStmt *
 tp_planner_hook(
-		Query		 *parse,
-		const char	 *query_string,
-		int			  cursorOptions,
-		ParamListInfo boundParams)
+		Query					 *parse,
+		const char				 *query_string,
+		int						  cursorOptions,
+		ParamListInfo boundParams TP_PLANNER_HOOK_DECL_EXTRA)
 {
 	PlannedStmt		*result;
 	BM25OidCache	 oid_cache;
@@ -1930,10 +1947,16 @@ tp_planner_hook(
 	{
 		if (prev_planner_hook)
 			return prev_planner_hook(
-					parse, query_string, cursorOptions, boundParams);
+					parse,
+					query_string,
+					cursorOptions,
+					boundParams TP_PLANNER_HOOK_PASS_EXTRA);
 		else
 			return standard_planner(
-					parse, query_string, cursorOptions, boundParams);
+					parse,
+					query_string,
+					cursorOptions,
+					boundParams TP_PLANNER_HOOK_PASS_EXTRA);
 	}
 
 	/*
@@ -1966,10 +1989,16 @@ tp_planner_hook(
 	{
 		if (prev_planner_hook)
 			result = prev_planner_hook(
-					parse, query_string, cursorOptions, boundParams);
+					parse,
+					query_string,
+					cursorOptions,
+					boundParams TP_PLANNER_HOOK_PASS_EXTRA);
 		else
 			result = standard_planner(
-					parse, query_string, cursorOptions, boundParams);
+					parse,
+					query_string,
+					cursorOptions,
+					boundParams TP_PLANNER_HOOK_PASS_EXTRA);
 	}
 	PG_FINALLY();
 	{

@@ -365,7 +365,8 @@ tp_create_shared_index_state(Oid index_oid, Oid heap_oid, bool reuse_if_exists)
 	 * Same tranche choices as tp_create_build_index_state for
 	 * consistency.
 	 */
-	LWLockInitialize(&shared_state->lock, TP_TRANCHE_INDEX_LOCK);
+	LWLockInitialize(
+			&shared_state->lock, tp_tranche_id(TP_TRANCHE_INDEX_LOCK));
 	pg_atomic_init_u64(&shared_state->spill_generation, 0);
 	memtable_dp = dsa_allocate(dsa, sizeof(TpMemtable));
 	if (!DsaPointerIsValid(memtable_dp))
@@ -374,8 +375,9 @@ tp_create_shared_index_state(Oid index_oid, Oid heap_oid, bool reuse_if_exists)
 	memtable = (TpMemtable *)dsa_get_address(dsa, memtable_dp);
 	memtable->string_hash_handle = DSHASH_HANDLE_INVALID;
 	memtable->doc_lengths_handle = DSHASH_HANDLE_INVALID;
-	LWLockInitialize(&memtable->apply_lock, TP_TRANCHE_CACHE_APPLY_LOCK);
-	LWLockInitialize(&memtable->lock, TP_TRANCHE_CACHE_LOCK);
+	LWLockInitialize(
+			&memtable->apply_lock, tp_tranche_id(TP_TRANCHE_CACHE_APPLY_LOCK));
+	LWLockInitialize(&memtable->lock, tp_tranche_id(TP_TRANCHE_CACHE_LOCK));
 	memtable->cursor_gen_spill_count = 0;
 	memtable->cursor_next_blkno		 = InvalidBlockNumber;
 	memtable->cursor_next_off		 = 0;
@@ -516,7 +518,8 @@ tp_create_build_index_state(Oid index_oid, Oid heap_oid)
 	 * Using a fixed ID avoids exhausting tranche IDs when creating many
 	 * indexes (e.g., partitioned tables with 500+ partitions).
 	 */
-	LWLockInitialize(&shared_state->lock, TP_TRANCHE_INDEX_LOCK);
+	LWLockInitialize(
+			&shared_state->lock, tp_tranche_id(TP_TRANCHE_INDEX_LOCK));
 	pg_atomic_init_u64(&shared_state->spill_generation, 0);
 
 	/* Check if index already registered (rebuild case) */
@@ -543,7 +546,7 @@ tp_create_build_index_state(Oid index_oid, Oid heap_oid)
 	 * Use a fixed tranche ID to avoid exhausting tranche IDs when creating
 	 * many indexes (e.g., partitioned tables with 500+ partitions).
 	 */
-	private_dsa = dsa_create(TP_TRANCHE_BUILD_DSA);
+	private_dsa = dsa_create(tp_tranche_id(TP_TRANCHE_BUILD_DSA));
 	if (!private_dsa)
 		elog(ERROR, "Failed to create private DSA for index build");
 
@@ -555,8 +558,9 @@ tp_create_build_index_state(Oid index_oid, Oid heap_oid)
 	memtable = (TpMemtable *)dsa_get_address(private_dsa, memtable_dp);
 	memtable->string_hash_handle = DSHASH_HANDLE_INVALID;
 	memtable->doc_lengths_handle = DSHASH_HANDLE_INVALID;
-	LWLockInitialize(&memtable->apply_lock, TP_TRANCHE_CACHE_APPLY_LOCK);
-	LWLockInitialize(&memtable->lock, TP_TRANCHE_CACHE_LOCK);
+	LWLockInitialize(
+			&memtable->apply_lock, tp_tranche_id(TP_TRANCHE_CACHE_APPLY_LOCK));
+	LWLockInitialize(&memtable->lock, tp_tranche_id(TP_TRANCHE_CACHE_LOCK));
 	memtable->cursor_gen_spill_count = 0;
 	memtable->cursor_next_blkno		 = InvalidBlockNumber;
 	memtable->cursor_next_off		 = 0;
@@ -637,8 +641,9 @@ tp_finalize_build_mode(TpLocalIndexState *local_state)
 	memtable = (TpMemtable *)dsa_get_address(global_dsa, memtable_dp);
 	memtable->string_hash_handle = DSHASH_HANDLE_INVALID;
 	memtable->doc_lengths_handle = DSHASH_HANDLE_INVALID;
-	LWLockInitialize(&memtable->apply_lock, TP_TRANCHE_CACHE_APPLY_LOCK);
-	LWLockInitialize(&memtable->lock, TP_TRANCHE_CACHE_LOCK);
+	LWLockInitialize(
+			&memtable->apply_lock, tp_tranche_id(TP_TRANCHE_CACHE_APPLY_LOCK));
+	LWLockInitialize(&memtable->lock, tp_tranche_id(TP_TRANCHE_CACHE_LOCK));
 	memtable->cursor_gen_spill_count = 0;
 	memtable->cursor_next_blkno		 = InvalidBlockNumber;
 	memtable->cursor_next_off		 = 0;
