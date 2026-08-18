@@ -10,8 +10,10 @@
 #include <postgres.h>
 
 #include <miscadmin.h>
+#include <nodes/pg_list.h>
 #include <storage/bufmgr.h>
 #include <storage/bufpage.h>
+#include <utils/memutils.h>
 #include <utils/rel.h>
 
 #include "constants.h"
@@ -127,14 +129,15 @@ tp_get_metapage(Relation index)
 	 * v6 with a non-Invalid _unused_docid_page (formerly
 	 * first_docid_page) is also accepted here.  It indicates
 	 * either (a) the operator called bm25_spill_index() before
-	 * the binary swap and the pointer is stale bookkeeping
-	 * safe to orphan, or (b) v1.2.x was SIGKILL'd with
-	 * in-flight documents in the chain and those documents
-	 * are now lost.  We cannot distinguish those cases from
-	 * the on-disk bytes alone, so we log a LOG-level forensic
-	 * message from the upgrade helper (which fires once, on
-	 * first write) and proceed.  Operators who suspect lost
-	 * documents should REINDEX.
+	 * the binary swap and the pointer is stale bookkeeping, or
+	 * (b) v1.2.x was SIGKILL'd with in-flight documents in the
+	 * chain and those documents are now lost.  We cannot
+	 * distinguish those cases from the on-disk bytes alone, so
+	 * the upgrade helper emits a client-visible WARNING (once,
+	 * on first write) and PRESERVES the pointer as a durable
+	 * marker; the scan path re-surfaces it via
+	 * tp_warn_if_pending_docid() until a REINDEX clears it.
+	 * Operators who suspect lost documents should REINDEX.
 	 *
 	 * v5 and earlier are not read-compatible and require
 	 * REINDEX as before.
@@ -161,12 +164,13 @@ tp_get_metapage(Relation index)
 
 	/*
 	 * Note: a v6 metapage with a non-Invalid _unused_docid_page
-	 * is accepted here as well — the operator-visible LOG fires
-	 * once, from tp_metapage_upgrade_to_current() on the first
-	 * write, at the point we actually orphan the pointer.  See
-	 * the rationale block in that function.  Emitting the LOG
-	 * here would spam (this function is on the hot path; the
-	 * upgrade fires at most once per index lifetime).
+	 * is accepted here as well — the operator-visible WARNING
+	 * fires once, from tp_metapage_upgrade_to_current() on the
+	 * first write, at the point we upgrade the page and preserve
+	 * the pointer as a durable marker.  See the rationale block
+	 * in that function.  The scan path re-surfaces the marker via
+	 * tp_warn_if_pending_docid(); this function stays silent
+	 * because it is on the hot read path.
 	 */
 
 	/*
@@ -259,8 +263,8 @@ tp_metapage_upgrade_to_current(Relation index, Page page)
 	/*
 	 * v6 lacks the memtable chain fields and may carry a stale
 	 * docid pointer; v7 already has the chain fields.  Only the
-	 * v6 path initializes memtable head/tail and orphans the
-	 * docid pointer.
+	 * v6 path initializes memtable head/tail and inspects the
+	 * legacy docid pointer.
 	 */
 	if (metap->version == TP_METAPAGE_VERSION_V6)
 	{
@@ -270,26 +274,32 @@ tp_metapage_upgrade_to_current(Relation index, Page page)
 		metap->memtable_tail_blkno = InvalidBlockNumber;
 
 		if (BlockNumberIsValid(orphan_docid_page) && !RecoveryInProgress())
-			ereport(LOG,
-					(errmsg("pg_textsearch: upgrading index \"%s\" "
-							"from a pre-v1.3 metapage (v6) and "
-							"orphaning a non-empty docid chain "
-							"pointer (first_docid_page = %u)",
-							RelationGetRelationName(index),
-							orphan_docid_page),
+			ereport(WARNING,
+					(errmsg("pg_textsearch: upgraded index \"%s\" "
+							"from a pre-v1.3 on-disk format that may "
+							"have held unspilled documents",
+							RelationGetRelationName(index)),
 					 errdetail(
-							 "The docid chain was a v1.2.x mechanism for "
-							 "replaying in-flight documents from heap on "
-							 "restart.  v1.3 has no equivalent.  If you "
-							 "did not call bm25_spill_index() on this "
-							 "index before swapping binaries, some "
-							 "recently-inserted documents may be missing "
-							 "from query results."),
-					 errhint("If query results look incomplete, "
-							 "REINDEX INDEX %s to rebuild from heap.",
+							 "The pre-v1.3 docid chain (first page "
+							 "%u) replayed in-flight documents from "
+							 "the heap on restart; v1.3+ has no "
+							 "equivalent, so any documents not "
+							 "spilled before the binary swap are "
+							 "absent from the index.",
+							 orphan_docid_page),
+					 errhint("Run \"REINDEX INDEX %s;\" to rebuild "
+							 "from the table and clear this warning.",
 							 RelationGetRelationName(index))));
 
-		metap->_unused_docid_page = InvalidBlockNumber;
+		/*
+		 * Preserve orphan_docid_page as a durable "results may be
+		 * incomplete" marker.  It rides through v8 in the
+		 * _unused_docid_page slot and is re-surfaced to clients on
+		 * the scan path (at most once per session) by
+		 * tp_warn_if_pending_docid() until a REINDEX rebuilds the
+		 * index from the heap and clears it.  Do NOT reset it to
+		 * InvalidBlockNumber here.
+		 */
 	}
 
 	/* Common to v6 and v7: introduce the deferred-free chain head. */
@@ -308,4 +318,70 @@ tp_metapage_upgrade_to_current(Relation index, Page page)
 		if (phdr->pd_lower < v8_pd_lower)
 			phdr->pd_lower = v8_pd_lower;
 	}
+}
+
+/*
+ * Per-backend set of index OIDs already inspected for the
+ * "results may be incomplete" marker this session.  Lives in
+ * TopMemoryContext so it survives the transient scan contexts.  An OID
+ * is recorded on the FIRST inspection regardless of outcome, so a
+ * clean index costs at most one metapage read per session and a marked
+ * index warns at most once -- neither floods a plan that reopens the
+ * scan many times (e.g. the inner side of a nested loop).
+ */
+static List *tp_pending_docid_seen = NIL;
+
+/*
+ * tp_warn_if_pending_docid
+ *
+ * Read-path guard for the pre-v1.3 upgrade marker.  When a pre-v1.3
+ * index was upgraded while it still carried unspilled documents,
+ * tp_metapage_upgrade_to_current() preserves the legacy docid pointer
+ * in _unused_docid_page as a durable "results may be incomplete"
+ * marker.  This helper surfaces that marker to the client as a WARNING
+ * on the scan path, so read-only workloads -- which never trigger the
+ * write-path upgrade WARNING -- still learn that a REINDEX is needed.
+ *
+ * Inspects the metapage at most once per index per backend session
+ * (see tp_pending_docid_seen).  Runs during recovery too: a hot
+ * standby serving reads against an upgraded primary must still see the
+ * advisory, even though the REINDEX that clears it has to run on the
+ * primary.
+ */
+void
+tp_warn_if_pending_docid(Relation index)
+{
+	Oid				index_oid = RelationGetRelid(index);
+	TpIndexMetaPage metap;
+	BlockNumber		marker;
+	MemoryContext	old;
+
+	if (list_member_oid(tp_pending_docid_seen, index_oid))
+		return;
+
+	metap  = tp_get_metapage(index);
+	marker = metap->_unused_docid_page;
+	pfree(metap);
+
+	/*
+	 * Record the index before (possibly) warning so a clean index is
+	 * never re-read and a marked index warns only once this session.
+	 */
+	old					  = MemoryContextSwitchTo(TopMemoryContext);
+	tp_pending_docid_seen = lappend_oid(tp_pending_docid_seen, index_oid);
+	MemoryContextSwitchTo(old);
+
+	if (!BlockNumberIsValid(marker))
+		return;
+
+	ereport(WARNING,
+			(errmsg("pg_textsearch: index \"%s\" may return "
+					"incomplete results after upgrade from a "
+					"pre-v1.3 on-disk format",
+					RelationGetRelationName(index)),
+			 errhint("Some documents inserted before the "
+					 "upgrade may be missing. Run \"REINDEX "
+					 "INDEX %s;\" to rebuild from the table and "
+					 "clear this warning.",
+					 RelationGetRelationName(index))));
 }
