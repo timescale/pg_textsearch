@@ -34,6 +34,16 @@ typedef uint32 ArenaAddr;
 #define ARENA_MAX_PAGES 4096
 
 /*
+ * Maximum bytes an arena can address: ARENA_MAX_PAGES * ARENA_PAGE_SIZE
+ * = 4096 * 1MB = 4GB = 2^32.  Computed in 64-bit on purpose: the product
+ * is exactly 2^32 and wraps to zero in a 32-bit size_t.  Used to clamp
+ * the flush budget so a maintenance_work_mem larger than the arena can
+ * still trigger a spill instead of hitting the arena's hard ceiling
+ * (issue #433).
+ */
+#define ARENA_MAX_BYTES ((uint64)ARENA_MAX_PAGES * ARENA_PAGE_SIZE)
+
+/*
  * Build an ArenaAddr from page index and offset.
  */
 static inline ArenaAddr
@@ -73,6 +83,25 @@ typedef struct TpArena
 	uint32 current_offset; /* Write position in current page */
 	Size   total_bytes;	   /* Total bytes allocated (for budget) */
 } TpArena;
+
+/*
+ * Clamp a requested flush budget to what a single arena can actually
+ * hold.  The arena is capped at ARENA_MAX_BYTES by construction, so a
+ * budget at or above that can never fire the flush check and the arena
+ * dies with "exceeded maximum capacity" instead of spilling.  We clamp
+ * to 3/4 of capacity, leaving headroom for per-document overshoot
+ * between budget checks (a document may add many terms before the next
+ * check).  See issue #433.
+ */
+static inline Size
+tp_arena_clamp_budget(Size budget)
+{
+	Size cap = (Size)(ARENA_MAX_BYTES - ARENA_MAX_BYTES / 4);
+
+	if (budget == 0 || budget > cap)
+		return cap;
+	return budget;
+}
 
 /*
  * Create a new arena.

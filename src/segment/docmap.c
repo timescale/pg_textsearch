@@ -181,10 +181,13 @@ tp_docmap_finalize(TpDocMapBuilder *builder)
 		  docmap_entry_cmp_by_ctid);
 
 	/* Allocate output arrays (split CTID storage for better cache locality) */
-	builder->capacity	  = builder->num_docs;
-	builder->ctid_pages	  = palloc(sizeof(BlockNumber) * builder->num_docs);
-	builder->ctid_offsets = palloc(sizeof(OffsetNumber) * builder->num_docs);
-	builder->fieldnorms	  = palloc(sizeof(uint8) * builder->num_docs);
+	builder->capacity	= builder->num_docs;
+	builder->ctid_pages = palloc_extended(
+			sizeof(BlockNumber) * builder->num_docs, MCXT_ALLOC_HUGE);
+	builder->ctid_offsets = palloc_extended(
+			sizeof(OffsetNumber) * builder->num_docs, MCXT_ALLOC_HUGE);
+	builder->fieldnorms = palloc_extended(
+			sizeof(uint8) * builder->num_docs, MCXT_ALLOC_HUGE);
 
 	/*
 	 * Fill arrays and reassign doc_ids in CTID order.

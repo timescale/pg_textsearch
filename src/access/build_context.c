@@ -106,8 +106,10 @@ build_context_grow_docs(TpBuildContext *ctx)
 {
 	uint32 new_capacity = ctx->docs_capacity * 2;
 
-	ctx->fieldnorms = repalloc(ctx->fieldnorms, new_capacity * sizeof(uint8));
-	ctx->ctids = repalloc(ctx->ctids, new_capacity * sizeof(ItemPointerData));
+	ctx->fieldnorms =
+			repalloc_huge(ctx->fieldnorms, new_capacity * sizeof(uint8));
+	ctx->ctids =
+			repalloc_huge(ctx->ctids, new_capacity * sizeof(ItemPointerData));
 	ctx->docs_capacity = new_capacity;
 }
 
@@ -224,7 +226,7 @@ tp_build_context_get_sorted_terms(TpBuildContext *ctx, uint32 *num_terms)
 		return NULL;
 	}
 
-	terms = palloc(count * sizeof(TpBuildTermInfo));
+	terms = palloc_extended(count * sizeof(TpBuildTermInfo), MCXT_ALLOC_HUGE);
 	i	  = 0;
 
 	hash_seq_init(&status, ctx->terms_ht);
@@ -266,7 +268,7 @@ tp_write_segment_from_build_ctx(TpBuildContext *ctx, Relation index)
 	TpDictionary	 dict;
 
 	uint32 *string_offsets;
-	uint32	string_pos;
+	uint64	string_pos;
 	uint32	i;
 	Buffer	header_buf;
 	Page	header_page;
@@ -328,12 +330,28 @@ tp_write_segment_from_build_ctx(TpBuildContext *ctx, Relation index)
 			&writer, &dict, offsetof(TpDictionary, string_offsets));
 
 	/* Build string offsets */
-	string_offsets = palloc0(num_terms * sizeof(uint32));
-	string_pos	   = 0;
+	string_offsets = palloc_extended(
+			num_terms * sizeof(uint32), MCXT_ALLOC_HUGE | MCXT_ALLOC_ZERO);
+	string_pos = 0;
 	for (i = 0; i < num_terms; i++)
 	{
-		string_offsets[i] = string_pos;
-		string_pos += sizeof(uint32) + terms[i].term_len + sizeof(uint32);
+		/*
+		 * String-pool offsets are stored as uint32 in the segment
+		 * format.  Fail loudly before writing rather than silently
+		 * wrapping (issue #432).
+		 */
+		if (string_pos > PG_UINT32_MAX)
+			ereport(ERROR,
+					(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
+					 errmsg("pg_textsearch: segment string pool exceeds "
+							"the %u-byte format limit",
+							PG_UINT32_MAX),
+					 errhint("The corpus vocabulary is too large for a "
+							 "single segment.")));
+
+		string_offsets[i] = (uint32)string_pos;
+		string_pos += (uint64)sizeof(uint32) + terms[i].term_len +
+					  sizeof(uint32);
 	}
 
 	/* Write string offsets array */
@@ -369,7 +387,9 @@ tp_write_segment_from_build_ctx(TpBuildContext *ctx, Relation index)
 	header.postings_offset = writer.current_offset;
 
 	/* Initialize per-term tracking and skip entry accumulator */
-	term_blocks = palloc0(num_terms * sizeof(TermBlockInfo));
+	term_blocks = palloc_extended(
+			num_terms * sizeof(TermBlockInfo),
+			MCXT_ALLOC_HUGE | MCXT_ALLOC_ZERO);
 
 	skip_entries_capacity = 1024;
 	skip_entries_count	  = 0;
@@ -470,7 +490,7 @@ tp_write_segment_from_build_ctx(TpBuildContext *ctx, Relation index)
 			if (skip_entries_count >= skip_entries_capacity)
 			{
 				skip_entries_capacity *= 2;
-				all_skip_entries = repalloc(
+				all_skip_entries = repalloc_huge(
 						all_skip_entries,
 						skip_entries_capacity * sizeof(TpSkipEntry));
 			}
@@ -495,7 +515,8 @@ tp_write_segment_from_build_ctx(TpBuildContext *ctx, Relation index)
 	/* Write CTID pages array (BlockNumber per doc) */
 	header.ctid_pages_offset = writer.current_offset;
 	{
-		uint32 *ctid_pages = palloc(ctx->num_docs * sizeof(uint32));
+		uint32 *ctid_pages = palloc_extended(
+				ctx->num_docs * sizeof(uint32), MCXT_ALLOC_HUGE);
 
 		for (i = 0; i < ctx->num_docs; i++)
 			ctid_pages[i] = ItemPointerGetBlockNumber(&ctx->ctids[i]);
@@ -507,7 +528,8 @@ tp_write_segment_from_build_ctx(TpBuildContext *ctx, Relation index)
 	/* Write CTID offsets array (OffsetNumber per doc) */
 	header.ctid_offsets_offset = writer.current_offset;
 	{
-		uint16 *ctid_offsets = palloc(ctx->num_docs * sizeof(uint16));
+		uint16 *ctid_offsets = palloc_extended(
+				ctx->num_docs * sizeof(uint16), MCXT_ALLOC_HUGE);
 
 		for (i = 0; i < ctx->num_docs; i++)
 			ctid_offsets[i] = ItemPointerGetOffsetNumber(&ctx->ctids[i]);
@@ -733,7 +755,7 @@ tp_write_segment_to_buffile(TpBuildContext *ctx, BufFile *file)
 	off_t base_file_offset;
 
 	uint32 *string_offsets;
-	uint32	string_pos;
+	uint64	string_pos;
 	uint32	i;
 
 	/* Current write position in the flat stream */
@@ -791,12 +813,28 @@ tp_write_segment_to_buffile(TpBuildContext *ctx, BufFile *file)
 	current_offset += offsetof(TpDictionary, string_offsets);
 
 	/* Build string offsets */
-	string_offsets = palloc0(num_terms * sizeof(uint32));
-	string_pos	   = 0;
+	string_offsets = palloc_extended(
+			num_terms * sizeof(uint32), MCXT_ALLOC_HUGE | MCXT_ALLOC_ZERO);
+	string_pos = 0;
 	for (i = 0; i < num_terms; i++)
 	{
-		string_offsets[i] = string_pos;
-		string_pos += sizeof(uint32) + terms[i].term_len + sizeof(uint32);
+		/*
+		 * String-pool offsets are stored as uint32 in the segment
+		 * format.  Fail loudly before writing rather than silently
+		 * wrapping (issue #432).
+		 */
+		if (string_pos > PG_UINT32_MAX)
+			ereport(ERROR,
+					(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
+					 errmsg("pg_textsearch: segment string pool exceeds "
+							"the %u-byte format limit",
+							PG_UINT32_MAX),
+					 errhint("The corpus vocabulary is too large for a "
+							 "single segment.")));
+
+		string_offsets[i] = (uint32)string_pos;
+		string_pos += (uint64)sizeof(uint32) + terms[i].term_len +
+					  sizeof(uint32);
 	}
 
 	/* Write string offsets array */
@@ -835,7 +873,9 @@ tp_write_segment_to_buffile(TpBuildContext *ctx, BufFile *file)
 	header.postings_offset = current_offset;
 
 	/* Initialize per-term tracking and skip entry accumulator */
-	term_blocks = palloc0(num_terms * sizeof(TermBlockInfo));
+	term_blocks = palloc_extended(
+			num_terms * sizeof(TermBlockInfo),
+			MCXT_ALLOC_HUGE | MCXT_ALLOC_ZERO);
 
 	skip_entries_capacity = 1024;
 	skip_entries_count	  = 0;
@@ -924,7 +964,7 @@ tp_write_segment_to_buffile(TpBuildContext *ctx, BufFile *file)
 			if (skip_entries_count >= skip_entries_capacity)
 			{
 				skip_entries_capacity *= 2;
-				all_skip_entries = repalloc(
+				all_skip_entries = repalloc_huge(
 						all_skip_entries,
 						skip_entries_capacity * sizeof(TpSkipEntry));
 			}
@@ -954,7 +994,8 @@ tp_write_segment_to_buffile(TpBuildContext *ctx, BufFile *file)
 	/* Write CTID pages array */
 	header.ctid_pages_offset = current_offset;
 	{
-		uint32 *ctid_pages = palloc(ctx->num_docs * sizeof(uint32));
+		uint32 *ctid_pages = palloc_extended(
+				ctx->num_docs * sizeof(uint32), MCXT_ALLOC_HUGE);
 
 		for (i = 0; i < ctx->num_docs; i++)
 			ctid_pages[i] = ItemPointerGetBlockNumber(&ctx->ctids[i]);
@@ -966,7 +1007,8 @@ tp_write_segment_to_buffile(TpBuildContext *ctx, BufFile *file)
 	/* Write CTID offsets array */
 	header.ctid_offsets_offset = current_offset;
 	{
-		uint16 *ctid_offsets = palloc(ctx->num_docs * sizeof(uint16));
+		uint16 *ctid_offsets = palloc_extended(
+				ctx->num_docs * sizeof(uint16), MCXT_ALLOC_HUGE);
 
 		for (i = 0; i < ctx->num_docs; i++)
 			ctid_offsets[i] = ItemPointerGetOffsetNumber(&ctx->ctids[i]);
@@ -995,7 +1037,8 @@ tp_write_segment_to_buffile(TpBuildContext *ctx, BufFile *file)
 		/* Save end position */
 		BufFileTell(file, &end_fileno, &end_file_offset);
 
-		dict_entries = palloc(num_terms * sizeof(TpDictEntry));
+		dict_entries = palloc_extended(
+				num_terms * sizeof(TpDictEntry), MCXT_ALLOC_HUGE);
 		for (i = 0; i < num_terms; i++)
 		{
 			dict_entries[i].skip_index_offset =

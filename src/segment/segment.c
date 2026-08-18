@@ -975,7 +975,7 @@ tp_write_segment(
 	TpDictionary	dict;
 
 	uint32			*string_offsets;
-	uint32			 string_pos;
+	uint64			 string_pos;
 	uint32			 i;
 	Buffer			 header_buf;
 	Page			 header_page;
@@ -1039,12 +1039,28 @@ tp_write_segment(
 			&writer, &dict, offsetof(TpDictionary, string_offsets));
 
 	/* Build string offsets */
-	string_offsets = palloc0(num_terms * sizeof(uint32));
-	string_pos	   = 0;
+	string_offsets = palloc_extended(
+			num_terms * sizeof(uint32), MCXT_ALLOC_HUGE | MCXT_ALLOC_ZERO);
+	string_pos = 0;
 	for (i = 0; i < num_terms; i++)
 	{
-		string_offsets[i] = string_pos;
-		string_pos += sizeof(uint32) + terms[i].term_len + sizeof(uint32);
+		/*
+		 * String-pool offsets are stored as uint32 in the segment
+		 * format.  Fail loudly before writing rather than silently
+		 * wrapping (issue #432).
+		 */
+		if (string_pos > PG_UINT32_MAX)
+			ereport(ERROR,
+					(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
+					 errmsg("pg_textsearch: segment string pool exceeds "
+							"the %u-byte format limit",
+							PG_UINT32_MAX),
+					 errhint("The corpus vocabulary is too large for a "
+							 "single segment.")));
+
+		string_offsets[i] = (uint32)string_pos;
+		string_pos += (uint64)sizeof(uint32) + terms[i].term_len +
+					  sizeof(uint32);
 	}
 
 	/* Write string offsets array */
@@ -1079,7 +1095,9 @@ tp_write_segment(
 	header.postings_offset = writer.current_offset;
 
 	/* Initialize per-term tracking and skip entry accumulator */
-	term_blocks = palloc0(num_terms * sizeof(TermBlockInfo));
+	term_blocks = palloc_extended(
+			num_terms * sizeof(TermBlockInfo),
+			MCXT_ALLOC_HUGE | MCXT_ALLOC_ZERO);
 
 	skip_entries_capacity = 1024;
 	skip_entries_count	  = 0;
@@ -2052,16 +2070,16 @@ tp_segment_writer_init(TpSegmentWriter *writer, Relation index)
 }
 
 void
-tp_segment_writer_write(TpSegmentWriter *writer, const void *data, uint32 len)
+tp_segment_writer_write(TpSegmentWriter *writer, const void *data, Size len)
 {
 	const char *src			  = (const char *)data;
-	uint32		bytes_written = 0;
+	Size		bytes_written = 0;
 
 	while (bytes_written < len)
 	{
 		/* Calculate how much we can write to current page */
 		uint32 page_space = BLCKSZ - writer->buffer_pos;
-		uint32 to_write	  = Min(page_space, len - bytes_written);
+		uint32 to_write	  = (uint32)Min((Size)page_space, len - bytes_written);
 
 		/* Copy data to buffer */
 		memcpy(writer->buffer + writer->buffer_pos,

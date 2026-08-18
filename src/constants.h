@@ -47,10 +47,12 @@
  * v1.2.x cluster could leave a non-Invalid pointer to ctids
  * that the v7 binary cannot re-tokenize.  Such an index opens
  * fine; the first metapage mutation (via
- * tp_metapage_upgrade_to_current) emits a LOG-level forensic
- * message recording the orphaned pointer and then clears it.
- * Operators who suspect lost in-flight documents from a SIGKILL
- * should REINDEX.  Indexes from a clean v1.2.x shutdown have
+ * tp_metapage_upgrade_to_current) emits a client-visible
+ * WARNING recording the possibly-incomplete state and PRESERVES
+ * the pointer as a durable marker in v8, which
+ * tp_warn_if_pending_docid() re-surfaces on the scan path, at most
+ * once per session, until a REINDEX rebuilds the index from the heap
+ * and clears it.  Indexes from a clean v1.2.x shutdown have
  * _unused_docid_page == InvalidBlockNumber and upgrade silently
  * with no operator intervention.
  *

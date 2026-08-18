@@ -86,7 +86,7 @@ extern BlockNumber tp_write_segment(
 		struct TpDocMapBuilder *docmap);
 extern void tp_segment_writer_init(TpSegmentWriter *writer, Relation index);
 extern void
-tp_segment_writer_write(TpSegmentWriter *writer, const void *data, uint32 len);
+tp_segment_writer_write(TpSegmentWriter *writer, const void *data, Size len);
 extern void tp_segment_writer_flush(TpSegmentWriter *writer);
 extern void tp_segment_writer_finish(TpSegmentWriter *writer);
 
