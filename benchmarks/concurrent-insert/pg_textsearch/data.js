@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1786952320209,
+  "lastUpdate": 1787038166631,
   "repoUrl": "https://github.com/timescale/pg_textsearch",
   "entries": {
     "Concurrent INSERT (pg_textsearch)": [
@@ -8436,6 +8436,68 @@ window.BENCHMARK_DATA = {
           {
             "name": "pg_textsearch INSERT latency (c=8)",
             "value": 1.89,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tjgreen@gmail.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "5464d6617f9ec1f818da55e4e593fa394075fe91",
+          "message": "Improved upgrade data-integrity test matrix (#450)\n\nAdds a stronger upgrade data-integrity test harness. The existing\n`upgrade-tests.yml` exercises only one on-disk shape and captures its\nbaseline from the already-upgraded binary, so it cannot detect\nsilently-dropped documents.\n\n**`test/scripts/upgrade_matrix.sh`** — for each old release, builds\nfour distinct on-disk states (single/two/multi segment, and an index\nwith unspilled L0 memtable data), upgrades to the current binary, and\nchecks recall against heap ground truth (a rare sentinel token vs. the\nheap) measured under the old binary, the new binary, and after\n`REINDEX`. Also covers the legacy metapage-v5 clean-`ERROR`-without-\n`REINDEX` path.\n\n**`upgrade-matrix` CI job** in `.github/workflows/upgrade-tests.yml`,\nrunning the harness on PG 17/18. Segment-backed shapes and the\n`REINDEX` safety net are hard assertions; upgrading a pre-1.3\n(metapage v6) index with unspilled L0 data drops those documents, so\nthat case is surfaced as a non-fatal `::warning::` (`REINDEX`\nrecovers). Set `STRICT_UNSPILLED=1` to make it a hard failure.\n\nThe workflow now also triggers on `v*` release tags and its `paths`\nfilter covers the harness and `src/index/**`, so the matrix runs on\nevery release; `RELEASING.md` documents this.\n\n## Reproduce\n```bash\nPG_CONFIG=/usr/lib/postgresql/17/bin/pg_config \\\n  test/scripts/upgrade_matrix.sh 0.5.0 0.5.1 1.0.0 1.2.0 1.3.0\n```",
+          "timestamp": "2026-08-17T00:59:26Z",
+          "url": "https://github.com/timescale/pg_textsearch/commit/5464d6617f9ec1f818da55e4e593fa394075fe91"
+        },
+        "date": 1787038135626,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "pg_textsearch INSERT TPS (c=1)",
+            "value": 2663.050597,
+            "unit": "tps"
+          },
+          {
+            "name": "pg_textsearch INSERT latency (c=1)",
+            "value": 0.376,
+            "unit": "ms"
+          },
+          {
+            "name": "pg_textsearch INSERT TPS (c=2)",
+            "value": 4902.691529,
+            "unit": "tps"
+          },
+          {
+            "name": "pg_textsearch INSERT latency (c=2)",
+            "value": 0.408,
+            "unit": "ms"
+          },
+          {
+            "name": "pg_textsearch INSERT TPS (c=4)",
+            "value": 7289.291359,
+            "unit": "tps"
+          },
+          {
+            "name": "pg_textsearch INSERT latency (c=4)",
+            "value": 0.549,
+            "unit": "ms"
+          },
+          {
+            "name": "pg_textsearch INSERT TPS (c=8)",
+            "value": 8692.052794,
+            "unit": "tps"
+          },
+          {
+            "name": "pg_textsearch INSERT latency (c=8)",
+            "value": 0.92,
             "unit": "ms"
           }
         ]
