@@ -598,7 +598,7 @@ tp_vacuum_rebuild_segment(
 
 	/* Write new segment if any docs survived */
 	if (build_ctx->num_docs > 0)
-		new_root = tp_write_segment_from_build_ctx(build_ctx, index);
+		new_root = tp_write_segment_from_build_ctx(build_ctx, index, true);
 	else
 		new_root = InvalidBlockNumber;
 

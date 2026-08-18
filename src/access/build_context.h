@@ -127,10 +127,12 @@ tp_build_context_get_sorted_terms(TpBuildContext *ctx, uint32 *num_terms);
 
 /*
  * Write a segment from the build context to an index relation.
+ * When contiguous is true the writer bypasses the FSM and extends
+ * the relation so all data pages are physically sequential.
  * Returns the header block number of the written segment.
  */
-extern BlockNumber
-tp_write_segment_from_build_ctx(TpBuildContext *ctx, Relation index);
+extern BlockNumber tp_write_segment_from_build_ctx(
+		TpBuildContext *ctx, Relation index, bool contiguous);
 
 /*
  * Write a segment from the build context to a BufFile as a flat

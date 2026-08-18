@@ -13,6 +13,7 @@
 #include <access/xloginsert.h>
 #include <catalog/namespace.h>
 #include <catalog/storage.h>
+#include <common/pg_prng.h>
 #include <inttypes.h>
 #include <lib/dshash.h>
 #include <miscadmin.h>
@@ -41,6 +42,77 @@
 
 /* External: compression GUC from mod.c */
 extern bool tp_compress_segments;
+
+/* External: debug GUC for randomizing page allocation order */
+extern bool tp_debug_randomize_pages;
+
+/*
+ * Shuffled page pool for worst-case fragmentation experiments.
+ * Pre-extends the relation by a large number of pages, collects
+ * their block numbers, shuffles (Fisher-Yates), and serves
+ * allocation requests from the shuffled array.
+ */
+typedef struct ShuffledPagePool
+{
+	Oid			 index_oid;
+	BlockNumber *pages;
+	uint32		 count;
+	uint32		 next;
+} ShuffledPagePool;
+
+static ShuffledPagePool shuffled_pool = {0};
+
+static void
+shuffled_pool_init(Relation index, uint32 num_pages)
+{
+	uint32 i;
+
+	if (shuffled_pool.pages)
+		pfree(shuffled_pool.pages);
+
+	shuffled_pool.index_oid = RelationGetRelid(index);
+	shuffled_pool.pages		= palloc(sizeof(BlockNumber) * num_pages);
+	shuffled_pool.count		= num_pages;
+	shuffled_pool.next		= 0;
+
+	for (i = 0; i < num_pages; i++)
+	{
+		Buffer buf = ReadBufferExtended(
+				index, MAIN_FORKNUM, P_NEW, RBM_ZERO_AND_LOCK, NULL);
+		shuffled_pool.pages[i] = BufferGetBlockNumber(buf);
+		UnlockReleaseBuffer(buf);
+	}
+
+	/* Fisher-Yates shuffle */
+	for (i = num_pages - 1; i > 0; i--)
+	{
+		uint32		j	= pg_prng_uint32(&pg_global_prng_state) % (i + 1);
+		BlockNumber tmp = shuffled_pool.pages[i];
+		shuffled_pool.pages[i] = shuffled_pool.pages[j];
+		shuffled_pool.pages[j] = tmp;
+	}
+
+	elog(LOG,
+		 "debug_randomize_pages: pre-allocated and shuffled %u pages "
+		 "for index %u",
+		 num_pages,
+		 RelationGetRelid(index));
+}
+
+static BlockNumber
+shuffled_pool_allocate(Relation index)
+{
+	if (shuffled_pool.next >= shuffled_pool.count ||
+		shuffled_pool.index_oid != RelationGetRelid(index))
+	{
+		/*
+		 * Pool exhausted or wrong index — extend with a fresh
+		 * batch.  Use 100K pages (~800 MB) per refill.
+		 */
+		shuffled_pool_init(index, 100000);
+	}
+	return shuffled_pool.pages[shuffled_pool.next++];
+}
 
 void
 tp_segment_log_dirty_buffer(Relation index, Buffer buffer)
@@ -760,6 +832,9 @@ tp_segment_release_direct(TpSegmentDirectAccess *access)
 static BlockNumber
 allocate_segment_page(Relation index)
 {
+	if (tp_debug_randomize_pages)
+		return shuffled_pool_allocate(index);
+
 	/*
 	 * Reuse a recyclable free page from the FSM (recycled from a
 	 * compaction/vacuum drain), extending the relation only when the
@@ -806,7 +881,19 @@ tp_segment_writer_allocate_page(TpSegmentWriter *writer)
 	BlockNumber new_page;
 
 	tp_segment_writer_grow_pages(writer);
-	new_page = allocate_segment_page(writer->index);
+
+	if (writer->contiguous)
+	{
+		Buffer buffer = ReadBufferExtended(
+				writer->index, MAIN_FORKNUM, P_NEW, RBM_ZERO_AND_LOCK, NULL);
+		new_page = BufferGetBlockNumber(buffer);
+		UnlockReleaseBuffer(buffer);
+	}
+	else
+	{
+		new_page = allocate_segment_page(writer->index);
+	}
+
 	writer->pages[writer->pages_allocated++] = new_page;
 	return new_page;
 }
@@ -830,8 +917,8 @@ write_page_index_internal(Relation index, BlockNumber *pages, uint32 num_pages)
 	uint32 entries_per_page = (BLCKSZ - SizeOfPageHeaderData -
 							   MAXALIGN(sizeof(TpPageIndexSpecial))) /
 							  sizeof(BlockNumber);
-	uint32 num_index_pages = (num_pages + entries_per_page - 1) /
-							 entries_per_page;
+	uint32 num_index_pages	= (num_pages + entries_per_page - 1) /
+							  entries_per_page;
 
 	/* Allocate index pages incrementally */
 	BlockNumber *index_pages = palloc(num_index_pages * sizeof(BlockNumber));
@@ -1362,8 +1449,8 @@ tp_write_segment(
 			entry.doc_freq	  = term_blocks[i].doc_freq;
 
 			/* Calculate where this entry is in the segment */
-			entry_offset = header.entries_offset +
-						   ((uint64)i * sizeof(TpDictEntry));
+			entry_offset	   = header.entries_offset +
+								 ((uint64)i * sizeof(TpDictEntry));
 			entry_logical_page = (uint32)(entry_offset /
 										  SEGMENT_DATA_PER_PAGE);
 			page_offset = (uint32)(entry_offset % SEGMENT_DATA_PER_PAGE);
@@ -1412,7 +1499,7 @@ tp_write_segment(
 					/* Entry spans two pages */
 					char *dest = (char *)dict_page + SizeOfPageHeaderData +
 								 page_offset;
-					char *src = (char *)&entry;
+					char *src  = (char *)&entry;
 
 					/* Write first part to current working copy */
 					memcpy(dest, src, bytes_on_this_page);
@@ -1579,6 +1666,107 @@ tp_segment_collect_pages(
 
 	*pages_out = all_pages;
 	return num_pages;
+}
+
+/*
+ * Copy a flat BufFile segment into contiguous index pages.
+ *
+ * Reads data_size bytes from the current BufFile position,
+ * writes them into freshly extended (contiguous) relation
+ * pages, builds a page index, and backpatches the segment
+ * header with num_pages and page_index.
+ *
+ * Returns the root block (pages[0]) of the new on-disk
+ * segment, or InvalidBlockNumber if data_size is 0.
+ */
+BlockNumber
+tp_copy_buffile_to_contiguous_pages(
+		Relation index, BufFile *file, uint64 data_size)
+{
+	TpSegmentWriter writer;
+	TpSegmentHeader header;
+	BlockNumber		root_block;
+	BlockNumber		page_index_root;
+	uint64			bytes_remaining;
+	char		   *read_buf;
+	int				start_fileno;
+	off_t			start_offset;
+
+	if (data_size == 0)
+		return InvalidBlockNumber;
+
+	/* Remember the BufFile start so we can re-read the header */
+	BufFileTell(file, &start_fileno, &start_offset);
+
+	/* Pre-read the header (we need it for backpatching later) */
+	BufFileReadExact(file, &header, sizeof(TpSegmentHeader));
+
+	/* Seek back to segment start for the full copy */
+	BufFileSeek(file, start_fileno, start_offset, SEEK_SET);
+
+	/* Allocate pages contiguously at the end of the relation */
+	tp_segment_writer_init_contiguous(&writer, index);
+	root_block = writer.pages[0];
+
+	read_buf		= palloc(SEGMENT_DATA_PER_PAGE);
+	bytes_remaining = data_size;
+	while (bytes_remaining > 0)
+	{
+		uint32 chunk = (uint32)
+				Min(bytes_remaining, (uint64)SEGMENT_DATA_PER_PAGE);
+
+		BufFileReadExact(file, read_buf, chunk);
+		tp_segment_writer_write(&writer, read_buf, chunk);
+		bytes_remaining -= chunk;
+
+		CHECK_FOR_INTERRUPTS();
+	}
+	pfree(read_buf);
+
+	/* Flush remaining buffered data */
+	tp_segment_writer_flush(&writer);
+	writer.buffer_pos = SizeOfPageHeaderData;
+
+#ifdef USE_ASSERT_CHECKING
+	/* Verify data pages are physically contiguous */
+	for (uint32 i = 1; i < writer.pages_allocated; i++)
+		Assert(writer.pages[i] == writer.pages[0] + i);
+#endif
+
+	/* Build page index (uses FSM for its own pages — fine) */
+	page_index_root =
+			write_page_index(index, writer.pages, writer.pages_allocated);
+
+	/* Patch header for paged format */
+	header.num_pages  = writer.pages_allocated;
+	header.page_index = page_index_root;
+
+	/*
+	 * Backpatch the header on the first data page.  Use a
+	 * GenericXLog delta — the page was already WAL-logged by
+	 * the writer flush, so a delta keeps WAL traffic small.
+	 */
+	{
+		Buffer			  buf;
+		Page			  page;
+		GenericXLogState *xlog_state;
+
+		buf = ReadBuffer(index, root_block);
+		LockBuffer(buf, BUFFER_LOCK_EXCLUSIVE);
+		xlog_state = GenericXLogStart(index);
+		page	   = GenericXLogRegisterBuffer(xlog_state, buf, 0);
+		memcpy((char *)page + SizeOfPageHeaderData,
+			   &header,
+			   sizeof(TpSegmentHeader));
+		GenericXLogFinish(xlog_state);
+		UnlockReleaseBuffer(buf);
+	}
+
+	tp_segment_writer_finish(&writer);
+	if (writer.pages)
+		pfree(writer.pages);
+
+	return root_block;
 }
 
 /*
@@ -2046,8 +2234,9 @@ tp_dump_segment_to_output(
 
 /* Segment writer helper functions */
 
-void
-tp_segment_writer_init(TpSegmentWriter *writer, Relation index)
+static void
+tp_segment_writer_init_common(
+		TpSegmentWriter *writer, Relation index, bool contiguous)
 {
 	writer->index			= index;
 	writer->pages			= NULL;
@@ -2056,17 +2245,27 @@ tp_segment_writer_init(TpSegmentWriter *writer, Relation index)
 	writer->current_offset	= 0;
 	writer->buffer			= palloc(BLCKSZ);
 	writer->buffer_page		= 0;
-	writer->buffer_pos		= SizeOfPageHeaderData; /* Skip page header */
+	writer->buffer_pos		= SizeOfPageHeaderData;
+	writer->contiguous		= contiguous;
 
-	/* Initialize reusable posting buffer */
 	writer->posting_buffer		= NULL;
 	writer->posting_buffer_size = 0;
 
-	/* Allocate first page */
 	tp_segment_writer_allocate_page(writer);
 
-	/* Initialize first page */
 	PageInit((Page)writer->buffer, BLCKSZ, 0);
+}
+
+void
+tp_segment_writer_init(TpSegmentWriter *writer, Relation index)
+{
+	tp_segment_writer_init_common(writer, index, false);
+}
+
+void
+tp_segment_writer_init_contiguous(TpSegmentWriter *writer, Relation index)
+{
+	tp_segment_writer_init_common(writer, index, true);
 }
 
 void

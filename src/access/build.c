@@ -303,7 +303,7 @@ tp_build_flush_and_link(TpBuildContext *ctx, Relation index)
 {
 	BlockNumber segment_root;
 
-	segment_root = tp_write_segment_from_build_ctx(ctx, index);
+	segment_root = tp_write_segment_from_build_ctx(ctx, index, false);
 	if (segment_root == InvalidBlockNumber)
 		return;
 
@@ -628,7 +628,7 @@ tp_force_merge(PG_FUNCTION_ARGS)
 		 * when the chain is empty.
 		 */
 		(void)tp_do_spill(index_state, index_rel, NULL);
-		tp_force_merge_all(index_rel);
+		tp_force_merge_all(index_rel, tp_defrag_on_merge);
 		tp_truncate_dead_pages(index_rel);
 		tp_release_index_lock(index_state);
 	}

@@ -64,6 +64,7 @@ typedef struct TpSegmentWriter
 	char		*buffer;		  /* Write buffer (one page) */
 	uint32		 buffer_page;	  /* Which logical page is in buffer */
 	uint32		 buffer_pos;	  /* Position within buffer */
+	bool		 contiguous;	  /* Bypass FSM, extend relation */
 
 	/* Reusable buffer for posting list conversion */
 	TpSegmentPosting *posting_buffer;	   /* Reusable posting buffer */
@@ -85,6 +86,8 @@ extern BlockNumber tp_write_segment(
 		uint32					num_terms,
 		struct TpDocMapBuilder *docmap);
 extern void tp_segment_writer_init(TpSegmentWriter *writer, Relation index);
+extern void
+tp_segment_writer_init_contiguous(TpSegmentWriter *writer, Relation index);
 extern void
 tp_segment_writer_write(TpSegmentWriter *writer, const void *data, Size len);
 extern void tp_segment_writer_flush(TpSegmentWriter *writer);
@@ -144,6 +147,20 @@ extern uint32 tp_segment_collect_pages(
 		Relation index, BlockNumber root_block, BlockNumber **pages_out);
 extern void
 tp_segment_free_pages(Relation index, BlockNumber *pages, uint32 num_pages);
+
+/*
+ * Copy a flat BufFile segment into contiguous index pages.
+ *
+ * Reads data_size bytes from the BufFile at its current position,
+ * writes them to freshly extended (contiguous) relation pages,
+ * builds a page index, and backpatches the header with num_pages
+ * and page_index.  Returns the root block of the new segment.
+ *
+ * The caller must seek the BufFile to the segment start before
+ * calling.  The caller is responsible for closing the BufFile.
+ */
+extern BlockNumber tp_copy_buffile_to_contiguous_pages(
+		Relation index, BufFile *file, uint64 data_size);
 
 /*
  * Segment posting iterator for block-based traversal.

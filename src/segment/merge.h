@@ -18,17 +18,30 @@ struct TpMergeSource;
 struct TpMergedTerm;
 
 /*
- * Merge sink: writes merged segment data to index pages.
+ * Merge sink: writes merged segment data to index pages or
+ * a flat BufFile byte stream.
+ *
+ * Pages mode: data goes through TpSegmentWriter to index
+ * relation pages (possibly scattered via FSM).
+ *
+ * BufFile mode: data is written as a contiguous byte stream
+ * to a temporary BufFile.  The caller later copies the
+ * BufFile into contiguous pages via
+ * tp_copy_buffile_to_contiguous_pages().
  */
 typedef struct TpMergeSink
 {
 	uint64			current_offset;
-	TpSegmentWriter writer;
-	Relation		index;
+	TpSegmentWriter writer; /* pages mode only */
+	Relation		index;	/* pages mode only */
+	BufFile		   *buffile;
+	bool			use_buffile;
+	uint64			buffile_base; /* composite start offset */
 } TpMergeSink;
 
 /* Sink initialization */
 extern void merge_sink_init_pages(TpMergeSink *sink, Relation index);
+extern void merge_sink_init_buffile(TpMergeSink *sink, BufFile *file);
 
 /*
  * Write a merged segment to sink (pages or BufFile).
@@ -68,8 +81,8 @@ extern void write_merged_segment_to_sink(
  * the index relation. This function modifies the metapage to update
  * level chains.
  */
-extern BlockNumber
-tp_merge_level_segments(Relation index, uint32 level, uint32 max_merge);
+extern BlockNumber tp_merge_level_segments(
+		Relation index, uint32 level, uint32 max_merge, bool defragment);
 
 /*
  * Check if a level needs compaction and trigger merge if so.
@@ -91,7 +104,12 @@ extern void tp_maybe_compact_level(Relation index, uint32 level);
  * threshold and merges ALL segments at each level in one batch.
  * Used by bm25_force_merge to produce a fully compacted index.
  *
+ * When defragment is true, each merge writes to a temporary BufFile
+ * first, then copies the data into contiguous pages at the end of
+ * the relation for sequential I/O performance.
+ *
  * Parameters:
- *   index - The index relation (must be opened with appropriate lock)
+ *   index      - The index relation (must be opened with appropriate lock)
+ *   defragment - Write merged segments to contiguous pages
  */
-extern void tp_force_merge_all(Relation index);
+extern void tp_force_merge_all(Relation index, bool defragment);

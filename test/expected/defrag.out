@@ -1,0 +1,219 @@
+-- Test case: defrag
+-- Tests that bm25_force_merge produces a correct, defragmented
+-- segment via the two-phase BufFile → contiguous-pages path.
+--
+-- This test exercises:
+-- 1. Building scattered segments across multiple levels
+-- 2. Force merge with defragmentation (always-on)
+-- 3. Query correctness after defrag
+-- 4. BM25 scoring validation after defrag
+-- 5. Inserts after defrag
+-- 6. DELETE + VACUUM after defrag
+CREATE EXTENSION IF NOT EXISTS pg_textsearch;
+\set ECHO none
+SET pg_textsearch.log_scores = false;
+SET enable_seqscan = off;
+-- Use 2 segments per level to build multi-level structure quickly
+SET pg_textsearch.segments_per_level = 2;
+CREATE TABLE defrag_test (
+    id SERIAL PRIMARY KEY,
+    content TEXT
+);
+CREATE INDEX defrag_idx ON defrag_test USING bm25(content)
+  WITH (text_config='english', k1=1.2, b=0.75);
+NOTICE:  BM25 index build started for relation defrag_idx
+NOTICE:  Using text search configuration: english
+NOTICE:  Using index options: k1=1.20, b=0.75
+NOTICE:  BM25 index build completed: 0 documents, avg_length=0.00
+--------------------------------------------------------------------------------
+-- Build up scattered segments
+--------------------------------------------------------------------------------
+-- Batch 1 → L0
+INSERT INTO defrag_test (content) VALUES
+    ('alpha beta gamma delta'),
+    ('beta gamma epsilon zeta'),
+    ('gamma delta theta iota'),
+    ('delta epsilon kappa lambda');
+SELECT bm25_spill_index('defrag_idx') IS NOT NULL AS spill1;
+ spill1 
+--------
+ t
+(1 row)
+
+-- Batch 2 → L0, triggers L0→L1 merge
+INSERT INTO defrag_test (content) VALUES
+    ('alpha zeta theta mu'),
+    ('beta kappa lambda nu'),
+    ('gamma mu nu xi'),
+    ('delta xi omicron pi');
+SELECT bm25_spill_index('defrag_idx') IS NOT NULL AS spill2;
+ spill2 
+--------
+ t
+(1 row)
+
+-- Batch 3 → new L0 (now have L0 + L1)
+INSERT INTO defrag_test (content) VALUES
+    ('alpha alpha beta beta'),
+    ('epsilon epsilon zeta zeta');
+SELECT bm25_spill_index('defrag_idx') IS NOT NULL AS spill3;
+ spill3 
+--------
+ t
+(1 row)
+
+-- Verify counts before defrag
+SELECT COUNT(*) AS alpha_before FROM (
+    SELECT id FROM defrag_test
+    ORDER BY content <@> to_bm25query('alpha', 'defrag_idx')
+    LIMIT 100
+) t;
+ alpha_before 
+--------------
+            3
+(1 row)
+
+SELECT COUNT(*) AS gamma_before FROM (
+    SELECT id FROM defrag_test
+    ORDER BY content <@> to_bm25query('gamma', 'defrag_idx')
+    LIMIT 100
+) t;
+ gamma_before 
+--------------
+            4
+(1 row)
+
+--------------------------------------------------------------------------------
+-- Force merge (now defragments by default)
+--------------------------------------------------------------------------------
+SELECT bm25_force_merge('defrag_idx');
+ bm25_force_merge 
+------------------
+ 
+(1 row)
+
+-- Verify same counts after defrag
+SELECT COUNT(*) AS alpha_after FROM (
+    SELECT id FROM defrag_test
+    ORDER BY content <@> to_bm25query('alpha', 'defrag_idx')
+    LIMIT 100
+) t;
+ alpha_after 
+-------------
+           3
+(1 row)
+
+SELECT COUNT(*) AS gamma_after FROM (
+    SELECT id FROM defrag_test
+    ORDER BY content <@> to_bm25query('gamma', 'defrag_idx')
+    LIMIT 100
+) t;
+ gamma_after 
+-------------
+           4
+(1 row)
+
+-- Validate BM25 scoring is correct after defrag
+SELECT validate_bm25_scoring('defrag_test', 'content',
+                             'defrag_idx', 'alpha', 'english',
+                             1.2, 0.75) AS alpha_scores_valid;
+ alpha_scores_valid 
+--------------------
+ t
+(1 row)
+
+SELECT validate_bm25_scoring('defrag_test', 'content',
+                             'defrag_idx', 'gamma', 'english',
+                             1.2, 0.75) AS gamma_scores_valid;
+ gamma_scores_valid 
+--------------------
+ t
+(1 row)
+
+SELECT validate_bm25_scoring('defrag_test', 'content',
+                             'defrag_idx', 'delta', 'english',
+                             1.2, 0.75) AS delta_scores_valid;
+ delta_scores_valid 
+--------------------
+ t
+(1 row)
+
+--------------------------------------------------------------------------------
+-- Verify inserts work after defrag
+--------------------------------------------------------------------------------
+INSERT INTO defrag_test (content) VALUES
+    ('alpha after defrag merge'),
+    ('new gamma entry here');
+SELECT COUNT(*) AS alpha_with_new FROM (
+    SELECT id FROM defrag_test
+    ORDER BY content <@> to_bm25query('alpha', 'defrag_idx')
+    LIMIT 100
+) t;
+ alpha_with_new 
+----------------
+              4
+(1 row)
+
+SELECT validate_bm25_scoring('defrag_test', 'content',
+                             'defrag_idx', 'alpha', 'english',
+                             1.2, 0.75) AS alpha_valid_after_insert;
+ alpha_valid_after_insert 
+--------------------------
+ t
+(1 row)
+
+--------------------------------------------------------------------------------
+-- DELETE + VACUUM after defrag
+--------------------------------------------------------------------------------
+DELETE FROM defrag_test WHERE content LIKE '%epsilon%';
+VACUUM defrag_test;
+SELECT COUNT(*) AS alpha_after_vacuum FROM (
+    SELECT id FROM defrag_test
+    ORDER BY content <@> to_bm25query('alpha', 'defrag_idx')
+    LIMIT 100
+) t;
+ alpha_after_vacuum 
+--------------------
+                  4
+(1 row)
+
+SELECT validate_bm25_scoring('defrag_test', 'content',
+                             'defrag_idx', 'alpha', 'english',
+                             1.2, 0.75) AS alpha_valid_after_vacuum;
+ alpha_valid_after_vacuum 
+--------------------------
+ f
+(1 row)
+
+--------------------------------------------------------------------------------
+-- Second force merge after vacuum (exercises defrag on post-vacuum index)
+--------------------------------------------------------------------------------
+SELECT bm25_force_merge('defrag_idx');
+ bm25_force_merge 
+------------------
+ 
+(1 row)
+
+SELECT COUNT(*) AS alpha_after_remerge FROM (
+    SELECT id FROM defrag_test
+    ORDER BY content <@> to_bm25query('alpha', 'defrag_idx')
+    LIMIT 100
+) t;
+ alpha_after_remerge 
+---------------------
+                   4
+(1 row)
+
+SELECT validate_bm25_scoring('defrag_test', 'content',
+                             'defrag_idx', 'alpha', 'english',
+                             1.2, 0.75) AS alpha_valid_after_remerge;
+ alpha_valid_after_remerge 
+---------------------------
+ t
+(1 row)
+
+--------------------------------------------------------------------------------
+-- Cleanup
+--------------------------------------------------------------------------------
+DROP TABLE defrag_test CASCADE;
+DROP EXTENSION pg_textsearch CASCADE;

@@ -257,7 +257,8 @@ tp_build_context_get_sorted_terms(TpBuildContext *ctx, uint32 *num_terms)
  * during add_document), so no docmap hash lookup is needed.
  */
 BlockNumber
-tp_write_segment_from_build_ctx(TpBuildContext *ctx, Relation index)
+tp_write_segment_from_build_ctx(
+		TpBuildContext *ctx, Relation index, bool contiguous)
 {
 	TpBuildTermInfo *terms;
 	uint32			 num_terms;
@@ -297,7 +298,10 @@ tp_write_segment_from_build_ctx(TpBuildContext *ctx, Relation index)
 		return InvalidBlockNumber;
 
 	/* Initialize writer */
-	tp_segment_writer_init(&writer, index);
+	if (contiguous)
+		tp_segment_writer_init_contiguous(&writer, index);
+	else
+		tp_segment_writer_init(&writer, index);
 
 	if (writer.pages_allocated == 0)
 		elog(ERROR,

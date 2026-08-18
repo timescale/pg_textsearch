@@ -97,6 +97,12 @@ bool tp_memtable_cache_enabled = true;
  */
 bool tp_log_cache_state = false;
 
+/* Defragment segments during bm25_force_merge (on by default). */
+bool tp_defrag_on_merge = true;
+
+/* Debug: randomize page allocation order for fragmentation experiments */
+bool tp_debug_randomize_pages = false;
+
 /* Debug: trigger PANIC after spill finalize for crash-safety testing */
 bool tp_debug_panic_after_spill_finalize = false;
 
@@ -370,6 +376,35 @@ _PG_init(void)
 			false,
 			PGC_SUSET, /* superuser-only: forces a server-wide PANIC,
 						* so unprivileged roles must not reach it */
+			0,
+			NULL,
+			NULL,
+			NULL);
+
+	DefineCustomBoolVariable(
+			"pg_textsearch.defrag_on_merge",
+			"Defragment segments during bm25_force_merge.",
+			"When enabled, bm25_force_merge writes the merged "
+			"segment to contiguous pages for sequential I/O. "
+			"Disable to benchmark merge without defragmentation.",
+			&tp_defrag_on_merge,
+			true,
+			PGC_USERSET,
+			0,
+			NULL,
+			NULL,
+			NULL);
+
+	DefineCustomBoolVariable(
+			"pg_textsearch.debug_randomize_pages",
+			"Randomize page allocation order (testing only).",
+			"Pre-extends the relation and serves page "
+			"allocations in random order to simulate "
+			"worst-case fragmentation.  For benchmarking "
+			"only; never enable in production.",
+			&tp_debug_randomize_pages,
+			false,
+			PGC_SUSET,
 			0,
 			NULL,
 			NULL,
