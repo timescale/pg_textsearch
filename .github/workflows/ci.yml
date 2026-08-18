@@ -26,12 +26,9 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
-    # PG19 is in beta: run it, but don't let beta breakage block merges.
-    continue-on-error: ${{ matrix.pg_version == 19 }}
     strategy:
-      fail-fast: false
       matrix:
-        pg_version: [17, 18, 19]
+        pg_version: [17, 18]
 
     steps:
     - uses: actions/checkout@v4
@@ -42,11 +39,6 @@ jobs:
         sudo apt-get install -y wget ca-certificates
         wget --quiet -O - https://www.postgresql.org/media/keys/ACCC4CF8.asc | sudo apt-key add -
         echo "deb http://apt.postgresql.org/pub/repos/apt/ $(lsb_release -cs)-pgdg main" | sudo tee /etc/apt/sources.list.d/pgdg.list
-        # PG19 is in beta: its packages live in the pgdg-testing suite
-        # until GA. Adding it only for 19 keeps 17/18 on stable packages.
-        if [ "${{ matrix.pg_version }}" = "19" ]; then
-          echo "deb http://apt.postgresql.org/pub/repos/apt/ $(lsb_release -cs)-pgdg-testing main 19" | sudo tee /etc/apt/sources.list.d/pgdg-testing.list
-        fi
         sudo apt-get update
         sudo apt-get install -y postgresql-${{ matrix.pg_version }} postgresql-server-dev-${{ matrix.pg_version }}
 
@@ -256,18 +248,13 @@ jobs:
 
   build-test-multiple-configs:
     runs-on: ubuntu-latest
-    # PG19 is in beta: build it, but don't let beta breakage block merges.
-    continue-on-error: ${{ matrix.config.pg_version == 19 }}
     strategy:
-      fail-fast: false
       matrix:
         config:
           - { cc: gcc, pg_version: 17 }
           - { cc: clang, pg_version: 17 }
           - { cc: gcc, pg_version: 18 }
           - { cc: clang, pg_version: 18 }
-          - { cc: gcc, pg_version: 19 }
-          - { cc: clang, pg_version: 19 }
 
     steps:
     - uses: actions/checkout@v4
@@ -278,11 +265,6 @@ jobs:
         sudo apt-get install -y wget ca-certificates build-essential bc
         wget --quiet -O - https://www.postgresql.org/media/keys/ACCC4CF8.asc | sudo apt-key add -
         echo "deb http://apt.postgresql.org/pub/repos/apt/ $(lsb_release -cs)-pgdg main" | sudo tee /etc/apt/sources.list.d/pgdg.list
-        # PG19 is in beta: its packages live in the pgdg-testing suite
-        # until GA. Adding it only for 19 keeps 17/18 on stable packages.
-        if [ "${{ matrix.config.pg_version }}" = "19" ]; then
-          echo "deb http://apt.postgresql.org/pub/repos/apt/ $(lsb_release -cs)-pgdg-testing main 19" | sudo tee /etc/apt/sources.list.d/pgdg-testing.list
-        fi
         sudo apt-get update
         sudo apt-get install -y postgresql-${{ matrix.config.pg_version }} postgresql-server-dev-${{ matrix.config.pg_version }}
 
@@ -293,6 +275,84 @@ jobs:
         make clean
         # Build with -Werror via PG_CFLAGS (CFLAGS is overridden by pgxs)
         make PG_CFLAGS="-Werror -Wno-error=unused-parameter"
+
+  # PG19 is in beta and has no PGDG apt package yet, so it is built from
+  # source here and exercised with both gcc and clang plus the full SQL
+  # regression suite. This job is experimental: beta breakage must not
+  # block merges (continue-on-error), and it can be dropped in favor of
+  # the apt matrices once PG19 reaches GA and PGDG ships packages.
+  test-pg19-beta:
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    strategy:
+      fail-fast: false
+      matrix:
+        cc: [gcc, clang]
+    env:
+      PG19_REF: REL_19_BETA3
+      PGPREFIX: ${{ github.workspace }}/pg19-install
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Install build dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y build-essential clang bison flex \
+          libreadline-dev zlib1g-dev libicu-dev pkg-config bc
+
+    - name: Cache PostgreSQL ${{ env.PG19_REF }} build
+      id: pgcache
+      uses: actions/cache@v4
+      with:
+        path: ${{ env.PGPREFIX }}
+        key: pg19-${{ env.PG19_REF }}-${{ matrix.cc }}-${{ runner.os }}
+
+    - name: Build PostgreSQL ${{ env.PG19_REF }} from source
+      if: steps.pgcache.outputs.cache-hit != 'true'
+      run: |
+        git clone --depth 1 --branch "$PG19_REF" \
+          https://git.postgresql.org/git/postgresql.git /tmp/pgsrc
+        cd /tmp/pgsrc
+        CC=${{ matrix.cc }} ./configure --prefix="$PGPREFIX" \
+          --with-icu --enable-debug --enable-cassert
+        make -j"$(nproc)"
+        make install
+
+    - name: Build extension with ${{ matrix.cc }}
+      run: |
+        export PATH="$PGPREFIX/bin:$PATH"
+        export CC=${{ matrix.cc }}
+        make clean
+        make PG_CFLAGS="-Werror -Wno-error=unused-parameter"
+        make install
+
+    - name: Run regression tests
+      timeout-minutes: 15
+      run: |
+        export PATH="$PGPREFIX/bin:$PATH"
+        rm -rf tmp_check_shared
+        mkdir -p tmp_check_shared
+        initdb -D tmp_check_shared/data --auth-local=trust --auth-host=trust
+        echo "port = 55433" >> tmp_check_shared/data/postgresql.conf
+        echo "shared_buffers = 256MB" >> tmp_check_shared/data/postgresql.conf
+        echo "max_connections = 20" >> tmp_check_shared/data/postgresql.conf
+        echo "shared_preload_libraries = 'pg_textsearch'" >> tmp_check_shared/data/postgresql.conf
+        echo "unix_socket_directories = '$PWD/tmp_check_shared'" >> tmp_check_shared/data/postgresql.conf
+        if ! pg_ctl start -D tmp_check_shared/data -l tmp_check_shared/data/logfile -w; then
+          echo "PostgreSQL failed to start. Log contents:"
+          cat tmp_check_shared/data/logfile
+          exit 1
+        fi
+        createdb -h $PWD/tmp_check_shared -p 55433 contrib_regression
+        if ! make installcheck PGHOST=$PWD/tmp_check_shared PGPORT=55433; then
+          echo "Tests failed. Showing regression diffs:"
+          [ -f test/regression.diffs ] && cat test/regression.diffs
+          echo "PostgreSQL server log (last 200 lines):"
+          tail -200 tmp_check_shared/data/logfile || true
+          pg_ctl stop -D tmp_check_shared/data || true
+          exit 1
+        fi
+        pg_ctl stop -D tmp_check_shared/data
 
   performance-test:
     runs-on: ubuntu-latest
