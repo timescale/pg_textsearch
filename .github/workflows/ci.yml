@@ -42,6 +42,11 @@ jobs:
         sudo apt-get install -y wget ca-certificates
         wget --quiet -O - https://www.postgresql.org/media/keys/ACCC4CF8.asc | sudo apt-key add -
         echo "deb http://apt.postgresql.org/pub/repos/apt/ $(lsb_release -cs)-pgdg main" | sudo tee /etc/apt/sources.list.d/pgdg.list
+        # PG19 is in beta: its packages live in the pgdg-testing suite
+        # until GA. Adding it only for 19 keeps 17/18 on stable packages.
+        if [ "${{ matrix.pg_version }}" = "19" ]; then
+          echo "deb http://apt.postgresql.org/pub/repos/apt/ $(lsb_release -cs)-pgdg-testing main 19" | sudo tee /etc/apt/sources.list.d/pgdg-testing.list
+        fi
         sudo apt-get update
         sudo apt-get install -y postgresql-${{ matrix.pg_version }} postgresql-server-dev-${{ matrix.pg_version }}
 
@@ -273,6 +278,11 @@ jobs:
         sudo apt-get install -y wget ca-certificates build-essential bc
         wget --quiet -O - https://www.postgresql.org/media/keys/ACCC4CF8.asc | sudo apt-key add -
         echo "deb http://apt.postgresql.org/pub/repos/apt/ $(lsb_release -cs)-pgdg main" | sudo tee /etc/apt/sources.list.d/pgdg.list
+        # PG19 is in beta: its packages live in the pgdg-testing suite
+        # until GA. Adding it only for 19 keeps 17/18 on stable packages.
+        if [ "${{ matrix.config.pg_version }}" = "19" ]; then
+          echo "deb http://apt.postgresql.org/pub/repos/apt/ $(lsb_release -cs)-pgdg-testing main 19" | sudo tee /etc/apt/sources.list.d/pgdg-testing.list
+        fi
         sudo apt-get update
         sudo apt-get install -y postgresql-${{ matrix.config.pg_version }} postgresql-server-dev-${{ matrix.config.pg_version }}
 
