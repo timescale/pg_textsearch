@@ -97,7 +97,7 @@ extern void tp_segment_writer_finish(TpSegmentWriter *writer);
 extern TpSegmentReader *
 tp_segment_open_ex(Relation index, BlockNumber root, bool load_ctids);
 extern TpSegmentReader *tp_segment_open(Relation index, BlockNumber root);
-extern TpSegmentReader			   *
+extern TpSegmentReader *
 tp_segment_open_from_buffile(BufFile *file, uint64 base_offset);
 extern void tp_segment_read(
 		TpSegmentReader *reader,

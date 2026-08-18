@@ -9,7 +9,7 @@
 # The tar file contains 70 gzipped JSONL files which are streamed
 # to a single TSV, deleting each .gz after processing to save disk.
 
-set -e
+set -eo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DATA_DIR="$SCRIPT_DIR/data"
@@ -24,9 +24,10 @@ echo ""
 # Collection (passages) - 20.3GB tar of 70 gzipped JSONL files
 if [ ! -f "collection.tsv" ]; then
     if [ ! -d "msmarco_v2_passage" ]; then
-        if [ ! -f "msmarco_v2_passage.tar" ]; then
+        if [ ! -f "msmarco_v2_passage.tar" ] \
+           || [ "$(wc -c < msmarco_v2_passage.tar)" -lt 21000000000 ]; then
             echo "Downloading passage collection (~20GB)..."
-            wget -q --show-progress \
+            wget -c --show-progress \
                 https://msmarco.z22.web.core.windows.net/msmarcoranking/msmarco_v2_passage.tar
         fi
         echo "Extracting tar archive..."
@@ -37,25 +38,35 @@ if [ ! -f "collection.tsv" ]; then
 
     # Convert 70 gzipped JSONL files to single TSV
     # Each JSONL line: {"pid": "msmarco_passage_XX_NNNNN", "passage": "..."}
-    # Delete each .gz after processing to save disk space
+    # Delete each .gz after processing to save disk space.
+    # Write to a temp file and rename at the end so a partial
+    # conversion never leaves behind a 0-byte collection.tsv.
     echo "Converting JSONL files to collection.tsv..."
-    > collection.tsv
+    > collection.tsv.tmp
     file_count=0
     total_files=$(ls -1 msmarco_v2_passage/*.gz 2>/dev/null | wc -l)
+
+    if [ "$total_files" -eq 0 ]; then
+        echo "ERROR: no .gz files found in msmarco_v2_passage/"
+        rm -f collection.tsv.tmp
+        exit 1
+    fi
 
     for f in msmarco_v2_passage/*.gz; do
         file_count=$((file_count + 1))
         echo "  Processing $f ($file_count/$total_files)..."
-        zcat "$f" | python3 -c "
+        gunzip -c "$f" | python3 -c "
 import sys, json
 for line in sys.stdin:
     obj = json.loads(line)
     pid = obj['pid']
     text = obj['passage'].replace('\t', ' ').replace('\n', ' ')
     print(f'{pid}\t{text}')
-" >> collection.tsv
+" >> collection.tsv.tmp
         rm "$f"
     done
+
+    mv collection.tsv.tmp collection.tsv
 
     # Clean up empty directory
     rmdir msmarco_v2_passage 2>/dev/null || true
