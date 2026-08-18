@@ -230,3 +230,7 @@ extern int	  tp_memtable_pages_threshold;
 extern int	  tp_segments_per_level;
 extern bool	  tp_filtered_seed;
 extern double tp_filtered_seed_margin;
+extern bool	  tp_compress_segments;
+extern bool	  tp_memtable_cache_enabled;
+extern bool	  tp_log_cache_state;
+extern int	  tp_memory_limit_kb;
