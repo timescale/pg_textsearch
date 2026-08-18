@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1787036624221,
+  "lastUpdate": 1787036627524,
   "repoUrl": "https://github.com/timescale/pg_textsearch",
   "entries": {
     "cranfield Benchmarks": [
@@ -250379,6 +250379,88 @@ window.BENCHMARK_DATA = {
           {
             "name": "paradedb_msmarco_concurrent - Throughput (avg ms/query)",
             "value": 71.88,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tjgreen@gmail.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "5464d6617f9ec1f818da55e4e593fa394075fe91",
+          "message": "Improved upgrade data-integrity test matrix (#450)\n\nAdds a stronger upgrade data-integrity test harness. The existing\n`upgrade-tests.yml` exercises only one on-disk shape and captures its\nbaseline from the already-upgraded binary, so it cannot detect\nsilently-dropped documents.\n\n**`test/scripts/upgrade_matrix.sh`** — for each old release, builds\nfour distinct on-disk states (single/two/multi segment, and an index\nwith unspilled L0 memtable data), upgrades to the current binary, and\nchecks recall against heap ground truth (a rare sentinel token vs. the\nheap) measured under the old binary, the new binary, and after\n`REINDEX`. Also covers the legacy metapage-v5 clean-`ERROR`-without-\n`REINDEX` path.\n\n**`upgrade-matrix` CI job** in `.github/workflows/upgrade-tests.yml`,\nrunning the harness on PG 17/18. Segment-backed shapes and the\n`REINDEX` safety net are hard assertions; upgrading a pre-1.3\n(metapage v6) index with unspilled L0 data drops those documents, so\nthat case is surfaced as a non-fatal `::warning::` (`REINDEX`\nrecovers). Set `STRICT_UNSPILLED=1` to make it a hard failure.\n\nThe workflow now also triggers on `v*` release tags and its `paths`\nfilter covers the harness and `src/index/**`, so the matrix runs on\nevery release; `RELEASING.md` documents this.\n\n## Reproduce\n```bash\nPG_CONFIG=/usr/lib/postgresql/17/bin/pg_config \\\n  test/scripts/upgrade_matrix.sh 0.5.0 0.5.1 1.0.0 1.2.0 1.3.0\n```",
+          "timestamp": "2026-08-17T00:59:26Z",
+          "url": "https://github.com/timescale/pg_textsearch/commit/5464d6617f9ec1f818da55e4e593fa394075fe91"
+        },
+        "date": 1787036626961,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "paradedb_msmarco_concurrent - Index Build Time",
+            "value": 4.413,
+            "unit": "ms"
+          },
+          {
+            "name": "paradedb_msmarco_concurrent - Insert Time",
+            "value": 0.446,
+            "unit": "ms"
+          },
+          {
+            "name": "paradedb_msmarco_concurrent - Concurrent Insert Time",
+            "value": 1452847.779765,
+            "unit": "ms"
+          },
+          {
+            "name": "paradedb_msmarco_concurrent - 1 Token Query (p50)",
+            "value": 72.29,
+            "unit": "ms"
+          },
+          {
+            "name": "paradedb_msmarco_concurrent - 2 Token Query (p50)",
+            "value": 29.98,
+            "unit": "ms"
+          },
+          {
+            "name": "paradedb_msmarco_concurrent - 3 Token Query (p50)",
+            "value": 77.62,
+            "unit": "ms"
+          },
+          {
+            "name": "paradedb_msmarco_concurrent - 4 Token Query (p50)",
+            "value": 79.41,
+            "unit": "ms"
+          },
+          {
+            "name": "paradedb_msmarco_concurrent - 5 Token Query (p50)",
+            "value": 83.1,
+            "unit": "ms"
+          },
+          {
+            "name": "paradedb_msmarco_concurrent - 6 Token Query (p50)",
+            "value": 87.53,
+            "unit": "ms"
+          },
+          {
+            "name": "paradedb_msmarco_concurrent - 7 Token Query (p50)",
+            "value": 88.52,
+            "unit": "ms"
+          },
+          {
+            "name": "paradedb_msmarco_concurrent - 8+ Token Query (p50)",
+            "value": 95.22,
+            "unit": "ms"
+          },
+          {
+            "name": "paradedb_msmarco_concurrent - Throughput (avg ms/query)",
+            "value": 76.84,
             "unit": "ms"
           }
         ]
