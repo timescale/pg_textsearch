@@ -760,8 +760,9 @@ tp_memtable_chain_source_extract(
 		return;
 	}
 
-	terms = (TermInfo *)palloc0(num_terms * sizeof(TermInfo));
-	i	  = 0;
+	terms = (TermInfo *)palloc_extended(
+			num_terms * sizeof(TermInfo), MCXT_ALLOC_HUGE | MCXT_ALLOC_ZERO);
+	i = 0;
 	hash_seq_init(&seq, src->term_ht);
 	while ((te = (ChainTermEntry *)hash_seq_search(&seq)) != NULL)
 	{

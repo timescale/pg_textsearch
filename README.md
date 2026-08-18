@@ -16,7 +16,7 @@ Modern ranked text search for Postgres.
 - Supports partitioned tables
 - Best in class performance and scalability
 
-🚀 **Status**: v1.4.0-dev - Production ready.
+🚀 **Status**: v1.4.0 - Production ready.
 
 ## Historical note
 
@@ -287,6 +287,11 @@ SELECT 'docs_idx:search query text'::bm25query;
 SELECT to_bm25query('search query text');
 -- Returns: search query text
 ```
+
+**Note**: Standalone scoring (`text <@> to_bm25query(text, index_name)`)
+requires the invoking role to hold `SELECT` on the indexed table, or on the
+indexed column(s). This matches the privileges required to read the same data
+through an ordinary index scan.
 
 **Note**: In PostgreSQL 18, the embedded index name syntax using single colon (`:`) allows the
 query planner to determine the index name even when evaluating SELECT clause expressions early.

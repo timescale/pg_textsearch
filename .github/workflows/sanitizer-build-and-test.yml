@@ -85,8 +85,13 @@ jobs:
         fi
 
         cd ~/$PG_SRC_DIR
+        # RANDOMIZE_ALLOCATED_MEMORY makes stringTypeDatum() run type input
+        # functions twice, catching input functions that scribble on their
+        # argument cstring. ASAN alone misses this (the scribble is an
+        # in-bounds write), so define it explicitly for the source build.
         ./configure --prefix=$HOME/$PG_INSTALL_DIR --enable-debug --enable-cassert \
-          --with-openssl --without-readline --without-zlib --without-libxml
+          --with-openssl --without-readline --without-zlib --without-libxml \
+          CPPFLAGS="-DRANDOMIZE_ALLOCATED_MEMORY"
         make -j$(nproc)
         # Build the pg_walinspect contrib module under the same
         # sanitizer flags. wal_audit.sh requires it; without this

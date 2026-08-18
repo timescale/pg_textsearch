@@ -562,6 +562,14 @@ validate_and_open_index(TpQuery *query, Oid *index_oid_out)
 	}
 
 	/*
+	 * Enforce the invoking role's SELECT privilege on the indexed relation
+	 * and column before reading any index-derived data. Standalone scoring
+	 * opens the index directly, bypassing the executor's range-table
+	 * permission checks.
+	 */
+	tp_check_index_read_privilege(index_oid);
+
+	/*
 	 * Check if this is a partitioned index. Partitioned indexes don't have
 	 * storage - they're just templates. We need to use a child index for
 	 * text config, but aggregate stats from all children.
@@ -739,6 +747,15 @@ bm25_text_bm25query_score(PG_FUNCTION_ARGS)
 
 	PG_TRY();
 	{
+		/*
+		 * Surface the pre-v1.3 upgrade data-loss marker to standalone
+		 * scoring callers too.  This path does not go through
+		 * tp_beginscan, so without this the WARNING would only reach
+		 * index-scan (ORDER BY ... LIMIT) workloads.  The per-session
+		 * throttle is shared, so at most one warning per index fires.
+		 */
+		tp_warn_if_pending_docid(index_rel);
+
 		/* Get the metapage to extract text_config_oid */
 		metap			= tp_get_metapage(index_rel);
 		text_config_oid = metap->text_config_oid;

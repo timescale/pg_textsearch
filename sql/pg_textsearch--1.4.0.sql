@@ -1,4 +1,4 @@
--- pg_textsearch extension version 1.4.0-dev
+-- pg_textsearch extension version 1.4.0
 
 -- complain if script is sourced in psql, rather than via CREATE EXTENSION
 \echo Use "CREATE EXTENSION pg_textsearch" to load this file. \quit
@@ -14,11 +14,11 @@ BEGIN
             'pg_textsearch library not loaded. '
             'Add pg_textsearch to shared_preload_libraries and restart.';
     END IF;
-    IF lib_ver OPERATOR(pg_catalog.<>) '1.4.0-dev' THEN
+    IF lib_ver OPERATOR(pg_catalog.<>) '1.4.0' THEN
         RAISE EXCEPTION
             'pg_textsearch library version mismatch: loaded=%, expected=%. '
             'Restart the server after installing the new binary.',
-            lib_ver, '1.4.0-dev';
+            lib_ver, '1.4.0';
     END IF;
 END $$;
 
@@ -133,10 +133,16 @@ CREATE OPERATOR @extschema@.= (
 -- the same setup do not survive worker startup reliably (see follow-up
 -- issue).  Ranked queries should use ORDER BY <@> ... LIMIT n, which is an
 -- index scan and does not exercise this function in workers.
+-- STABLE, not IMMUTABLE: the returned score depends on corpus statistics
+-- that change as the indexed table is modified, so the result is only
+-- stable within a single scan.  STABLE also keeps the planner from
+-- constant-folding a fully-constant scoring expression at plan time, so the
+-- runtime privilege check on the named index always runs under the invoking
+-- role.
 CREATE FUNCTION @extschema@.bm25_text_bm25query_score(left_text text, right_query @extschema@.bm25query)
 RETURNS float8
 AS 'MODULE_PATHNAME', 'bm25_text_bm25query_score'
-LANGUAGE C IMMUTABLE STRICT PARALLEL UNSAFE COST 1000;
+LANGUAGE C STABLE STRICT PARALLEL UNSAFE COST 1000;
 
 -- bm25query equality function
 CREATE FUNCTION @extschema@.bm25query_eq(@extschema@.bm25query, @extschema@.bm25query)
@@ -201,7 +207,7 @@ CREATE FUNCTION @extschema@.bm25_textarray_bm25query_score(
     left_arr text[], right_query @extschema@.bm25query)
 RETURNS float8
 AS 'MODULE_PATHNAME', 'bm25_textarray_bm25query_score'
-LANGUAGE C IMMUTABLE STRICT PARALLEL UNSAFE COST 1000;
+LANGUAGE C STABLE STRICT PARALLEL UNSAFE COST 1000;
 
 -- Error stub for text[] <@> text (planner should rewrite to bm25query)
 CREATE FUNCTION @extschema@.bm25_textarray_text_score(text[], text)
