@@ -44,6 +44,7 @@
 #include <utils/rel.h>
 #include <utils/syscache.h>
 
+#include "compat.h"
 #include "planner/hooks.h"
 #include "scoring/bm25.h"
 #include "types/query.h"
@@ -1016,13 +1017,9 @@ resolve_indexes_in_query(Query *query)
  */
 static void
 tp_post_parse_analyze_hook(
-		ParseState *pstate pg_attribute_unused(),
-		Query			  *query,
-#if PG_VERSION_NUM >= 190000
-		const JumbleState *jstate pg_attribute_unused())
-#else
-		JumbleState *jstate pg_attribute_unused())
-#endif
+		ParseState *pstate		pg_attribute_unused(),
+		Query				   *query,
+		TP_JUMBLE_STATE *jstate pg_attribute_unused())
 {
 	/* Reset flag for this query - will be set if BM25 operators found */
 	query_has_bm25_operators = false;

@@ -34,6 +34,46 @@ static TpGlobalRegistry *tapir_registry = NULL;
 /* Backend-local DSA area pointer */
 static dsa_area *tapir_dsa = NULL;
 
+/*
+ * Wait-event name for each fixed tranche constant, keyed by the
+ * constant itself so the table cannot silently drift if a TP_TRANCHE_*
+ * value is added, removed or renumbered in constants.h.  Each name
+ * mirrors its constant so the two read the same way in
+ * pg_stat_activity.wait_event.
+ */
+#define TP_TRANCHE_SLOT(name) [TP_TRANCHE_##name - TP_TRANCHE_FIRST]
+
+static const char *const tp_tranche_names[TP_TRANCHE_COUNT] = {
+		TP_TRANCHE_SLOT(STRING)			  = "tapir_string",
+		TP_TRANCHE_SLOT(POSTING)		  = "tapir_posting",
+		TP_TRANCHE_SLOT(CORPUS)			  = "tapir_corpus",
+		TP_TRANCHE_SLOT(DOC_LENGTHS)	  = "tapir_doc_lengths",
+		TP_TRANCHE_SLOT(INDEX_LOCK)		  = "tapir_index_lock",
+		TP_TRANCHE_SLOT(BUILD_DSA)		  = "tapir_build_dsa",
+		TP_TRANCHE_SLOT(GLOBAL_DSA)		  = "tapir_global_dsa",
+		TP_TRANCHE_SLOT(REGISTRY)		  = "tapir_registry",
+		TP_TRANCHE_SLOT(POSTING_LOCK)	  = "tapir_posting_lock",
+		TP_TRANCHE_SLOT(CACHE_APPLY_LOCK) = "tapir_cache_apply_lock",
+		TP_TRANCHE_SLOT(CACHE_LOCK)		  = "tapir_cache_lock",
+		TP_TRANCHE_SLOT(EVICTION_MUTEX)	  = "tapir_eviction_mutex",
+};
+
+#undef TP_TRANCHE_SLOT
+
+/*
+ * Name of a fixed tranche constant, or a placeholder if constants.h
+ * grew an entry that was never named above (which would otherwise leave
+ * a NULL in the table).
+ */
+static const char *
+tp_tranche_name(int fixed_tranche_id)
+{
+	const char *name = tp_tranche_names[fixed_tranche_id - TP_TRANCHE_FIRST];
+
+	Assert(name != NULL);
+	return name != NULL ? name : "tapir_unnamed";
+}
+
 #if PG_VERSION_NUM >= 190000
 /*
  * PG19+ removed LWLockRegisterTranche(); tranche names can only be
@@ -45,23 +85,9 @@ static dsa_area *tapir_dsa = NULL;
 static void
 tp_init_tranche_ids(void)
 {
-	static const char *const tranche_names[TP_TRANCHE_COUNT] = {
-			"tapir_string_hash",	  /* TP_TRANCHE_STRING */
-			"tapir_posting",		  /* TP_TRANCHE_POSTING (reserved) */
-			"tapir_corpus",			  /* TP_TRANCHE_CORPUS (reserved) */
-			"tapir_doclength_hash",	  /* TP_TRANCHE_DOC_LENGTHS */
-			"tapir_index_lock",		  /* TP_TRANCHE_INDEX_LOCK */
-			"tapir_build_dsa",		  /* TP_TRANCHE_BUILD_DSA */
-			"tapir_global_dsa",		  /* TP_TRANCHE_GLOBAL_DSA */
-			"tapir_registry",		  /* TP_TRANCHE_REGISTRY */
-			"tapir_posting_lock",	  /* TP_TRANCHE_POSTING_LOCK */
-			"tapir_cache_apply_lock", /* TP_TRANCHE_CACHE_APPLY_LOCK */
-			"tapir_cache_lock",		  /* TP_TRANCHE_CACHE_LOCK */
-			"tapir_cache_eviction",	  /* TP_TRANCHE_EVICTION_MUTEX */
-	};
-
 	for (int i = 0; i < TP_TRANCHE_COUNT; i++)
-		tapir_registry->tranche_ids[i] = LWLockNewTrancheId(tranche_names[i]);
+		tapir_registry->tranche_ids[i] = LWLockNewTrancheId(
+				tp_tranche_name(TP_TRANCHE_FIRST + i));
 }
 
 /*
@@ -76,6 +102,18 @@ tp_tranche_id(int fixed_tranche_id)
 	Assert(tapir_registry != NULL);
 	Assert(idx >= 0 && idx < TP_TRANCHE_COUNT);
 	return tapir_registry->tranche_ids[idx];
+}
+#else
+/*
+ * PG17/18: the fixed IDs are used as-is, so the names just have to be
+ * registered in every backend that may report a wait event on them.
+ */
+static void
+tp_register_tranche_names(void)
+{
+	for (int i = 0; i < TP_TRANCHE_COUNT; i++)
+		LWLockRegisterTranche(
+				TP_TRANCHE_FIRST + i, tp_tranche_name(TP_TRANCHE_FIRST + i));
 }
 #endif
 
@@ -226,14 +264,12 @@ tp_registry_shmem_startup(void)
 
 #if PG_VERSION_NUM < 190000
 	/*
-	 * Register the lock tranche names.  On PG19+ the names are supplied
-	 * to LWLockNewTrancheId() at allocation time (see
-	 * tp_init_tranche_ids()) and LWLockRegisterTranche() no longer
+	 * Register the lock tranche names in this backend.  On PG19+ the
+	 * names are supplied to LWLockNewTrancheId() at allocation time
+	 * (see tp_init_tranche_ids()) and LWLockRegisterTranche() no longer
 	 * exists.
 	 */
-	LWLockRegisterTranche(tapir_registry->lock.tranche, "tapir_registry");
-	LWLockRegisterTranche(
-			tapir_registry->eviction_mutex.tranche, "tapir_cache_eviction");
+	tp_register_tranche_names();
 #endif
 }
 

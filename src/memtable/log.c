@@ -46,6 +46,7 @@
 #include <utils/relcache.h>
 #include <utils/varlena.h>
 
+#include "compat.h"
 #include "constants.h"
 #include "index/freepage.h"
 #include "index/metapage.h"
@@ -1599,10 +1600,8 @@ bm25_memtable_chain(PG_FUNCTION_ARGS)
 		TupleDescInitEntry(tupdesc, 3, "free_offset", INT4OID, -1, 0);
 		TupleDescInitEntry(tupdesc, 4, "next_block", INT8OID, -1, 0);
 		TupleDescInitEntry(tupdesc, 5, "flags", INT4OID, -1, 0);
-#if PG_VERSION_NUM >= 190000
-		/* PG19 requires finalizing a hand-built TupleDesc before use. */
+		/* Hand-built TupleDescs must be finalized before use (PG19+). */
 		TupleDescFinalize(tupdesc);
-#endif
 		funcctx->tuple_desc = BlessTupleDesc(tupdesc);
 		funcctx->user_fctx	= state;
 
@@ -1702,10 +1701,8 @@ bm25_memtable_dead_pages(PG_FUNCTION_ARGS)
 		TupleDescInitEntry(tupdesc, 2, "flags", INT4OID, -1, 0);
 		TupleDescInitEntry(tupdesc, 3, "dead_fxid", INT8OID, -1, 0);
 		TupleDescInitEntry(tupdesc, 4, "n_records", INT4OID, -1, 0);
-#if PG_VERSION_NUM >= 190000
-		/* PG19 requires finalizing a hand-built TupleDesc before use. */
+		/* Hand-built TupleDescs must be finalized before use (PG19+). */
 		TupleDescFinalize(tupdesc);
-#endif
 		funcctx->tuple_desc = BlessTupleDesc(tupdesc);
 		funcctx->user_fctx	= state;
 
