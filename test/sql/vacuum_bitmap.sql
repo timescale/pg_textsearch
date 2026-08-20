@@ -347,4 +347,31 @@ SELECT bm25_dump_index('vb_dump_idx') LIKE '%Alive: 10 / 10 docs%'
 
 DROP TABLE vb_dump;
 
+-- =============================================================
+-- Test 11: Batched CTID reads across pages and segments
+-- =============================================================
+CREATE TABLE vb_batched (id serial PRIMARY KEY, content text);
+
+INSERT INTO vb_batched (content)
+SELECT 'bounded batch ' || i
+FROM generate_series(1, 3000) i;
+
+CREATE INDEX vb_batched_idx ON vb_batched
+    USING bm25 (content) WITH (text_config = 'english');
+
+INSERT INTO vb_batched (content)
+SELECT 'bounded batch ' || i
+FROM generate_series(3001, 6000) i;
+
+DELETE FROM vb_batched WHERE id % 3 = 0;
+VACUUM vb_batched;
+
+SELECT count(*) FROM (
+    SELECT id FROM vb_batched
+    ORDER BY content <@> to_bm25query('bounded', 'vb_batched_idx')
+    LIMIT 6000
+) q;
+
+DROP TABLE vb_batched;
+
 DROP EXTENSION pg_textsearch;

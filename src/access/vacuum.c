@@ -334,11 +334,18 @@ tp_vacuum_identify_affected(
 		int64				   *total_dead_out)
 {
 	TpVacuumSegmentInfo *segments;
-	int					 capacity	= 32;
-	int					 count		= 0;
-	int64				 total_dead = 0;
+	/* Keep both CTID scratch arrays within roughly one PostgreSQL block. */
+	const uint32  ctid_batch_capacity = BLCKSZ / (sizeof(BlockNumber) +
+												  sizeof(OffsetNumber));
+	BlockNumber	 *ctid_pages;
+	OffsetNumber *ctid_offsets;
+	int			  capacity	 = 32;
+	int			  count		 = 0;
+	int64		  total_dead = 0;
 
-	segments = palloc(capacity * sizeof(TpVacuumSegmentInfo));
+	segments	 = palloc(capacity * sizeof(TpVacuumSegmentInfo));
+	ctid_pages	 = palloc(ctid_batch_capacity * sizeof(BlockNumber));
+	ctid_offsets = palloc(ctid_batch_capacity * sizeof(OffsetNumber));
 
 	for (int level = 0; level < TP_MAX_LEVELS; level++)
 	{
@@ -349,7 +356,7 @@ tp_vacuum_identify_affected(
 			TpSegmentReader *reader;
 			uint32			 seg_dead = 0;
 
-			reader = tp_segment_open_ex(index, seg, true);
+			reader = tp_segment_open_ex(index, seg, false);
 			if (!reader || !reader->header)
 			{
 				if (reader)
@@ -363,36 +370,64 @@ tp_vacuum_identify_affected(
 				uint32	dead_cap   = 0;
 				bool	has_bitset = (reader->header->alive_bitset_offset > 0);
 
-				for (uint32 i = 0; i < reader->header->num_docs; i++)
+				for (uint32 batch_start = 0;
+					 batch_start < reader->header->num_docs;
+					 batch_start += ctid_batch_capacity)
 				{
-					ItemPointerData ctid;
+					uint32 batch_count =
+							Min(ctid_batch_capacity,
+								reader->header->num_docs - batch_start);
 
-					/*
-					 * Skip docs already marked dead in the alive
-					 * bitset.  Without this, CTID reuse after a
-					 * previous VACUUM would double-count dead docs
-					 * and corrupt total_docs in the metapage.
-					 */
-					if (has_bitset && !tp_segment_is_alive(reader, i))
-						continue;
+					tp_segment_read(
+							reader,
+							reader->header->ctid_pages_offset +
+									(uint64)batch_start * sizeof(BlockNumber),
+							ctid_pages,
+							batch_count * sizeof(BlockNumber));
+					tp_segment_read(
+							reader,
+							reader->header->ctid_offsets_offset +
+									(uint64)batch_start * sizeof(OffsetNumber),
+							ctid_offsets,
+							batch_count * sizeof(OffsetNumber));
 
-					tp_segment_lookup_ctid(reader, i, &ctid);
-					if (ItemPointerIsValid(&ctid) &&
-						callback(&ctid, callback_state))
+					for (uint32 batch_pos = 0; batch_pos < batch_count;
+						 batch_pos++)
 					{
-						if (seg_dead >= dead_cap)
+						ItemPointerData ctid;
+						uint32			i = batch_start + batch_pos;
+
+						/*
+						 * Skip docs already marked dead in the alive
+						 * bitset.  Without this, CTID reuse after a
+						 * previous VACUUM would double-count dead docs
+						 * and corrupt total_docs in the metapage.
+						 */
+						if (has_bitset && !tp_segment_is_alive(reader, i))
+							continue;
+
+						ItemPointerSet(
+								&ctid,
+								ctid_pages[batch_pos],
+								ctid_offsets[batch_pos]);
+						if (ItemPointerIsValid(&ctid) &&
+							callback(&ctid, callback_state))
 						{
-							dead_cap = (dead_cap == 0) ? 64 : dead_cap * 2;
-							dead_ids = dead_ids
-											 ? repalloc(
-													   dead_ids,
-													   dead_cap *
-															   sizeof(uint32))
-											 : palloc(dead_cap *
-													  sizeof(uint32));
+							if (seg_dead >= dead_cap)
+							{
+								dead_cap = (dead_cap == 0) ? 64 : dead_cap * 2;
+								dead_ids =
+										dead_ids
+												? repalloc(
+														  dead_ids,
+														  dead_cap *
+																  sizeof(uint32))
+												: palloc(dead_cap *
+														 sizeof(uint32));
+							}
+							dead_ids[seg_dead] = i;
+							seg_dead++;
 						}
-						dead_ids[seg_dead] = i;
-						seg_dead++;
 					}
 				}
 
@@ -423,6 +458,9 @@ tp_vacuum_identify_affected(
 			tp_segment_close(reader);
 		}
 	}
+
+	pfree(ctid_offsets);
+	pfree(ctid_pages);
 
 	*num_segments_out = count;
 	*total_dead_out	  = total_dead;
