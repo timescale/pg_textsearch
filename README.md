@@ -25,7 +25,9 @@ mascot and the name occurs in various places in the source code.
 
 ## PostgreSQL Version Compatibility
 
-pg_textsearch supports PostgreSQL 17 and 18.
+pg_textsearch supports PostgreSQL 17 and 18. PostgreSQL 19 (beta) is
+supported on a best-effort basis while it is in beta; its CI is allowed
+to fail and prebuilt binaries are not published for it yet.
 
 ## Installation
 

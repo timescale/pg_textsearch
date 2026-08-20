@@ -303,6 +303,32 @@ tp_get_local_index_state(Oid index_oid)
 }
 
 /*
+ * Initialize a freshly DSA-allocated TpMemtable.
+ *
+ * dsa_allocate() does NOT zero memory (reused chunks can hold
+ * garbage), so every field that requires a known initial value must be
+ * set here — in particular the two LWLocks, whose uninitialized state
+ * shows up later as a stuck spinlock (PANIC: stuck spinlock detected
+ * at LWLockWaitListLock).  All three memtable construction paths
+ * (runtime, build-mode private DSA, build-mode finalize) share this so
+ * a new field cannot be initialized in only some of them.
+ */
+static void
+tp_memtable_init(TpMemtable *memtable)
+{
+	memtable->string_hash_handle = DSHASH_HANDLE_INVALID;
+	memtable->doc_lengths_handle = DSHASH_HANDLE_INVALID;
+	LWLockInitialize(
+			&memtable->apply_lock, tp_tranche_id(TP_TRANCHE_CACHE_APPLY_LOCK));
+	LWLockInitialize(&memtable->lock, tp_tranche_id(TP_TRANCHE_CACHE_LOCK));
+	memtable->cursor_gen_spill_count = 0;
+	memtable->cursor_next_blkno		 = InvalidBlockNumber;
+	memtable->cursor_next_off		 = 0;
+	pg_atomic_init_u64(&memtable->cursor_seq, 0);
+	pg_atomic_init_u64(&memtable->estimated_bytes, 0);
+}
+
+/*
  * Create a new shared index state and return local state.
  *
  * If `reuse_if_exists` is true and a registry entry for this OID
@@ -365,22 +391,15 @@ tp_create_shared_index_state(Oid index_oid, Oid heap_oid, bool reuse_if_exists)
 	 * Same tranche choices as tp_create_build_index_state for
 	 * consistency.
 	 */
-	LWLockInitialize(&shared_state->lock, TP_TRANCHE_INDEX_LOCK);
+	LWLockInitialize(
+			&shared_state->lock, tp_tranche_id(TP_TRANCHE_INDEX_LOCK));
 	pg_atomic_init_u64(&shared_state->spill_generation, 0);
 	memtable_dp = dsa_allocate(dsa, sizeof(TpMemtable));
 	if (!DsaPointerIsValid(memtable_dp))
 		elog(ERROR, "Failed to allocate memtable in DSA");
 
 	memtable = (TpMemtable *)dsa_get_address(dsa, memtable_dp);
-	memtable->string_hash_handle = DSHASH_HANDLE_INVALID;
-	memtable->doc_lengths_handle = DSHASH_HANDLE_INVALID;
-	LWLockInitialize(&memtable->apply_lock, TP_TRANCHE_CACHE_APPLY_LOCK);
-	LWLockInitialize(&memtable->lock, TP_TRANCHE_CACHE_LOCK);
-	memtable->cursor_gen_spill_count = 0;
-	memtable->cursor_next_blkno		 = InvalidBlockNumber;
-	memtable->cursor_next_off		 = 0;
-	pg_atomic_init_u64(&memtable->cursor_seq, 0);
-	pg_atomic_init_u64(&memtable->estimated_bytes, 0);
+	tp_memtable_init(memtable);
 
 	shared_state->memtable_dp = memtable_dp;
 
@@ -516,7 +535,8 @@ tp_create_build_index_state(Oid index_oid, Oid heap_oid)
 	 * Using a fixed ID avoids exhausting tranche IDs when creating many
 	 * indexes (e.g., partitioned tables with 500+ partitions).
 	 */
-	LWLockInitialize(&shared_state->lock, TP_TRANCHE_INDEX_LOCK);
+	LWLockInitialize(
+			&shared_state->lock, tp_tranche_id(TP_TRANCHE_INDEX_LOCK));
 	pg_atomic_init_u64(&shared_state->spill_generation, 0);
 
 	/* Check if index already registered (rebuild case) */
@@ -543,7 +563,7 @@ tp_create_build_index_state(Oid index_oid, Oid heap_oid)
 	 * Use a fixed tranche ID to avoid exhausting tranche IDs when creating
 	 * many indexes (e.g., partitioned tables with 500+ partitions).
 	 */
-	private_dsa = dsa_create(TP_TRANCHE_BUILD_DSA);
+	private_dsa = dsa_create(tp_tranche_id(TP_TRANCHE_BUILD_DSA));
 	if (!private_dsa)
 		elog(ERROR, "Failed to create private DSA for index build");
 
@@ -553,15 +573,7 @@ tp_create_build_index_state(Oid index_oid, Oid heap_oid)
 		elog(ERROR, "Failed to allocate memtable in private DSA");
 
 	memtable = (TpMemtable *)dsa_get_address(private_dsa, memtable_dp);
-	memtable->string_hash_handle = DSHASH_HANDLE_INVALID;
-	memtable->doc_lengths_handle = DSHASH_HANDLE_INVALID;
-	LWLockInitialize(&memtable->apply_lock, TP_TRANCHE_CACHE_APPLY_LOCK);
-	LWLockInitialize(&memtable->lock, TP_TRANCHE_CACHE_LOCK);
-	memtable->cursor_gen_spill_count = 0;
-	memtable->cursor_next_blkno		 = InvalidBlockNumber;
-	memtable->cursor_next_off		 = 0;
-	pg_atomic_init_u64(&memtable->cursor_seq, 0);
-	pg_atomic_init_u64(&memtable->estimated_bytes, 0);
+	tp_memtable_init(memtable);
 
 	/* Store memtable pointer in shared state for memtable access */
 	shared_state->memtable_dp = memtable_dp;
@@ -635,15 +647,7 @@ tp_finalize_build_mode(TpLocalIndexState *local_state)
 		elog(ERROR, "Failed to allocate memtable in global DSA");
 
 	memtable = (TpMemtable *)dsa_get_address(global_dsa, memtable_dp);
-	memtable->string_hash_handle = DSHASH_HANDLE_INVALID;
-	memtable->doc_lengths_handle = DSHASH_HANDLE_INVALID;
-	LWLockInitialize(&memtable->apply_lock, TP_TRANCHE_CACHE_APPLY_LOCK);
-	LWLockInitialize(&memtable->lock, TP_TRANCHE_CACHE_LOCK);
-	memtable->cursor_gen_spill_count = 0;
-	memtable->cursor_next_blkno		 = InvalidBlockNumber;
-	memtable->cursor_next_off		 = 0;
-	pg_atomic_init_u64(&memtable->cursor_seq, 0);
-	pg_atomic_init_u64(&memtable->estimated_bytes, 0);
+	tp_memtable_init(memtable);
 
 	/*
 	 * Publish the new global memtable_dp and clear is_build_mode

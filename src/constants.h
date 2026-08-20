@@ -191,6 +191,35 @@
 #define TP_TRANCHE_EVICTION_MUTEX 1012
 
 /*
+ * Bounds of the contiguous fixed-tranche block above.  TP_TRANCHE_COUNT
+ * fixed IDs [TP_TRANCHE_FIRST, TP_TRANCHE_LAST] are defined; a handful
+ * (POSTING, CORPUS) are currently reserved but still allocated so the
+ * block stays contiguous.
+ */
+#define TP_TRANCHE_FIRST TP_TRANCHE_STRING
+#define TP_TRANCHE_LAST	 TP_TRANCHE_EVICTION_MUTEX
+#define TP_TRANCHE_COUNT ((TP_TRANCHE_LAST) - (TP_TRANCHE_FIRST) + 1)
+
+/*
+ * Resolve a fixed logical tranche constant (TP_TRANCHE_*) to the actual
+ * LWLock tranche ID to use at runtime.
+ *
+ * PG17/18: the fixed IDs are used directly (and named at startup via
+ * LWLockRegisterTranche), so this is a compile-time identity.
+ *
+ * PG19+: LWLockRegisterTranche() was removed; a tranche name can only be
+ * assigned when the ID is allocated via LWLockNewTrancheId().  We
+ * allocate one contiguous, name-registered block of TP_TRANCHE_COUNT IDs
+ * exactly once at shared-memory startup and map each fixed constant onto
+ * it.  See tp_registry_shmem_startup() and tp_tranche_id().
+ */
+#if PG_VERSION_NUM >= 190000
+extern int tp_tranche_id(int fixed_tranche_id);
+#else
+#define tp_tranche_id(fixed_tranche_id) (fixed_tranche_id)
+#endif
+
+/*
  * Global GUC variables declared in mod.c
  * Note: tp_relopt_kind is declared in index.c as it requires
  * access/reloptions.h
@@ -201,3 +230,7 @@ extern int	  tp_memtable_pages_threshold;
 extern int	  tp_segments_per_level;
 extern bool	  tp_filtered_seed;
 extern double tp_filtered_seed_margin;
+extern bool	  tp_compress_segments;
+extern bool	  tp_memtable_cache_enabled;
+extern bool	  tp_log_cache_state;
+extern int	  tp_memory_limit_kb;

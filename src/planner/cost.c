@@ -7,6 +7,7 @@
 #include <postgres.h>
 
 #include <access/genam.h>
+#include <limits.h>
 #include <math.h>
 #include <nodes/pathnodes.h>
 #include <optimizer/optimizer.h>
