@@ -104,9 +104,12 @@ INSERT INTO vb_reuse (content)
 SELECT 'beta keyword document ' || i
 FROM generate_series(1, 50) i;
 
--- alpha should return nothing
-SELECT count(*) FROM (
-    SELECT id FROM vb_reuse
+-- No alpha content may resurface, whether or not CTIDs were reused.
+-- Counting returned rows instead would be horizon-dependent, since
+-- ORDER BY ... LIMIT does not filter.
+SELECT count(*) FILTER (WHERE content LIKE 'alpha%') AS stale_alpha_rows
+FROM (
+    SELECT id, content FROM vb_reuse
     ORDER BY content <@> to_bm25query('alpha', 'vb_reuse_idx')
     LIMIT 1000
 ) q;

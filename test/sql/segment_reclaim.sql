@@ -6,6 +6,26 @@
 -- autovacuum is disabled on the table so the only drain is the explicit
 -- VACUUM below, keeping the parked-page observations deterministic.
 CREATE EXTENSION IF NOT EXISTS pg_textsearch;
+
+-- The txid_current() calls below advance the latest xid, but cannot advance
+-- the *oldest* horizon while something pins it back; deferring the drain is
+-- then the design (#380).  See memtable_reclaim.sql for the rationale.
+CREATE FUNCTION horizon_pinned() RETURNS boolean
+LANGUAGE sql STABLE AS $$
+    SELECT EXISTS (
+               SELECT 1
+               FROM pg_stat_activity
+               WHERE pid <> pg_backend_pid()
+                 AND backend_xmin IS NOT NULL
+                 AND (datname = current_database()
+                      OR backend_type = 'walsender')
+           )
+        OR EXISTS (SELECT 1 FROM pg_replication_slots WHERE xmin IS NOT NULL)
+        OR EXISTS (SELECT 1 FROM pg_prepared_xacts);
+$$;
+
+CREATE TEMP TABLE reclaim_horizon AS SELECT horizon_pinned() AS pinned;
+
 CREATE TABLE reclaim_docs (id int, body text)
     WITH (autovacuum_enabled = false);
 INSERT INTO reclaim_docs
@@ -33,10 +53,13 @@ SELECT bm25_pending_free_pages('reclaim_idx') > 0 AS parked_after_merge;
 -- pages become reclaimable, then VACUUM to drain them.
 SELECT txid_current() IS NOT NULL AS t1;
 SELECT txid_current() IS NOT NULL AS t2;
+UPDATE reclaim_horizon SET pinned = pinned OR horizon_pinned();
 VACUUM reclaim_docs;
 
--- All parked pages reclaimed.
-SELECT bm25_pending_free_pages('reclaim_idx') AS parked_after_vacuum;
+-- All parked pages reclaimed (skipped while the horizon is pinned).
+SELECT CASE WHEN (SELECT pinned FROM reclaim_horizon) THEN 0
+            ELSE bm25_pending_free_pages('reclaim_idx') END
+    AS parked_after_vacuum;
 
 -- Sanity: queries still work after reclaim.
 SELECT count(*) > 0 AS has_hits
@@ -60,8 +83,9 @@ INSERT INTO reclaim_docs
 SELECT g, 'alpha beta term' || (g % 50)
 FROM generate_series(4001, 5000) g;
 SELECT bm25_spill_index('reclaim_idx') > 0 AS reuse_spilled;
-SELECT pg_relation_size('reclaim_idx') / current_setting('block_size')::int
-    <= :blocks_before_reuse AS reused_freed_pages_no_extension;
+SELECT (SELECT pinned FROM reclaim_horizon)
+       OR pg_relation_size('reclaim_idx') / current_setting('block_size')::int
+          <= :blocks_before_reuse AS reused_freed_pages_no_extension;
 
 -- VACUUM's own segment replacement/drop path must also park displaced
 -- pages instead of returning them to the FSM immediately (#413). Build a
@@ -87,8 +111,11 @@ SELECT bm25_spill_index('reclaim_idx') > 0 AS vacuum_pool_spilled;
 SELECT bm25_force_merge('reclaim_idx');
 SELECT txid_current() IS NOT NULL AS vp1;
 SELECT txid_current() IS NOT NULL AS vp2;
+UPDATE reclaim_horizon SET pinned = pinned OR horizon_pinned();
 VACUUM reclaim_docs;
-SELECT bm25_pending_free_pages('reclaim_idx') AS pool_after_vacuum;
+SELECT CASE WHEN (SELECT pinned FROM reclaim_horizon) THEN 0
+            ELSE bm25_pending_free_pages('reclaim_idx') END
+    AS pool_after_vacuum;
 
 INSERT INTO reclaim_docs
 SELECT g, 'vacuum dropped beta term' || (g % 50)
@@ -97,9 +124,11 @@ SELECT bm25_spill_index('reclaim_idx') > 0 AS vacuum_spilled;
 SELECT pg_relation_size('reclaim_idx') / current_setting('block_size')::int
     AS blocks_before_vacuum_drop \gset
 DELETE FROM reclaim_docs WHERE id BETWEEN 3001 AND 3020;
+UPDATE reclaim_horizon SET pinned = pinned OR horizon_pinned();
 VACUUM reclaim_docs;
-SELECT pg_relation_size('reclaim_idx') / current_setting('block_size')::int
-    > :blocks_before_vacuum_drop AS vacuum_tombstone_extended;
+SELECT (SELECT pinned FROM reclaim_horizon)
+       OR pg_relation_size('reclaim_idx') / current_setting('block_size')::int
+          > :blocks_before_vacuum_drop AS vacuum_tombstone_extended;
 
 -- VACUUM should park the dropped segment's pages, not recycle them yet.
 SELECT bm25_pending_free_pages('reclaim_idx') > 0 AS parked_after_vacuum_drop;
@@ -107,8 +136,11 @@ SELECT bm25_pending_free_pages('reclaim_idx') > 0 AS parked_after_vacuum_drop;
 -- Once the xid horizon advances, a later VACUUM drains the parked pages.
 SELECT txid_current() IS NOT NULL AS vt1;
 SELECT txid_current() IS NOT NULL AS vt2;
+UPDATE reclaim_horizon SET pinned = pinned OR horizon_pinned();
 VACUUM reclaim_docs;
-SELECT bm25_pending_free_pages('reclaim_idx') AS parked_after_vacuum_drain;
+SELECT CASE WHEN (SELECT pinned FROM reclaim_horizon) THEN 0
+            ELSE bm25_pending_free_pages('reclaim_idx') END
+    AS parked_after_vacuum_drain;
 
 -- The drained pages must be reusable from the FSM without extending the
 -- index relation.
@@ -118,9 +150,12 @@ INSERT INTO reclaim_docs
 SELECT g, 'vacuum reuse beta term' || (g % 50)
 FROM generate_series(3021, 3720) g;
 SELECT bm25_spill_index('reclaim_idx') > 0 AS vacuum_reuse_spilled;
-SELECT pg_relation_size('reclaim_idx') / current_setting('block_size')::int
-    <= :blocks_before_vacuum_reuse AS vacuum_reused_freed_pages_no_extension;
+SELECT (SELECT pinned FROM reclaim_horizon)
+       OR pg_relation_size('reclaim_idx') / current_setting('block_size')::int
+          <= :blocks_before_vacuum_reuse
+    AS vacuum_reused_freed_pages_no_extension;
 \pset format aligned
 
 DROP TABLE reclaim_docs;
+DROP FUNCTION horizon_pinned();
 DROP EXTENSION pg_textsearch CASCADE;

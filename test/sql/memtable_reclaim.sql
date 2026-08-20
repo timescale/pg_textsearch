@@ -6,18 +6,29 @@
 
 CREATE EXTENSION IF NOT EXISTS pg_textsearch;
 
--- True when another same-database client backend holds an xmin, which
--- pins the reclaim horizon back and can defer FSM reclaim.
-CREATE FUNCTION other_backend_holds_xmin() RETURNS boolean
+-- True when the cluster's reclaim horizon may be pinned, which defers FSM
+-- reclaim.  GetOldestNonRemovableTransactionId() is held back by anything
+-- ComputeXidHorizons() folds into data_oldest_nonremovable (procarray.c):
+-- an xmin-holding backend in our database, a backend flagged
+-- PROC_AFFECTS_ALL_HORIZONS, a replication slot xmin, or a prepared xact.
+-- A standby with hot_standby_feedback = on publishes its xmin through the
+-- slot, not pg_stat_activity, so checking only client backends misses it.
+-- While pinned, deleted tuples stay HEAPTUPLE_RECENTLY_DEAD: VACUUM must
+-- retain them, and index builds must still index them to preserve MVCC.
+-- Counts taken after a DELETE are then meaningless, so dependent
+-- assertions are skipped rather than relaxed.
+CREATE FUNCTION horizon_pinned() RETURNS boolean
 LANGUAGE sql STABLE AS $$
     SELECT EXISTS (
-        SELECT 1
-        FROM pg_stat_activity
-        WHERE pid <> pg_backend_pid()
-          AND datname = current_database()
-          AND backend_type = 'client backend'
-          AND backend_xmin IS NOT NULL
-    );
+               SELECT 1
+               FROM pg_stat_activity
+               WHERE pid <> pg_backend_pid()
+                 AND backend_xmin IS NOT NULL
+                 AND (datname = current_database()
+                      OR backend_type = 'walsender')
+           )
+        OR EXISTS (SELECT 1 FROM pg_replication_slots WHERE xmin IS NOT NULL)
+        OR EXISTS (SELECT 1 FROM pg_prepared_xacts);
 $$;
 
 CREATE TABLE memtable_reclaim_t (id serial PRIMARY KEY, body text);
@@ -58,22 +69,22 @@ SELECT pg_relation_size('memtable_reclaim_idx'::regclass, 'main')::bigint
        AS sz_after_spill;
 
 CREATE TEMP TABLE reclaim_blocker_state (
-    blocked_by_other_backend bool
+    pinned bool
 );
 
-INSERT INTO reclaim_blocker_state (blocked_by_other_backend)
+INSERT INTO reclaim_blocker_state (pinned)
 SELECT false;
 
 -- Horizon: spill xact is committed (autocommit per statement).
 UPDATE reclaim_blocker_state
-SET blocked_by_other_backend = blocked_by_other_backend
-    OR other_backend_holds_xmin();
+SET pinned = pinned
+    OR horizon_pinned();
 VACUUM ANALYZE memtable_reclaim_t;
 
 -- Idempotent second pass (RecordFreeIndexPage on same blocks is safe).
 UPDATE reclaim_blocker_state
-SET blocked_by_other_backend = blocked_by_other_backend
-    OR other_backend_holds_xmin();
+SET pinned = pinned
+    OR horizon_pinned();
 VACUUM ANALYZE memtable_reclaim_t;
 
 SELECT count(*) >= 1 AS search_after_vacuum FROM (
@@ -97,7 +108,7 @@ FROM bm25_memtable_chain('memtable_reclaim_idx');
 -- is legitimately deferred, so skip the check rather than relax it.
 SELECT
     CASE
-        WHEN (SELECT blocked_by_other_backend FROM reclaim_blocker_state)
+        WHEN (SELECT pinned FROM reclaim_blocker_state)
             THEN true
         ELSE (pg_relation_size('memtable_reclaim_idx'::regclass, 'main')
               - (SELECT sz_after_spill FROM reclaim_sizes)) = 0
@@ -121,10 +132,10 @@ SELECT pg_relation_size('memtable_reclaim_idx'::regclass, 'main')::bigint,
        5;
 
 CREATE TEMP TABLE multi_cycle_blocker_state (
-    blocked_by_other_backend bool
+    pinned bool
 );
 
-INSERT INTO multi_cycle_blocker_state (blocked_by_other_backend)
+INSERT INTO multi_cycle_blocker_state (pinned)
 SELECT false;
 
 -- Cycle 1
@@ -136,8 +147,8 @@ UPDATE multi_cycle_bounds SET max_live_pages = GREATEST(
     (SELECT count(*)::int FROM bm25_memtable_chain('memtable_reclaim_idx')));
 SELECT bm25_spill_index('memtable_reclaim_idx') IS NOT NULL AS mc_spill_1;
 UPDATE multi_cycle_blocker_state
-SET blocked_by_other_backend = blocked_by_other_backend
-    OR other_backend_holds_xmin();
+SET pinned = pinned
+    OR horizon_pinned();
 VACUUM ANALYZE memtable_reclaim_t;
 
 -- Cycle 2
@@ -149,8 +160,8 @@ UPDATE multi_cycle_bounds SET max_live_pages = GREATEST(
     (SELECT count(*)::int FROM bm25_memtable_chain('memtable_reclaim_idx')));
 SELECT bm25_spill_index('memtable_reclaim_idx') IS NOT NULL AS mc_spill_2;
 UPDATE multi_cycle_blocker_state
-SET blocked_by_other_backend = blocked_by_other_backend
-    OR other_backend_holds_xmin();
+SET pinned = pinned
+    OR horizon_pinned();
 VACUUM ANALYZE memtable_reclaim_t;
 
 -- Cycle 3
@@ -162,8 +173,8 @@ UPDATE multi_cycle_bounds SET max_live_pages = GREATEST(
     (SELECT count(*)::int FROM bm25_memtable_chain('memtable_reclaim_idx')));
 SELECT bm25_spill_index('memtable_reclaim_idx') IS NOT NULL AS mc_spill_3;
 UPDATE multi_cycle_blocker_state
-SET blocked_by_other_backend = blocked_by_other_backend
-    OR other_backend_holds_xmin();
+SET pinned = pinned
+    OR horizon_pinned();
 VACUUM ANALYZE memtable_reclaim_t;
 
 -- Cycle 4
@@ -175,8 +186,8 @@ UPDATE multi_cycle_bounds SET max_live_pages = GREATEST(
     (SELECT count(*)::int FROM bm25_memtable_chain('memtable_reclaim_idx')));
 SELECT bm25_spill_index('memtable_reclaim_idx') IS NOT NULL AS mc_spill_4;
 UPDATE multi_cycle_blocker_state
-SET blocked_by_other_backend = blocked_by_other_backend
-    OR other_backend_holds_xmin();
+SET pinned = pinned
+    OR horizon_pinned();
 VACUUM ANALYZE memtable_reclaim_t;
 
 -- Cycle 5
@@ -188,8 +199,8 @@ UPDATE multi_cycle_bounds SET max_live_pages = GREATEST(
     (SELECT count(*)::int FROM bm25_memtable_chain('memtable_reclaim_idx')));
 SELECT bm25_spill_index('memtable_reclaim_idx') IS NOT NULL AS mc_spill_5;
 UPDATE multi_cycle_blocker_state
-SET blocked_by_other_backend = blocked_by_other_backend
-    OR other_backend_holds_xmin();
+SET pinned = pinned
+    OR horizon_pinned();
 VACUUM ANALYZE memtable_reclaim_t;
 
 SELECT max_live_pages > 1 AS multi_cycle_chain_multi_page
@@ -200,7 +211,7 @@ FROM multi_cycle_bounds;
 -- horizon.
 SELECT
     CASE
-        WHEN (SELECT blocked_by_other_backend FROM multi_cycle_blocker_state)
+        WHEN (SELECT pinned FROM multi_cycle_blocker_state)
             THEN true
         ELSE (pg_relation_size('memtable_reclaim_idx'::regclass, 'main')
               - (SELECT sz_start FROM multi_cycle_bounds))
@@ -209,6 +220,6 @@ SELECT
     END
     AS multi_cycle_growth_valid;
 
-DROP FUNCTION other_backend_holds_xmin();
+DROP FUNCTION horizon_pinned();
 DROP TABLE memtable_reclaim_t;
 DROP EXTENSION pg_textsearch CASCADE;
