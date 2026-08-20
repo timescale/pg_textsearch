@@ -202,8 +202,13 @@ EOF
     pg_ctl start -D "${PRIMARY_DIR}" \
         -l "${PRIMARY_DIR}/postgres.log" -w
     createdb -p "${PRIMARY_PORT}" "${TEST_DB}"
-    psql -p "${PRIMARY_PORT}" -d "${TEST_DB}" \
-        -c "CREATE EXTENSION pg_textsearch;" >/dev/null
+    # Set SETUP_CREATE_EXTENSION=0 when the caller needs a bare
+    # database -- pinned_horizon.sh hands it to pg_regress, whose
+    # tests create and drop the extension themselves.
+    if [ "${SETUP_CREATE_EXTENSION:-1}" = "1" ]; then
+        psql -p "${PRIMARY_PORT}" -d "${TEST_DB}" \
+            -c "CREATE EXTENSION pg_textsearch;" >/dev/null
+    fi
 }
 
 # Standby is built from primary via pg_basebackup. Caller must

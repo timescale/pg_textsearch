@@ -202,7 +202,16 @@ test-reindex:
 	@echo "Running multi-backend reindex regression tests (issue #390)..."
 	@cd test/scripts && ./multi_backend_reindex.sh
 
-test-shell: test-concurrency test-recovery test-segment test-cic test-multi-index test-reindex
+test-pinned-horizon:
+	@echo "Running pinned-horizon regression tests..."
+	@cd test/scripts && ./pinned_horizon.sh
+
+# Print the REGRESS list so shell tests can drive pg_regress without
+# duplicating it.
+print-regress:
+	@echo $(REGRESS)
+
+test-shell: test-concurrency test-recovery test-segment test-cic test-multi-index test-reindex test-pinned-horizon
 	@echo "All shell-based tests completed"
 
 test-all: test test-shell
@@ -377,4 +386,4 @@ help:
 	@echo "  make test-all"
 	@echo "  make format"
 
-.PHONY: test clean-test-dirs installcheck test-concurrency test-recovery test-segment test-stress test-cic test-chinese test-replication test-replication-extended test-logical-replication test-multi-index test-reindex test-shell test-all expected lint-format format format-check format-diff format-single coverage coverage-build coverage-clean coverage-report help
+.PHONY: test clean-test-dirs installcheck test-concurrency test-recovery test-segment test-stress test-cic test-chinese test-replication test-replication-extended test-logical-replication test-multi-index test-reindex test-pinned-horizon print-regress test-shell test-all expected lint-format format format-check format-diff format-single coverage coverage-build coverage-clean coverage-report help

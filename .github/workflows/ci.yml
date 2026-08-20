@@ -208,6 +208,17 @@ jobs:
           echo "✗ WAL audit tests failed"
           exit 1
         fi
+        # Reruns the SQL suite against a primary whose reclaim horizon is
+        # pinned by a hot-standby-feedback standby. Catches assertions on
+        # counts taken after DELETE/VACUUM/REINDEX that a single-node
+        # installcheck cannot, since it never pins the horizon.
+        echo "Running pinned-horizon regression tests..."
+        if (cd test/scripts && ./pinned_horizon.sh); then
+          echo "✓ Pinned-horizon tests passed"
+        else
+          echo "✗ Pinned-horizon tests failed"
+          exit 1
+        fi
 
         # hypertable.sh needs a PostgreSQL instance with TimescaleDB preloaded
         echo "Running hypertable tests..."
