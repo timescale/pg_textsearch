@@ -22,6 +22,9 @@ LANGUAGE sql STABLE AS $$
         OR EXISTS (SELECT 1 FROM pg_replication_slots WHERE xmin IS NOT NULL)
         OR EXISTS (SELECT 1 FROM pg_prepared_xacts);
 $$;
+-- Deferred reclaim is horizon-defined, so it cannot be asserted without
+-- reference to the horizon.  Latch the pin before each operation and
+-- sample it again inline in the assertion; see memtable_reclaim.sql.
 CREATE TEMP TABLE reclaim_horizon AS SELECT horizon_pinned() AS pinned;
 CREATE TABLE reclaim_docs (id int, body text)
     WITH (autovacuum_enabled = false);
@@ -77,7 +80,8 @@ SELECT txid_current() IS NOT NULL AS t2;
 UPDATE reclaim_horizon SET pinned = pinned OR horizon_pinned();
 VACUUM reclaim_docs;
 -- All parked pages reclaimed (skipped while the horizon is pinned).
-SELECT CASE WHEN (SELECT pinned FROM reclaim_horizon) THEN 0
+SELECT CASE WHEN (SELECT pinned FROM reclaim_horizon)
+                 OR horizon_pinned() THEN 0
             ELSE bm25_pending_free_pages('reclaim_idx') END
     AS parked_after_vacuum;
  parked_after_vacuum 
@@ -116,7 +120,7 @@ SELECT bm25_spill_index('reclaim_idx') > 0 AS reuse_spilled;
  t
 (1 row)
 
-SELECT (SELECT pinned FROM reclaim_horizon)
+SELECT (SELECT pinned FROM reclaim_horizon) OR horizon_pinned()
        OR pg_relation_size('reclaim_idx') / current_setting('block_size')::int
           <= :blocks_before_reuse AS reused_freed_pages_no_extension;
  reused_freed_pages_no_extension 
@@ -165,7 +169,8 @@ t
 (1 row)
 UPDATE reclaim_horizon SET pinned = pinned OR horizon_pinned();
 VACUUM reclaim_docs;
-SELECT CASE WHEN (SELECT pinned FROM reclaim_horizon) THEN 0
+SELECT CASE WHEN (SELECT pinned FROM reclaim_horizon)
+                 OR horizon_pinned() THEN 0
             ELSE bm25_pending_free_pages('reclaim_idx') END
     AS pool_after_vacuum;
 pool_after_vacuum
@@ -183,7 +188,7 @@ SELECT pg_relation_size('reclaim_idx') / current_setting('block_size')::int
 DELETE FROM reclaim_docs WHERE id BETWEEN 3001 AND 3020;
 UPDATE reclaim_horizon SET pinned = pinned OR horizon_pinned();
 VACUUM reclaim_docs;
-SELECT (SELECT pinned FROM reclaim_horizon)
+SELECT (SELECT pinned FROM reclaim_horizon) OR horizon_pinned()
        OR pg_relation_size('reclaim_idx') / current_setting('block_size')::int
           > :blocks_before_vacuum_drop AS vacuum_tombstone_extended;
 vacuum_tombstone_extended
@@ -205,7 +210,8 @@ t
 (1 row)
 UPDATE reclaim_horizon SET pinned = pinned OR horizon_pinned();
 VACUUM reclaim_docs;
-SELECT CASE WHEN (SELECT pinned FROM reclaim_horizon) THEN 0
+SELECT CASE WHEN (SELECT pinned FROM reclaim_horizon)
+                 OR horizon_pinned() THEN 0
             ELSE bm25_pending_free_pages('reclaim_idx') END
     AS parked_after_vacuum_drain;
 parked_after_vacuum_drain
@@ -222,7 +228,7 @@ SELECT bm25_spill_index('reclaim_idx') > 0 AS vacuum_reuse_spilled;
 vacuum_reuse_spilled
 t
 (1 row)
-SELECT (SELECT pinned FROM reclaim_horizon)
+SELECT (SELECT pinned FROM reclaim_horizon) OR horizon_pinned()
        OR pg_relation_size('reclaim_idx') / current_setting('block_size')::int
           <= :blocks_before_vacuum_reuse
     AS vacuum_reused_freed_pages_no_extension;

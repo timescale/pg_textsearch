@@ -15,6 +15,12 @@ CREATE EXTENSION IF NOT EXISTS pg_textsearch;
 -- retain them, and index builds must still index them to preserve MVCC.
 -- Counts taken after a DELETE are then meaningless, so dependent
 -- assertions are skipped rather than relaxed.
+--
+-- FSM reclaim is horizon-defined, so there is no horizon-independent way
+-- to assert it (contrast catalog_stats.sql, which compares against a core
+-- btree instead).  The pin is sampled both before the operation, into a
+-- latch, and again inline in the assertion, so a pin appearing or
+-- clearing mid-window is still caught.
 CREATE FUNCTION horizon_pinned() RETURNS boolean
 LANGUAGE sql STABLE AS $$
     SELECT EXISTS (
@@ -130,7 +136,7 @@ FROM bm25_memtable_chain('memtable_reclaim_idx');
 -- is legitimately deferred, so skip the check rather than relax it.
 SELECT
     CASE
-        WHEN (SELECT pinned FROM reclaim_blocker_state)
+        WHEN (SELECT pinned FROM reclaim_blocker_state) OR horizon_pinned()
             THEN true
         ELSE (pg_relation_size('memtable_reclaim_idx'::regclass, 'main')
               - (SELECT sz_after_spill FROM reclaim_sizes)) = 0
@@ -257,7 +263,7 @@ FROM multi_cycle_bounds;
 -- horizon.
 SELECT
     CASE
-        WHEN (SELECT pinned FROM multi_cycle_blocker_state)
+        WHEN (SELECT pinned FROM multi_cycle_blocker_state) OR horizon_pinned()
             THEN true
         ELSE (pg_relation_size('memtable_reclaim_idx'::regclass, 'main')
               - (SELECT sz_start FROM multi_cycle_bounds))

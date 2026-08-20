@@ -3,22 +3,6 @@
 
 CREATE EXTENSION IF NOT EXISTS pg_textsearch;
 
--- True when the reclaim horizon may be pinned, leaving deleted tuples
--- HEAPTUPLE_RECENTLY_DEAD; see memtable_reclaim.sql for the rationale.
-CREATE FUNCTION horizon_pinned() RETURNS boolean
-LANGUAGE sql STABLE AS $$
-    SELECT EXISTS (
-               SELECT 1
-               FROM pg_stat_activity
-               WHERE pid <> pg_backend_pid()
-                 AND backend_xmin IS NOT NULL
-                 AND (datname = current_database()
-                      OR backend_type = 'walsender')
-           )
-        OR EXISTS (SELECT 1 FROM pg_replication_slots WHERE xmin IS NOT NULL)
-        OR EXISTS (SELECT 1 FROM pg_prepared_xacts);
-$$;
-
 -- ============================================================
 -- heap_tuples vs index_tuples for partial indexes
 --
@@ -177,39 +161,42 @@ FROM generate_series(1, 100) i;
 CREATE INDEX stats_vacuum_idx ON stats_vacuum
     USING bm25 (content) WITH (text_config='english');
 
--- Latch: the horizon may unpin partway through the window below.
-CREATE TEMP TABLE stats_vacuum_horizon AS SELECT horizon_pinned() AS pinned;
+-- A core btree over the same rows acts as the oracle.  One VACUUM
+-- processes every index on the table under a single reclaim horizon, so
+-- bm25's reltuples must equal btree's exactly.  The absolute counts move
+-- when the horizon is pinned -- deleted tuples stay RECENTLY_DEAD and
+-- must remain indexed -- but this equality does not.
+CREATE INDEX stats_vacuum_btree ON stats_vacuum (content);
 
 -- Delete half the rows and vacuum
 DELETE FROM stats_vacuum WHERE id > 50;
-UPDATE stats_vacuum_horizon SET pinned = pinned OR horizon_pinned();
 VACUUM stats_vacuum;
 
--- Index reltuples should reflect roughly 50 after vacuum.
-SELECT (SELECT pinned FROM stats_vacuum_horizon)
-       OR reltuples BETWEEN 40 AND 60 AS index_tuples_after_vacuum
-FROM pg_class WHERE oid = 'stats_vacuum_idx'::regclass;
+SELECT bm25.reltuples = btree.reltuples AS index_tuples_after_vacuum
+FROM pg_class bm25, pg_class btree
+WHERE bm25.oid = 'stats_vacuum_idx'::regclass
+  AND btree.oid = 'stats_vacuum_btree'::regclass;
 
 -- Second delete + vacuum; reltuples must continue tracking the
 -- live count (regression test: reporting metap->total_docs - only
 -- this-round deaths would leave reltuples stuck at the first
 -- round's value).
 DELETE FROM stats_vacuum WHERE id > 25;
-UPDATE stats_vacuum_horizon SET pinned = pinned OR horizon_pinned();
 VACUUM stats_vacuum;
 
-SELECT (SELECT pinned FROM stats_vacuum_horizon)
-       OR reltuples BETWEEN 15 AND 35 AS index_tuples_after_second_vacuum
-FROM pg_class WHERE oid = 'stats_vacuum_idx'::regclass;
+SELECT bm25.reltuples = btree.reltuples AS index_tuples_after_second_vacuum
+FROM pg_class bm25, pg_class btree
+WHERE bm25.oid = 'stats_vacuum_idx'::regclass
+  AND btree.oid = 'stats_vacuum_btree'::regclass;
 
 -- No-deletes maintenance round; reltuples must stay at the live
 -- count, not reset to the cumulative insert count.
-UPDATE stats_vacuum_horizon SET pinned = pinned OR horizon_pinned();
 VACUUM stats_vacuum;
 
-SELECT (SELECT pinned FROM stats_vacuum_horizon)
-       OR reltuples BETWEEN 15 AND 35 AS index_tuples_after_noop_vacuum
-FROM pg_class WHERE oid = 'stats_vacuum_idx'::regclass;
+SELECT bm25.reltuples = btree.reltuples AS index_tuples_after_noop_vacuum
+FROM pg_class bm25, pg_class btree
+WHERE bm25.oid = 'stats_vacuum_idx'::regclass
+  AND btree.oid = 'stats_vacuum_btree'::regclass;
 
 DROP TABLE stats_vacuum CASCADE;
 
@@ -232,17 +219,18 @@ CREATE INDEX stats_reindex_idx ON stats_reindex
     USING bm25 (content) WITH (text_config='english')
     WHERE category = 'tech';
 
--- Latch across the delete/REINDEX window.
-CREATE TEMP TABLE stats_reindex_horizon AS SELECT horizon_pinned() AS pinned;
+-- Same oracle, with an identical predicate.  REINDEX TABLE rebuilds
+-- both in one command.
+CREATE INDEX stats_reindex_btree ON stats_reindex (content)
+    WHERE category = 'tech';
 
 -- Delete some matching rows
 DELETE FROM stats_reindex WHERE category = 'tech' AND id > 20;
-UPDATE stats_reindex_horizon SET pinned = pinned OR horizon_pinned();
 
 -- The build NOTICE reports the document count, which varies with the
 -- horizon.  Silence it; the count is asserted below instead.
 SET client_min_messages = warning;
-REINDEX INDEX stats_reindex_idx;
+REINDEX TABLE stats_reindex;
 RESET client_min_messages;
 
 -- heap reltuples should still be ~90; core excludes recently-dead here,
@@ -250,17 +238,11 @@ RESET client_min_messages;
 SELECT reltuples >= 80 AS heap_tuples_ok
 FROM pg_class WHERE oid = 'stats_reindex'::regclass;
 
--- index reltuples should reflect ~20 remaining tech rows.
-SELECT (SELECT pinned FROM stats_reindex_horizon)
-       OR reltuples BETWEEN 15 AND 25 AS index_tuples_ok
-FROM pg_class WHERE oid = 'stats_reindex_idx'::regclass;
+SELECT bm25.reltuples = btree.reltuples AS index_tuples_ok
+FROM pg_class bm25, pg_class btree
+WHERE bm25.oid = 'stats_reindex_idx'::regclass
+  AND btree.oid = 'stats_reindex_btree'::regclass;
 
 DROP TABLE stats_reindex CASCADE;
-
--- ============================================================
--- Cleanup
--- ============================================================
-
-DROP FUNCTION horizon_pinned();
 
 DROP EXTENSION pg_textsearch CASCADE;
