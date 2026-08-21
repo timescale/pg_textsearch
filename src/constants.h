@@ -196,6 +196,8 @@
  * access/reloptions.h
  */
 extern bool	  tp_log_scores;
+extern bool	  tp_defrag_on_merge;
+extern bool	  tp_debug_randomize_pages;
 extern int	  tp_bulk_load_threshold;
 extern int	  tp_memtable_pages_threshold;
 extern int	  tp_segments_per_level;

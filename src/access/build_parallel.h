@@ -32,7 +32,7 @@
  * Without worker-side compaction, this is bounded by
  * (table_size / maintenance_work_mem_per_worker).
  */
-#define TP_MAX_WORKER_SEGMENTS 64
+#define TP_MAX_WORKER_SEGMENTS 1024
 
 /*
  * Shared memory keys for parallel build TOC

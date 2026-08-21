@@ -56,24 +56,48 @@ merge_sink_init_pages(TpMergeSink *sink, Relation index)
 	sink->current_offset = sink->writer.current_offset;
 }
 
+void
+merge_sink_init_buffile(TpMergeSink *sink, BufFile *file)
+{
+	int	  fileno;
+	off_t offset;
+
+	memset(sink, 0, sizeof(TpMergeSink));
+	sink->use_buffile = true;
+	sink->buffile	  = file;
+
+	BufFileTell(file, &fileno, &offset);
+	sink->buffile_base	 = tp_buffile_composite_offset(fileno, offset);
+	sink->current_offset = 0;
+}
+
 /*
  * Sequential append to sink.
  */
 static void
 merge_sink_write(TpMergeSink *sink, const void *data, Size size)
 {
-	tp_segment_writer_write(&sink->writer, data, size);
-	sink->current_offset = sink->writer.current_offset;
+	if (sink->use_buffile)
+	{
+		BufFileWrite(sink->buffile, (void *)data, size);
+		sink->current_offset += size;
+	}
+	else
+	{
+		tp_segment_writer_write(&sink->writer, data, size);
+		sink->current_offset = sink->writer.current_offset;
+	}
 }
 
 /*
  * Positioned write for backpatching (dict entries, header).
  *
- * Each per-page chunk is logged as a small GenericXLog delta against the
- * page that the writer flush already wrote.  This keeps backpatch WAL
- * traffic proportional to the number of bytes actually changed (a few
- * dict entries or the segment header struct), rather than emitting a
- * full-page image for every visited page.
+ * Pages mode: each per-page chunk is logged as a small
+ * GenericXLog delta against the page that the writer flush
+ * already wrote.
+ *
+ * BufFile mode: seek to the target offset, write, then
+ * restore the file position for the next sequential append.
  */
 static void
 merge_sink_write_at(
@@ -82,6 +106,22 @@ merge_sink_write_at(
 	const char *src		  = (const char *)data;
 	uint32		remaining = size;
 	uint64		pos		  = offset;
+
+	if (sink->use_buffile)
+	{
+		int	  save_fileno;
+		off_t save_offset;
+		int	  tgt_fileno;
+		off_t tgt_offset;
+
+		BufFileTell(sink->buffile, &save_fileno, &save_offset);
+		tp_buffile_decompose_offset(
+				sink->buffile_base + offset, &tgt_fileno, &tgt_offset);
+		BufFileSeek(sink->buffile, tgt_fileno, tgt_offset, SEEK_SET);
+		BufFileWrite(sink->buffile, (void *)data, size);
+		BufFileSeek(sink->buffile, save_fileno, save_offset, SEEK_SET);
+		return;
+	}
 
 	while (remaining > 0)
 	{
@@ -1375,8 +1415,19 @@ write_merged_segment_to_sink(
 	/* Finalize data_size */
 	header.data_size = sink->current_offset;
 
-	/* Flush writer and write page index */
+	if (sink->use_buffile)
 	{
+		/*
+		 * BufFile mode: no pages, no page index.  The flat
+		 * stream will be copied to contiguous pages later
+		 * by tp_copy_buffile_to_contiguous_pages().
+		 */
+		header.num_pages  = 0;
+		header.page_index = InvalidBlockNumber;
+	}
+	else
+	{
+		/* Pages mode: flush writer and build page index */
 		BlockNumber page_index_root;
 
 		tp_segment_writer_flush(&sink->writer);
@@ -1388,7 +1439,7 @@ write_merged_segment_to_sink(
 		header.num_pages  = sink->writer.pages_allocated;
 	}
 
-	/* Backpatch dict entries */
+	/* Backpatch dict entries (works for both modes) */
 	{
 		TpDictEntry *dict_entries;
 
@@ -1412,11 +1463,11 @@ write_merged_segment_to_sink(
 		pfree(dict_entries);
 	}
 
-	/* Backpatch header */
+	/* Backpatch header (works for both modes) */
 	merge_sink_write_at(sink, 0, &header, sizeof(TpSegmentHeader));
 
-	/* Finish writer */
-	tp_segment_writer_finish(&sink->writer);
+	if (!sink->use_buffile)
+		tp_segment_writer_finish(&sink->writer);
 
 	/* Cleanup */
 	pfree(string_offsets);
@@ -1436,7 +1487,8 @@ write_merged_segment_to_sink(
  * block, or InvalidBlockNumber on failure.
  */
 BlockNumber
-tp_merge_level_segments(Relation index, uint32 level, uint32 max_merge)
+tp_merge_level_segments(
+		Relation index, uint32 level, uint32 max_merge, bool defragment)
 {
 	TpIndexMetaPage metap;
 	Buffer			metabuf;
@@ -1684,29 +1736,65 @@ tp_merge_level_segments(Relation index, uint32 level, uint32 max_merge)
 		CHECK_FOR_INTERRUPTS();
 	}
 
-	/* Write merged segment using pages sink */
+	/* Write merged segment */
 	if (num_merged_terms > 0)
 	{
 		TpMergeSink sink;
 
-		merge_sink_init_pages(&sink, index);
-		if (sink.writer.pages_allocated == 0)
-			elog(ERROR, "merge: failed to allocate segment pages");
-		new_segment = sink.writer.pages[0];
+		if (defragment)
+		{
+			/*
+			 * Two-phase defragmenting write: merge into a
+			 * temporary BufFile, then copy the flat stream
+			 * into contiguous pages at the end of the
+			 * relation.  Allocated in parent context so the
+			 * BufFile survives merge_ctx deletion.
+			 */
+			BufFile *tmpfile;
 
-		write_merged_segment_to_sink(
-				&sink,
-				merged_terms,
-				num_merged_terms,
-				sources,
-				num_sources,
-				level + 1,
-				total_tokens,
-				false);
+			MemoryContextSwitchTo(old_ctx);
+			tmpfile = BufFileCreateTemp(false);
+			MemoryContextSwitchTo(merge_ctx);
 
-		/* Free writer pages array */
-		if (sink.writer.pages)
-			pfree(sink.writer.pages);
+			merge_sink_init_buffile(&sink, tmpfile);
+
+			write_merged_segment_to_sink(
+					&sink,
+					merged_terms,
+					num_merged_terms,
+					sources,
+					num_sources,
+					level + 1,
+					total_tokens,
+					false);
+
+			BufFileSeek(tmpfile, 0, 0, SEEK_SET);
+			new_segment = tp_copy_buffile_to_contiguous_pages(
+					index, tmpfile, sink.current_offset);
+			BufFileClose(tmpfile);
+		}
+		else
+		{
+			merge_sink_init_pages(&sink, index);
+			if (sink.writer.pages_allocated == 0)
+				elog(ERROR,
+					 "merge: failed to allocate "
+					 "segment pages");
+			new_segment = sink.writer.pages[0];
+
+			write_merged_segment_to_sink(
+					&sink,
+					merged_terms,
+					num_merged_terms,
+					sources,
+					num_sources,
+					level + 1,
+					total_tokens,
+					false);
+
+			if (sink.writer.pages)
+				pfree(sink.writer.pages);
+		}
 
 		/* Free merged terms data */
 		for (i = 0; i < (int)num_merged_terms; i++)
@@ -1955,7 +2043,7 @@ tp_maybe_compact_level(Relation index, uint32 level)
 	while (level_count >= (uint16)tp_segments_per_level)
 	{
 		if (tp_merge_level_segments(
-					index, level, (uint32)tp_segments_per_level) ==
+					index, level, (uint32)tp_segments_per_level, false) ==
 			InvalidBlockNumber)
 			break;
 
@@ -1973,30 +2061,479 @@ tp_maybe_compact_level(Relation index, uint32 level)
 }
 
 /*
- * Force-merge all segments into a single segment, à la Lucene's
- * forceMerge(1).  Merges ALL segments at each level in a single
- * batch, ignoring the segments_per_level threshold.
+ * Force-merge all segments across ALL levels into a single segment.
+ *
+ * Unlike the per-level loop, this collects every segment from every
+ * level and performs a single N-way merge, producing one segment at
+ * the highest occupied level + 1 (capped at TP_MAX_LEVELS - 1).
+ * This is the equivalent of Lucene's forceMerge(1).
+ *
+ * When defragment is true, the merged segment is written to
+ * contiguous pages via the BufFile two-phase path.
  */
 void
-tp_force_merge_all(Relation index)
+tp_force_merge_all(Relation index, bool defragment)
 {
-	for (uint32 level = 0; level < TP_MAX_LEVELS - 1; level++)
+	TpIndexMetaPage metap;
+	Buffer			metabuf;
+	Page			metapage;
+	uint32			total_segments = 0;
+	uint32			highest_level  = 0;
+	uint32			target_level;
+
+	/* Segment header blocks collected from all levels */
+	BlockNumber *all_headers	   = NULL;
+	uint32		 all_headers_count = 0;
+	uint32		 all_headers_cap   = 0;
+
+	/* Per-level segment counts for metapage update */
+	uint32 level_consumed[TP_MAX_LEVELS];
+
+	TpMergeSource *sources			= NULL;
+	int			   num_sources		= 0;
+	TpMergedTerm  *merged_terms		= NULL;
+	uint32		   num_merged_terms = 0;
+	uint32		   merged_capacity	= 0;
+	uint64		   total_tokens		= 0;
+	uint64		   src_num_docs_sum = 0;
+	BlockNumber	   new_segment;
+	MemoryContext  merge_ctx;
+	MemoryContext  old_ctx;
+
+	/* Page reclamation tracking */
+	BlockNumber **segment_pages		   = NULL;
+	uint32		 *segment_page_counts  = NULL;
+	uint32		  num_segments_tracked = 0;
+	uint32		  total_pages_to_free  = 0;
+
+	int i;
+
+	memset(level_consumed, 0, sizeof(level_consumed));
+
+	/* Drain any reclaimable tombstone pages first. */
 	{
-		Buffer			metabuf;
-		Page			metapage;
-		TpIndexMetaPage metap;
-		uint16			count;
-
-		metabuf = ReadBuffer(index, 0);
-		LockBuffer(metabuf, BUFFER_LOCK_SHARE);
-		metapage = BufferGetPage(metabuf);
-		metap	 = (TpIndexMetaPage)PageGetContents(metapage);
-		count	 = metap->level_counts[level];
-		UnlockReleaseBuffer(metabuf);
-
-		if (count < 2)
-			break; /* Nothing to merge at this level or above */
-
-		tp_merge_level_segments(index, level, UINT32_MAX);
+		uint32 drained = tp_tombstone_drain(
+				index, NULL, tp_reclaim_horizon(NULL), false);
+		if (drained > 0)
+			IndexFreeSpaceMapVacuum(index);
 	}
+
+	/*
+	 * Phase 1: collect segment header blocks from every level.
+	 */
+	metabuf = ReadBuffer(index, 0);
+	LockBuffer(metabuf, BUFFER_LOCK_SHARE);
+	metapage = BufferGetPage(metabuf);
+	metap	 = (TpIndexMetaPage)PageGetContents(metapage);
+
+	for (uint32 level = 0; level < TP_MAX_LEVELS; level++)
+	{
+		BlockNumber head  = metap->level_heads[level];
+		uint16		count = metap->level_counts[level];
+
+		if (count == 0 || head == InvalidBlockNumber)
+			continue;
+
+		total_segments += count;
+		if (level > highest_level)
+			highest_level = level;
+	}
+
+	UnlockReleaseBuffer(metabuf);
+
+	if (total_segments < 2)
+		return; /* 0 or 1 segment total — nothing to merge */
+
+	target_level = Min(highest_level + 1, TP_MAX_LEVELS - 1);
+
+	/* Allocate arrays sized for all segments */
+	all_headers_cap = total_segments;
+	all_headers		= palloc(sizeof(BlockNumber) * all_headers_cap);
+
+	segment_pages		= palloc0(sizeof(BlockNumber *) * total_segments);
+	segment_page_counts = palloc0(sizeof(uint32) * total_segments);
+
+	merge_ctx = AllocSetContextCreate(
+			CurrentMemoryContext, "Force Merge All", ALLOCSET_DEFAULT_SIZES);
+	old_ctx = MemoryContextSwitchTo(merge_ctx);
+
+	sources = palloc0(sizeof(TpMergeSource) * total_segments);
+
+	MemoryContextSwitchTo(old_ctx);
+
+	/*
+	 * Re-read metapage and walk each level's chain, collecting
+	 * every segment header block.
+	 */
+	metabuf = ReadBuffer(index, 0);
+	LockBuffer(metabuf, BUFFER_LOCK_SHARE);
+	metapage = BufferGetPage(metabuf);
+	metap	 = (TpIndexMetaPage)PageGetContents(metapage);
+
+	for (uint32 level = 0; level < TP_MAX_LEVELS; level++)
+	{
+		BlockNumber current = metap->level_heads[level];
+		uint16		count	= metap->level_counts[level];
+		uint32		walked	= 0;
+
+		while (current != InvalidBlockNumber && walked < count)
+		{
+			TpSegmentReader *reader;
+			BlockNumber		 next;
+
+			reader = tp_segment_open(index, current);
+			if (!reader)
+				break;
+
+			next = reader->header->next_segment;
+			tp_segment_close(reader);
+
+			all_headers[all_headers_count++] = current;
+			level_consumed[level]++;
+			walked++;
+			current = next;
+		}
+	}
+
+	UnlockReleaseBuffer(metabuf);
+
+	if (all_headers_count < 2)
+	{
+		pfree(all_headers);
+		pfree((void *)segment_pages);
+		pfree(segment_page_counts);
+		MemoryContextDelete(merge_ctx);
+		return;
+	}
+
+	elog(LOG,
+		 "force_merge: merging %u segments from %u levels "
+		 "into L%u",
+		 all_headers_count,
+		 highest_level + 1,
+		 target_level);
+
+	/*
+	 * Phase 2: initialize merge sources and collect pages.
+	 */
+	old_ctx = MemoryContextSwitchTo(merge_ctx);
+
+	for (i = 0; i < (int)all_headers_count; i++)
+	{
+		BlockNumber hdr = all_headers[i];
+		uint64		seg_tokens;
+
+		{
+			TpSegmentReader *r = tp_segment_open(index, hdr);
+
+			if (!r)
+				continue;
+			seg_tokens = r->header->total_tokens;
+			tp_segment_close(r);
+		}
+
+		/* Collect pages in parent context */
+		{
+			MemoryContext save = MemoryContextSwitchTo(old_ctx);
+			uint32		  pc;
+
+			pc = tp_segment_collect_pages(
+					index, hdr, &segment_pages[num_segments_tracked]);
+			segment_page_counts[num_segments_tracked] = pc;
+			total_pages_to_free += pc;
+			num_segments_tracked++;
+			MemoryContextSwitchTo(save);
+		}
+
+		if (merge_source_init(&sources[num_sources], index, hdr))
+		{
+			total_tokens += seg_tokens;
+			src_num_docs_sum += sources[num_sources].reader->header->num_docs;
+			num_sources++;
+		}
+	}
+
+	if (num_sources == 0)
+	{
+		MemoryContextSwitchTo(old_ctx);
+		MemoryContextDelete(merge_ctx);
+		for (i = 0; i < (int)num_segments_tracked; i++)
+			if (segment_pages[i])
+				pfree(segment_pages[i]);
+		pfree((void *)segment_pages);
+		pfree(segment_page_counts);
+		pfree(all_headers);
+		return;
+	}
+
+	/*
+	 * Phase 3: N-way merge of all terms.
+	 */
+	while (true)
+	{
+		int			  min_idx;
+		const char	 *min_term;
+		TpMergedTerm *current_merged;
+
+		min_idx = merge_find_min_source(sources, num_sources);
+		if (min_idx < 0)
+			break;
+
+		min_term = sources[min_idx].current_term;
+
+		if (num_merged_terms >= merged_capacity)
+		{
+			merged_capacity = merged_capacity == 0 ? 1024
+												   : merged_capacity * 2;
+			if (merged_terms == NULL)
+				merged_terms = palloc_extended(
+						merged_capacity * sizeof(TpMergedTerm),
+						MCXT_ALLOC_HUGE);
+			else
+				merged_terms = repalloc_huge(
+						merged_terms, merged_capacity * sizeof(TpMergedTerm));
+		}
+
+		current_merged					 = &merged_terms[num_merged_terms];
+		current_merged->term_len		 = strlen(min_term);
+		current_merged->term			 = pstrdup(min_term);
+		current_merged->segment_refs	 = NULL;
+		current_merged->num_segment_refs = 0;
+		current_merged->segment_refs_capacity = 0;
+		current_merged->posting_offset		  = 0;
+		current_merged->posting_count		  = 0;
+		num_merged_terms++;
+
+		for (i = 0; i < num_sources; i++)
+		{
+			if (sources[i].exhausted)
+				continue;
+			if (strcmp(sources[i].current_term, current_merged->term) == 0)
+			{
+				merged_term_add_segment_ref(
+						current_merged, i, &sources[i].current_entry);
+				merge_source_advance(&sources[i]);
+			}
+		}
+
+		CHECK_FOR_INTERRUPTS();
+	}
+
+	/*
+	 * Phase 4: write merged segment.
+	 */
+	if (num_merged_terms > 0)
+	{
+		TpMergeSink sink;
+
+		if (defragment)
+		{
+			BufFile *tmpfile;
+
+			MemoryContextSwitchTo(old_ctx);
+			tmpfile = BufFileCreateTemp(false);
+			MemoryContextSwitchTo(merge_ctx);
+
+			merge_sink_init_buffile(&sink, tmpfile);
+
+			write_merged_segment_to_sink(
+					&sink,
+					merged_terms,
+					num_merged_terms,
+					sources,
+					num_sources,
+					target_level,
+					total_tokens,
+					false);
+
+			BufFileSeek(tmpfile, 0, 0, SEEK_SET);
+			new_segment = tp_copy_buffile_to_contiguous_pages(
+					index, tmpfile, sink.current_offset);
+			BufFileClose(tmpfile);
+		}
+		else
+		{
+			merge_sink_init_pages(&sink, index);
+			if (sink.writer.pages_allocated == 0)
+				elog(ERROR, "force_merge: failed to allocate pages");
+			new_segment = sink.writer.pages[0];
+
+			write_merged_segment_to_sink(
+					&sink,
+					merged_terms,
+					num_merged_terms,
+					sources,
+					num_sources,
+					target_level,
+					total_tokens,
+					false);
+
+			if (sink.writer.pages)
+				pfree(sink.writer.pages);
+		}
+
+		for (i = 0; i < (int)num_merged_terms; i++)
+		{
+			if (merged_terms[i].term)
+				pfree(merged_terms[i].term);
+			if (merged_terms[i].segment_refs)
+				pfree(merged_terms[i].segment_refs);
+		}
+		pfree(merged_terms);
+	}
+	else
+	{
+		new_segment = InvalidBlockNumber;
+	}
+
+	/* Close all sources */
+	for (i = 0; i < num_sources; i++)
+		merge_source_close(&sources[i]);
+	pfree(sources);
+
+	FlushRelationBuffers(index);
+
+	MemoryContextSwitchTo(old_ctx);
+	MemoryContextDelete(merge_ctx);
+
+	if (new_segment == InvalidBlockNumber)
+	{
+		for (i = 0; i < (int)num_segments_tracked; i++)
+			if (segment_pages[i])
+				pfree(segment_pages[i]);
+		pfree((void *)segment_pages);
+		pfree(segment_page_counts);
+		pfree(all_headers);
+		return;
+	}
+
+	/*
+	 * Phase 5: update metapage — clear all levels, add the
+	 * single merged segment at target_level.
+	 */
+	{
+		uint32 merged_docs	 = 0;
+		uint64 merged_tokens = 0;
+		uint64 docs_shrinkage;
+		uint64 tokens_shrinkage;
+
+		{
+			Buffer			 b = ReadBuffer(index, new_segment);
+			Page			 p;
+			TpSegmentHeader *h;
+
+			LockBuffer(b, BUFFER_LOCK_SHARE);
+			p			  = BufferGetPage(b);
+			h			  = (TpSegmentHeader *)PageGetContents(p);
+			merged_docs	  = h->num_docs;
+			merged_tokens = h->total_tokens;
+			UnlockReleaseBuffer(b);
+		}
+
+		docs_shrinkage	 = (src_num_docs_sum > (uint64)merged_docs)
+								 ? src_num_docs_sum - (uint64)merged_docs
+								 : 0;
+		tokens_shrinkage = (total_tokens > merged_tokens)
+								 ? total_tokens - merged_tokens
+								 : 0;
+
+		{
+			GenericXLogState *xlog_state;
+			Page			  meta_copy;
+			TpIndexMetaPage	  meta_ptr;
+			FullTransactionId merged_fxid = ReadNextFullTransactionId();
+			BlockNumber		  batch_head;
+
+			/* Park displaced pages in tombstone chain */
+			{
+				BlockNumber *flat = palloc(
+						sizeof(BlockNumber) * Max(total_pages_to_free, 1));
+				uint32 n = 0;
+				int	   s;
+
+				for (s = 0; s < (int)num_segments_tracked; s++)
+				{
+					uint32 p;
+					for (p = 0; p < segment_page_counts[s]; p++)
+						flat[n++] = segment_pages[s][p];
+				}
+
+				batch_head = tp_tombstone_enqueue(
+						index,
+						flat,
+						n,
+						merged_fxid,
+						tp_tombstone_read_head(index));
+				pfree(flat);
+			}
+
+			metabuf = ReadBuffer(index, 0);
+			LockBuffer(metabuf, BUFFER_LOCK_EXCLUSIVE);
+
+			xlog_state = GenericXLogStart(index);
+			meta_copy  = GenericXLogRegisterBuffer(xlog_state, metabuf, 0);
+			tp_metapage_upgrade_to_current(index, meta_copy);
+			meta_ptr = (TpIndexMetaPage)PageGetContents(meta_copy);
+
+			/* Clear all levels that contributed segments */
+			for (uint32 lv = 0; lv < TP_MAX_LEVELS; lv++)
+			{
+				if (level_consumed[lv] == 0)
+					continue;
+				Assert(level_consumed[lv] == meta_ptr->level_counts[lv]);
+				meta_ptr->level_heads[lv]  = InvalidBlockNumber;
+				meta_ptr->level_counts[lv] = 0;
+			}
+
+			/* Link to existing chain at target level (if any) */
+			if (meta_ptr->level_heads[target_level] != InvalidBlockNumber)
+			{
+				Buffer			 seg_buf;
+				Page			 seg_page;
+				TpSegmentHeader *seg_hdr;
+
+				seg_buf = ReadBuffer(index, new_segment);
+				LockBuffer(seg_buf, BUFFER_LOCK_EXCLUSIVE);
+				seg_page = GenericXLogRegisterBuffer(xlog_state, seg_buf, 0);
+				((PageHeader)seg_page)->pd_lower = BLCKSZ;
+				seg_hdr = (TpSegmentHeader *)PageGetContents(seg_page);
+				seg_hdr->next_segment = meta_ptr->level_heads[target_level];
+				UnlockReleaseBuffer(seg_buf);
+			}
+
+			meta_ptr->level_heads[target_level]	 = new_segment;
+			meta_ptr->level_counts[target_level] = 1;
+
+			meta_ptr->total_docs = (meta_ptr->total_docs >= docs_shrinkage)
+										 ? meta_ptr->total_docs -
+												   docs_shrinkage
+										 : 0;
+			meta_ptr->total_len	 = (meta_ptr->total_len >= tokens_shrinkage)
+										 ? meta_ptr->total_len -
+												   tokens_shrinkage
+										 : 0;
+
+			if (batch_head != InvalidBlockNumber)
+				meta_ptr->pending_free_head = batch_head;
+
+			GenericXLogFinish(xlog_state);
+			UnlockReleaseBuffer(metabuf);
+		}
+	}
+
+	elog(LOG,
+		 "force_merge: merged %u segments into single L%u segment "
+		 "at block %u (%u terms, parked %u pages)",
+		 all_headers_count,
+		 target_level,
+		 new_segment,
+		 num_merged_terms,
+		 total_pages_to_free);
+
+	for (i = 0; i < (int)num_segments_tracked; i++)
+		if (segment_pages[i])
+			pfree(segment_pages[i]);
+	pfree((void *)segment_pages);
+	pfree(segment_page_counts);
+	pfree(all_headers);
 }
