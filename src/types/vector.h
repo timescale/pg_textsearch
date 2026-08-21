@@ -90,12 +90,12 @@ typedef struct TpVector
 					   MAXALIGN(((TpVector *)(x))->index_name_len + 1)))
 
 /* Function declarations */
-Datum tpvector_in(PG_FUNCTION_ARGS);
-Datum tpvector_out(PG_FUNCTION_ARGS);
-Datum tpvector_recv(PG_FUNCTION_ARGS);
-Datum tpvector_send(PG_FUNCTION_ARGS);
-Datum to_tpvector(PG_FUNCTION_ARGS);
-Datum tpvector_eq(PG_FUNCTION_ARGS);
+PGDLLEXPORT Datum tpvector_in(PG_FUNCTION_ARGS);
+PGDLLEXPORT Datum tpvector_out(PG_FUNCTION_ARGS);
+PGDLLEXPORT Datum tpvector_recv(PG_FUNCTION_ARGS);
+PGDLLEXPORT Datum tpvector_send(PG_FUNCTION_ARGS);
+PGDLLEXPORT Datum to_tpvector(PG_FUNCTION_ARGS);
+PGDLLEXPORT Datum tpvector_eq(PG_FUNCTION_ARGS);
 
 /* Constructor */
 TpVector *create_tpvector_from_strings(

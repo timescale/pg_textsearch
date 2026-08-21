@@ -18,18 +18,27 @@
 
 #include <postgres.h>
 
+#include "compat.h"
 #include "memtable/arena.h"
 
 /*
  * Single posting entry stored in EXPULL blocks.
  * 7 bytes of data; packed to avoid waste in blocks.
  */
+#ifdef _MSC_VER
+#pragma pack(push, 1) /* MSVC equivalent of TP_PACKED below */
+#endif
+
 typedef struct TpExpullEntry
 {
 	uint32 doc_id;	  /* Segment-local document ID */
 	uint16 frequency; /* Term frequency in document */
 	uint8  fieldnorm; /* Quantized document length */
-} __attribute__((packed)) TpExpullEntry;
+} TP_PACKED TpExpullEntry;
+
+#ifdef _MSC_VER
+#pragma pack(pop)
+#endif
 
 #define TP_EXPULL_ENTRY_SIZE sizeof(TpExpullEntry) /* 7 bytes */
 

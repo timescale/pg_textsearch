@@ -109,7 +109,7 @@ tp_string_copy_function(
 		void	   *dest,
 		const void *src,
 		size_t		keysize,
-		void	   *arg __attribute__((unused)))
+		void *arg	pg_attribute_unused())
 {
 	Assert(keysize == sizeof(TpStringKey));
 	(void)keysize;

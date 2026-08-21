@@ -31,7 +31,7 @@
 #include "scoring/bm25.h"
 
 #if PG_VERSION_NUM >= 180000
-PG_MODULE_MAGIC_EXT(.name = "pg_textsearch", .version = "1.4.0-dev");
+PG_MODULE_MAGIC_EXT(.name = "pg_textsearch", .version = "1.5.0-dev");
 #else
 PG_MODULE_MAGIC;
 #endif
@@ -563,7 +563,7 @@ tp_shmem_startup(void)
  * and check for bulk load auto-spill at pre-commit
  */
 static void
-tp_xact_callback(XactEvent event, void *arg __attribute__((unused)))
+tp_xact_callback(XactEvent event, void *arg pg_attribute_unused())
 {
 	switch (event)
 	{
@@ -619,7 +619,7 @@ tp_subxact_callback(
 		SubXactEvent	 event,
 		SubTransactionId mySubid,
 		SubTransactionId parentSubid,
-		void			*arg __attribute__((unused)))
+		void *arg		 pg_attribute_unused())
 {
 	switch (event)
 	{
