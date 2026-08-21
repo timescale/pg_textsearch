@@ -1044,8 +1044,7 @@ tp_write_segment(
 	string_pos = 0;
 	for (i = 0; i < num_terms; i++)
 	{
-		uint64 entry_size = (uint64)sizeof(uint32) + terms[i].term_len +
-							sizeof(uint32);
+		uint64 entry_size = tp_string_pool_entry_size(terms[i].term_len);
 
 		/*
 		 * String-pool offsets are stored as uint32 in the segment
@@ -1053,8 +1052,7 @@ tp_write_segment(
 		 * the final term cannot push the pool past the representable
 		 * limit without raising an error (issue #432).
 		 */
-		if (string_pos > (uint64)PG_UINT32_MAX ||
-			entry_size > ((uint64)PG_UINT32_MAX + 1) - string_pos)
+		if (tp_string_pool_offset_overflows(string_pos, entry_size))
 			ereport(ERROR,
 					(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
 					 errmsg("pg_textsearch: segment string pool exceeds "
@@ -1247,10 +1245,13 @@ tp_write_segment(
 			/* Accumulate skip entry */
 			if (skip_entries_count >= skip_entries_capacity)
 			{
-				skip_entries_capacity *= 2;
+				skip_entries_capacity = tp_grow_capacity(
+						skip_entries_capacity, 1024, "posting blocks");
 				all_skip_entries = repalloc_huge(
 						all_skip_entries,
-						skip_entries_capacity * sizeof(TpSkipEntry));
+						mul_size(
+								(Size)skip_entries_capacity,
+								sizeof(TpSkipEntry)));
 			}
 			all_skip_entries[skip_entries_count++] = skip;
 		}
