@@ -314,7 +314,7 @@ jobs:
         for ($attempt = 1; $attempt -le 2; $attempt++) {
           if (Test-Path -LiteralPath $zip) { Remove-Item -LiteralPath $zip -Force }
           try {
-            Invoke-WebRequest -Uri '${{ matrix.url }}' -OutFile $zip -UseBasicParsing
+            Invoke-WebRequest -Uri '${{ matrix.url }}' -OutFile $zip -UseBasicParsing -TimeoutSec 300
             $actual = (Get-FileHash -LiteralPath $zip -Algorithm SHA256).Hash.ToLowerInvariant()
             if ($actual -eq $expected) { $verified = $true; break }
             Write-Host "attempt ${attempt}: SHA256 is $actual, expected $expected"
