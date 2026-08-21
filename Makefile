@@ -26,6 +26,7 @@ DATA = sql/pg_textsearch--1.5.0-dev.sql \
 # Source files organized by directory
 OBJS = \
 	src/mod.o \
+	src/layout_check.o \
 	src/access/handler.o \
 	src/access/build.o \
 	src/access/build_context.o \

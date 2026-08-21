@@ -11,6 +11,8 @@
 #include <storage/itemptr.h>
 #include <utils/timestamp.h>
 
+#include "compat.h"
+
 /*
  * Page types for segment pages.
  * Magic and version constants are defined in constants.h.
@@ -180,7 +182,7 @@ typedef struct TpDictEntryV3
 	uint16 block_count;
 	uint16 reserved;
 	uint32 doc_freq;
-} __attribute__((aligned(4))) TpDictEntryV3;
+} pg_attribute_aligned(4) TpDictEntryV3;
 
 /*
  * Dictionary entry - 16 bytes, block-based storage (V4: uint64 offset)
@@ -200,12 +202,16 @@ typedef struct TpDictEntry
 	uint64 skip_index_offset; /* Offset to TpSkipEntry array for this term */
 	uint32 block_count;		  /* Number of blocks (and skip entries) */
 	uint32 doc_freq;		  /* Document frequency for IDF */
-} __attribute__((aligned(8))) TpDictEntry;
+} pg_attribute_aligned(8) TpDictEntry;
 
 /*
  * Block storage constants
  */
 #define TP_BLOCK_SIZE 128 /* Documents per block (matches Tantivy) */
+
+#ifdef _MSC_VER
+#pragma pack(push, 1) /* MSVC equivalent of TP_PACKED below */
+#endif
 
 /*
  * V3 legacy skip index entry - 16 bytes per block
@@ -219,7 +225,7 @@ typedef struct TpSkipEntryV3
 	uint32 posting_offset;
 	uint8  flags;
 	uint8  reserved[3];
-} __attribute__((packed)) TpSkipEntryV3;
+} TP_PACKED TpSkipEntryV3;
 
 /*
  * Skip index entry - 20 bytes per block (V4: uint64 posting_offset)
@@ -236,7 +242,11 @@ typedef struct TpSkipEntry
 	uint64 posting_offset; /* Byte offset from segment start to block data */
 	uint8  flags;		   /* Compression type, etc. */
 	uint8  reserved[3];	   /* Future use */
-} __attribute__((packed)) TpSkipEntry;
+} TP_PACKED TpSkipEntry;
+
+#ifdef _MSC_VER
+#pragma pack(pop)
+#endif
 
 /* Skip entry flags */
 #define TP_BLOCK_FLAG_UNCOMPRESSED 0x00 /* Raw doc IDs and frequencies */
@@ -270,7 +280,15 @@ typedef struct TpBlockPosting
  * compact 4-byte doc IDs in posting lists while still being able
  * to look up the actual heap tuple.
  */
+#ifdef _MSC_VER
+#pragma pack(push, 1) /* MSVC equivalent of TP_PACKED below */
+#endif
+
 typedef struct TpCtidMapEntry
 {
 	ItemPointerData ctid; /* 6 bytes - heap tuple location */
-} __attribute__((packed)) TpCtidMapEntry;
+} TP_PACKED TpCtidMapEntry;
+
+#ifdef _MSC_VER
+#pragma pack(pop)
+#endif
