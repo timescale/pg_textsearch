@@ -450,6 +450,12 @@ NOTICE:  BM25 index build completed: 3000 documents, avg_length=3.00
 INSERT INTO vb_batched (content)
 SELECT 'bounded batch ' || i
 FROM generate_series(3001, 6000) i;
+SELECT bm25_spill_index('vb_batched_idx');
+ bm25_spill_index 
+------------------
+               61
+(1 row)
+
 DELETE FROM vb_batched WHERE id % 3 = 0;
 VACUUM vb_batched;
 SELECT count(*) FROM (

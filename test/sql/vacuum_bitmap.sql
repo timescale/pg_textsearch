@@ -363,6 +363,8 @@ INSERT INTO vb_batched (content)
 SELECT 'bounded batch ' || i
 FROM generate_series(3001, 6000) i;
 
+SELECT bm25_spill_index('vb_batched_idx');
+
 DELETE FROM vb_batched WHERE id % 3 = 0;
 VACUUM vb_batched;
 
