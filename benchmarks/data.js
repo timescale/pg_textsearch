@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1787554831603,
+  "lastUpdate": 1787554835401,
   "repoUrl": "https://github.com/timescale/pg_textsearch",
   "entries": {
     "cranfield Benchmarks": [
@@ -112423,6 +112423,38 @@ window.BENCHMARK_DATA = {
           {
             "name": "wikipedia_gin_concurrent - Concurrent Insert Time",
             "value": 21287.921432,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "nikitatsym",
+            "username": "nikitatsym",
+            "email": "131807271+nikitatsym@users.noreply.github.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "c3bb8e2c1bdc7611a583f90cae69aeeada34b249",
+          "message": "Make the source tree compile with MSVC (#439)\n\n## Summary\n\nA first step toward Windows support (#82): make the source tree compile\nwith MSVC. There are no runtime, SQL, or on-disk-format changes on the\nsupported targets; the existing layouts are preserved and checked at\ncompile time. The only new files are a small portability header and a\ncompile-time assertion file that emits no code.\n\nThree kinds of changes:\n\n1. **Replace bare `__attribute__` with PostgreSQL's portability\n   macros.** The tree used `__attribute__((unused))`, `((aligned(N)))`\n   and `((packed))` directly, which MSVC does not parse.\n   `pg_attribute_unused()` and `pg_attribute_aligned(N)` from `c.h`\n   already handle MSVC. `c.h` has no MSVC-capable `packed` macro, so\n   the five packed layout-sensitive structs are wrapped in\n   `#pragma pack(push, 1)` / `#pragma pack(pop)` under\n   `#ifdef _MSC_VER`, and the attribute becomes a `TP_PACKED` macro in\n   a new `src/compat.h`: `pg_attribute_packed()` everywhere else,\n   empty under MSVC.\n\n2. **`PGDLLEXPORT` on V1 function prototypes in headers.**\n   `PG_FUNCTION_INFO_V1` declares the function `PGDLLEXPORT`, which\n   Windows needs for the loader to resolve it; MSVC then rejects any\n   second prototype without the marking (C2375), so the header\n   prototypes must carry it too. This is the same treatment PostgreSQL\n   applies to its own contrib headers.\n\n3. **Compile-time layout assertions (`src/layout_check.c`).** A new\n   translation unit of `StaticAssertDecl` assertions pins the existing\n   `sizeof` and `offsetof` values of the layout-sensitive structs\n   (alignment via a C99 `offsetof` probe, keeping PostgreSQL 17's C99\n   baseline). If the MSVC packing pragmas or alignment declarations\n   produced a different layout than the GCC attributes, the build\n   would fail, and the same assertions guard against future compiler\n   or platform drift.\n\n## Testing\n\n- Builds with MSVC 19.44 (Visual Studio 2022 Build Tools) against\n  PostgreSQL 17.10 and 18.4 (EDB distributions): no errors, and no\n  warnings attributable to these changes (the only warnings are\n  implicit narrowing/truncation C4244/C4267/C4305 sites already\n  present on main). The layout assertions hold on MSVC.\n- Runtime smoke test on Windows against both server versions:\n  `CREATE EXTENSION`, bm25 index build, ranking queries return\n  identical rows, order, and scores (to the four decimal places\n  printed) before and after `bm25_spill_index`, which forces reads\n  back through the packed on-disk structs; DELETE/VACUUM visibility\n  behaves as expected. `test/sql/basic.sql` run through psql produces\n  output identical to `test/expected/basic.out` on both versions\n  (modulo CRLF line endings and psql's `psql:file:line:` prefixes,\n  which pg_regress does not emit).\n- For GCC/Clang the modified lines compile to the same code as before:\n  the macros expand to exactly the previous attributes, and the\n  preprocessed struct definitions on a GNU target are identical\n  between `main` and this branch.\n- `make format-check` passes (clang-format 21.1.8, the version CI\n  pins).\n\n## Out of scope\n\nThis PR only makes the sources portable. It does not add a Windows\nbuild system (PGXS cannot drive MSVC), official binaries, or Windows\nCI. An unofficial out-of-tree build recipe (currently for the 1.3.1\nrelease) is at\n\n[nikitatsym/pg_textsearch-windows-msvc](https://github.com/nikitatsym/pg_textsearch-windows-msvc);\nI am happy to contribute a Windows CI job as a follow-up if there is\ninterest.\n\n## Breaking changes\n\nNone.",
+          "timestamp": "2026-08-19T00:07:49Z",
+          "url": "https://github.com/timescale/pg_textsearch/commit/c3bb8e2c1bdc7611a583f90cae69aeeada34b249"
+        },
+        "date": 1787554834531,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "wikipedia_gin_concurrent - Index Build Time",
+            "value": 99.675,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia_gin_concurrent - Concurrent Insert Time",
+            "value": 21330.116912,
             "unit": "ms"
           }
         ]
