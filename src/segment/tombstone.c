@@ -234,11 +234,11 @@ tp_tombstone_drain(
 		FullTransactionId		  horizon,
 		bool					  own_lock)
 {
-	uint32		freed	= 0;
-	BlockNumber nblocks = RelationGetNumberOfBlocks(index);
+	uint32 freed = 0;
 
 	for (;;)
 	{
+		BlockNumber	 nblocks;
 		BlockNumber	 prev = InvalidBlockNumber;
 		BlockNumber	 cur;
 		BlockNumber	 victim		   = InvalidBlockNumber;
@@ -254,6 +254,15 @@ tp_tombstone_drain(
 
 		if (own_lock)
 			tp_acquire_index_lock(state, LW_EXCLUSIVE);
+
+		/*
+		 * Read the relation size under the lock, once per iteration.
+		 * The index can shrink between iterations
+		 * (tp_truncate_dead_pages runs under this same lock), so a
+		 * value cached across iterations would be stale-high and would
+		 * let the sanity check below accept an out-of-range block.
+		 */
+		nblocks = RelationGetNumberOfBlocks(index);
 
 		/* Walk the chain to find the first past-horizon tombstone. */
 		cur = tp_tombstone_read_head(index);
@@ -361,10 +370,19 @@ tp_tombstone_drain(
 		/* Unlink first (corruption-safe; a crash here only leaks). */
 		tombstone_unlink(index, victim_prev, victim, victim_next);
 
-		if (own_lock)
-			tp_release_index_lock(state);
-
-		/* Now free the victim's blocks + its own page, unlocked. */
+		/*
+		 * Free the victim's blocks and its own page while still
+		 * holding the per-index lock.  Once unlinked they are no
+		 * longer visible to tp_tombstone_max_used_block(), so
+		 * tp_truncate_dead_pages() — which runs under this same lock
+		 * (see bm25_force_merge) — is free to truncate the relation
+		 * below them.  Dropping the lock here therefore opened a
+		 * window where the frees below either read past EOF ("could
+		 * not read blocks N..N in file ...") or, worse, stamped a
+		 * block that a truncate plus a concurrent extension had
+		 * already handed to a live structure.  The extra hold is
+		 * bounded by one tombstone page's block list.
+		 */
 		{
 			uint32 k;
 
@@ -373,6 +391,10 @@ tp_tombstone_drain(
 			tp_record_free_index_page(index, victim);
 			freed += victim_count + 1;
 		}
+
+		if (own_lock)
+			tp_release_index_lock(state);
+
 		if (victim_blocks)
 			pfree(victim_blocks);
 	}

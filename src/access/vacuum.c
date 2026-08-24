@@ -1215,8 +1215,8 @@ tp_vacuumcleanup(IndexVacuumInfo *info, IndexBulkDeleteResult *stats)
 		 * tombstone chain (metap->pending_free_head and tombstone
 		 * next_page links), so it must run under LW_EXCLUSIVE, not
 		 * LW_SHARED.  tp_tombstone_drain takes/releases the lock per
-		 * unlink (own_lock=true) so concurrent reads never wait more
-		 * than a single unlink.
+		 * drained tombstone (own_lock=true) so concurrent reads never
+		 * wait more than a single unlink plus its page frees.
 		 */
 		if (index_state != NULL)
 		{
