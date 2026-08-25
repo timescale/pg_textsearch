@@ -16,7 +16,7 @@ Modern ranked text search for Postgres.
 - Supports partitioned tables
 - Best in class performance and scalability
 
-🚀 **Status**: v1.4.0-dev - Production ready.
+🚀 **Status**: v1.5.0-dev - Production ready.
 
 ## Historical note
 

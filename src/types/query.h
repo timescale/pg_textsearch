@@ -47,21 +47,21 @@ typedef struct TpQuery
 #define TPQUERY_TEXT_PTR(x) (((TpQuery *)(x))->data)
 
 /* Function declarations */
-Datum tpquery_in(PG_FUNCTION_ARGS);
-Datum tpquery_out(PG_FUNCTION_ARGS);
-Datum tpquery_recv(PG_FUNCTION_ARGS);
-Datum tpquery_send(PG_FUNCTION_ARGS);
+PGDLLEXPORT Datum tpquery_in(PG_FUNCTION_ARGS);
+PGDLLEXPORT Datum tpquery_out(PG_FUNCTION_ARGS);
+PGDLLEXPORT Datum tpquery_recv(PG_FUNCTION_ARGS);
+PGDLLEXPORT Datum tpquery_send(PG_FUNCTION_ARGS);
 
 /* Constructor functions */
-Datum to_tpquery_text(PG_FUNCTION_ARGS);
-Datum to_tpquery_text_index(PG_FUNCTION_ARGS);
+PGDLLEXPORT Datum to_tpquery_text(PG_FUNCTION_ARGS);
+PGDLLEXPORT Datum to_tpquery_text_index(PG_FUNCTION_ARGS);
 
 /* Operator functions */
-Datum bm25_text_bm25query_score(PG_FUNCTION_ARGS);
-Datum bm25_text_text_score(PG_FUNCTION_ARGS);
-Datum bm25_textarray_bm25query_score(PG_FUNCTION_ARGS);
-Datum bm25_textarray_text_score(PG_FUNCTION_ARGS);
-Datum tpquery_eq(PG_FUNCTION_ARGS);
+PGDLLEXPORT Datum bm25_text_bm25query_score(PG_FUNCTION_ARGS);
+PGDLLEXPORT Datum bm25_text_text_score(PG_FUNCTION_ARGS);
+PGDLLEXPORT Datum bm25_textarray_bm25query_score(PG_FUNCTION_ARGS);
+PGDLLEXPORT Datum bm25_textarray_text_score(PG_FUNCTION_ARGS);
+PGDLLEXPORT Datum tpquery_eq(PG_FUNCTION_ARGS);
 
 /* Utility functions */
 TpQuery *create_tpquery(const char *query_text, Oid index_oid);

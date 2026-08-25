@@ -12,6 +12,7 @@
 #include <port/atomics.h>
 #include <storage/buffile.h>
 
+#include "compat.h"
 #include "constants.h"
 #include "segment/format.h"
 #include "storage/bufmgr.h"
@@ -46,13 +47,21 @@ tp_buffile_decompose_offset(uint64 composite, int *fileno, off_t *offset)
  * When CTIDs are pre-loaded, ctid is set immediately. When lazy loading,
  * ctid is invalid and doc_id is used to look up CTID at result extraction.
  */
+#ifdef _MSC_VER
+#pragma pack(push, 1) /* MSVC equivalent of TP_PACKED below */
+#endif
+
 typedef struct TpSegmentPosting
 {
 	ItemPointerData ctid;	   /* 6 bytes - heap tuple ID (may be invalid) */
 	uint32			doc_id;	   /* 4 bytes - segment-local doc ID */
 	uint16			frequency; /* 2 bytes - term frequency */
 	uint16 doc_length;		   /* 2 bytes - document length (from fieldnorm) */
-} __attribute__((packed)) TpSegmentPosting;
+} TP_PACKED TpSegmentPosting;
+
+#ifdef _MSC_VER
+#pragma pack(pop)
+#endif
 
 /* Version-aware struct size helpers */
 static inline size_t

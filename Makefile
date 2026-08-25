@@ -1,6 +1,6 @@
 EXTENSION = pg_textsearch
 EXTVERSION = $(shell awk -F"'" '/default_version/ {print $$2}' pg_textsearch.control)
-DATA = sql/pg_textsearch--1.4.0-dev.sql \
+DATA = sql/pg_textsearch--1.5.0-dev.sql \
        sql/pg_textsearch--0.0.1--0.0.2.sql \
        sql/pg_textsearch--0.0.2--0.0.3.sql \
        sql/pg_textsearch--0.0.3--0.0.4.sql \
@@ -20,11 +20,13 @@ DATA = sql/pg_textsearch--1.4.0-dev.sql \
        sql/pg_textsearch--1.1.0--1.2.0.sql \
        sql/pg_textsearch--1.2.0--1.3.0.sql \
        sql/pg_textsearch--1.3.0--1.3.1.sql \
-       sql/pg_textsearch--1.3.1--1.4.0-dev.sql
+       sql/pg_textsearch--1.3.1--1.4.0.sql \
+       sql/pg_textsearch--1.4.0--1.5.0-dev.sql
 
 # Source files organized by directory
 OBJS = \
 	src/mod.o \
+	src/layout_check.o \
 	src/access/handler.o \
 	src/access/build.o \
 	src/access/build_context.o \
