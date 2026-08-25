@@ -21,8 +21,9 @@
 # tombstone chain, which stranded the drain's page frees past EOF
 # ("could not read blocks N..N ... read only 0 of 8192 bytes").
 #
-# TEST_SIZE_MULTIPLIER scales the loop counts (default 1.0); CI uses a
-# smaller value under sanitizers, where every page mutation is slow.
+# TEST_SIZE_MULTIPLIER scales the loop counts (default 1.0), for
+# scaling the run down on a constrained runner.  Prefer full scale:
+# these are timing races, and a shorter run finds them less often.
 #
 
 set -e
