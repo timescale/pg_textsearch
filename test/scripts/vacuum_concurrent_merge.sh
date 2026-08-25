@@ -15,6 +15,15 @@
 # is also aggressive).  Before the fix this fails within seconds; after it,
 # it completes cleanly with no segment-header errors and no crash.
 #
+# It also covers the tombstone-drain-vs-truncate race (issue #465):
+# bm25_force_merge truncates the index via tp_truncate_dead_pages
+# while VACUUM drains the deferred-free tombstone chain, stranding the
+# drain's page frees past EOF ("could not read blocks N..N").
+#
+# TEST_SIZE_MULTIPLIER scales the loop counts (default 1.0) for
+# constrained runners.  Prefer full scale: these are timing races, and
+# a shorter run finds them less often.
+#
 
 set -e
 
@@ -24,6 +33,14 @@ TEST_DB=vacuum_concurrent_merge_test
 DATA_DIR="${SCRIPT_DIR}/../tmp_vacuum_concurrent_merge"
 LOGFILE="${DATA_DIR}/postgres.log"
 ERR_DIR="${DATA_DIR}/client_logs"
+KEEP_DIR="${SCRIPT_DIR}/../tmp_vacuum_concurrent_merge_logs"
+TEST_SIZE_MULTIPLIER=${TEST_SIZE_MULTIPLIER:-1.0}
+
+# Scale a loop count by TEST_SIZE_MULTIPLIER (minimum 1).
+scaled_count() {
+    awk "BEGIN {n = int($1 * ${TEST_SIZE_MULTIPLIER} + 0.5);
+                print (n < 1 ? 1 : n)}"
+}
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -40,6 +57,15 @@ cleanup() {
     jobs -p | xargs -r kill 2>/dev/null || true
     if [ -f "${DATA_DIR}/postmaster.pid" ]; then
         pg_ctl stop -D "${DATA_DIR}" -m immediate &>/dev/null || true
+    fi
+    # Preserve the logs on failure: the data dir is too large to
+    # upload, and without the server log a CI failure is undebuggable.
+    if [ "$exit_code" -ne 0 ] && [ -d "${DATA_DIR}" ]; then
+        rm -rf "${KEEP_DIR}"
+        mkdir -p "${KEEP_DIR}"
+        cp "${LOGFILE}" "${KEEP_DIR}/" 2>/dev/null || true
+        cp -r "${ERR_DIR}" "${KEEP_DIR}/" 2>/dev/null || true
+        warn "Preserved logs in ${KEEP_DIR}"
     fi
     rm -rf "${DATA_DIR}"
     exit $exit_code
@@ -97,7 +123,7 @@ SQL
 # Spill the memtable aggressively so many small segments accrue for the
 # merger to compact.
 writer() {
-    for i in $(seq 1 120); do
+    for i in $(seq 1 $(scaled_count 120)); do
         $PSQL -c "SET pg_textsearch.memtable_pages_threshold=4;
           SET statement_timeout='60s'; SET lock_timeout='30s';
           INSERT INTO docs (body)
@@ -111,7 +137,7 @@ writer() {
 # Concurrent spill + force-merge: the LW_EXCLUSIVE segment recycler that
 # races VACUUM.
 merger() {
-    for i in $(seq 1 250); do
+    for i in $(seq 1 $(scaled_count 250)); do
         $PSQL -c "SELECT bm25_spill_index('docs_bm25');
                   SELECT bm25_force_merge('docs_bm25')" \
           >>"${ERR_DIR}/merger.log" 2>&1 || return 30
@@ -121,7 +147,7 @@ merger() {
 # Delete the oldest rows by id (monotonic -> no row-lock deadlocks) to
 # create dead tuples for VACUUM bulk-delete to reclaim.
 deleter() {
-    for i in $(seq 1 250); do
+    for i in $(seq 1 $(scaled_count 250)); do
         $PSQL -c "DELETE FROM docs
                   WHERE id IN (SELECT id FROM docs ORDER BY id ASC LIMIT 120)" \
           >>"${ERR_DIR}/deleter.log" 2>&1 || return 40
@@ -132,7 +158,7 @@ deleter() {
 # Explicit VACUUM in a loop deterministically exercises the bulk-delete and
 # cleanup paths concurrently with the merger.
 vacuumer() {
-    for i in $(seq 1 200); do
+    for i in $(seq 1 $(scaled_count 200)); do
         $PSQL -c "VACUUM docs" >>"${ERR_DIR}/vacuumer.log" 2>&1 || return 50
         sleep 0.05
     done
@@ -159,6 +185,17 @@ run_test() {
         warn "Found 'invalid segment header':"
         grep -RIn "invalid segment header" "${ERR_DIR}" "${LOGFILE}" | head -5
         error "TEST FAILED: issue #411 reproduced (invalid segment header)"
+    fi
+
+    # The tombstone-drain-vs-truncate race (issue #465).  Check
+    # explicitly: an autovacuum-side occurrence is server-log only and
+    # would slip past the client-exit check below.
+    if grep -REIl "could not read blocks?.*read only [0-9]+ of" \
+        "${ERR_DIR}" "${LOGFILE}" >/dev/null 2>&1; then
+        warn "Found a past-EOF index read:"
+        grep -REIn "could not read blocks?.*read only [0-9]+ of" \
+            "${ERR_DIR}" "${LOGFILE}" | head -5
+        error "TEST FAILED: issue #465 reproduced (read past EOF)"
     fi
 
     # An out-of-bounds alive-bitset write crashes the backend.
