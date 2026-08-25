@@ -99,8 +99,11 @@ extern BlockNumber tp_tombstone_enqueue_extend(
  *
  * `own_lock` selects locking discipline:
  *   - true  (vacuum path): acquire/release the per-index LWLock
- *     EXCLUSIVE around each single unlink, so reads never wait more
- *     than one unlink.  `state` must be non-NULL.
+ *     EXCLUSIVE once per drained tombstone, held across the unlink
+ *     AND that tombstone's page frees so a concurrent
+ *     tp_truncate_dead_pages() cannot shrink the relation beneath
+ *     them.  Reads therefore wait for one chain walk, unlink, and up
+ *     to TP_TOMBSTONE_CAPACITY page frees.  `state` must be non-NULL.
  *   - false (merge path): caller already holds the per-index lock
  *     EXCLUSIVE end-to-end; `state` is ignored.
  *

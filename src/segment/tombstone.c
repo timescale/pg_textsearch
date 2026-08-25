@@ -236,6 +236,9 @@ tp_tombstone_drain(
 {
 	uint32 freed = 0;
 
+	/* own_lock=true needs `state` to acquire and release the lock. */
+	Assert(!own_lock || state != NULL);
+
 	for (;;)
 	{
 		BlockNumber	 nblocks;
@@ -256,11 +259,17 @@ tp_tombstone_drain(
 			tp_acquire_index_lock(state, LW_EXCLUSIVE);
 
 		/*
-		 * Read the relation size under the lock, once per iteration.
-		 * The index can shrink between iterations
-		 * (tp_truncate_dead_pages runs under this same lock), so a
-		 * value cached across iterations would be stale-high and would
-		 * let the sanity check below accept an out-of-range block.
+		 * Re-read the relation size under the lock, once per
+		 * iteration.  Note this is NOT what makes the frees below
+		 * safe against a concurrent tp_truncate_dead_pages() — the
+		 * LWLock held across them is (a fresh bound would still go
+		 * stale between the check and the free).  It only keeps the
+		 * defensive b >= nblocks check honest across the gap where
+		 * the lock is dropped between iterations, since the old code
+		 * cached this in a C local for the whole call.  The value
+		 * itself is current either way: outside recovery
+		 * smgrnblocks_cached() refuses the smgr size cache, so
+		 * RelationGetNumberOfBlocks() re-stats the file.
 		 */
 		nblocks = RelationGetNumberOfBlocks(index);
 
@@ -380,9 +389,22 @@ tp_tombstone_drain(
 		 * window where the frees below either read past EOF ("could
 		 * not read blocks N..N in file ...") or, worse, stamped a
 		 * block that a truncate plus a concurrent extension had
-		 * already handed to a live structure.  The extra hold is
-		 * bounded by one tombstone page's block list.
+		 * already handed to a live structure.
+		 *
+		 * Freeing before the unlink would shorten the hold but is
+		 * unsafe: a still-chained tombstone's blocks could be claimed
+		 * from the FSM and then freed again by a later drain of that
+		 * same tombstone.  The hold is bounded by one tombstone
+		 * page's block list (TP_TOMBSTONE_CAPACITY, ~2036 blocks at
+		 * 8kB).  This loop is deliberately free of a cancellation
+		 * point: the tombstone is already unlinked, so erroring out
+		 * part-way would strand the remaining blocks with nothing left
+		 * to free them.  The CHECK_FOR_INTERRUPTS at the head of the
+		 * drain loop cancels between tombstones instead, where the
+		 * chain is consistent.
 		 */
+		Assert(!own_lock ||
+			   LWLockHeldByMeInMode(&state->shared->lock, LW_EXCLUSIVE));
 		{
 			uint32 k;
 

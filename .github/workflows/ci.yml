@@ -357,7 +357,7 @@ jobs:
   sanitizer:
     name: PG${{ matrix.pg }} Sanitizer
     runs-on: ubuntu-22.04
-    timeout-minutes: 45
+    timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
@@ -517,6 +517,18 @@ jobs:
           cd test/scripts && ./concurrent_duplicate_read.sh
         "
 
+        # Covers the VACUUM-vs-merge races (#411, #465).  Only this
+        # job runs it under sanitizers on a PR, where the windows are
+        # wide enough to hit; scaled down because every page mutation
+        # is slow under ASAN.
+        echo "Running VACUUM concurrency tests under sanitizer..."
+        timeout 900s bash -c "
+          export PATH=\"$HOME/$PG_INSTALL_DIR/bin:\$PATH\"
+          export PGHOST=$PWD/tmp_sanitizer_test
+          export PGPORT=55433
+          cd test/scripts && TEST_SIZE_MULTIPLIER=0.35 ./vacuum_concurrent_merge.sh
+        "
+
         echo "Running crash recovery tests under sanitizer..."
         timeout 600s bash -c "
           export PATH=\"$HOME/$PG_INSTALL_DIR/bin:\$PATH\"
@@ -614,6 +626,7 @@ jobs:
         path: |
           tmp_sanitizer_test/
           test/scripts/tmp_*
+          test/tmp_*
         retention-days: 7
 
   coverage:
