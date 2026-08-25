@@ -517,6 +517,17 @@ jobs:
           cd test/scripts && ./concurrent_duplicate_read.sh
         "
 
+        # Covers the VACUUM-vs-merge races (#411, #465).  This is the
+        # only sanitized run of it on a PR, where the timing windows
+        # are wide enough to hit.
+        echo "Running VACUUM concurrency tests under sanitizer..."
+        timeout 900s bash -c "
+          export PATH=\"$HOME/$PG_INSTALL_DIR/bin:\$PATH\"
+          export PGHOST=$PWD/tmp_sanitizer_test
+          export PGPORT=55433
+          cd test/scripts && ./vacuum_concurrent_merge.sh
+        "
+
         echo "Running crash recovery tests under sanitizer..."
         timeout 600s bash -c "
           export PATH=\"$HOME/$PG_INSTALL_DIR/bin:\$PATH\"
@@ -614,6 +625,7 @@ jobs:
         path: |
           tmp_sanitizer_test/
           test/scripts/tmp_*
+          test/tmp_*
         retention-days: 7
 
   coverage:
