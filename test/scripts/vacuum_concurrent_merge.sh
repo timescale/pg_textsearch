@@ -16,14 +16,13 @@
 # it completes cleanly with no segment-header errors and no crash.
 #
 # It also covers the tombstone-drain-vs-truncate race (issue #465):
-# the merger's bm25_force_merge truncates the index via
-# tp_truncate_dead_pages while the vacuumer drains the deferred-free
-# tombstone chain, which stranded the drain's page frees past EOF
-# ("could not read blocks N..N ... read only 0 of 8192 bytes").
+# bm25_force_merge truncates the index via tp_truncate_dead_pages
+# while VACUUM drains the deferred-free tombstone chain, stranding the
+# drain's page frees past EOF ("could not read blocks N..N").
 #
-# TEST_SIZE_MULTIPLIER scales the loop counts (default 1.0), for
-# scaling the run down on a constrained runner.  Prefer full scale:
-# these are timing races, and a shorter run finds them less often.
+# TEST_SIZE_MULTIPLIER scales the loop counts (default 1.0) for
+# constrained runners.  Prefer full scale: these are timing races, and
+# a shorter run finds them less often.
 #
 
 set -e
@@ -59,9 +58,8 @@ cleanup() {
     if [ -f "${DATA_DIR}/postmaster.pid" ]; then
         pg_ctl stop -D "${DATA_DIR}" -m immediate &>/dev/null || true
     fi
-    # Preserve the logs on failure: without the server log a CI
-    # reproduction is undebuggable, and the data dir itself is too
-    # large to upload.
+    # Preserve the logs on failure: the data dir is too large to
+    # upload, and without the server log a CI failure is undebuggable.
     if [ "$exit_code" -ne 0 ] && [ -d "${DATA_DIR}" ]; then
         rm -rf "${KEEP_DIR}"
         mkdir -p "${KEEP_DIR}"
@@ -189,11 +187,9 @@ run_test() {
         error "TEST FAILED: issue #411 reproduced (invalid segment header)"
     fi
 
-    # The tombstone-drain-vs-truncate race (issue #465): the drain
-    # frees a block that a concurrent force-merge truncate already
-    # removed.  Check explicitly — an autovacuum-side occurrence is
-    # server-log only and would otherwise slip past the client-exit
-    # check below.
+    # The tombstone-drain-vs-truncate race (issue #465).  Check
+    # explicitly: an autovacuum-side occurrence is server-log only and
+    # would slip past the client-exit check below.
     if grep -REIl "could not read blocks?.*read only [0-9]+ of" \
         "${ERR_DIR}" "${LOGFILE}" >/dev/null 2>&1; then
         warn "Found a past-EOF index read:"

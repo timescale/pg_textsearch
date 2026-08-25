@@ -361,11 +361,11 @@ Tombstone drain vs truncate: `tp_tombstone_drain()` (VACUUM
 cleanup, `own_lock=true`) and `tp_truncate_dead_pages()`
 (`bm25_force_merge`) are mutually exclusive under the per-index
 `LW_EXCLUSIVE`. Unlinking a tombstone removes its parked blocks
-from `tp_tombstone_max_used_block()`'s high-water mark, so
-truncation would be free to shrink the relation beneath them; the
-drain therefore holds the lock across the unlink *and* the frees.
-Dropping it in between let a concurrent truncate strand the frees
-past EOF, or — after a truncate plus a re-extension — stamp
+from `tp_tombstone_max_used_block()`'s high-water mark, so a
+truncate would then be free to shrink the relation beneath them.
+The drain therefore holds the lock across the unlink *and* the
+frees. Dropping it in between let a truncate strand the frees past
+EOF, or — after a truncate plus a re-extension — stamp
 `TP_FREE_PAGE_MAGIC` on a block already handed to a live
 structure, a corruption that replicates to standbys.
 

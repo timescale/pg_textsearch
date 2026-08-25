@@ -517,10 +517,9 @@ jobs:
           cd test/scripts && ./concurrent_duplicate_read.sh
         "
 
-        # Covers the VACUUM-vs-merge races (#411, #465).  Only this
-        # job runs it under sanitizers on a PR, where the timing
-        # windows are wide enough to hit.  Run at full scale: the
-        # scaled-down variant finishes too fast to exercise the race.
+        # Covers the VACUUM-vs-merge races (#411, #465).  This is the
+        # only sanitized run of it on a PR, where the timing windows
+        # are wide enough to hit.
         echo "Running VACUUM concurrency tests under sanitizer..."
         timeout 900s bash -c "
           export PATH=\"$HOME/$PG_INSTALL_DIR/bin:\$PATH\"
