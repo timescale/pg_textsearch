@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1787643284484,
+  "lastUpdate": 1787643288364,
   "repoUrl": "https://github.com/timescale/pg_textsearch",
   "entries": {
     "cranfield Benchmarks": [
@@ -260625,6 +260625,88 @@ window.BENCHMARK_DATA = {
           {
             "name": "paradedb_msmarco_concurrent - Throughput (avg ms/query)",
             "value": 59.18,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Kunal Singh",
+            "username": "the-osiris",
+            "email": "91742676+the-osiris@users.noreply.github.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "a514c8a36bbb53e399e00860c17b4b2b0df02978",
+          "message": "perf: bound VACUUM CTID reads (#462)\n\n## Summary\n\n- open VACUUM segments without preloading their complete CTID mapping\n- read CTID block numbers and tuple offsets in bounded sequential\nbatches\n- reuse the same scratch buffers across batches and segment boundaries\n- add multi-page, multi-segment VACUUM regression coverage\n\nFixes #320.",
+          "timestamp": "2026-08-24T17:18:37Z",
+          "url": "https://github.com/timescale/pg_textsearch/commit/a514c8a36bbb53e399e00860c17b4b2b0df02978"
+        },
+        "date": 1787643287739,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "paradedb_msmarco_concurrent - Index Build Time",
+            "value": 114.179,
+            "unit": "ms"
+          },
+          {
+            "name": "paradedb_msmarco_concurrent - Insert Time",
+            "value": 0.425,
+            "unit": "ms"
+          },
+          {
+            "name": "paradedb_msmarco_concurrent - Concurrent Insert Time",
+            "value": 3523279.443636,
+            "unit": "ms"
+          },
+          {
+            "name": "paradedb_msmarco_concurrent - 1 Token Query (p50)",
+            "value": 47.31,
+            "unit": "ms"
+          },
+          {
+            "name": "paradedb_msmarco_concurrent - 2 Token Query (p50)",
+            "value": 20.78,
+            "unit": "ms"
+          },
+          {
+            "name": "paradedb_msmarco_concurrent - 3 Token Query (p50)",
+            "value": 49.8,
+            "unit": "ms"
+          },
+          {
+            "name": "paradedb_msmarco_concurrent - 4 Token Query (p50)",
+            "value": 51.1,
+            "unit": "ms"
+          },
+          {
+            "name": "paradedb_msmarco_concurrent - 5 Token Query (p50)",
+            "value": 58.2,
+            "unit": "ms"
+          },
+          {
+            "name": "paradedb_msmarco_concurrent - 6 Token Query (p50)",
+            "value": 56.76,
+            "unit": "ms"
+          },
+          {
+            "name": "paradedb_msmarco_concurrent - 7 Token Query (p50)",
+            "value": 57.76,
+            "unit": "ms"
+          },
+          {
+            "name": "paradedb_msmarco_concurrent - 8+ Token Query (p50)",
+            "value": 62.13,
+            "unit": "ms"
+          },
+          {
+            "name": "paradedb_msmarco_concurrent - Throughput (avg ms/query)",
+            "value": 50.5,
             "unit": "ms"
           }
         ]
