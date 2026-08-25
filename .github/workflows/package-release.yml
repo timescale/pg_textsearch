@@ -202,6 +202,28 @@ jobs:
         PG_VERSION="$3"
         echo "Building for PostgreSQL version: $PG_VERSION"
 
+        # Installing packages under QEMU emulation occasionally dies with
+        # a segfault in a maintainer script (see issue #466), so retry
+        # before giving up on the whole build.
+        install_deps() {
+            local attempt
+            for attempt in 1 2 3; do
+                if apt-get update -o Acquire::Retries=3 &&
+                   apt-get install -y -o Acquire::Retries=3 \
+                       build-essential \
+                       "postgresql-server-dev-$PG_VERSION"; then
+                    return 0
+                fi
+                echo "apt-get attempt $attempt failed; retrying in 15s"
+                dpkg --configure -a || true
+                sleep 15
+            done
+            echo "ERROR: could not install build dependencies"
+            return 1
+        }
+
+        install_deps
+
         # Use the correct pg_config for the target PostgreSQL version
         # The postgresql-server-dev-XX package installs pg_config here
         export PG_CONFIG="/usr/lib/postgresql/$PG_VERSION/bin/pg_config"
@@ -227,14 +249,29 @@ jobs:
         chmod +x build.sh
 
         # Run build in TimescaleDB container with proper architecture
-        # Run as root to install dependencies
-        docker run --rm \
-          --platform ${{ matrix.platform.docker_platform }} \
-          -v "$PWD:/build" \
-          -w /build \
-          --user root \
-          timescale/timescaledb-ha:pg${{ matrix.pg_version }}-all \
-          bash -c "apt-get update && apt-get install -y build-essential postgresql-server-dev-${{ matrix.pg_version }} && /build/build.sh '$VERSION' '${{ matrix.platform.type }}' '${{ matrix.pg_version }}'"
+        # Run as root to install dependencies. arm64 runs under QEMU
+        # emulation, which is prone to spurious crashes, so retry the
+        # whole container run a few times before failing the job.
+        for attempt in 1 2 3; do
+          if docker run --rm \
+            --platform ${{ matrix.platform.docker_platform }} \
+            -v "$PWD:/build" \
+            -w /build \
+            --user root \
+            timescale/timescaledb-ha:pg${{ matrix.pg_version }}-all \
+            /build/build.sh "$VERSION" '${{ matrix.platform.type }}' '${{ matrix.pg_version }}'; then
+            echo "Build succeeded on attempt $attempt"
+            exit 0
+          fi
+
+          echo "::warning::Build attempt $attempt failed"
+          # Leftovers from the failed attempt are owned by root.
+          sudo rm -rf dist debian-build
+          sleep 30
+        done
+
+        echo "::error::Build failed after 3 attempts"
+        exit 1
 
     - name: Verify package architecture
       run: |
@@ -349,6 +386,26 @@ jobs:
       with:
         path: artifacts
 
+    - name: Verify all platform packages were built
+      run: |
+        MISSING=""
+        for pg in 17 18; do
+          for arch in amd64 arm64; do
+            if ! ls artifacts/*/pg-textsearch-*-pg${pg}-${arch}.zip \
+                 >/dev/null 2>&1; then
+              MISSING="$MISSING pg${pg}-${arch}"
+            fi
+          done
+        done
+
+        if [ -n "$MISSING" ]; then
+          echo "::error::Missing platform packages:$MISSING"
+          echo "Refusing to publish an incomplete set of release assets."
+          exit 1
+        fi
+
+        echo "✅ All platform packages present"
+
     - name: Upload Release Assets
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -371,3 +428,35 @@ jobs:
             gh release upload "$TAG_NAME" "$file" --clobber
           fi
         done
+
+  # A failed matrix leg skips the release job entirely, which silently
+  # leaves the release without .deb packages (issue #466). Surface that
+  # as an explicit, named failure in the run summary.
+  release-status:
+    needs: [build-packages, build-source, release]
+    runs-on: ubuntu-latest
+    if: always() && github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
+
+    steps:
+    - name: Check release assets were published
+      run: |
+        RESULT="${{ needs.release.result }}"
+
+        if [ "$RESULT" = "success" ]; then
+          echo "✅ Release assets published" >> $GITHUB_STEP_SUMMARY
+          exit 0
+        fi
+
+        {
+          echo "## ❌ Release assets were NOT published"
+          echo
+          echo "- \`build-packages\`: ${{ needs.build-packages.result }}"
+          echo "- \`build-source\`: ${{ needs.build-source.result }}"
+          echo "- \`release\`: $RESULT"
+          echo
+          echo "The tagged release is missing its \`.deb\` packages."
+          echo "Re-run the failed jobs with \`gh run rerun <run-id> --failed\`."
+        } >> $GITHUB_STEP_SUMMARY
+
+        echo "::error::Release assets were not published for this tag"
+        exit 1

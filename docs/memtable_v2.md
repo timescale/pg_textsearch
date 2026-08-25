@@ -353,7 +353,21 @@ are the durable record.
 | Scan      | `LW_SHARED`      | chain pages SHARED one at a time      |
 | Spill     | `LW_EXCLUSIVE`   | chain pages DEAD via GenericXLog; then metapage + new seg header |
 | Vacuum    | `LW_SHARED`      | reclaim: DEAD pages SHARED read; FSM update not WAL-logged; spill takes `LW_EXCLUSIVE` separately |
+| Vacuum: tombstone drain | `LW_EXCLUSIVE` | per drained tombstone, held across the unlink and that tombstone's page frees |
 | Merge     | (segment-only)   | metapage + new seg header via GenericXLog |
+| Force-merge truncate | `LW_EXCLUSIVE` | held end-to-end across `tp_truncate_dead_pages` → `RelationTruncate` |
+
+Tombstone drain vs truncate: `tp_tombstone_drain()` (VACUUM
+cleanup, `own_lock=true`) and `tp_truncate_dead_pages()`
+(`bm25_force_merge`) are mutually exclusive under the per-index
+`LW_EXCLUSIVE`. Unlinking a tombstone removes its parked blocks
+from `tp_tombstone_max_used_block()`'s high-water mark, so a
+truncate would then be free to shrink the relation beneath them.
+The drain therefore holds the lock across the unlink *and* the
+frees. Dropping it in between let a truncate strand the frees past
+EOF, or — after a truncate plus a re-extension — stamp
+`TP_FREE_PAGE_MAGIC` on a block already handed to a live
+structure, a corruption that replicates to standbys.
 
 Insert vs scan: both SHARED at LWLock; the tail buffer's EXCL
 lock serializes the per-page race, the same way any heap or

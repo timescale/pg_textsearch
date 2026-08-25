@@ -9,6 +9,11 @@ test/regression.diffs
 test/regression.out
 test/results/
 tmp_check_shared/
+# Test scratch dirs, at any level (root, test/, test/scripts/)
+tmp_*/
+
+# PGXS dependency-tracking output
+.deps/
 
 # Coverage artifacts
 coverage-html/

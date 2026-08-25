@@ -364,6 +364,21 @@ This is analogous to Lucene's `forceMerge(1)`. It rewrites all segments into
 a single segment and reclaims the freed pages. Best used after large batch
 inserts, not during ongoing write traffic.
 
+#### Index fragmentation on update-heavy workloads
+
+Sustained INSERT/DELETE/UPDATE traffic can cause index pages to become
+physically scattered across the relation file, reducing sequential-read
+efficiency. If cold-cache query latency degrades over time, a periodic
+`REINDEX` rebuilds the index with contiguous page layout:
+
+```sql
+REINDEX INDEX docs_idx;
+```
+
+This is the same as `DROP INDEX` + `CREATE INDEX` but keeps the index
+name. Schedule it during low-traffic windows since it takes an
+exclusive lock.
+
 #### Use LIMIT with ORDER BY
 
 Top-k queries (`ORDER BY ... LIMIT n`) enable Block-Max WAND optimization,
