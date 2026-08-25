@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1787556990951,
+  "lastUpdate": 1787643078163,
   "repoUrl": "https://github.com/timescale/pg_textsearch",
   "entries": {
     "Concurrent INSERT (ParadeDB)": [
@@ -8808,6 +8808,68 @@ window.BENCHMARK_DATA = {
           {
             "name": "ParadeDB INSERT latency (c=8)",
             "value": 0.707,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Kunal Singh",
+            "username": "the-osiris",
+            "email": "91742676+the-osiris@users.noreply.github.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "a514c8a36bbb53e399e00860c17b4b2b0df02978",
+          "message": "perf: bound VACUUM CTID reads (#462)\n\n## Summary\n\n- open VACUUM segments without preloading their complete CTID mapping\n- read CTID block numbers and tuple offsets in bounded sequential\nbatches\n- reuse the same scratch buffers across batches and segment boundaries\n- add multi-page, multi-segment VACUUM regression coverage\n\nFixes #320.",
+          "timestamp": "2026-08-24T17:18:37Z",
+          "url": "https://github.com/timescale/pg_textsearch/commit/a514c8a36bbb53e399e00860c17b4b2b0df02978"
+        },
+        "date": 1787643045225,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "ParadeDB INSERT TPS (c=1)",
+            "value": 2609.68351,
+            "unit": "tps"
+          },
+          {
+            "name": "ParadeDB INSERT latency (c=1)",
+            "value": 0.383,
+            "unit": "ms"
+          },
+          {
+            "name": "ParadeDB INSERT TPS (c=2)",
+            "value": 4786.994727,
+            "unit": "tps"
+          },
+          {
+            "name": "ParadeDB INSERT latency (c=2)",
+            "value": 0.418,
+            "unit": "ms"
+          },
+          {
+            "name": "ParadeDB INSERT TPS (c=4)",
+            "value": 7569.535361,
+            "unit": "tps"
+          },
+          {
+            "name": "ParadeDB INSERT latency (c=4)",
+            "value": 0.528,
+            "unit": "ms"
+          },
+          {
+            "name": "ParadeDB INSERT TPS (c=8)",
+            "value": 11378.927275,
+            "unit": "tps"
+          },
+          {
+            "name": "ParadeDB INSERT latency (c=8)",
+            "value": 0.703,
             "unit": "ms"
           }
         ]
