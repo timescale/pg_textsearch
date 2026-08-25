@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1787643267196,
+  "lastUpdate": 1787643270615,
   "repoUrl": "https://github.com/timescale/pg_textsearch",
   "entries": {
     "cranfield Benchmarks": [
@@ -215326,6 +215326,38 @@ window.BENCHMARK_DATA = {
           {
             "name": "paradedb_wikipedia (100.0K docs) - Index Size",
             "value": 59.63,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Kunal Singh",
+            "username": "the-osiris",
+            "email": "91742676+the-osiris@users.noreply.github.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "a514c8a36bbb53e399e00860c17b4b2b0df02978",
+          "message": "perf: bound VACUUM CTID reads (#462)\n\n## Summary\n\n- open VACUUM segments without preloading their complete CTID mapping\n- read CTID block numbers and tuple offsets in bounded sequential\nbatches\n- reuse the same scratch buffers across batches and segment boundaries\n- add multi-page, multi-segment VACUUM regression coverage\n\nFixes #320.",
+          "timestamp": "2026-08-24T17:18:37Z",
+          "url": "https://github.com/timescale/pg_textsearch/commit/a514c8a36bbb53e399e00860c17b4b2b0df02978"
+        },
+        "date": 1787643269939,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "paradedb_wikipedia (100.0K docs) - Index Build Time",
+            "value": 4112.241,
+            "unit": "ms"
+          },
+          {
+            "name": "paradedb_wikipedia (100.0K docs) - Index Size",
+            "value": 59.64,
             "unit": "MB"
           }
         ]
