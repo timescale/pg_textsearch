@@ -15,6 +15,9 @@ typedef enum TpCompactionMode
 	TP_COMPACTION_OFF
 } TpCompactionMode;
 
-extern int tp_compaction_mode;
+extern int	 tp_compaction_mode;
+extern char *tp_compaction_request_function;
 
 extern void tp_compaction_request(Oid indexoid);
+extern void tp_compaction_flush_requests(void);
+extern void tp_compaction_reset_requests(void);

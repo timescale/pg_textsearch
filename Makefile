@@ -89,7 +89,8 @@ PG_CPPFLAGS += -Wno-unknown-warning-option -Wno-clobbered -Wno-packed-not-aligne
 # Test configuration
 REGRESS = abort aerodocs basic binary_io bmw bmw_skip_advance bulk_load \
 	cache_apply cache_memory_cap cache_source cache_spill catalog_stats \
-	chain_source compaction compression concurrent_build coverage deletion \
+	chain_source compaction compaction_request compression \
+	concurrent_build coverage deletion \
 	vacuum vacuum_bitmap vacuum_extended vacuum_rebuild dropped empty \
 	explicit_index expression_index filtered_seed force_merge implicit index \
 	inheritance large_documents limits lock manyterms memory memtable_append \

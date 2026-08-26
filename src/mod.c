@@ -299,6 +299,20 @@ _PG_init(void)
 			NULL,
 			NULL);
 
+	DefineCustomStringVariable(
+			"pg_textsearch.compaction_request_function",
+			"Function called for background compaction requests",
+			"Names a function taking a single regclass argument.  In "
+			"background compaction mode, pg_textsearch calls this function "
+			"at transaction pre-commit for each index that needs compaction.",
+			&tp_compaction_request_function,
+			"",
+			PGC_SUSET,
+			0,
+			NULL,
+			NULL,
+			NULL);
+
 	DefineCustomBoolVariable(
 			"pg_textsearch.compress_segments",
 			"Enable compression for new segment blocks",
@@ -555,12 +569,20 @@ tp_xact_callback(XactEvent event, void *arg pg_attribute_unused())
 	switch (event)
 	{
 	case XACT_EVENT_PRE_COMMIT:
-	case XACT_EVENT_PARALLEL_PRE_COMMIT:
 		/*
 		 * Check for bulk load auto-spill before commit.
 		 * If any index had a large number of terms added this transaction,
 		 * spill to disk to prevent unbounded memory growth.
+		 *
+		 * Flush compaction requests after the spill check, because the spill
+		 * itself can enqueue a background compaction request.
 		 */
+		tp_bulk_load_spill_check();
+		tp_compaction_flush_requests();
+		break;
+
+	case XACT_EVENT_PARALLEL_PRE_COMMIT:
+		/* Parallel workers must not flush background compaction requests. */
 		tp_bulk_load_spill_check();
 		break;
 
@@ -570,6 +592,7 @@ tp_xact_callback(XactEvent event, void *arg pg_attribute_unused())
 		tp_release_all_index_locks();
 		/* Reset bulk load counters for next transaction */
 		tp_reset_bulk_load_counters();
+		tp_compaction_reset_requests();
 		break;
 
 	case XACT_EVENT_ABORT:
@@ -580,11 +603,13 @@ tp_xact_callback(XactEvent event, void *arg pg_attribute_unused())
 		tp_release_all_index_locks();
 		/* Reset bulk load counters for next transaction */
 		tp_reset_bulk_load_counters();
+		tp_compaction_reset_requests();
 		break;
 
 	case XACT_EVENT_PRE_PREPARE:
 	case XACT_EVENT_PREPARE:
-		/* Nothing to do for these events */
+		/* Background compaction is not supported for prepared transactions. */
+		tp_compaction_reset_requests();
 		break;
 	}
 }

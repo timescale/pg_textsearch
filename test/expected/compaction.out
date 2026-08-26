@@ -159,6 +159,7 @@ compaction_mode_bg_spill2
 t
 (1 row)
 COMMIT;
+WARNING:  bm25: pg_textsearch.compaction_request_function is unset or unresolvable; skipping background compaction
 SELECT count(*) = 40 AS compaction_mode_bg_committed
 FROM compaction_mode_bg;
 compaction_mode_bg_committed

@@ -152,6 +152,7 @@ make format-single FILE=path/to/file.c  # format specific file
 | `pg_textsearch.memtable_pages_threshold` | Chain pages before auto-spill (0 = disable) | 64 |
 | `pg_textsearch.segments_per_level` | Segments before compaction | 8 |
 | `pg_textsearch.compaction_mode` | Spill-time compaction mode | inline |
+| `pg_textsearch.compaction_request_function` | Function taking one `regclass` argument, called at pre-commit for background compaction requests | "" |
 | `pg_textsearch.compress_segments` | Enable compression for new segment blocks | true |
 | `pg_textsearch.filtered_seed` | Seed the BM25 internal top-K from estimated filter selectivity so filtered top-k queries (`WHERE ... ORDER BY score LIMIT k`) avoid executor backoff re-drives. Results identical. | true |
 | `pg_textsearch.filtered_seed_margin` | Seed = `ceil(margin * LIMIT / selectivity)`. Higher captures the true top-k in one scoring pass more often, at the cost of scoring deeper. Range [1, 1000] | 3.0 |
