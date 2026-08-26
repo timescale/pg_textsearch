@@ -69,8 +69,14 @@ writers serialize behind it — see the comment at
 take `LW_SHARED` on that same lock. On the run captured for this
 demo, a concurrent writer against the same index saw a worst-case
 single-`INSERT` latency of **2.802s** while a merge batch held the
-lock — a real, measured stall, printed unconditionally by the
-demo's closing summary rather than hidden or averaged away. See
+lock; an independent rerun measured **4.471s**. It varies with
+whichever batch happens to be merging — expect seconds, not
+milliseconds. It is a real, measured stall, printed unconditionally
+by the demo's closing summary rather than hidden or averaged away.
+Such a writer cannot be cancelled while it waits, either: the lock
+holder runs with interrupts held off, so `statement_timeout` does
+not apply until the merge releases the lock (see
+`docs/background_compaction_report.md`). See
 `docs/background_compaction.md`'s "Future work: non-blocking merges"
 section for the proposed (out-of-scope-for-this-POC) fix: since
 segments are immutable, a merge could build its output out-of-band

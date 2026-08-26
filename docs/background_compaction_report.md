@@ -363,6 +363,49 @@ the cancellation) rather than the originally assumed one (level
 counts unchanged); see the comment above that assertion in the demo
 script for detail.
 
+**Root cause: the merge's `CHECK_FOR_INTERRUPTS()` calls cannot
+fire.** The behavior above initially looked like a timing accident —
+cancellation arriving just as the cascade finished — but it
+reproduces at every timeout from 50ms upward, which no timing
+explanation covers. The reason is structural:
+`src/segment/merge.c` calls `CHECK_FOR_INTERRUPTS()` every 1000
+terms (`merge.c:1315`, `:1684`) *while the backend holds the
+per-index `LW_EXCLUSIVE`*, and PostgreSQL's `LWLockAcquire()` calls
+`HOLD_INTERRUPTS()` for exactly the reason its comment gives:
+
+> ... by the LWLock. This ensures that interrupts will not interfere
+> with manipulations of data structures in shared memory.
+> — `src/backend/storage/lmgr/lwlock.c:1216-1219`
+
+`CHECK_FOR_INTERRUPTS()` is a no-op while `InterruptHoldoffCount >
+0`, and the count only returns to zero when `LWLockRelease()` runs
+`RESUME_INTERRUPTS()`. So every interrupt check inside the merge
+loop is dead code for as long as the lock is held, and the cancel
+is necessarily deferred until the merge has finished and dropped
+the lock. The corpus term count is not the limiting factor here —
+the demo's dictionary is roughly 64 x 400 = 25,600 distinct terms,
+so the checks are reached thousands of times; they simply cannot
+act.
+
+Three consequences worth carrying into the next work stream:
+
+1. **`statement_timeout` gives no protection against a long inline
+   merge.** A client cannot bound its exposure to compaction; it
+   pays the full merge cost and then receives an error. This is the
+   strongest practical argument for background mode, stronger than
+   the latency numbers above.
+2. **The same holdoff bounds Act 3's writer stall.** The 4.5s
+   worst-case concurrent-writer latency is not merely a lock wait
+   that could be interrupted — a writer blocked behind a merge
+   batch cannot be cancelled either.
+3. **The interrupt checks in `merge.c` are misleading as written.**
+   They suggest long merges are cancellable when they are not.
+   Either they should be removed with a comment explaining why
+   cancellation is impossible under the lock, or — better, and
+   aligned with "Future work: non-blocking merges" — the merge
+   should build its output segment *without* holding the lock, at
+   which point the checks become both effective and necessary.
+
 **Ranking-invariance must compare document identity, not raw score,
 against a table receiving concurrent writes.** The first version of
 Act 3's ranking-invariance check captured a `(ctid, score)` baseline
@@ -386,7 +429,13 @@ with a background cascade running against an 8-segment/200,000-row
 poll interval, no backoff) saw a worst-case single-`INSERT` latency
 of **2.802s** — one merge batch's full `LW_EXCLUSIVE` hold, exactly
 the honest limitation `docs/background_compaction.md` already
-documents. All 70 concurrent writes eventually committed with zero
+documents. An independent rerun on the same machine measured
+**4.471s** over 81 concurrent inserts, so treat this as "seconds,
+varying with the batch that happens to be merging" rather than a
+stable figure. Per the root-cause finding above, a writer stalled
+this way cannot be cancelled either: it is waiting on an LWLock
+whose holder has interrupts held off. All 70 concurrent writes
+eventually committed with zero
 failures once the batch released the lock; background compaction
 does not lose writes, but it does not make merges lock-free either.
 This is printed unconditionally in the demo's closing summary, and

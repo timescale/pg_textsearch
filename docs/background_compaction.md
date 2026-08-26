@@ -241,6 +241,21 @@ writer can commit between levels. But within a single batch, the
 lock is still held for as long as that merge takes, exactly as it
 would be for `bm25_compact()` called inline.
 
+**`statement_timeout` does not bound a merge.** The merge runs while
+the backend holds that `LW_EXCLUSIVE`, and `LWLockAcquire()` holds
+off interrupts for the duration of the hold, so the
+`CHECK_FOR_INTERRUPTS()` calls inside `src/segment/merge.c` cannot
+fire and the cancel is deferred until the lock is released. Under
+`inline` mode a client that trips a large cascade therefore waits
+for the *entire* merge and then receives `canceling statement due to
+statement timeout` — and because segment pages are physical,
+`GenericXLog`-logged mutations rather than transactional data, the
+merge is not undone by the abort. The client pays the full cost, the
+write is lost, and the compaction happens anyway. A writer blocked
+behind a merge batch is uncancellable for the same reason. This is
+the strongest practical argument for `background` mode, and it is
+measured in `docs/background_compaction_report.md`.
+
 ## When background mode is worth enabling
 
 Background mode is a latency-*variance* trade, not a free win. It
