@@ -55,6 +55,15 @@ LOGFILE="${DATA_DIR}/postgres.log"
 KEEP_DIR="${SCRIPT_DIR}/../tmp_durable_compaction_logs"
 TEST_SIZE_MULTIPLIER=${TEST_SIZE_MULTIPLIER:-1.0}
 
+# Pin every binary to the installation pg_config points at, matching
+# the convention in shutdown_spill.sh. This must be the same install
+# `make install` targeted, because that is the only $libdir where
+# pg_textsearch.so is discoverable -- relying on an ambient PATH
+# silently picks up a system Postgres that has neither extension and
+# fails much later with a bare "could not access file".
+PGBINDIR="$(pg_config --bindir)"
+PKGLIBDIR="$(pg_config --pkglibdir)"
+
 # Scale a loop count by TEST_SIZE_MULTIPLIER (minimum 1).
 scaled_count() {
     awk "BEGIN {n = int($1 * ${TEST_SIZE_MULTIPLIER} + 0.5);
@@ -74,7 +83,7 @@ cleanup() {
     local exit_code=$?
     log "Cleaning up (exit code: $exit_code)..."
     if [ -f "${DATA_DIR}/postmaster.pid" ]; then
-        pg_ctl stop -D "${DATA_DIR}" -m immediate &>/dev/null || true
+        "${PGBINDIR}/pg_ctl" stop -D "${DATA_DIR}" -m immediate &>/dev/null || true
     fi
     if [ "$exit_code" -ne 0 ] && [ -d "${DATA_DIR}" ]; then
         rm -rf "${KEEP_DIR}"
@@ -95,7 +104,7 @@ trap cleanup EXIT INT TERM
 sql_as() {
     local role="$1"
     shift
-    psql -h "${DATA_DIR}" -p "${TEST_PORT}" -U "${role}" -d "${TEST_DB}" \
+    "${PGBINDIR}/psql" -h "${DATA_DIR}" -p "${TEST_PORT}" -U "${role}" -d "${TEST_DB}" \
         -qAt -v ON_ERROR_STOP=1 "$@"
 }
 
@@ -173,6 +182,21 @@ count_generations() {
 
 setup_test_cluster() {
     log "Setting up dedicated PostgreSQL instance on port ${TEST_PORT}..."
+
+    # Fail early and legibly if either module is missing from the
+    # install pg_config points at. Without this the cluster dies at
+    # startup with only "could not access file" in a log the caller
+    # has to go hunting for.
+    local lib
+    for lib in pg_durable pg_textsearch; do
+        if [ ! -f "${PKGLIBDIR}/${lib}.so" ]; then
+            error "${lib}.so not found in ${PKGLIBDIR}. This test \
+needs both pg_durable and pg_textsearch installed into the Postgres \
+that '$(command -v pg_config)' points at. Put the intended \
+installation's bin directory first on PATH, or run 'make install'."
+        fi
+    done
+
     rm -rf "${DATA_DIR}"
     mkdir -p "${DATA_DIR}"
 
@@ -180,7 +204,7 @@ setup_test_cluster() {
     # used for the background worker's own internal connection, distinct
     # from the per-node submitted_by connection. Matching it to the
     # cluster's superuser avoids a "role does not exist" surprise.
-    initdb -D "${DATA_DIR}" -U postgres \
+    "${PGBINDIR}/initdb" -D "${DATA_DIR}" -U postgres \
         --auth-local=trust --auth-host=trust >/dev/null 2>&1
 
     cat >> "${DATA_DIR}/postgresql.conf" << EOF
@@ -209,10 +233,10 @@ EOF
     cat "${DATA_DIR}/pg_hba.conf" >> "${DATA_DIR}/pg_hba.conf.new"
     mv "${DATA_DIR}/pg_hba.conf.new" "${DATA_DIR}/pg_hba.conf"
 
-    pg_ctl start -D "${DATA_DIR}" -l "${LOGFILE}" -w -o "-p ${TEST_PORT}" \
+    "${PGBINDIR}/pg_ctl" start -D "${DATA_DIR}" -l "${LOGFILE}" -w -o "-p ${TEST_PORT}" \
         || error "Failed to start PostgreSQL"
 
-    createdb -h "${DATA_DIR}" -p "${TEST_PORT}" -U postgres "${TEST_DB}"
+    "${PGBINDIR}/createdb" -h "${DATA_DIR}" -p "${TEST_PORT}" -U postgres "${TEST_DB}"
     sql_super -c "CREATE EXTENSION pg_durable;"
     sql_super -c "CREATE EXTENSION pg_textsearch;"
     log "Test cluster ready (db=${TEST_DB})"

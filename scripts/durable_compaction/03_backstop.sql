@@ -94,7 +94,7 @@
 -- own ':=' assignment operator.  Stash the cadence in a custom GUC
 -- instead, set here at the top level where interpolation does
 -- apply, and read it back with current_setting() below.
-SELECT pg_catalog.set_config('pg_durable_test.cron', :'cron', false);
+SELECT pg_catalog.set_config('pg_textsearch_backstop.cron', :'cron', false);
 
 DO $$
 DECLARE
@@ -127,7 +127,7 @@ BEGIN
             SELECT df.start(
                 df.loop(
                     df.wait_for_schedule(
-                        pg_catalog.current_setting('pg_durable_test.cron'))
+                        pg_catalog.current_setting('pg_textsearch_backstop.cron'))
                     ~> 'SELECT public.bm25_compact_pending()'),
                 label => 'bm25-compaction-backstop')
             INTO instance;
