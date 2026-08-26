@@ -288,6 +288,26 @@ See [RELEASING.md](RELEASING.md) for release instructions.
   currently parked in the deferred-free tombstone chain (issue #380),
   awaiting standby-safe FSM reclaim
 - `bm25_debug_pageviz(index_name, file_path)` - Generate page layout visualization
+- `bm25_compact(idx regclass)` - Runs the full compaction cascade for
+  an index under the caller's own transaction, holding the per-index
+  `LW_EXCLUSIVE` lock for the whole cascade
+- `bm25_compact_step(idx regclass)` - Merges one over-threshold level
+  and returns whether more levels still need compaction; used to
+  split a cascade across transactions (see
+  `docs/background_compaction.md`)
+- `bm25_level_counts(idx regclass)` - Returns the per-level segment
+  counts as an `int[]`
+- `bm25_needs_compaction(idx regclass)` - Whether any level is at or
+  over `pg_textsearch.segments_per_level`
+- `bm25_indexes_needing_compaction()` - Lists BM25 indexes the caller
+  has usage rights on
+- `bm25_compact_pending()` - Compacts every index
+  `bm25_indexes_needing_compaction()` returns that currently needs
+  it, isolating failures per index; returns the count compacted
+
+See [`docs/background_compaction.md`](docs/background_compaction.md)
+for how these combine into asynchronous background compaction driven
+by pg_durable.
 
 ## Parallel Index Build
 
