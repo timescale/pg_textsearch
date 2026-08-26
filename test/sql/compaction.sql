@@ -14,6 +14,18 @@ CREATE INDEX compaction_test_idx ON compaction_test
 
 CREATE INDEX compaction_test_btree_idx ON compaction_test(id);
 
+-- Candidate enumeration includes bm25 indexes and excludes btree indexes.
+SELECT EXISTS (
+    SELECT 1
+    FROM bm25_indexes_needing_compaction() AS t(idx)
+    WHERE t.idx = 'compaction_test_idx'::regclass
+) AS compaction_enum_includes_bm25;
+SELECT NOT EXISTS (
+    SELECT 1
+    FROM bm25_indexes_needing_compaction() AS t(idx)
+    WHERE t.idx = 'compaction_test_btree_idx'::regclass
+) AS compaction_enum_excludes_btree;
+
 -- A new bm25 index reports one count per LSM level.
 SELECT array_length(bm25_level_counts('compaction_test_idx'::regclass), 1)
        AS level_count_length;
@@ -96,15 +108,22 @@ BEGIN
 END $$;
 
 SET pg_textsearch.segments_per_level = 2;
+SELECT bm25_needs_compaction('compaction_step_a_idx'::regclass)
+       AS step_needs_before;
+SELECT bm25_compact_step('compaction_step_a_idx'::regclass)
+       AS step_first_returns_true;
 CREATE TEMP TABLE compaction_step_result (steps integer);
 DO $$
 DECLARE
     step_count integer := 0;
 BEGIN
-    WHILE bm25_compact_step('compaction_step_a_idx'::regclass) LOOP
+    WHILE bm25_needs_compaction('compaction_step_a_idx'::regclass) LOOP
         step_count := step_count + 1;
         IF step_count > 100 THEN
             RAISE EXCEPTION 'bm25_compact_step did not terminate';
+        END IF;
+        IF NOT bm25_compact_step('compaction_step_a_idx'::regclass) THEN
+            RAISE EXCEPTION 'bm25_needs_compaction disagrees with step';
         END IF;
     END LOOP;
     INSERT INTO compaction_step_result VALUES (step_count);
@@ -112,6 +131,10 @@ END $$;
 SELECT steps AS compact_step_count FROM compaction_step_result;
 SELECT steps >= 2 AS compact_step_split_cascade
 FROM compaction_step_result;
+SELECT NOT bm25_needs_compaction('compaction_step_a_idx'::regclass)
+       AS step_needs_after;
+SELECT NOT bm25_compact_step('compaction_step_a_idx'::regclass)
+       AS step_final_returns_false;
 SELECT bm25_compact('compaction_step_b_idx'::regclass);
 SELECT bm25_level_counts('compaction_step_a_idx'::regclass) =
        bm25_level_counts('compaction_step_b_idx'::regclass)
@@ -135,6 +158,63 @@ RESET ROLE;
 DROP OWNED BY compaction_user CASCADE;
 DROP ROLE compaction_user;
 
+-- The sweeper compacts eligible indexes and leaves them below threshold.
+SELECT bm25_compact('compaction_test_idx'::regclass);
+SET pg_textsearch.segments_per_level = 64;
+CREATE TABLE compaction_pending (id serial PRIMARY KEY, body text);
+CREATE INDEX compaction_pending_idx ON compaction_pending
+    USING bm25(body) WITH (text_config = 'english');
+
+DO $$
+DECLARE
+    n integer;
+BEGIN
+    FOR n IN 1..2 LOOP
+        INSERT INTO compaction_pending (body)
+        SELECT format('pending batch %s doc %s filler filler', n, i)
+        FROM generate_series(1, 20) i;
+        PERFORM bm25_spill_index('compaction_pending_idx');
+    END LOOP;
+END $$;
+
+SET pg_textsearch.segments_per_level = 2;
+SELECT bm25_needs_compaction('compaction_pending_idx'::regclass)
+       AS pending_needs_before;
+SELECT bm25_compact_pending() = 1 AS pending_compacted_one;
+SELECT NOT bm25_needs_compaction('compaction_pending_idx'::regclass)
+       AS pending_needs_after;
+
+-- A bad candidate warns, but the sweeper continues to the next index.
+SET pg_textsearch.segments_per_level = 64;
+CREATE TABLE compaction_resilient (id serial PRIMARY KEY, body text);
+CREATE INDEX compaction_resilient_idx ON compaction_resilient
+    USING bm25(body) WITH (text_config = 'english');
+
+DO $$
+DECLARE
+    n integer;
+BEGIN
+    FOR n IN 1..2 LOOP
+        INSERT INTO compaction_resilient (body)
+        SELECT format('resilient batch %s doc %s filler filler', n, i)
+        FROM generate_series(1, 20) i;
+        PERFORM bm25_spill_index('compaction_resilient_idx');
+    END LOOP;
+END $$;
+
+SET pg_textsearch.segments_per_level = 2;
+CREATE OR REPLACE FUNCTION bm25_indexes_needing_compaction()
+RETURNS SETOF regclass
+LANGUAGE sql STABLE AS $func$
+    VALUES (0::oid::regclass),
+           ('compaction_resilient_idx'::regclass);
+$func$;
+SELECT bm25_compact_pending() = 1 AS pending_continued_after_warning;
+SELECT NOT bm25_needs_compaction('compaction_resilient_idx'::regclass)
+       AS pending_resilience_completed;
+
+DROP TABLE compaction_resilient CASCADE;
+DROP TABLE compaction_pending CASCADE;
 DROP TABLE compaction_step_a CASCADE;
 DROP TABLE compaction_step_b CASCADE;
 DROP TABLE compaction_manual CASCADE;

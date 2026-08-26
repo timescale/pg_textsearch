@@ -29,3 +29,57 @@ CREATE FUNCTION @extschema@.bm25_compact_step(idx regclass)
 RETURNS boolean
 AS 'MODULE_PATHNAME', 'tp_compact_index_step'
 LANGUAGE C VOLATILE STRICT;
+
+CREATE FUNCTION @extschema@.bm25_needs_compaction(idx regclass)
+RETURNS boolean
+LANGUAGE sql STABLE AS $$
+    SELECT EXISTS (
+        SELECT 1
+        FROM unnest(@extschema@.bm25_level_counts(idx))
+             WITH ORDINALITY AS t(cnt, lvl)
+        WHERE
+          -- TP_MAX_LEVELS - 1; ordinality 8 is the ineligible top level.
+          t.lvl <= 7
+          AND t.cnt >= pg_catalog.current_setting(
+                  'pg_textsearch.segments_per_level')::int
+    );
+$$;
+
+CREATE FUNCTION @extschema@.bm25_indexes_needing_compaction()
+RETURNS SETOF regclass
+LANGUAGE sql STABLE AS $$
+    SELECT c.oid::regclass
+    FROM pg_catalog.pg_class c
+         JOIN pg_catalog.pg_am am ON am.oid = c.relam
+         JOIN pg_catalog.pg_index i ON i.indexrelid = c.oid
+    WHERE am.amname = 'bm25'
+      AND c.relpersistence <> 't'
+      AND i.indisvalid
+      AND i.indisready
+      AND pg_catalog.pg_has_role(c.relowner, 'USAGE')
+    ORDER BY c.oid;
+$$;
+
+CREATE FUNCTION @extschema@.bm25_compact_pending()
+RETURNS integer
+LANGUAGE plpgsql AS $$
+DECLARE
+    idx regclass;
+    n   integer := 0;
+BEGIN
+    FOR idx IN
+        SELECT * FROM @extschema@.bm25_indexes_needing_compaction()
+    LOOP
+        BEGIN
+            IF @extschema@.bm25_needs_compaction(idx) THEN
+                PERFORM @extschema@.bm25_compact(idx);
+                n := n + 1;
+            END IF;
+        EXCEPTION WHEN OTHERS THEN
+            RAISE WARNING 'bm25: compaction of % failed: %', idx, SQLERRM;
+        END;
+    END LOOP;
+
+    RETURN n;
+END;
+$$;
