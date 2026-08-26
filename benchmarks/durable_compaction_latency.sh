@@ -43,6 +43,12 @@ LOGFILE="${DATA_DIR}/postgres.log"
 KEEP_DIR="${SCRIPT_DIR}/tmp_durable_compaction_bench_logs"
 BENCH_ROUNDS="${BENCH_ROUNDS:-10 50 200}"
 BENCH_SEGMENTS_PER_LEVEL="${BENCH_SEGMENTS_PER_LEVEL:-4}"
+# Scenario 2 (see below): how many segments to pile up, and how many
+# rows each holds, before timing the commit that triggers the merge.
+# The defaults are sized so the merge costs seconds rather than
+# milliseconds -- that is the whole point of the comparison.
+BENCH_TRIGGER_SEGMENTS="${BENCH_TRIGGER_SEGMENTS:-8}"
+BENCH_TRIGGER_ROWS="${BENCH_TRIGGER_ROWS:-25000}"
 
 # Pin every binary to the installation pg_config points at -- the
 # same convention as test/scripts/durable_compaction.sh and
@@ -299,6 +305,78 @@ bench_mode() {
 }
 
 # ---------------------------------------------------------------------
+# Scenario 2: latency of the ONE transaction that triggers a merge,
+# at a corpus size where merging is genuinely expensive.
+#
+# Scenario 1 above averages every spill round, most of which merge
+# nothing, so it is dominated by the fixed ~0.06s enqueue cost that
+# background mode adds to each spill and it makes background look
+# uniformly worse. That is a real cost, but it is not the cost this
+# design exists to remove. The cost that matters is paid by the
+# unlucky transaction that happens to cross the threshold: under
+# inline it waits for the whole cascade, under background it waits
+# only for the enqueue. This scenario isolates exactly that
+# transaction.
+# ---------------------------------------------------------------------
+
+# Build BENCH_TRIGGER_SEGMENTS sizeable segments with compaction
+# disabled, then time the single commit that turns compaction back on
+# and crosses the threshold. Echoes that commit's duration.
+time_trigger_commit() {
+    local mode="$1"
+    local table="bench_trigger_${mode}"
+    local idx="${table}_idx"
+    create_owned_table "$table" "$idx"
+
+    # Pile up segments with compaction off so none of this build cost
+    # lands in the measured transaction. These thresholds are
+    # PGC_SUSET, so they must go through ALTER SYSTEM as the
+    # superuser -- app_owner cannot SET them in its own session.
+    set_guc pg_textsearch.compaction_mode off
+    set_guc pg_textsearch.memtable_pages_threshold 0
+    set_guc pg_textsearch.bulk_load_threshold 0
+    local i
+    for i in $(seq 1 "${BENCH_TRIGGER_SEGMENTS}"); do
+        sql_as app_owner << SQL >/dev/null
+SET client_min_messages = warning;
+INSERT INTO ${table} (body)
+SELECT 'segment ${i} document ' || g || ' ' ||
+       repeat('lorem ipsum dolor sit amet consectetur adipiscing ' ||
+              'elit sed do eiusmod tempor incididunt ut labore ', 3)
+FROM generate_series(1, ${BENCH_TRIGGER_ROWS}) g;
+SELECT bm25_spill_index('${idx}');
+SQL
+    done
+
+    # Sanity-check the setup actually produced the segments we are
+    # about to merge. Without this the scenario silently degenerates
+    # into timing an empty merge and reports meaningless numbers.
+    local l0
+    l0=$(sql_super -c \
+        "SELECT (bm25_level_counts('${idx}'::regclass))[1];")
+    if [ "${l0:-0}" -lt "${BENCH_TRIGGER_SEGMENTS}" ]; then
+        error "scenario 2 setup failed for mode '${mode}': expected \
+at least ${BENCH_TRIGGER_SEGMENTS} L0 segments, found '${l0}'"
+    fi
+
+    set_guc pg_textsearch.compaction_mode "$mode"
+
+    local start end
+    start=$(date +%s.%N)
+    sql_as app_owner << SQL >/dev/null
+SET client_min_messages = warning;
+BEGIN;
+INSERT INTO ${table} (body)
+SELECT 'trigger doc ' || g || ' lorem ipsum dolor'
+FROM generate_series(1, 20) g;
+SELECT bm25_spill_index('${idx}');
+COMMIT;
+SQL
+    end=$(date +%s.%N)
+    awk "BEGIN { printf \"%.3f\", ${end} - ${start} }"
+}
+
+# ---------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------
 
@@ -309,6 +387,7 @@ wait_for_durable_worker
 log "pg_textsearch.segments_per_level = ${BENCH_SEGMENTS_PER_LEVEL}"
 log "Round counts to measure: ${BENCH_ROUNDS}"
 echo ""
+log "Scenario 1: average spill-round transaction (most merge nothing)"
 printf "%-8s %-10s %-12s %-12s\n" "rounds" "mode" "p50 (s)" "p99 (s)"
 printf "%-8s %-10s %-12s %-12s\n" "------" "----" "-------" "-------"
 
@@ -323,6 +402,19 @@ for rounds in $BENCH_ROUNDS; do
 done
 
 echo ""
+log "Scenario 2: the single transaction that triggers a real merge \
+(${BENCH_TRIGGER_SEGMENTS} segments x ${BENCH_TRIGGER_ROWS} rows)"
+trigger_inline=$(time_trigger_commit inline)
+trigger_bg=$(time_trigger_commit background)
+printf "%-12s %-12s\n" "mode" "commit (s)"
+printf "%-12s %-12s\n" "----" "----------"
+printf "%-12s %-12s\n" "inline" "${trigger_inline}"
+printf "%-12s %-12s\n" "background" "${trigger_bg}"
+echo ""
+log "Scenario 2 is the comparison this design is about: scenario 1's \
+fixed enqueue cost is paid on every spill, but only scenario 2's \
+transaction pays for the merge itself."
+
+echo ""
 log "Done. These numbers are from THIS run, on this machine, at the \
-round counts above -- do not extrapolate to other scales without \
-rerunning."
+scales above -- do not extrapolate to other scales without rerunning."

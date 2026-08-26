@@ -241,6 +241,32 @@ writer can commit between levels. But within a single batch, the
 lock is still held for as long as that merge takes, exactly as it
 would be for `bm25_compact()` called inline.
 
+## When background mode is worth enabling
+
+Background mode is a latency-*variance* trade, not a free win. It
+adds a roughly constant **~0.06s** to every spill that requests
+compaction — two nested subtransactions, SPI, and `df.start()`'s own
+writes to `df.instances`/`df.nodes` — and removes the merge from the
+tail. Measured with
+[`benchmarks/durable_compaction_latency.sh`](../benchmarks/durable_compaction_latency.sh):
+
+| | inline | background |
+|---|---|---|
+| typical spill, no merge triggered | ~0.020s | ~0.079s |
+| spill that triggers a merge (200k-row corpus) | 0.982s | 0.084s |
+
+At `segments_per_level = 2` over the same corpus, forcing a deeper
+cascade, the triggering transaction measured **2.794s inline versus
+0.097s background** — and both modes converged on the identical final
+layout, so the background path defers the work rather than skipping
+it.
+
+The implication for operators: enable background mode when merges are
+expensive relative to the enqueue, which on commodity hardware means
+roughly tens of thousands of non-trivial documents and up. Below that,
+inline is simply cheaper, and turning background mode on will make
+every write marginally slower for no benefit.
+
 ## Future work: non-blocking merges
 
 Segments are immutable, and

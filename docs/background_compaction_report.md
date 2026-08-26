@@ -160,30 +160,57 @@ rounds   mode       p50 (s)      p99 (s)
 500      background 0.084154     0.106680
 ```
 
-**Be honest about what this shows: background was slower at every
-scale tested, not faster.** Inline p50 stayed close to ~0.020-0.024s
-across 10 to 500 rounds and two `segments_per_level` settings;
-background p50 stayed close to ~0.077-0.084s. Even at 500 rounds
-with `segments_per_level = 2` (forcing more frequent, deeper merges),
-inline's p99 (0.045s) was still well under background's p50
-(0.084s) — **no crossover scale was found in this testing.**
+**Scenario 1 — the average spill round — favours inline, and that is
+a real cost, not a measurement artifact.** Inline p50 stayed close to
+~0.020-0.024s across 10 to 500 rounds and two `segments_per_level`
+settings; background p50 stayed close to ~0.077-0.084s. **The two
+nested subtransactions plus SPI plus `df.start()`'s own writes to
+`df.instances`/`df.nodes` cost a fairly constant ~0.06s per spill**,
+and that cost is paid on *every* spill that requests compaction,
+whether or not a merge follows.
 
-This matches, and sharpens, the Task 7 end-to-end test's own
-observation of `inline=0.141s background=0.159s` over 10 spill
-rounds *inside one transaction* (a coarser measurement that amortizes
-the per-round overhead across the whole batch). Measuring individual
-rounds isolates the effect: **the two nested subtransactions plus SPI
-plus `df.start()`'s own writes to `df.instances`/`df.nodes` cost a
-fairly constant ~0.06s per spill**, and at the corpus sizes reachable
-in this testing (documents of a handful of words, up to 500 rounds ×
-20 rows), the actual merge work `bm25_compact_step()` performs never
-got large enough to exceed that fixed enqueue cost. The upside this
-POC exists to capture — moving merge CPU/IO off the writer — only
-pays for itself once merges are expensive enough to dwarf the
-enqueue overhead; this testing did not reach that scale, and no
-number here should be read as showing that it does. Do not
-extrapolate these figures to a production-sized corpus without
-rerunning at that scale.
+But scenario 1 is the wrong question. Most spill rounds merge
+nothing, so averaging over them measures the enqueue overhead and
+almost nothing else. The cost this design exists to remove is paid
+by the one unlucky transaction that crosses the threshold: under
+`inline` it waits for the whole merge, under `background` it waits
+only for the enqueue. Scenario 2 isolates that transaction — 8
+segments of 25,000 substantial documents each (200,000 rows), then
+one 20-row INSERT that triggers the cascade:
+
+```
+$ BENCH_ROUNDS="10" benchmarks/durable_compaction_latency.sh
+[...]
+Scenario 2: the single transaction that triggers a real merge
+(8 segments x 25000 rows)
+mode         commit (s)
+----         ----------
+inline       0.982
+background   0.084
+```
+
+**That is the crossover: ~12x on the triggering transaction**, and it
+grows with the size of the merge. Measured by hand on the development
+cluster at `segments_per_level = 2` (a deeper cascade over the same
+200,000-row corpus) the gap was larger still — **2.794s inline versus
+0.097s background, ~29x** — and both modes converged on the identical
+final layout, `{1,0,0,1,0,0,0,0}`, confirming the background path is
+not skipping work but deferring it.
+
+So the honest summary is a trade, not a win everywhere:
+
+| | inline | background |
+|---|---|---|
+| typical spill (no merge) | ~0.020s | ~0.079s |
+| spill that triggers a merge | 0.982s / 2.794s | 0.084s / 0.097s |
+
+Background mode adds a fixed ~0.06s to every compaction request and
+removes seconds from the tail. It is a latency-*variance* trade:
+worth it when merges are expensive relative to the enqueue, which on
+this hardware means roughly a corpus of tens of thousands of
+non-trivial documents and up. At toy scale — the scale most of the
+regression tests run at — inline is simply cheaper, and the numbers
+above should not be read as claiming otherwise.
 
 ## pg_durable limitations hit
 
