@@ -85,6 +85,13 @@ tp_merge_level_segments(Relation index, uint32 level, uint32 max_merge);
 extern void tp_maybe_compact_level(Relation index, uint32 level);
 
 /*
+ * Perform at most one merge batch, splitting cascades across
+ * transactions so the per-index exclusive lock can be released
+ * between levels.
+ */
+extern bool tp_compact_step(Relation index);
+
+/*
  * Compact all segments across all levels into one segment per level.
  *
  * Unlike tp_maybe_compact_level, this ignores the segments_per_level

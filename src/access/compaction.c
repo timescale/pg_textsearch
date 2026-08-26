@@ -7,6 +7,7 @@
 #include <postgres.h>
 
 #include <access/relation.h>
+#include <access/xlog.h>
 #include <catalog/objectaccess.h>
 #include <catalog/pg_class.h>
 #include <catalog/pg_type.h>
@@ -17,6 +18,8 @@
 #include "access/am.h"
 #include "constants.h"
 #include "index/metapage.h"
+#include "index/state.h"
+#include "segment/merge.h"
 
 /*
  * Open a bm25 index by OID, validating that it is in fact a bm25
@@ -76,4 +79,89 @@ tp_level_counts(PG_FUNCTION_ARGS)
 	result = construct_array(
 			elems, TP_MAX_LEVELS, INT4OID, sizeof(int32), true, TYPALIGN_INT);
 	PG_RETURN_ARRAYTYPE_P(result);
+}
+
+PG_FUNCTION_INFO_V1(tp_compact_index);
+
+Datum
+tp_compact_index(PG_FUNCTION_ARGS)
+{
+	Oid				   indexoid = PG_GETARG_OID(0);
+	Relation		   index_rel;
+	TpLocalIndexState *index_state;
+
+	if (RecoveryInProgress())
+		ereport(ERROR,
+				(errcode(ERRCODE_READ_ONLY_SQL_TRANSACTION),
+				 errmsg("cannot compact a bm25 index during recovery")));
+
+	index_rel = tp_open_bm25_index(indexoid, RowExclusiveLock, true);
+
+	index_state = tp_get_local_index_state(indexoid);
+	if (index_state == NULL)
+	{
+		char *relname = pstrdup(RelationGetRelationName(index_rel));
+
+		relation_close(index_rel, RowExclusiveLock);
+		ereport(ERROR,
+				(errcode(ERRCODE_INTERNAL_ERROR),
+				 errmsg("could not get index state for \"%s\"", relname)));
+	}
+
+	tp_acquire_index_lock(index_state, LW_EXCLUSIVE);
+	PG_TRY();
+	{
+		tp_maybe_compact_level(index_rel, 0);
+	}
+	PG_FINALLY();
+	{
+		tp_release_index_lock(index_state);
+		relation_close(index_rel, RowExclusiveLock);
+	}
+	PG_END_TRY();
+
+	PG_RETURN_VOID();
+}
+
+PG_FUNCTION_INFO_V1(tp_compact_index_step);
+
+Datum
+tp_compact_index_step(PG_FUNCTION_ARGS)
+{
+	Oid				   indexoid = PG_GETARG_OID(0);
+	Relation		   index_rel;
+	TpLocalIndexState *index_state;
+	bool			   more_work;
+
+	if (RecoveryInProgress())
+		ereport(ERROR,
+				(errcode(ERRCODE_READ_ONLY_SQL_TRANSACTION),
+				 errmsg("cannot compact a bm25 index during recovery")));
+
+	index_rel = tp_open_bm25_index(indexoid, RowExclusiveLock, true);
+
+	index_state = tp_get_local_index_state(indexoid);
+	if (index_state == NULL)
+	{
+		char *relname = pstrdup(RelationGetRelationName(index_rel));
+
+		relation_close(index_rel, RowExclusiveLock);
+		ereport(ERROR,
+				(errcode(ERRCODE_INTERNAL_ERROR),
+				 errmsg("could not get index state for \"%s\"", relname)));
+	}
+
+	tp_acquire_index_lock(index_state, LW_EXCLUSIVE);
+	PG_TRY();
+	{
+		more_work = tp_compact_step(index_rel);
+	}
+	PG_FINALLY();
+	{
+		tp_release_index_lock(index_state);
+		relation_close(index_rel, RowExclusiveLock);
+	}
+	PG_END_TRY();
+
+	PG_RETURN_BOOL(more_work);
 }

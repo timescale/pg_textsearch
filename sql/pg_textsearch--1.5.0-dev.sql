@@ -260,6 +260,16 @@ RETURNS int[]
 AS 'MODULE_PATHNAME', 'tp_level_counts'
 LANGUAGE C STRICT PARALLEL SAFE;
 
+CREATE FUNCTION @extschema@.bm25_compact(idx regclass)
+RETURNS void
+AS 'MODULE_PATHNAME', 'tp_compact_index'
+LANGUAGE C VOLATILE STRICT;
+
+CREATE FUNCTION @extschema@.bm25_compact_step(idx regclass)
+RETURNS boolean
+AS 'MODULE_PATHNAME', 'tp_compact_index_step'
+LANGUAGE C VOLATILE STRICT;
+
 -- Fast summary function showing only statistics (no content dump)
 CREATE FUNCTION @extschema@.bm25_summarize_index(text) RETURNS text
     AS 'MODULE_PATHNAME', 'tp_summarize_index'

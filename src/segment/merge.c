@@ -1973,6 +1973,48 @@ tp_maybe_compact_level(Relation index, uint32 level)
 }
 
 /*
+ * Perform at most one merge batch, at the lowest level that is over
+ * threshold.
+ *
+ * Splitting a cascade into steps lets each step run in its own
+ * transaction, so the per-index exclusive lock is released between
+ * levels rather than held for the whole cascade.
+ */
+bool
+tp_compact_step(Relation index)
+{
+	TpIndexMetaPage metap;
+	Buffer			metabuf;
+	Page			metapage;
+	uint16			level_counts[TP_MAX_LEVELS];
+	uint32			level;
+
+	metabuf = ReadBuffer(index, 0);
+	LockBuffer(metabuf, BUFFER_LOCK_SHARE);
+	metapage = BufferGetPage(metabuf);
+	metap	 = (TpIndexMetaPage)PageGetContents(metapage);
+
+	memcpy(level_counts, metap->level_counts, sizeof(level_counts));
+
+	UnlockReleaseBuffer(metabuf);
+
+	for (level = 0; level < TP_MAX_LEVELS - 1; level++)
+	{
+		if (level_counts[level] < (uint16)tp_segments_per_level)
+			continue;
+
+		if (tp_merge_level_segments(
+					index, level, (uint32)tp_segments_per_level) ==
+			InvalidBlockNumber)
+			return false;
+
+		return true;
+	}
+
+	return false;
+}
+
+/*
  * Force-merge all segments into a single segment, à la Lucene's
  * forceMerge(1).  Merges ALL segments at each level in a single
  * batch, ignoring the segments_per_level threshold.

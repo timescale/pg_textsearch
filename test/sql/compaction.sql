@@ -37,5 +37,106 @@ SELECT (bm25_level_counts('compaction_test_idx'::regclass))[1]
 SELECT bm25_level_counts('compaction_test_btree_idx'::regclass);
 SELECT bm25_level_counts('compaction_test'::regclass);
 
+-- bm25_compact reduces the occupied lower level and promotes upward.
+SET pg_textsearch.segments_per_level = 64;
+CREATE TABLE compaction_manual (id serial PRIMARY KEY, body text);
+CREATE INDEX compaction_manual_idx ON compaction_manual
+    USING bm25(body) WITH (text_config = 'english');
+
+INSERT INTO compaction_manual (body)
+SELECT 'compact alpha ' || i || ' ' || repeat('filler ', 4)
+FROM generate_series(1, 20) i;
+SELECT bm25_spill_index('compaction_manual_idx') IS NOT NULL
+       AS manual_spill1;
+
+INSERT INTO compaction_manual (body)
+SELECT 'compact beta ' || i || ' ' || repeat('filler ', 4)
+FROM generate_series(1, 20) i;
+SELECT bm25_spill_index('compaction_manual_idx') IS NOT NULL
+       AS manual_spill2;
+
+INSERT INTO compaction_manual (body)
+SELECT 'compact gamma ' || i || ' ' || repeat('filler ', 4)
+FROM generate_series(1, 20) i;
+SELECT bm25_spill_index('compaction_manual_idx') IS NOT NULL
+       AS manual_spill3;
+
+SET pg_textsearch.segments_per_level = 2;
+SELECT (bm25_level_counts('compaction_manual_idx'::regclass))[1] >= 2
+       AS manual_l0_over_threshold;
+SELECT bm25_compact('compaction_manual_idx'::regclass);
+SELECT (bm25_level_counts('compaction_manual_idx'::regclass))[1] < 2
+       AS manual_l0_below_threshold;
+SELECT (bm25_level_counts('compaction_manual_idx'::regclass))[2] > 0
+       AS manual_l1_promoted;
+
+-- Stepped compaction terminates and matches whole-cascade compaction.
+SET pg_textsearch.segments_per_level = 64;
+CREATE TABLE compaction_step_a (id serial PRIMARY KEY, body text);
+CREATE TABLE compaction_step_b (id serial PRIMARY KEY, body text);
+CREATE INDEX compaction_step_a_idx ON compaction_step_a
+    USING bm25(body) WITH (text_config = 'english');
+CREATE INDEX compaction_step_b_idx ON compaction_step_b
+    USING bm25(body) WITH (text_config = 'english');
+
+DO $$
+DECLARE
+    n integer;
+BEGIN
+    FOR n IN 1..4 LOOP
+        INSERT INTO compaction_step_a (body)
+        SELECT format('step batch %s doc %s filler filler filler', n, i)
+        FROM generate_series(1, 20) i;
+        INSERT INTO compaction_step_b (body)
+        SELECT format('step batch %s doc %s filler filler filler', n, i)
+        FROM generate_series(1, 20) i;
+        PERFORM bm25_spill_index('compaction_step_a_idx');
+        PERFORM bm25_spill_index('compaction_step_b_idx');
+    END LOOP;
+END $$;
+
+SET pg_textsearch.segments_per_level = 2;
+CREATE TEMP TABLE compaction_step_result (steps integer);
+DO $$
+DECLARE
+    step_count integer := 0;
+BEGIN
+    WHILE bm25_compact_step('compaction_step_a_idx'::regclass) LOOP
+        step_count := step_count + 1;
+        IF step_count > 100 THEN
+            RAISE EXCEPTION 'bm25_compact_step did not terminate';
+        END IF;
+    END LOOP;
+    INSERT INTO compaction_step_result VALUES (step_count);
+END $$;
+SELECT steps AS compact_step_count FROM compaction_step_result;
+SELECT steps >= 2 AS compact_step_split_cascade
+FROM compaction_step_result;
+SELECT bm25_compact('compaction_step_b_idx'::regclass);
+SELECT bm25_level_counts('compaction_step_a_idx'::regclass) =
+       bm25_level_counts('compaction_step_b_idx'::regclass)
+       AS step_matches_full_compact;
+
+-- Only the owner can run compaction control functions.
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'compaction_user') THEN
+        EXECUTE 'REASSIGN OWNED BY compaction_user TO CURRENT_USER';
+        EXECUTE 'DROP OWNED BY compaction_user CASCADE';
+        DROP ROLE compaction_user;
+    END IF;
+END $$;
+CREATE ROLE compaction_user LOGIN;
+GRANT USAGE ON SCHEMA public TO compaction_user;
+SET ROLE compaction_user;
+SELECT bm25_compact('compaction_step_a_idx'::regclass);
+SELECT bm25_compact_step('compaction_step_a_idx'::regclass);
+RESET ROLE;
+DROP OWNED BY compaction_user CASCADE;
+DROP ROLE compaction_user;
+
+DROP TABLE compaction_step_a CASCADE;
+DROP TABLE compaction_step_b CASCADE;
+DROP TABLE compaction_manual CASCADE;
 DROP TABLE compaction_test CASCADE;
 DROP EXTENSION pg_textsearch CASCADE;
