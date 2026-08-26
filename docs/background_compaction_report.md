@@ -328,3 +328,66 @@ such. Reported here rather than silently worked around.
   model, the non-goals in spec §6, the `df.loop` termination
   argument — held up exactly as designed; no other discrepancies were
   found.
+
+## Task 9 findings (verified 2026-08-26, `run_demo.sh`)
+
+**Inline-mode `statement_timeout` does not undo a completed merge.**
+The Task 9 spec assumed that cancelling the triggering transaction
+mid-cascade (via `statement_timeout`, relying on
+`CHECK_FOR_INTERRUPTS()` inside the merge loop) would leave the
+segment layout unchanged, matching ordinary transactional rollback.
+Measured behavior on this machine is different: with
+`pg_textsearch.compaction_mode = 'inline'`, an 8-segment, 200,000-row
+corpus, and `segments_per_level = 2`, cancelling the triggering
+statement at timeouts ranging from 50ms up to just under the full
+cascade duration *all* produced the exact same result — the
+statement ran to the full measured cascade time (matching the
+uncancelled calibration run almost exactly) before the cancellation
+was observed, and the final segment layout was the fully-converged
+one, identical to a successful run. Only the triggering row's
+visibility was rolled back (`SELECT ... WHERE body = '...'` returned
+`f`); the L0 segment count had already dropped to its final value.
+
+This is consistent with, not a bug in, the documented architecture:
+segment merges are physical page mutations WAL-logged directly via
+`GenericXLog` (see `CLAUDE.md`'s "Physical replication" note — there
+is no custom rmgr and no undo log for these pages), exactly like a
+B-tree page split surviving a `ROLLBACK`. `ROLLBACK` undoes heap
+tuple visibility, not already-flushed index structure. Practically,
+this means inline mode's `statement_timeout` "protection" is
+illusory for compaction: the client pays the *full* merge cost and
+still receives an error, which is a strictly worse outcome than
+either succeeding or failing fast. `demo/background_compaction/run_demo.sh`'s
+Act 1 was rewritten to assert the measured behavior (L0 drops despite
+the cancellation) rather than the originally assumed one (level
+counts unchanged); see the comment above that assertion in the demo
+script for detail.
+
+**Ranking-invariance must compare document identity, not raw score,
+against a table receiving concurrent writes.** The first version of
+Act 3's ranking-invariance check captured a `(ctid, score)` baseline
+*before* a concurrent writer loop began inserting further rows into
+the same table (deliberately — the writer needs to hit the same
+index under compaction to measure real `LW_EXCLUSIVE` stall). Every
+one of 17/17 later samples showed a numeric score drift after
+rounding to 4 decimals — not a ranking bug, but the ordinary and
+correct effect of `total_docs`/average document length shifting by a
+small amount as new rows commit. Because every demo document is
+constructed to be exactly 30 words, BM25's length-normalization term
+is identical across all of them, so this drift rescales every
+document's score by the same factor and does not reorder them. The
+fix was to compare `ctid` *order* only (dropping the score column
+from the comparison), which is the correct invariant to assert given
+a corpus that is expected to keep growing during the check.
+
+**Measured max concurrent-writer latency (honest, not tuned away):**
+with a background cascade running against an 8-segment/200,000-row
+`act3_idx`, a concurrent writer hammering the *same* index (0.1s
+poll interval, no backoff) saw a worst-case single-`INSERT` latency
+of **2.802s** — one merge batch's full `LW_EXCLUSIVE` hold, exactly
+the honest limitation `docs/background_compaction.md` already
+documents. All 70 concurrent writes eventually committed with zero
+failures once the batch released the lock; background compaction
+does not lose writes, but it does not make merges lock-free either.
+This is printed unconditionally in the demo's closing summary, and
+is not hidden or averaged away.
