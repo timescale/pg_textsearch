@@ -14,3 +14,8 @@ BEGIN
             'Add pg_textsearch to shared_preload_libraries and restart.';
     END IF;
 END $$;
+
+CREATE FUNCTION @extschema@.bm25_level_counts(idx regclass)
+RETURNS int[]
+AS 'MODULE_PATHNAME', 'tp_level_counts'
+LANGUAGE C STRICT PARALLEL SAFE;

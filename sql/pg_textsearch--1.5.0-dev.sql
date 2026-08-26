@@ -255,6 +255,11 @@ RETURNS void
 AS 'MODULE_PATHNAME', 'tp_force_merge'
 LANGUAGE C VOLATILE STRICT;
 
+CREATE FUNCTION @extschema@.bm25_level_counts(idx regclass)
+RETURNS int[]
+AS 'MODULE_PATHNAME', 'tp_level_counts'
+LANGUAGE C STRICT PARALLEL SAFE;
+
 -- Fast summary function showing only statistics (no content dump)
 CREATE FUNCTION @extschema@.bm25_summarize_index(text) RETURNS text
     AS 'MODULE_PATHNAME', 'tp_summarize_index'

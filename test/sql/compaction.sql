@@ -1,0 +1,41 @@
+CREATE EXTENSION IF NOT EXISTS pg_textsearch;
+
+\pset format unaligned
+SET client_min_messages = warning;
+SET pg_textsearch.segments_per_level = 8;
+
+CREATE TABLE compaction_test (
+    id serial PRIMARY KEY,
+    body text
+);
+
+CREATE INDEX compaction_test_idx ON compaction_test
+    USING bm25(body) WITH (text_config = 'english');
+
+CREATE INDEX compaction_test_btree_idx ON compaction_test(id);
+
+-- A new bm25 index reports one count per LSM level.
+SELECT array_length(bm25_level_counts('compaction_test_idx'::regclass), 1)
+       AS level_count_length;
+
+-- Manual spills create L0 segments, and the observable L0 count grows.
+INSERT INTO compaction_test (body)
+SELECT 'alpha document ' || i || ' ' || repeat('filler ', 4)
+FROM generate_series(1, 20) i;
+SELECT bm25_spill_index('compaction_test_idx') IS NOT NULL AS spill1;
+SELECT (bm25_level_counts('compaction_test_idx'::regclass))[1]
+       AS l0_after_spill1;
+
+INSERT INTO compaction_test (body)
+SELECT 'beta document ' || i || ' ' || repeat('filler ', 4)
+FROM generate_series(1, 20) i;
+SELECT bm25_spill_index('compaction_test_idx') IS NOT NULL AS spill2;
+SELECT (bm25_level_counts('compaction_test_idx'::regclass))[1]
+       AS l0_after_spill2;
+
+-- Non-bm25 relations are rejected with a clear object-type error.
+SELECT bm25_level_counts('compaction_test_btree_idx'::regclass);
+SELECT bm25_level_counts('compaction_test'::regclass);
+
+DROP TABLE compaction_test CASCADE;
+DROP EXTENSION pg_textsearch CASCADE;
