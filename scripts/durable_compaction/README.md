@@ -170,6 +170,42 @@ pg_textsearch.compaction_request_function = 'public.bm25_request_compaction'
 Use `off` plus the backstop if you want compaction driven purely on
 a schedule.
 
+### Set the compaction threshold where the *worker* can see it
+
+`pg_textsearch.segments_per_level` decides both whether a request is
+enqueued and whether the background task actually merges anything --
+but the two decisions are made in **two different sessions**:
+
+| Decision                        | Evaluated in                       |
+|---------------------------------|------------------------------------|
+| enqueue a request at PRE_COMMIT | the **writer's** session           |
+| `bm25_needs_compaction()` loop  | the **compactor's** worker session |
+
+The worker connects as `textsearch_compactor` and inherits nothing
+from the writer. Setting the threshold only in the writer's session
+produces a task that starts, evaluates the condition against the
+*default* threshold, finds nothing to do and reports `completed`
+while the level counts never change -- a silent no-op that looks
+like success:
+
+```sql
+-- writer set segments_per_level = 2, worker still sees the default 8
+SELECT bm25_level_counts('my_idx');    -- {4,0,0,0,0,0,0,0}
+-- ... instance completes ...
+SELECT bm25_level_counts('my_idx');    -- {4,0,0,0,0,0,0,0}  (unchanged)
+```
+
+Set it at a scope both sessions inherit -- `postgresql.conf`,
+`ALTER SYSTEM`, or `ALTER DATABASE ... SET` -- or explicitly on the
+compactor role:
+
+```sql
+ALTER ROLE textsearch_compactor SET pg_textsearch.segments_per_level = 2;
+```
+
+The same applies to any other GUC that `bm25_compact_step()` or
+`bm25_needs_compaction()` reads.
+
 ## Operating
 
 ```sql
@@ -179,8 +215,9 @@ FROM df.instances
 WHERE label LIKE 'bm25-compact%'
 ORDER BY created_at DESC LIMIT 20;
 
--- why one failed
-SELECT n.id, n.node_type, n.status, n.error, left(n.query, 80)
+-- why one failed -- NOTE: n.error is empty in 0.2.6, see
+-- "Known limitations"; the message is in the server log
+SELECT n.id, n.node_type, n.status, n.status_details, left(n.query, 80)
 FROM df.nodes n
 WHERE n.instance_id = '<id>';
 
@@ -200,6 +237,19 @@ as a superuser.
   and no `on_failure`; a node that raises kills its instance. This is
   why the two-layer story (next-spill retry plus the hourly backstop)
   exists. Upstream PR #354 would change this.
+* **`df.nodes.error` is always empty.** In 0.2.6 a failed node has
+  `status = 'failed'` but an empty `error` column, and
+  `status_details` carries only `{"execution_id": ...}`. The real
+  message is only in the Postgres server log:
+
+  ```
+  INFO duroxide::orchestration: Function failed with error:
+    SQL execution failed: error returned from database: <message>
+    instance_id=<id> execution_id=1
+  ```
+
+  Diagnosing a failed compaction therefore requires log access, so
+  keep `logging_collector` on.
 * **One second minimum per loop iteration.** pg_durable rate-limits
   `df.loop` to `LOOP_MIN_ITER_DURATION = 1 s`, so a stepped cascade
   of *n* levels takes at least *n* seconds. Irrelevant for
