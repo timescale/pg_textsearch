@@ -159,6 +159,13 @@ test-stress:
 	@echo "Running stress tests..."
 	@cd test/scripts && ./stress.sh
 
+# Background compaction via pg_durable. Requires the pg_durable extension
+# to be installed; NOT part of test-all/test-shell because CI does not
+# have pg_durable. See scripts/durable_compaction/README.md for setup.
+test-durable:
+	@echo "Running pg_durable background compaction test..."
+	@cd test/scripts && ./durable_compaction.sh
+
 test-cic:
 	@echo "Running CREATE INDEX CONCURRENTLY tests..."
 	@cd test/scripts && ./cic.sh
@@ -366,6 +373,7 @@ help:
 	@echo "  make test-recovery    - Run crash recovery tests"
 	@echo "  make test-segment     - Run multi-backend segment tests"
 	@echo "  make test-stress      - Run long-running stress tests"
+	@echo "  make test-durable     - Run pg_durable compaction test (needs pg_durable)"
 	@echo "  make test-cic         - Run CREATE INDEX CONCURRENTLY tests"
 	@echo "  make test-chinese     - Run Chinese tokenization test (needs zhparser)"
 	@echo "  make test-reindex     - Run multi-backend reindex regression tests (issue #390)"
@@ -392,4 +400,4 @@ help:
 	@echo "  make test-all"
 	@echo "  make format"
 
-.PHONY: test clean-test-dirs installcheck test-concurrency test-recovery test-segment test-stress test-cic test-chinese test-replication test-replication-extended test-logical-replication test-multi-index test-reindex test-shell test-all expected lint-format format format-check format-diff format-single coverage coverage-build coverage-clean coverage-report help
+.PHONY: test clean-test-dirs installcheck test-concurrency test-recovery test-segment test-stress test-durable test-cic test-chinese test-replication test-replication-extended test-logical-replication test-multi-index test-reindex test-shell test-all expected lint-format format format-check format-diff format-single coverage coverage-build coverage-clean coverage-report help

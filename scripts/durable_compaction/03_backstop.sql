@@ -13,6 +13,12 @@
 --
 -- Start this once.  It is a single long-lived instance.
 --
+-- The sweep cadence defaults to hourly and can be overridden with
+-- -v cron=... (e.g. for a faster cadence in a test harness):
+--
+--   psql -U textsearch_compactor -d postgres -f 03_backstop.sql \
+--       -v cron='* * * * *'
+--
 --
 -- WHY THIS EXISTS
 --
@@ -78,6 +84,18 @@
 
 \set ON_ERROR_STOP on
 
+\if :{?cron}
+\else
+\set cron '0 * * * *'
+\endif
+
+-- psql's :'var' interpolation does not reach inside a dollar-quoted
+-- ($$ ... $$) body -- deliberately, so it cannot mangle plpgsql's
+-- own ':=' assignment operator.  Stash the cadence in a custom GUC
+-- instead, set here at the top level where interpolation does
+-- apply, and read it back with current_setting() below.
+SELECT pg_catalog.set_config('pg_durable_test.cron', :'cron', false);
+
 DO $$
 DECLARE
     instance text;
@@ -108,7 +126,8 @@ BEGIN
         BEGIN
             SELECT df.start(
                 df.loop(
-                    df.wait_for_schedule('0 * * * *')
+                    df.wait_for_schedule(
+                        pg_catalog.current_setting('pg_durable_test.cron'))
                     ~> 'SELECT public.bm25_compact_pending()'),
                 label => 'bm25-compaction-backstop')
             INTO instance;
