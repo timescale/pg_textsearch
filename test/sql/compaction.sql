@@ -49,6 +49,80 @@ SELECT (bm25_level_counts('compaction_test_idx'::regclass))[1]
 SELECT bm25_level_counts('compaction_test_btree_idx'::regclass);
 SELECT bm25_level_counts('compaction_test'::regclass);
 
+-- The compaction_mode GUC accepts the documented values only.
+SET pg_textsearch.compaction_mode = 'inline';
+SELECT current_setting('pg_textsearch.compaction_mode') = 'inline'
+       AS compaction_mode_accepts_inline;
+SET pg_textsearch.compaction_mode = 'background';
+SELECT current_setting('pg_textsearch.compaction_mode') = 'background'
+       AS compaction_mode_accepts_background;
+SET pg_textsearch.compaction_mode = 'off';
+SELECT current_setting('pg_textsearch.compaction_mode') = 'off'
+       AS compaction_mode_accepts_off;
+SET pg_textsearch.compaction_mode = 'bogus';
+SET pg_textsearch.compaction_mode = 'inline';
+
+-- Auto-compaction mode controls the spill-time compaction call site.
+SET pg_textsearch.segments_per_level = 2;
+SET pg_textsearch.compaction_mode = 'off';
+CREATE TABLE compaction_mode_off (id serial PRIMARY KEY, body text);
+CREATE INDEX compaction_mode_off_idx ON compaction_mode_off
+    USING bm25(body) WITH (text_config = 'english');
+
+INSERT INTO compaction_mode_off (body)
+SELECT 'mode off alpha ' || i || ' ' || repeat('filler ', 4)
+FROM generate_series(1, 20) i;
+SELECT bm25_spill_index('compaction_mode_off_idx') IS NOT NULL
+       AS compaction_mode_off_spill1;
+
+INSERT INTO compaction_mode_off (body)
+SELECT 'mode off beta ' || i || ' ' || repeat('filler ', 4)
+FROM generate_series(1, 20) i;
+SELECT bm25_spill_index('compaction_mode_off_idx') IS NOT NULL
+       AS compaction_mode_off_spill2;
+SELECT (bm25_level_counts('compaction_mode_off_idx'::regclass))[1] >= 2
+       AS compaction_mode_off_keeps_l0_segments;
+SELECT bm25_needs_compaction('compaction_mode_off_idx'::regclass)
+       AS compaction_mode_off_needs_compaction;
+
+SET pg_textsearch.compaction_mode = 'inline';
+INSERT INTO compaction_mode_off (body)
+SELECT 'mode inline gamma ' || i || ' ' || repeat('filler ', 4)
+FROM generate_series(1, 20) i;
+SELECT bm25_spill_index('compaction_mode_off_idx') IS NOT NULL
+       AS compaction_mode_inline_spill;
+SELECT (bm25_level_counts('compaction_mode_off_idx'::regclass))[1] < 2
+       AS compaction_mode_inline_collapses_l0;
+SELECT NOT bm25_needs_compaction('compaction_mode_off_idx'::regclass)
+       AS compaction_mode_inline_clears_pending;
+
+-- Task 5 adds the background consumer; for now background only records.
+SET pg_textsearch.compaction_mode = 'background';
+CREATE TABLE compaction_mode_bg (id serial PRIMARY KEY, body text);
+CREATE INDEX compaction_mode_bg_idx ON compaction_mode_bg
+    USING bm25(body) WITH (text_config = 'english');
+BEGIN;
+INSERT INTO compaction_mode_bg (body)
+SELECT 'mode background alpha ' || i || ' ' || repeat('filler ', 4)
+FROM generate_series(1, 20) i;
+SELECT bm25_spill_index('compaction_mode_bg_idx') IS NOT NULL
+       AS compaction_mode_bg_spill1;
+INSERT INTO compaction_mode_bg (body)
+SELECT 'mode background beta ' || i || ' ' || repeat('filler ', 4)
+FROM generate_series(1, 20) i;
+SELECT bm25_spill_index('compaction_mode_bg_idx') IS NOT NULL
+       AS compaction_mode_bg_spill2;
+COMMIT;
+SELECT count(*) = 40 AS compaction_mode_bg_committed
+FROM compaction_mode_bg;
+SELECT (bm25_level_counts('compaction_mode_bg_idx'::regclass))[1] >= 2
+       AS compaction_mode_bg_keeps_l0_segments;
+SELECT bm25_needs_compaction('compaction_mode_bg_idx'::regclass)
+       AS compaction_mode_bg_needs_compaction;
+RESET pg_textsearch.compaction_mode;
+DROP TABLE compaction_mode_bg CASCADE;
+DROP TABLE compaction_mode_off CASCADE;
+
 -- bm25_compact reduces the occupied lower level and promotes upward.
 SET pg_textsearch.segments_per_level = 64;
 CREATE TABLE compaction_manual (id serial PRIMARY KEY, body text);

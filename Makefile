@@ -59,6 +59,7 @@ OBJS = \
 	src/types/array.o \
 	src/types/vector.o \
 	src/types/query.o \
+	src/index/compaction_request.o \
 	src/index/state.o \
 	src/index/registry.o \
 	src/index/metapage.o \

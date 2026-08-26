@@ -32,6 +32,7 @@
 #include "access/build_context.h"
 #include "access/build_parallel.h"
 #include "constants.h"
+#include "index/compaction_request.h"
 #include "index/metapage.h"
 #include "index/registry.h"
 #include "index/state.h"
@@ -242,7 +243,17 @@ tp_do_spill(
 
 	pgstat_progress_update_param(
 			PROGRESS_CREATEIDX_SUBPHASE, TP_PHASE_COMPACTING);
-	tp_maybe_compact_level(index_rel, 0);
+	switch (tp_compaction_mode)
+	{
+	case TP_COMPACTION_INLINE:
+		tp_maybe_compact_level(index_rel, 0);
+		break;
+	case TP_COMPACTION_BACKGROUND:
+		tp_compaction_request(RelationGetRelid(index_rel));
+		break;
+	case TP_COMPACTION_OFF:
+		break;
+	}
 	pgstat_progress_update_param(
 			PROGRESS_CREATEIDX_SUBPHASE, TP_PHASE_LOADING);
 
@@ -1242,7 +1253,13 @@ tp_build_callback(
 
 		pgstat_progress_update_param(
 				PROGRESS_CREATEIDX_SUBPHASE, TP_PHASE_COMPACTING);
-		tp_maybe_compact_level(bs->index, 0);
+		/*
+		 * CREATE INDEX always compacts inline: the index is not yet
+		 * visible to other sessions, so a background worker could not
+		 * open it.  Only 'off' is honored here.
+		 */
+		if (tp_compaction_mode != TP_COMPACTION_OFF)
+			tp_maybe_compact_level(bs->index, 0);
 		pgstat_progress_update_param(
 				PROGRESS_CREATEIDX_SUBPHASE, TP_PHASE_LOADING);
 	}

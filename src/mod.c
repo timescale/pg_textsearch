@@ -25,6 +25,7 @@
 
 #include "access/am.h"
 #include "constants.h"
+#include "index/compaction_request.h"
 #include "index/registry.h"
 #include "index/state.h"
 #include "planner/hooks.h"
@@ -62,6 +63,12 @@ int tp_memtable_pages_threshold = TP_DEFAULT_MEMTABLE_PAGES_THRESHOLD;
 
 /* Global variable for segments per level before compaction */
 int tp_segments_per_level = TP_DEFAULT_SEGMENTS_PER_LEVEL;
+
+static const struct config_enum_entry compaction_mode_options[] =
+		{{"inline", TP_COMPACTION_INLINE, false},
+		 {"background", TP_COMPACTION_BACKGROUND, false},
+		 {"off", TP_COMPACTION_OFF, false},
+		 {NULL, 0, false}};
 
 /* Global variable for segment compression (on by default - benchmarks show
  * compression improves both size and query performance)
@@ -271,6 +278,21 @@ _PG_init(void)
 			TP_DEFAULT_SEGMENTS_PER_LEVEL, /* default 8 */
 			2,							   /* min 2 */
 			64,							   /* max 64 */
+			PGC_SUSET,
+			0,
+			NULL,
+			NULL,
+			NULL);
+
+	DefineCustomEnumVariable(
+			"pg_textsearch.compaction_mode",
+			"Controls spill-time segment compaction",
+			"inline compacts during the spilling transaction; background "
+			"records a request for a later worker; off disables automatic "
+			"compaction.",
+			&tp_compaction_mode,
+			TP_COMPACTION_INLINE, /* default inline */
+			compaction_mode_options,
 			PGC_SUSET,
 			0,
 			NULL,
