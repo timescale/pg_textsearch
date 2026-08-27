@@ -209,19 +209,21 @@ tp_compaction_flush_requests(void)
 		return;
 	}
 
-	funcoid = tp_lookup_request_function();
-	if (!OidIsValid(funcoid))
+	PG_TRY();
 	{
-		ereport(WARNING,
-				(errmsg("bm25: pg_textsearch.compaction_request_function is "
-						"unset or unresolvable; skipping background "
-						"compaction")));
-		list_free(pending);
-		return;
+		funcoid = tp_lookup_request_function();
+		if (!OidIsValid(funcoid))
+			ereport(WARNING,
+					(errmsg("bm25: pg_textsearch.compaction_request_function "
+							"is unset or unresolvable; skipping background "
+							"compaction")));
+		else
+			foreach (lc, pending)
+				tp_run_request(funcoid, lfirst_oid(lc));
 	}
-
-	foreach (lc, pending)
-		tp_run_request(funcoid, lfirst_oid(lc));
-
-	list_free(pending);
+	PG_FINALLY();
+	{
+		list_free(pending);
+	}
+	PG_END_TRY();
 }
