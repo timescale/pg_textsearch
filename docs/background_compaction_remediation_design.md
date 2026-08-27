@@ -6,6 +6,14 @@ Resolve the correctness, security, operability, testing, and packaging issues
 found in the PR #471 review without expanding the POC into a general
 non-blocking compaction redesign.
 
+## Implementation Status
+
+The compaction traversal, request gating, temporary-index handling, read-only
+enforcement, cancellation propagation, and prepared-transaction callbacks are
+implemented and independently reviewed. The pg_durable role and wrapper
+hardening is implemented and under review. Benchmark draining, packaging, and
+the final operator-documentation pass remain.
+
 ## Request Semantics
 
 Memtable spills and segment merges are physical `GenericXLog` mutations.
@@ -36,7 +44,8 @@ level counts remain discoverable by the backstop.
 
 Query cancellation and shutdown errors are not best-effort failures. The
 request dispatcher will rethrow those errors after restoring PostgreSQL
-subtransaction state. Other enqueue failures remain warnings.
+subtransaction state and releasing its detached request list. Other enqueue
+failures remain warnings.
 
 ## Compaction Scheduling
 
@@ -49,10 +58,11 @@ Temporary indexes cannot be opened by a pg_durable worker in another backend.
 They will retain inline compaction even when the cluster-wide mode is
 `background`.
 
-Whole-cascade `bm25_compact()` will repeatedly execute the same lowest-level
-step used by `bm25_compact_step()` until no eligible level remains. This lets
-the backstop repair an interrupted cascade whose L0 is below threshold while
-L1 or a higher level still needs work.
+Whole-cascade `bm25_compact()` scans every compactable level, merging each
+over-threshold level before continuing upward. `bm25_compact_step()` still
+merges only the lowest eligible batch. This lets the backstop repair an
+interrupted cascade whose L0 is below threshold while L1 or a higher level
+still needs work.
 
 Both compaction mutators will call `PreventCommandIfReadOnly()` for permanent
 indexes. Local temporary indexes retain PostgreSQL's normal read-only
@@ -100,7 +110,9 @@ Tests are added before implementation:
 1. A below-threshold spill produces no request; the threshold-crossing spill
    produces exactly one.
 2. `bm25_compact()` repairs a higher-level-only backlog.
-3. Statement timeout during request dispatch aborts rather than committing.
+3. Query cancellation during request dispatch aborts rather than committing.
+   The regression self-cancels because PostgreSQL disables
+   `statement_timeout` before PRE_COMMIT callbacks.
 4. A directly dispatched pg_durable task survives caller rollback, while an
    explicitly rolled-back spill remains discoverable and repairable through
    level counts and the backstop.
