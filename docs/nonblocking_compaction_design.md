@@ -469,6 +469,159 @@ The production-facing pending-free page count remains
 locking protocol; replacing a long exclusive section with the new protocol
 should not create two permanent correctness modes.
 
+## Stage 0: baseline concurrency benchmark
+
+Benchmarking precedes race-harness and locking changes. Its purpose is not
+merely to demonstrate that the proposed design is faster; it is a decision
+gate that can change the implementation order or invalidate parts of this
+design.
+
+The benchmark must run against an unmodified baseline commit and produce a
+checked-in report before Stage 1 begins. The same harness and corpus are run
+again after each implementation stage.
+
+### Harness
+
+Add a standalone benchmark under `benchmarks/` that creates and owns a
+dedicated PostgreSQL cluster. It must pin every PostgreSQL binary to
+`pg_config --bindir`, record the extension and PostgreSQL commit/version, and
+fail if setup does not produce the requested segment layout.
+
+Use a deterministic synthetic corpus rather than requiring an external
+download. Documents should have enough vocabulary and postings to make merge
+CPU and I/O material. Environment variables may scale:
+
+- documents per source segment;
+- number of source segments;
+- client count;
+- measurement duration;
+- repetition count.
+
+Provide two presets:
+
+- smoke: small enough to validate the harness quickly;
+- measurement: at least eight source segments with enough documents to
+  produce a multi-second merge on a development machine.
+
+Build the fixture with automatic compaction disabled, spill explicitly after
+each batch, empty the memtable before measurement, and verify the exact level
+counts. After PR #471 lands, use `bm25_compact_step()` to trigger exactly one
+normal merge batch; do not use `bm25_force_merge()` as the primary merge
+measurement because its all-level merge and relation truncation would
+confound the result.
+
+Each measured run rebuilds the fixture in the same scratch database. Do not
+clone a template database: until issue #464 is fixed, shared index state keyed
+only by index OID can collide across template-cloned databases.
+
+### Controlled scenarios
+
+Measure each foreground workload first without maintenance and then while one
+known maintenance operation overlaps it:
+
+| Foreground workload | Overlapping operation |
+|---|---|
+| top-k scans | none, one merge, one spill, VACUUM |
+| inserts with auto-spill disabled | none, one merge, one spill, VACUUM |
+| mixed top-k scans and inserts | none, one merge, one spill, VACUUM |
+| explicit spill | none, one merge |
+
+Run foreground workloads at 1, 4, and 16 clients by default. Keep insert
+transactions small and disable their automatic spill so the operation under
+test is the only maintenance event in its measurement window.
+
+The merge scenario is the primary gate. Spill and VACUUM scenarios establish
+whether removing merge-duration exclusion merely exposes another dominant
+critical section.
+
+### Measurements
+
+Do not rely on pgbench's average latency. Enable per-transaction logging and
+report, separately for scans and inserts:
+
+- transaction count and throughput;
+- p50, p95, p99, and maximum latency;
+- count and percentage above 100 ms and 1 second;
+- maintenance-operation wall time;
+- the exact interval in which maintenance overlapped foreground work.
+
+Tag each connection with `application_name`. During the run, sample
+`pg_stat_activity` frequently enough to capture multi-second stalls and
+record:
+
+- timestamp, pid, application name, and backend state;
+- `wait_event_type` and `wait_event`;
+- query start and transaction start.
+
+`pg_locks` does not expose LWLocks, and `log_lock_waits` covers heavyweight
+locks only. The benchmark therefore correlates foreground latency spikes and
+`wait_event_type = 'LWLock'` samples with the explicitly recorded merge or
+spill interval. If the fixed extension tranche does not expose a useful wait
+event name, naming that existing tranche is an observability-only prerequisite
+and must be recorded as such; it must not alter lock acquisition or lifetime.
+
+Run each scenario at least five times. Report the median run and retain every
+raw result so variability and outliers remain visible. The report records
+hardware, filesystem, relevant PostgreSQL settings, cache-warmup procedure,
+corpus shape, segment layout, and all harness parameters.
+
+### CPU, off-CPU, and database profiles
+
+Latency and wait-event correlation identify when foreground work stalls, but
+they do not show where the merge spends its resources. The measurement preset
+therefore includes a profiling run with symbols available for PostgreSQL and
+the extension.
+
+Capture three complementary views:
+
+1. **On-CPU flame graph for the merge backend.** This should distinguish term
+   enumeration, posting merge, compression, page construction, GenericXLog,
+   buffer management, and relation extension. A conventional `perf` CPU
+   profile is appropriate for this view.
+2. **Off-CPU flame graph for foreground scan and insert backends.** A normal
+   CPU flame graph omits sleeping lock waiters and cannot confirm the current
+   contention analysis by itself. Use an off-CPU profiler, such as BCC or
+   bpftrace `offcputime`, or a `perf sched` trace, and correlate stacks with
+   the backend PIDs tagged by `application_name`. The expected baseline stack
+   should terminate in PostgreSQL's LWLock wait path during the merge window.
+3. **System and PostgreSQL counters.** Record `perf stat` counters, relevant
+   `pg_stat_io`, `pg_stat_wal`, and `pg_stat_database` deltas, buffer hit/read
+   counts, WAL bytes, context switches, and page faults. These distinguish
+   lock exclusion from CPU saturation, storage contention, WAL pressure, and
+   relation extension.
+
+Profile the no-maintenance control and overlapping-merge scenario with the
+same corpus and foreground load. Repeat the same profiles after the locking
+change. The expected result is not merely a smaller flame-graph frame:
+
+- baseline foreground backends spend merge-overlap wall time in the per-index
+  LWLock wait path;
+- the merge backend's on-CPU work explains its remaining duration;
+- after the redesign, the foreground LWLock off-CPU stack disappears or is
+  confined to the brief spill/publication windows;
+- any remaining latency correlates with measured CPU, I/O, or WAL pressure
+  rather than an unexplained gap.
+
+Profiling is a controlled Linux measurement, not a CI gate. The report checks
+in generated SVG or folded-stack summaries plus exact commands, kernel
+settings, symbol/build flags, backend PIDs, and profiler versions. Large raw
+`perf.data` files remain external artifacts.
+
+### Decision gate
+
+Before Stage 1, review the baseline and answer:
+
+1. Which operation dominates scan and insert tail latency?
+2. What fraction of the observed stall is LWLock wait versus CPU, buffer I/O,
+   WAL, or relation extension?
+3. At what segment/document scale does merge contention become material?
+4. Does spill or VACUUM become the next dominant exclusion window?
+5. Is serial same-index merge throughput a measured limitation?
+
+Proceed with the select/build/publish redesign only if merge-duration lock
+wait is material. If measurements identify a different primary bottleneck,
+revise the implementation stages and this document before changing locks.
+
 ## Test design
 
 Timing-only stress tests remain useful but are not sufficient. The primary
@@ -516,9 +669,9 @@ tests use deterministic phase barriers.
 - Extend the existing writer + force-merge + deleter + VACUUM stress test to
   include normal stepped compaction and phase-aware diagnostics.
 - Run sanitizer jobs for the complete suite.
-- Benchmark scan and insert latency during a large merge before and after the
-  change.
-- Record publication duration separately from build duration.
+- Re-run the Stage 0 benchmark after each implementation stage.
+- Record publication duration separately from build duration once the merge
+  lifecycle has been split.
 
 The deterministic acceptance criterion is stronger than a machine-dependent
 latency threshold: while a merge is paused indefinitely in phase 1, an
@@ -527,6 +680,15 @@ numbers are reported for regression tracking rather than used as flaky CI
 gates.
 
 ## Staged delivery
+
+### Stage 0: measure the baseline
+
+- Implement the dedicated concurrency benchmark without changing lock
+  behavior.
+- Run the full measurement preset against the baseline commit.
+- Capture on-CPU and off-CPU profiles for the control and merge-overlap runs.
+- Check in the environment, raw-result summary, and conclusions.
+- Revisit the proposed stages before implementing them.
 
 ### Stage 1: audit and race harness
 
@@ -559,7 +721,8 @@ gates.
 
 ### Stage 5: measure and decide
 
-- Compare reader/writer latency and lock waits with the baseline.
+- Re-run every Stage 0 scenario and compare reader/writer latency, throughput,
+  and wait samples with the baseline.
 - Audit any remaining long `LW_EXCLUSIVE` sections.
 - Consider non-blocking spill only if spill is now material.
 - Consider same-index parallel merges only if serialized merge throughput is
