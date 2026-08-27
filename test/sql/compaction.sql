@@ -182,6 +182,25 @@ BEGIN
 END $$;
 
 SET pg_textsearch.segments_per_level = 2;
+SELECT bm25_compact_step('compaction_step_b_idx'::regclass)
+       AS full_stage_step1;
+SELECT bm25_compact_step('compaction_step_b_idx'::regclass)
+       AS full_stage_step2;
+SELECT (bm25_level_counts('compaction_step_b_idx'::regclass))[1] < 2
+       AND
+       (bm25_level_counts('compaction_step_b_idx'::regclass))[2] >= 2
+       AS full_stage_higher_only;
+SELECT bm25_compact('compaction_step_b_idx'::regclass);
+SELECT NOT bm25_needs_compaction('compaction_step_b_idx'::regclass)
+       AS full_compact_clears_higher_level;
+
+BEGIN READ ONLY;
+SELECT bm25_compact('compaction_step_a_idx'::regclass);
+ROLLBACK;
+BEGIN READ ONLY;
+SELECT bm25_compact_step('compaction_step_a_idx'::regclass);
+ROLLBACK;
+
 SELECT bm25_needs_compaction('compaction_step_a_idx'::regclass)
        AS step_needs_before;
 SELECT bm25_compact_step('compaction_step_a_idx'::regclass)

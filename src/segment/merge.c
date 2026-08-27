@@ -1943,29 +1943,29 @@ tp_maybe_compact_level(Relation index, uint32 level)
 
 	UnlockReleaseBuffer(metabuf);
 
-	if (level_count < (uint16)tp_segments_per_level)
-		return; /* Level not full */
-
-	/*
-	 * Merge batches of segments_per_level until the level is
-	 * below threshold.  Each batch produces one segment at
-	 * level+1; after the loop we check if that level also needs
-	 * compaction.
-	 */
-	while (level_count >= (uint16)tp_segments_per_level)
+	if (level_count >= (uint16)tp_segments_per_level)
 	{
-		if (tp_merge_level_segments(
-					index, level, (uint32)tp_segments_per_level) ==
-			InvalidBlockNumber)
-			break;
+		/*
+		 * Merge batches of segments_per_level until the level is
+		 * below threshold.  Each batch produces one segment at
+		 * level+1; after the loop we check if that level also needs
+		 * compaction.
+		 */
+		while (level_count >= (uint16)tp_segments_per_level)
+		{
+			if (tp_merge_level_segments(
+						index, level, (uint32)tp_segments_per_level) ==
+				InvalidBlockNumber)
+				break;
 
-		/* Re-read the level count after merge */
-		metabuf = ReadBuffer(index, 0);
-		LockBuffer(metabuf, BUFFER_LOCK_SHARE);
-		metapage	= BufferGetPage(metabuf);
-		metap		= (TpIndexMetaPage)PageGetContents(metapage);
-		level_count = metap->level_counts[level];
-		UnlockReleaseBuffer(metabuf);
+			/* Re-read the level count after merge */
+			metabuf = ReadBuffer(index, 0);
+			LockBuffer(metabuf, BUFFER_LOCK_SHARE);
+			metapage	= BufferGetPage(metabuf);
+			metap		= (TpIndexMetaPage)PageGetContents(metapage);
+			level_count = metap->level_counts[level];
+			UnlockReleaseBuffer(metabuf);
+		}
 	}
 
 	/* Check if next level now needs compaction */

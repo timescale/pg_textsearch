@@ -251,6 +251,40 @@ BEGIN
     END LOOP;
 END $$;
 SET pg_textsearch.segments_per_level = 2;
+SELECT bm25_compact_step('compaction_step_b_idx'::regclass)
+       AS full_stage_step1;
+full_stage_step1
+t
+(1 row)
+SELECT bm25_compact_step('compaction_step_b_idx'::regclass)
+       AS full_stage_step2;
+full_stage_step2
+t
+(1 row)
+SELECT (bm25_level_counts('compaction_step_b_idx'::regclass))[1] < 2
+       AND
+       (bm25_level_counts('compaction_step_b_idx'::regclass))[2] >= 2
+       AS full_stage_higher_only;
+full_stage_higher_only
+t
+(1 row)
+SELECT bm25_compact('compaction_step_b_idx'::regclass);
+bm25_compact
+
+(1 row)
+SELECT NOT bm25_needs_compaction('compaction_step_b_idx'::regclass)
+       AS full_compact_clears_higher_level;
+full_compact_clears_higher_level
+t
+(1 row)
+BEGIN READ ONLY;
+SELECT bm25_compact('compaction_step_a_idx'::regclass);
+ERROR:  cannot execute bm25 index compaction in a read-only transaction
+ROLLBACK;
+BEGIN READ ONLY;
+SELECT bm25_compact_step('compaction_step_a_idx'::regclass);
+ERROR:  cannot execute bm25 index compaction in a read-only transaction
+ROLLBACK;
 SELECT bm25_needs_compaction('compaction_step_a_idx'::regclass)
        AS step_needs_before;
 step_needs_before

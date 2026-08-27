@@ -97,6 +97,9 @@ tp_compact_index(PG_FUNCTION_ARGS)
 
 	index_rel = tp_open_bm25_index(indexoid, RowExclusiveLock, true);
 
+	if (!RelationUsesLocalBuffers(index_rel))
+		PreventCommandIfReadOnly("bm25 index compaction");
+
 	index_state = tp_get_local_index_state(indexoid);
 	if (index_state == NULL)
 	{
@@ -139,6 +142,9 @@ tp_compact_index_step(PG_FUNCTION_ARGS)
 				 errmsg("cannot compact a bm25 index during recovery")));
 
 	index_rel = tp_open_bm25_index(indexoid, RowExclusiveLock, true);
+
+	if (!RelationUsesLocalBuffers(index_rel))
+		PreventCommandIfReadOnly("bm25 index compaction");
 
 	index_state = tp_get_local_index_state(indexoid);
 	if (index_state == NULL)
