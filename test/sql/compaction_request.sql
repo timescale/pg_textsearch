@@ -19,6 +19,16 @@ BEGIN
 END;
 $$;
 
+-- COMMIT disables statement_timeout before PRE_COMMIT callbacks, so
+-- self-cancel provides a deterministic query-cancellation error.
+CREATE FUNCTION slow_compaction(idx regclass) RETURNS void
+LANGUAGE plpgsql AS $$
+BEGIN
+    PERFORM pg_catalog.pg_cancel_backend(pg_catalog.pg_backend_pid());
+    PERFORM pg_catalog.pg_sleep(1);
+END;
+$$;
+
 CREATE TABLE compaction_request_docs (
     id serial PRIMARY KEY,
     body text
@@ -46,7 +56,7 @@ SELECT bm25_spill_index('compaction_request_docs2_idx') IS NOT NULL
        AS request_seed_spill2;
 TRUNCATE compaction_log;
 
--- Rollback leaves no log rows because the dispatch is transaction-local.
+-- Explicit rollback does not reach PRE_COMMIT dispatch.
 BEGIN;
 INSERT INTO compaction_request_docs (body)
 SELECT 'rollback doc ' || i || ' ' || repeat('filler ', 4)
@@ -56,7 +66,7 @@ SELECT bm25_spill_index('compaction_request_docs_idx') IS NOT NULL
 ROLLBACK;
 SELECT count(*) AS rollback_log_rows FROM compaction_log;
 
--- Commit dispatches one request atomically with the writer transaction.
+-- Commit reaches PRE_COMMIT and dispatches one request.
 BEGIN;
 INSERT INTO compaction_request_docs (body)
 SELECT 'commit doc ' || i || ' ' || repeat('filler ', 4)
@@ -159,6 +169,29 @@ COMMIT;
 SELECT count(*) >= 160 AS raising_function_committed
 FROM compaction_request_docs;
 
+-- Query cancellation during dispatch aborts the writer transaction.
+CREATE TABLE compaction_cancel_docs (id serial PRIMARY KEY, body text);
+CREATE INDEX compaction_cancel_docs_idx ON compaction_cancel_docs
+    USING bm25(body) WITH (text_config = 'english');
+
+SET pg_textsearch.segments_per_level = 2;
+SET pg_textsearch.compaction_request_function = 'slow_compaction';
+
+-- Seed one physical segment so the transaction under test reaches threshold.
+INSERT INTO compaction_cancel_docs (body) VALUES ('seed request');
+SELECT bm25_spill_index('compaction_cancel_docs_idx') IS NOT NULL
+       AS cancel_seed_spill;
+DELETE FROM compaction_cancel_docs;
+
+BEGIN;
+INSERT INTO compaction_cancel_docs (body) VALUES ('cancel request');
+SELECT bm25_spill_index('compaction_cancel_docs_idx') IS NOT NULL
+       AS cancel_spill;
+\set VERBOSITY terse
+COMMIT;
+\set VERBOSITY default
+SELECT count(*) AS canceled_rows FROM compaction_cancel_docs;
+
 -- Background requests start only when a level reaches its threshold.
 SET pg_textsearch.compaction_request_function = 'log_compaction';
 SET pg_textsearch.segments_per_level = 2;
@@ -198,6 +231,7 @@ SELECT NOT bm25_needs_compaction('compaction_temp_docs_idx'::regclass)
 
 RESET pg_textsearch.compaction_mode;
 RESET pg_textsearch.compaction_request_function;
+DROP TABLE compaction_cancel_docs CASCADE;
 DROP TABLE compaction_threshold_docs CASCADE;
 DROP TABLE compaction_request_docs2 CASCADE;
 DROP TABLE compaction_request_docs CASCADE;

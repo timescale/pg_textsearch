@@ -161,6 +161,16 @@ tp_run_request(Oid funcoid, Oid indexoid)
 		RollbackAndReleaseCurrentSubTransaction();
 		MemoryContextSwitchTo(oldcxt);
 
+		if (edata->sqlerrcode == ERRCODE_QUERY_CANCELED ||
+			edata->sqlerrcode == ERRCODE_ADMIN_SHUTDOWN ||
+			edata->sqlerrcode == ERRCODE_CRASH_SHUTDOWN)
+		{
+			ReleaseCurrentSubTransaction();
+			MemoryContextSwitchTo(oldcxt);
+			CurrentResourceOwner = oldowner;
+			ReThrowError(edata);
+		}
+
 		ereport(WARNING,
 				(errmsg("bm25: background compaction request for "
 						"index \"%s\" failed: %s",

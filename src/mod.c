@@ -607,8 +607,11 @@ tp_xact_callback(XactEvent event, void *arg pg_attribute_unused())
 		break;
 
 	case XACT_EVENT_PRE_PREPARE:
+		tp_bulk_load_spill_check();
+		tp_compaction_flush_requests();
+		break;
+
 	case XACT_EVENT_PREPARE:
-		/* Background compaction is not supported for prepared transactions. */
 		tp_compaction_reset_requests();
 		break;
 	}
