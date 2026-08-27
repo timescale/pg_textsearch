@@ -10,13 +10,15 @@ non-blocking compaction redesign.
 
 Memtable spills and segment merges are physical `GenericXLog` mutations.
 PostgreSQL does not undo them when the surrounding SQL transaction aborts.
-Background requests therefore follow the physical spill, not logical heap
-commit.
+Background requests therefore follow the physical spill rather than claiming
+logical heap-commit atomicity. The index's level counts are the durable marker,
+and the backstop is the guarantee path; immediate requests are accelerators.
 
 The pg_durable wrapper will use `transaction_mode => 'new'`. The independent
 start:
 
-- survives caller rollback, matching the surviving physical segment;
+- survives caller rollback after dispatch has begun, matching the surviving
+  physical segment;
 - makes the task graph visible before `df.start()` returns, eliminating the
   five-second caller-transaction visibility race;
 - remains best-effort: an enqueue failure logs a warning and the backstop
@@ -29,6 +31,8 @@ The transaction callback will also flush pending requests during
 physical spill requests. Request state remains deduplicated per index and is
 cleared after flushing or transaction cleanup. Savepoint rollback does not
 remove a request because it does not undo the corresponding physical spill.
+An explicit `ROLLBACK` before PRE_COMMIT dispatches no request; the surviving
+level counts remain discoverable by the backstop.
 
 Query cancellation and shutdown errors are not best-effort failures. The
 request dispatcher will rethrow those errors after restoring PostgreSQL
@@ -97,8 +101,9 @@ Tests are added before implementation:
    produces exactly one.
 2. `bm25_compact()` repairs a higher-level-only backlog.
 3. Statement timeout during request dispatch aborts rather than committing.
-4. The pg_durable task survives caller rollback and corresponds to the
-   surviving physical spill.
+4. A directly dispatched pg_durable task survives caller rollback, while an
+   explicitly rolled-back spill remains discoverable and repairable through
+   level counts and the backstop.
 5. PREPARE flushes rather than discards a pending request.
 6. Background mode compacts temporary indexes inline and creates no durable
    task.
