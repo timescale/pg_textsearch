@@ -272,10 +272,12 @@ LANGUAGE C VOLATILE STRICT;
 
 CREATE FUNCTION @extschema@.bm25_needs_compaction(idx regclass)
 RETURNS boolean
-LANGUAGE sql STABLE AS $$
+LANGUAGE sql STABLE
+SET search_path = pg_catalog, pg_temp
+AS $$
     SELECT EXISTS (
         SELECT 1
-        FROM unnest(@extschema@.bm25_level_counts(idx))
+        FROM pg_catalog.unnest(@extschema@.bm25_level_counts(idx))
              WITH ORDINALITY AS t(cnt, lvl)
         WHERE
           -- TP_MAX_LEVELS - 1; ordinality 8 is the ineligible top level.
@@ -287,8 +289,10 @@ $$;
 
 CREATE FUNCTION @extschema@.bm25_indexes_needing_compaction()
 RETURNS SETOF regclass
-LANGUAGE sql STABLE AS $$
-    SELECT c.oid::regclass
+LANGUAGE sql STABLE
+SET search_path = pg_catalog, pg_temp
+AS $$
+    SELECT c.oid::pg_catalog.regclass
     FROM pg_catalog.pg_class c
          JOIN pg_catalog.pg_am am ON am.oid = c.relam
          JOIN pg_catalog.pg_index i ON i.indexrelid = c.oid
@@ -302,7 +306,9 @@ $$;
 
 CREATE FUNCTION @extschema@.bm25_compact_pending()
 RETURNS integer
-LANGUAGE plpgsql AS $$
+LANGUAGE plpgsql
+SET search_path = pg_catalog, pg_temp
+AS $$
 DECLARE
     idx regclass;
     n   integer := 0;

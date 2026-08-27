@@ -1044,6 +1044,16 @@ jobs:
         VERSION=$(awk -F"'" '/default_version/ {print $2}' pg_textsearch.control)
         echo "Checking sql/pg_textsearch--${VERSION}.sql"
         pgspot "sql/pg_textsearch--${VERSION}.sql"
+        # Also check the upgrade script into the current version: it
+        # ships the same definitions as the base install file, so an
+        # unchecked one lets the same defect reach upgrading users.
+        # Already-released upgrade scripts are deliberately excluded --
+        # they are frozen and carry pre-existing warnings.
+        for f in sql/pg_textsearch--*--"${VERSION}".sql; do
+          [ -e "$f" ] || continue
+          echo "Checking ${f}"
+          pgspot "${f}"
+        done
 
   # Umbrella job for branch protection rules
   all-tests-passed:

@@ -277,11 +277,16 @@ BEGIN
 END $$;
 
 SET pg_textsearch.segments_per_level = 2;
+-- Mirror the real function's pinned search_path, so the stub resolves
+-- names the same way the function it stands in for does.  That means
+-- the relation reference must be schema-qualified.
 CREATE OR REPLACE FUNCTION bm25_indexes_needing_compaction()
 RETURNS SETOF regclass
-LANGUAGE sql STABLE AS $func$
+LANGUAGE sql STABLE
+SET search_path = pg_catalog, pg_temp
+AS $func$
     VALUES (0::oid::regclass),
-           ('compaction_resilient_idx'::regclass);
+           ('public.compaction_resilient_idx'::regclass);
 $func$;
 SELECT bm25_compact_pending() = 1 AS pending_continued_after_warning;
 SELECT NOT bm25_needs_compaction('compaction_resilient_idx'::regclass)
