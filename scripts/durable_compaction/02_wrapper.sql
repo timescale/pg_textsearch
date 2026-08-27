@@ -22,8 +22,10 @@
 -- df privileges at all, only EXECUTE on this one function -- can
 -- enqueue compaction that then runs with the index owner's rights.
 --
--- The caller supplies only a regclass.  The DSL text is built here,
--- from the OID, and is never accepted from the caller.
+-- The caller supplies only a regclass and must be the login role with
+-- INSERT privilege on the indexed heap.  The DSL shape and function
+-- names are fixed here; only the numeric index OID is constructed
+-- into the SQL text.
 
 \set ON_ERROR_STOP on
 
@@ -32,7 +34,11 @@
 \set writer_role ''
 \endif
 
-CREATE OR REPLACE FUNCTION public.bm25_request_compaction(idx regclass)
+DROP FUNCTION IF EXISTS public.bm25_request_compaction(regclass);
+
+-- Recreate rather than replace so reinstalling this script removes
+-- every prior named EXECUTE grant before applying writer_role below.
+CREATE FUNCTION public.bm25_request_compaction(idx regclass)
 RETURNS text
 LANGUAGE plpgsql
 SECURITY DEFINER
@@ -55,6 +61,18 @@ BEGIN
         WHERE c.oid = idx AND am.amname = 'bm25')
     THEN
         RAISE EXCEPTION '"%" is not a bm25 index', idx::text;
+    END IF;
+
+    IF NOT EXISTS (
+        SELECT 1
+        FROM pg_catalog.pg_index i
+        WHERE i.indexrelid = idx
+          AND pg_catalog.has_table_privilege(
+                  session_user, i.indrelid, 'INSERT'))
+    THEN
+        RAISE EXCEPTION
+            'permission denied to request compaction for %', idx
+            USING ERRCODE = 'insufficient_privilege';
     END IF;
 
     SELECT n.nspname INTO ext_schema
@@ -97,15 +115,16 @@ BEGIN
     -- levels against the same threshold, so the condition goes false
     -- once no level is over threshold.
     --
-    -- transaction_mode => 'caller' is the default, but it is spelled
-    -- out because atomicity is the whole point: the request is
-    -- inserted in the writer's transaction, so a spill that rolls
-    -- back queues nothing and a spill that commits queues exactly
-    -- one task.  Never pass 'new' here.
+    -- The GenericXLog-logged level state is the durable truth.  This
+    -- request is only an accelerator: a redundant or early request is
+    -- a harmless no-op, while the next spill and the periodic backstop
+    -- re-check that durable state.  Persist the request independently
+    -- so a later failure of the caller's transaction cannot discard an
+    -- accelerator that has already been submitted.
     RETURN df.start(
         df.loop(body, cond),
         label            => 'bm25-compact-' || idx_oid,
-        transaction_mode => 'caller');
+        transaction_mode => 'new');
 END;
 $fn$;
 

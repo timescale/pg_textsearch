@@ -10,22 +10,24 @@
 # scripts/durable_compaction/ exactly as an operator would, and then
 # verifies every criterion from the plan's "acceptance criteria" section:
 #
-#   1. Atomicity        - a rolled-back spill enqueues nothing; a
+#   1. PRE_COMMIT gating - a rolled-back spill enqueues nothing; a
 #                          committed spill enqueues exactly one instance.
-#   2. It actually compacts - background mode really drops segment counts.
-#   3. Write latency     - inline vs background wall-clock is recorded.
-#   4. Failure path       - a compactor without ownership fails the
+#   2. Independent start - a direct request survives caller rollback.
+#   3. It actually compacts - background mode really drops segment counts.
+#   4. Write latency     - inline vs background wall-clock is recorded.
+#   5. Failure path       - a compactor without ownership fails the
 #                          instance; restoring ownership self-heals on the
 #                          next spill.
-#   5. Cascade splits across transactions - a multi-level cascade shows up
+#   6. Cascade splits across transactions - a multi-level cascade shows up
 #                          as more than one node execution in the server
 #                          log, and a concurrent writer can commit while
 #                          the cascade is still running.
-#   6. Permissions        - a writer with ONLY EXECUTE on
+#   7. Permissions        - a writer with ONLY EXECUTE on
 #                          bm25_request_compaction (no df privileges at
 #                          all) can still enqueue a task, attributed to
-#                          textsearch_compactor.
-#   7. Backstop           - the scheduled sweep compacts an index with
+#                          textsearch_compactor, but cannot target a heap
+#                          on which its login role lacks INSERT.
+#   8. Backstop           - the scheduled sweep compacts an index with
 #                          compaction_mode = 'off' and no writer
 #                          involvement at all.
 #
@@ -51,6 +53,7 @@ GLUE_DIR="${SCRIPT_DIR}/../../scripts/durable_compaction"
 TEST_PORT=55447
 TEST_DB=durable_compaction_test
 DATA_DIR="${SCRIPT_DIR}/../tmp_durable_compaction"
+SOCKET_DIR="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 LOGFILE="${DATA_DIR}/postgres.log"
 KEEP_DIR="${SCRIPT_DIR}/../tmp_durable_compaction_logs"
 TEST_SIZE_MULTIPLIER=${TEST_SIZE_MULTIPLIER:-1.0}
@@ -83,7 +86,8 @@ cleanup() {
     local exit_code=$?
     log "Cleaning up (exit code: $exit_code)..."
     if [ -f "${DATA_DIR}/postmaster.pid" ]; then
-        "${PGBINDIR}/pg_ctl" stop -D "${DATA_DIR}" -m immediate &>/dev/null || true
+        "${PGBINDIR}/pg_ctl" stop -D "${DATA_DIR}" -m immediate \
+            &>/dev/null || true
     fi
     if [ "$exit_code" -ne 0 ] && [ -d "${DATA_DIR}" ]; then
         rm -rf "${KEEP_DIR}"
@@ -104,7 +108,8 @@ trap cleanup EXIT INT TERM
 sql_as() {
     local role="$1"
     shift
-    "${PGBINDIR}/psql" -h "${DATA_DIR}" -p "${TEST_PORT}" -U "${role}" -d "${TEST_DB}" \
+    "${PGBINDIR}/psql" -h "${SOCKET_DIR}" -p "${TEST_PORT}" \
+        -U "${role}" -d "${TEST_DB}" \
         -qAt -v ON_ERROR_STOP=1 "$@"
 }
 
@@ -209,7 +214,7 @@ installation's bin directory first on PATH, or run 'make install'."
 
     cat >> "${DATA_DIR}/postgresql.conf" << EOF
 port = ${TEST_PORT}
-unix_socket_directories = '${DATA_DIR}'
+unix_socket_directories = '${SOCKET_DIR}'
 listen_addresses = 'localhost'
 shared_preload_libraries = 'pg_durable,pg_textsearch'
 logging_collector = on
@@ -233,10 +238,12 @@ EOF
     cat "${DATA_DIR}/pg_hba.conf" >> "${DATA_DIR}/pg_hba.conf.new"
     mv "${DATA_DIR}/pg_hba.conf.new" "${DATA_DIR}/pg_hba.conf"
 
-    "${PGBINDIR}/pg_ctl" start -D "${DATA_DIR}" -l "${LOGFILE}" -w -o "-p ${TEST_PORT}" \
+    "${PGBINDIR}/pg_ctl" start -D "${DATA_DIR}" -l "${LOGFILE}" \
+        -w -o "-p ${TEST_PORT}" \
         || error "Failed to start PostgreSQL"
 
-    "${PGBINDIR}/createdb" -h "${DATA_DIR}" -p "${TEST_PORT}" -U postgres "${TEST_DB}"
+    "${PGBINDIR}/createdb" -h "${SOCKET_DIR}" -p "${TEST_PORT}" \
+        -U postgres "${TEST_DB}"
     sql_super -c "CREATE EXTENSION pg_durable;"
     sql_super -c "CREATE EXTENSION pg_textsearch;"
     log "Test cluster ready (db=${TEST_DB})"
@@ -244,13 +251,58 @@ EOF
 
 setup_roles_and_glue() {
     log "Creating app_owner / app_writer and wiring the glue scripts..."
+
+    if sql_super -f "${GLUE_DIR}/01_setup_role.sql" \
+        >/dev/null 2>&1; then
+        error "setup accepted a missing index_owner"
+    fi
+    log "PASS: setup rejects a missing index_owner"
+
+    if sql_super -f "${GLUE_DIR}/01_setup_role.sql" \
+        -v index_owner=postgres >/dev/null 2>&1; then
+        error "setup accepted a superuser index_owner"
+    fi
+    log "PASS: setup rejects a superuser index_owner"
+
     sql_super -c "CREATE ROLE app_owner LOGIN;"
     sql_super -c "CREATE ROLE app_writer LOGIN;"
 
     sql_super -f "${GLUE_DIR}/01_setup_role.sql" -v index_owner=app_owner \
         >/dev/null
+
+    if sql_as textsearch_compactor -c "SET ROLE app_owner;" \
+        >/dev/null 2>&1; then
+        error "compactor can SET ROLE app_owner"
+    fi
+    log "PASS: compactor cannot SET ROLE app_owner"
+
+    sql_super -c "CREATE ROLE compactor_superuser_parent \
+SUPERUSER NOLOGIN;"
+    sql_super -c "GRANT compactor_superuser_parent TO \
+textsearch_compactor WITH INHERIT TRUE, SET FALSE;"
+    if sql_super -f "${GLUE_DIR}/01_setup_role.sql" \
+        -v index_owner=app_owner >/dev/null 2>&1; then
+        error "setup accepted compactor membership in a superuser role"
+    fi
+    log "PASS: setup rejects compactor membership in a superuser role"
+    sql_super -c "REVOKE compactor_superuser_parent FROM \
+textsearch_compactor;"
+    sql_super -c "DROP ROLE compactor_superuser_parent;"
+
     sql_super -f "${GLUE_DIR}/02_wrapper.sql" -v writer_role=app_writer \
         >/dev/null
+
+    sql_super -c "CREATE ROLE old_writer LOGIN;"
+    sql_super -c "GRANT EXECUTE ON FUNCTION \
+public.bm25_request_compaction(regclass) TO old_writer;"
+    sql_super -f "${GLUE_DIR}/02_wrapper.sql" -v writer_role=app_writer \
+        >/dev/null
+
+    local old_writer_can_execute
+    old_writer_can_execute=$(sql_super -c "SELECT has_function_privilege(\
+'old_writer', 'public.bm25_request_compaction(regclass)', 'EXECUTE');")
+    assert_eq "wrapper reinstall removes stale named EXECUTE grants" \
+        "f" "$old_writer_can_execute"
 
     # app_owner is used as the general spilling writer in most scenarios
     # below (it must own the index to call bm25_spill_index() at all);
@@ -320,23 +372,23 @@ SQL
 }
 
 create_owned_table() {
-    local table="$1" idx="$2"
+    local table="$1" idx="$2" owner="${3:-app_owner}"
     sql_super << SQL
 SET client_min_messages = warning;
 CREATE TABLE ${table} (id serial PRIMARY KEY, body text);
 CREATE INDEX ${idx} ON ${table}
     USING bm25(body) WITH (text_config = 'english');
-ALTER TABLE ${table} OWNER TO app_owner;
-ALTER INDEX ${idx} OWNER TO app_owner;
+ALTER TABLE ${table} OWNER TO ${owner};
+ALTER INDEX ${idx} OWNER TO ${owner};
 SQL
 }
 
 # ---------------------------------------------------------------------
-# Test 1: Atomicity
+# Test 1: PRE_COMMIT gating
 # ---------------------------------------------------------------------
 
 test_atomicity() {
-    log "=== Test: atomicity ==="
+    log "=== Test: PRE_COMMIT gating ==="
     create_owned_table t_atomic t_atomic_idx
     local label
     label=$(label_for t_atomic_idx)
@@ -368,7 +420,35 @@ SQL
 }
 
 # ---------------------------------------------------------------------
-# Test 2: it actually compacts
+# Test 2: a direct request uses an independent transaction
+# ---------------------------------------------------------------------
+
+test_independent_request() {
+    log "=== Test: request transaction is independent ==="
+    create_owned_table t_independent t_independent_idx
+    local label
+    label=$(label_for t_independent_idx)
+
+    sql_as app_owner << SQL >/dev/null
+BEGIN;
+SELECT public.bm25_request_compaction('t_independent_idx');
+ROLLBACK;
+SQL
+
+    local request_count
+    request_count=$(sql_super -c \
+        "SELECT count(*) FROM df.instances WHERE label = '${label}';")
+    assert_eq "direct request survives caller rollback" \
+        "1" "$request_count"
+
+    local id
+    id=$(sql_super -c \
+        "SELECT id FROM df.instances WHERE label = '${label}';")
+    wait_for_instance "$id" 30 >/dev/null
+}
+
+# ---------------------------------------------------------------------
+# Test 3: it actually compacts
 # ---------------------------------------------------------------------
 
 test_actually_compacts() {
@@ -406,7 +486,7 @@ test_actually_compacts() {
 }
 
 # ---------------------------------------------------------------------
-# Test 3: write latency, inline vs background
+# Test 4: write latency, inline vs background
 # ---------------------------------------------------------------------
 
 time_rounds() {
@@ -463,7 +543,7 @@ number (got '${val}')"
 }
 
 # ---------------------------------------------------------------------
-# Test 4: failure path
+# Test 5: failure path
 # ---------------------------------------------------------------------
 
 test_failure_path() {
@@ -497,7 +577,8 @@ ${l0_unchanged})"
 
     # Restore ownership; the next spill self-heals (README, "Known
     # limitations: No retry" -- next-spill retry is layer 1).
-    sql_super -c "GRANT app_owner TO textsearch_compactor;"
+    sql_super -c "GRANT app_owner TO textsearch_compactor \
+WITH INHERIT TRUE, SET FALSE;"
 
     spill_rounds app_owner t_failure_idx t_failure 1
     id=$(sql_super -c \
@@ -518,7 +599,7 @@ ${l0_after})"
 }
 
 # ---------------------------------------------------------------------
-# Test 5: cascade splits across transactions
+# Test 6: cascade splits across transactions
 # ---------------------------------------------------------------------
 
 test_cascade() {
@@ -611,11 +692,33 @@ for the cascade, server log shows ${generations}"
 }
 
 # ---------------------------------------------------------------------
-# Test 6: permissions
+# Test 7: permissions
 # ---------------------------------------------------------------------
 
 test_permissions() {
     log "=== Test: writer permissions (EXECUTE-only) ==="
+
+    sql_super -c "CREATE ROLE other_owner LOGIN;"
+    sql_super -f "${GLUE_DIR}/01_setup_role.sql" \
+        -v index_owner=other_owner >/dev/null
+    create_owned_table t_other t_other_idx other_owner
+
+    sql_as app_writer <<'SQL'
+DO $body$
+BEGIN
+    BEGIN
+        PERFORM public.bm25_request_compaction('t_other_idx');
+        RAISE EXCEPTION
+            'app_writer requested compaction for another owner';
+    EXCEPTION
+        WHEN insufficient_privilege THEN
+            NULL;
+    END;
+END
+$body$;
+SQL
+    log "PASS: writer cannot request compaction without heap INSERT"
+
     create_owned_table t_perm t_perm_idx
     sql_super << SQL
 GRANT INSERT, SELECT ON t_perm TO app_writer;
@@ -641,21 +744,23 @@ df.start() directly (it holds no df schema privileges)"
     # resets the chain and immediately starts refilling it), producing
     # a pile of tiny L0 segments whose df.loop cascade does not converge
     # inside any reasonable timeout. threshold=4 was measured to cross
-    # exactly once for this batch, giving one predictable L0 segment
-    # (well under segments_per_level=2, so the enqueued instance is a
-    # cheap single-iteration no-op) -- this test only cares whether a
-    # request is enqueued and correctly attributed, not whether real
-    # compaction work happens.
+    # once per 400-row transaction. Two transactions therefore reach
+    # segments_per_level=2 and make the second commit request
+    # compaction.
     set_guc pg_textsearch.memtable_pages_threshold '4'
 
-    sql_as app_writer << SQL
+    local batch
+    for batch in 1 2; do
+        sql_as app_writer << SQL
 SET client_min_messages = warning;
 BEGIN;
 INSERT INTO t_perm (body)
-SELECT 'writer doc ' || i || ' filler filler filler filler filler'
+SELECT 'writer batch ${batch} doc ' || i ||
+       ' filler filler filler filler filler'
 FROM generate_series(1, 400) i;
 COMMIT;
 SQL
+    done
 
     reset_guc pg_textsearch.memtable_pages_threshold
 
@@ -679,7 +784,7 @@ for a writer that only holds EXECUTE on bm25_request_compaction"
 }
 
 # ---------------------------------------------------------------------
-# Test 7: backstop (run LAST -- its per-minute sweep would otherwise
+# Test 8: backstop (run LAST -- its per-minute sweep would otherwise
 # compact every pending index in the database, corrupting the carefully
 # staged segment counts the other tests depend on).
 # ---------------------------------------------------------------------
@@ -756,6 +861,7 @@ setup_roles_and_glue
 wait_for_durable_worker
 
 test_atomicity
+test_independent_request
 test_actually_compacts
 test_write_latency
 test_failure_path

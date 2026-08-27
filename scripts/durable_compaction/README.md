@@ -28,16 +28,33 @@ df.loop(
     'SELECT bm25_needs_compaction(<oid>::oid::regclass)')  -- condition
 ```
 
+The SECURITY DEFINER wrapper accepts no DSL from the caller. It first
+requires the login identity (`session_user`) to have `INSERT` on the
+indexed heap, then constructs the fixed body and condition using only
+the numeric index OID. Re-running `02_wrapper.sql` drops and recreates
+the function, removing any stale named `EXECUTE` grants before
+granting the configured writer role.
+
 pg_durable's background worker runs **each node execution on its own
 connection, in its own transaction**. So the cascade is split: each
 `bm25_compact_step()` merges one batch at the lowest over-threshold
 level, commits, drops the per-index `LW_EXCLUSIVE`, and only then is
 the next level considered. A writer can commit in between.
 
-Because the request is inserted with `transaction_mode => 'caller'`
-(pg_durable's default), it is part of the writer's transaction: a
-spill that rolls back queues nothing, a spill that commits queues
-exactly one task.
+The wrapper uses `transaction_mode => 'new'`. pg_durable opens a
+loopback session as `textsearch_compactor`, persists the instance in
+that session's transaction, and returns its ID to the writer. The
+request therefore survives a later failure of the writer transaction.
+
+Requests are accelerators, not durable compaction state. The
+GenericXLog-logged level state in the index is the durable truth.
+Every `bm25_compact_step()` and `bm25_needs_compaction()` call reads
+that state again. An independent request may race ahead of the writer
+commit and do nothing, or may become redundant, without affecting
+correctness. A later spill requests again, and the scheduled backstop
+eventually finds every index whose durable level counts still require
+compaction. An explicit writer rollback still queues nothing because
+pg_textsearch invokes the wrapper only at `XACT_EVENT_PRE_COMMIT`.
 
 The request is best-effort. It runs in a subtransaction, so if
 pg_durable is unavailable the writer gets a `WARNING` and still
@@ -56,31 +73,35 @@ Both need it, and it needs a server restart.
 ### Both extensions in the same database
 
 pg_durable's `df` schema and its metadata tables exist only in the
-database named by `pg_durable.database`. `df.start()` must run inside
-the writer's own transaction for the atomicity above to hold, so the
-BM25 indexes have to live in that same database. `df.start`'s
-`database =>` parameter does not help: it selects where the *nodes*
-run, not where the instance row is written.
+database named by `pg_durable.database`. The wrapper's loopback
+`df.start()` session reconnects to that database, and the BM25 indexes
+must live there too. `df.start`'s `database =>` parameter does not
+help: it selects where the *nodes* run, not where the instance row is
+written.
 
-### Passwordless `pg_hba.conf` entry for the compactor
+### Passwordless authenticated connection for the compactor
 
 The worker executes each SQL node on a fresh libpq connection opened
 as `df.instances.submitted_by`. `connect_as_user()`
 (pg_durable `src/types.rs:233`) builds the connection options from
 username, database and port only — no password, and no host, so it
-uses the unix socket, where `peer` authentication fails for a role
-that is not the OS user.
+uses the Unix socket.
 
-Add, above the general rules:
+For production, map the PostgreSQL server's OS account to the
+compactor role with peer authentication. Replace
+`<server-os-user>` with the account that runs PostgreSQL:
 
 ```
-local   all   textsearch_compactor   trust
-host    all   textsearch_compactor   127.0.0.1/32   trust
+# pg_ident.conf
+pg_durable_compactor  <server-os-user>  textsearch_compactor
+
+# pg_hba.conf, above general local rules
+local  all  textsearch_compactor  peer map=pg_durable_compactor
 ```
 
-then `SELECT pg_reload_conf();`. Restricting the entry to this one
-role keeps the blast radius small; a production deployment would
-prefer a peer/ident map over `trust`.
+Then run `SELECT pg_reload_conf();`. The integration test uses
+`trust` only for its disposable cluster; do not copy that
+authentication setup into production.
 
 ### The compactor role must have LOGIN and must not be a superuser
 
@@ -143,9 +164,15 @@ psql -U textsearch_compactor -d postgres -f 03_backstop.sql
 `03` must run as `textsearch_compactor` itself so the instance is
 attributed to that role.
 
-Omitting `-v index_owner=...` defaults to the current user. Omitting
-`-v writer_role=...` grants `EXECUTE` to nobody; grant it yourself
-afterwards.
+`index_owner` is required, must exist, and must not be a superuser.
+The setup grants `textsearch_compactor` inherited membership with
+`SET FALSE`; it also rejects any membership the compactor already has
+in a superuser role. Omitting `-v writer_role=...` grants `EXECUTE` to
+nobody; grant it yourself afterwards.
+
+Each writer role granted wrapper `EXECUTE` also needs ordinary
+`INSERT` privilege on the indexed heap. The wrapper checks the login
+role, not a role selected later with `SET ROLE`.
 
 ## Configuration
 

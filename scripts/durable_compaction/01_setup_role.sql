@@ -7,14 +7,14 @@
 --
 -- Run as a superuser, in the database named by pg_durable.database
 -- (that is the only database in which the df schema exists, and
--- df.start() must run in the writer's own transaction, so the BM25
--- indexes have to live there too).
+-- transaction_mode => 'new' reconnects there to persist the request,
+-- so the BM25 indexes have to live there too).
 --
 --   psql -d postgres -f 01_setup_role.sql -v index_owner=app_owner
 --
--- If -v index_owner=... is omitted the current user is used.
+-- index_owner is required and must name an existing non-superuser role.
 --
--- Requirements this script encodes, each enforced by pg_durable:
+-- Requirements this script encodes for pg_durable:
 --
 --   * LOGIN is mandatory.  The background worker literally opens a
 --     new libpq connection as df.instances.submitted_by to run every
@@ -28,39 +28,77 @@
 --     superuser to dodge a permission error is explicitly off the
 --     table.
 --
---   * INHERIT plus membership in the index owner's role.  The
---     compactor can never *be* the index owner, but bm25_compact()
---     and bm25_compact_step() gate on object_ownercheck(), which
---     resolves through has_privs_of_role() -- so inherited
---     membership is sufficient.  bm25_indexes_needing_compaction()
---     likewise filters on pg_has_role(relowner, 'USAGE'), so without
---     this grant the backstop sweep simply sees no indexes.
+--   * INHERIT plus membership in an explicit, non-superuser index
+--     owner role.  bm25_compact() and bm25_compact_step() gate on
+--     object_ownercheck(), which resolves through has_privs_of_role(),
+--     so inherited membership is sufficient.  The membership is
+--     granted with SET FALSE: the worker receives the owner's object
+--     privileges but cannot become that role explicitly.
 --
 --   * pg_hba.conf must let this role connect WITHOUT a password.
 --     connect_as_user() builds PgConnectOptions from username,
 --     database and port only -- no password and no host, so it uses
---     the unix socket, where `peer` authentication fails for a role
---     that is not the OS user.  A `trust` line (or any
---     password-free method such as an ident map that resolves to
---     this role) is required, for example:
+--     the unix socket.  Production deployments should authenticate
+--     the PostgreSQL server's OS account with a peer map, for example:
 --
---       local   all   textsearch_compactor   trust
---       host    all   textsearch_compactor   127.0.0.1/32   trust
+--       # pg_ident.conf
+--       pg_durable_compactor  <server-os-user>  textsearch_compactor
 --
---     Placed above the general rules, and followed by
---     `SELECT pg_reload_conf();`.  Restricting the entry to this one
---     role keeps the blast radius small; a production deployment
---     would prefer a peer/ident map over trust.
+--       # pg_hba.conf
+--       local  all  textsearch_compactor  peer map=pg_durable_compactor
+--
+--     Place the HBA entry above general rules and reload the
+--     configuration.  The integration test uses trust only inside
+--     its throwaway cluster.
 
 \set ON_ERROR_STOP on
 
 \if :{?index_owner}
 \else
+\echo 'index_owner is required'
 \set index_owner ''
 \endif
 
-SELECT coalesce(nullif(:'index_owner', ''), current_user) AS index_owner
+SELECT nullif(:'index_owner', '') IS NOT NULL AS have_index_owner
 \gset
+
+\if :have_index_owner
+\else
+DO $$
+BEGIN
+    RAISE EXCEPTION 'index_owner is required';
+END
+$$;
+\endif
+
+SELECT EXISTS (
+           SELECT 1
+           FROM pg_catalog.pg_roles
+           WHERE rolname = :'index_owner'
+       ) AS index_owner_exists,
+       coalesce((
+           SELECT rolsuper
+           FROM pg_catalog.pg_roles
+           WHERE rolname = :'index_owner'
+       ), false) AS index_owner_is_superuser
+\gset
+
+\if :index_owner_exists
+\else
+DO $$
+BEGIN
+    RAISE EXCEPTION 'index_owner role does not exist';
+END
+$$;
+\endif
+
+\if :index_owner_is_superuser
+DO $$
+BEGIN
+    RAISE EXCEPTION 'index_owner must not be a superuser';
+END
+$$;
+\endif
 
 -- LOGIN: required by require_login_privilege().
 -- NOSUPERUSER: superuser submission is blocked by default.
@@ -79,17 +117,51 @@ BEGIN
 END
 $$;
 
+DO $$
+BEGIN
+    IF EXISTS (
+        SELECT 1
+        FROM pg_catalog.pg_auth_members m
+             JOIN pg_catalog.pg_roles granted_role
+               ON granted_role.oid = m.roleid
+             JOIN pg_catalog.pg_roles member_role
+               ON member_role.oid = m.member
+        WHERE member_role.rolname = 'textsearch_compactor'
+          AND granted_role.rolsuper)
+    THEN
+        RAISE EXCEPTION
+            'textsearch_compactor must not belong to a superuser role';
+    END IF;
+END
+$$;
+
 -- Grants schema USAGE on df plus the INSERT/SELECT privileges on
 -- df.instances and df.nodes that df.start() needs.  include_http is
 -- left false: compaction never makes HTTP calls.
 SELECT df.grant_usage('textsearch_compactor');
 
--- The compactor runs as itself, not as the writer, so it needs the
--- index owner's privileges on the heap and index it compacts.
-GRANT :"index_owner" TO textsearch_compactor;
+-- The worker inherits the owner's privileges, but cannot become that
+-- role explicitly.
+GRANT :"index_owner" TO textsearch_compactor
+    WITH INHERIT TRUE, SET FALSE;
 
--- The compactor must be able to reach the pg_textsearch functions.
--- Adjust if the extension does not live in public.
-GRANT USAGE ON SCHEMA public TO textsearch_compactor;
+-- Grant only the pg_textsearch entry points used by the per-index
+-- request and the periodic backstop.  Resolve the extension schema so
+-- this remains correct when pg_textsearch is not installed in public.
+SELECT n.nspname AS ext_schema
+FROM pg_catalog.pg_extension e
+     JOIN pg_catalog.pg_namespace n ON n.oid = e.extnamespace
+WHERE e.extname = 'pg_textsearch'
+\gset
+
+GRANT USAGE ON SCHEMA :"ext_schema" TO textsearch_compactor;
+GRANT EXECUTE ON FUNCTION
+    :"ext_schema".bm25_compact(regclass),
+    :"ext_schema".bm25_compact_step(regclass),
+    :"ext_schema".bm25_level_counts(regclass),
+    :"ext_schema".bm25_needs_compaction(regclass),
+    :"ext_schema".bm25_indexes_needing_compaction(),
+    :"ext_schema".bm25_compact_pending()
+TO textsearch_compactor;
 
 \echo 'textsearch_compactor ready.'
