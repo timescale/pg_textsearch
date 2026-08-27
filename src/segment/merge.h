@@ -71,6 +71,9 @@ extern void write_merged_segment_to_sink(
 extern BlockNumber
 tp_merge_level_segments(Relation index, uint32 level, uint32 max_merge);
 
+/* Return whether any compactable level has reached its threshold. */
+extern bool tp_compaction_needed(Relation index);
+
 /*
  * Check if a level needs compaction and trigger merge if so.
  *

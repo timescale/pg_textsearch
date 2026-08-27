@@ -249,7 +249,10 @@ tp_do_spill(
 		tp_maybe_compact_level(index_rel, 0);
 		break;
 	case TP_COMPACTION_BACKGROUND:
-		tp_compaction_request(RelationGetRelid(index_rel));
+		if (RelationUsesLocalBuffers(index_rel))
+			tp_maybe_compact_level(index_rel, 0);
+		else if (tp_compaction_needed(index_rel))
+			tp_compaction_request(RelationGetRelid(index_rel));
 		break;
 	case TP_COMPACTION_OFF:
 		break;

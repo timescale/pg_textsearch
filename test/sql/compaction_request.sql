@@ -2,7 +2,7 @@ CREATE EXTENSION IF NOT EXISTS pg_textsearch;
 
 \pset format unaligned
 SET client_min_messages = warning;
-SET pg_textsearch.segments_per_level = 64;
+SET pg_textsearch.segments_per_level = 2;
 SET pg_textsearch.compaction_mode = 'background';
 
 CREATE TABLE compaction_log (idx regclass);
@@ -34,6 +34,17 @@ CREATE INDEX compaction_request_docs2_idx ON compaction_request_docs2
     USING bm25(body) WITH (text_config = 'english');
 
 SET pg_textsearch.compaction_request_function = 'log_compaction';
+
+-- Seed each index below threshold so later spills exercise dispatch.
+INSERT INTO compaction_request_docs (body)
+SELECT 'seed doc ' || i FROM generate_series(1, 20) i;
+SELECT bm25_spill_index('compaction_request_docs_idx') IS NOT NULL
+       AS request_seed_spill;
+INSERT INTO compaction_request_docs2 (body)
+SELECT 'seed doc ' || i FROM generate_series(1, 20) i;
+SELECT bm25_spill_index('compaction_request_docs2_idx') IS NOT NULL
+       AS request_seed_spill2;
+TRUNCATE compaction_log;
 
 -- Rollback leaves no log rows because the dispatch is transaction-local.
 BEGIN;
@@ -148,8 +159,46 @@ COMMIT;
 SELECT count(*) >= 160 AS raising_function_committed
 FROM compaction_request_docs;
 
+-- Background requests start only when a level reaches its threshold.
+SET pg_textsearch.compaction_request_function = 'log_compaction';
+SET pg_textsearch.segments_per_level = 2;
+TRUNCATE compaction_log;
+
+CREATE TABLE compaction_threshold_docs (id serial PRIMARY KEY, body text);
+CREATE INDEX compaction_threshold_docs_idx ON compaction_threshold_docs
+    USING bm25(body) WITH (text_config = 'english');
+
+INSERT INTO compaction_threshold_docs (body)
+SELECT 'threshold first ' || i FROM generate_series(1, 20) i;
+SELECT bm25_spill_index('compaction_threshold_docs_idx') IS NOT NULL;
+SELECT count(*) AS below_threshold_requests FROM compaction_log;
+
+INSERT INTO compaction_threshold_docs (body)
+SELECT 'threshold second ' || i FROM generate_series(1, 20) i;
+SELECT bm25_spill_index('compaction_threshold_docs_idx') IS NOT NULL;
+SELECT count(*) AS threshold_requests FROM compaction_log
+WHERE idx = 'compaction_threshold_docs_idx'::regclass;
+
+-- Temporary indexes must compact inline because workers cannot access them.
+TRUNCATE compaction_log;
+CREATE TEMP TABLE compaction_temp_docs (id serial PRIMARY KEY, body text);
+CREATE INDEX compaction_temp_docs_idx ON compaction_temp_docs
+    USING bm25(body) WITH (text_config = 'english');
+
+INSERT INTO compaction_temp_docs (body)
+SELECT 'temp first ' || i FROM generate_series(1, 20) i;
+SELECT bm25_spill_index('compaction_temp_docs_idx') IS NOT NULL;
+INSERT INTO compaction_temp_docs (body)
+SELECT 'temp second ' || i FROM generate_series(1, 20) i;
+SELECT bm25_spill_index('compaction_temp_docs_idx') IS NOT NULL;
+
+SELECT count(*) AS temp_background_requests FROM compaction_log;
+SELECT NOT bm25_needs_compaction('compaction_temp_docs_idx'::regclass)
+       AS temp_compacted_inline;
+
 RESET pg_textsearch.compaction_mode;
 RESET pg_textsearch.compaction_request_function;
+DROP TABLE compaction_threshold_docs CASCADE;
 DROP TABLE compaction_request_docs2 CASCADE;
 DROP TABLE compaction_request_docs CASCADE;
 DROP TABLE compaction_log;

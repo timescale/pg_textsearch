@@ -1919,6 +1919,32 @@ tp_merge_level_segments(Relation index, uint32 level, uint32 max_merge)
 	return new_segment;
 }
 
+bool
+tp_compaction_needed(Relation index)
+{
+	TpIndexMetaPage metap;
+	Buffer			metabuf;
+	Page			metapage;
+	bool			needed = false;
+
+	metabuf = ReadBuffer(index, 0);
+	LockBuffer(metabuf, BUFFER_LOCK_SHARE);
+	metapage = BufferGetPage(metabuf);
+	metap	 = (TpIndexMetaPage)PageGetContents(metapage);
+
+	for (uint32 level = 0; level < TP_MAX_LEVELS - 1; level++)
+	{
+		if (metap->level_counts[level] >= (uint16)tp_segments_per_level)
+		{
+			needed = true;
+			break;
+		}
+	}
+
+	UnlockReleaseBuffer(metabuf);
+	return needed;
+}
+
 /*
  * Check if a level needs compaction and trigger merge if so.
  */
