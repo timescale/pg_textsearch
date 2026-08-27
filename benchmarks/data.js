@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1787824679151,
+  "lastUpdate": 1787824682604,
   "repoUrl": "https://github.com/timescale/pg_textsearch",
   "entries": {
     "cranfield Benchmarks": [
@@ -263429,6 +263429,88 @@ window.BENCHMARK_DATA = {
           {
             "name": "paradedb_msmarco_concurrent - Throughput (avg ms/query)",
             "value": 74.05,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tjgreen@gmail.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "648b25c57f91635341fac01676c015405665d2bb",
+          "message": "ci: harden package-release against transient arm64 QEMU failures (#467)\n\nCloses #466.\n\n## Why\n\n`v1.4.0` was published without any `.deb` packages. The\n[Package Release run for the\ntag](https://github.com/timescale/pg_textsearch/actions/runs/32163720583)\nfailed in `build-packages (18, arm64)` while installing build\ndependencies inside the QEMU-emulated arm64 container:\n\n```\nProcessing triggers for libc-bin (2.35-0ubuntu3.14) ...\nqemu: uncaught target signal 11 (Segmentation fault) - core dumped\ndpkg: error processing package libc-bin (--configure):\n installed libc-bin package post-installation script subprocess returned error exit status 139\nE: Sub-process /usr/bin/dpkg returned an error code (1)\n##[error]Process completed with exit code 100.\n```\n\nThat is a spurious QEMU user-mode emulation crash, not a build\nproblem — re-running the job succeeded on the first retry.\n\nThe `release` job declares `needs: [build-packages, build-source]`, so\nthat single failed matrix leg skipped the asset upload entirely. The\nrelease ended up with only the tarballs from `release.yml` and none of\nthe `pg-textsearch-v1.4.0-pg*-*.zip` bundles containing the `.deb`s.\nThe v1.4.0 assets have since been restored by re-running the job.\n\n## What changed\n\n- **Retry dependency installation.** `apt-get update`/`install` moved\n  into an `install_deps` retry loop inside `build.sh`, with\n  `-o Acquire::Retries=3` and a `dpkg --configure -a` recovery between\n  attempts, so an interrupted maintainer script does not wedge the\n  next try.\n- **Retry the container build.** The whole `docker run` is retried up\n  to three times. This is idempotent: `build.sh` starts with\n  `make clean` and `scripts/package-deb.sh` does\n  `rm -rf \"${BUILDDIR}\" \"${DEBDIR}\"` on entry. Root-owned leftovers\n  from a failed attempt are removed between tries.\n- **Fail loudly instead of silently shipping nothing.** The `release`\n  job now verifies all four `pgNN-ARCH` zips are present before\n  uploading anything, and a new `release-status` job writes an explicit\n  error to the run summary when a tag push does not produce release\n  assets.\n\n`needs` on the `release` job is deliberately left strict — publishing a\npartial set of platform packages would be worse than publishing none.\n\n## Testing\n\nWorkflow changes cannot be exercised until a tag is pushed, so the\nlogic was validated out of band:\n\n- YAML parses; every `run:` block passes `bash -n`, including the\n  heredoc'd `build.sh`.\n- The `docker run` retry loop was simulated with a stubbed `docker`:\n  succeeds on attempt 2 when the first attempt fails (`rc=0`), and\n  exits `1` after three failures.\n- The asset completeness check was run against a mock `artifacts/`\n  tree; it reports `MISSING: pg18-arm64` for exactly the v1.4.0\n  failure mode and passes once all four zips exist.",
+          "timestamp": "2026-08-25T20:29:10Z",
+          "url": "https://github.com/timescale/pg_textsearch/commit/648b25c57f91635341fac01676c015405665d2bb"
+        },
+        "date": 1787824682055,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "paradedb_msmarco_concurrent - Index Build Time",
+            "value": 4.593,
+            "unit": "ms"
+          },
+          {
+            "name": "paradedb_msmarco_concurrent - Insert Time",
+            "value": 0.564,
+            "unit": "ms"
+          },
+          {
+            "name": "paradedb_msmarco_concurrent - Concurrent Insert Time",
+            "value": 1570617.636138,
+            "unit": "ms"
+          },
+          {
+            "name": "paradedb_msmarco_concurrent - 1 Token Query (p50)",
+            "value": 73.41,
+            "unit": "ms"
+          },
+          {
+            "name": "paradedb_msmarco_concurrent - 2 Token Query (p50)",
+            "value": 30.69,
+            "unit": "ms"
+          },
+          {
+            "name": "paradedb_msmarco_concurrent - 3 Token Query (p50)",
+            "value": 75.76,
+            "unit": "ms"
+          },
+          {
+            "name": "paradedb_msmarco_concurrent - 4 Token Query (p50)",
+            "value": 76.89,
+            "unit": "ms"
+          },
+          {
+            "name": "paradedb_msmarco_concurrent - 5 Token Query (p50)",
+            "value": 79.27,
+            "unit": "ms"
+          },
+          {
+            "name": "paradedb_msmarco_concurrent - 6 Token Query (p50)",
+            "value": 85.88,
+            "unit": "ms"
+          },
+          {
+            "name": "paradedb_msmarco_concurrent - 7 Token Query (p50)",
+            "value": 87.68,
+            "unit": "ms"
+          },
+          {
+            "name": "paradedb_msmarco_concurrent - 8+ Token Query (p50)",
+            "value": 92.79,
+            "unit": "ms"
+          },
+          {
+            "name": "paradedb_msmarco_concurrent - Throughput (avg ms/query)",
+            "value": 75.22,
             "unit": "ms"
           }
         ]
