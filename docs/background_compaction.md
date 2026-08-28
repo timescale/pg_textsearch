@@ -321,9 +321,9 @@ this document in the parent package documentation directory.
 
 ## pg_durable follow-up
 
-The integration works as a proof of concept, but two upstream capabilities
-are required to make the recurring backstop reliable. The statements below
-describe gaps confirmed in the pg_durable 0.2.6 development tree.
+The integration works as a proof of concept, but one upstream capability is
+required to make recurring compaction reliable. The gap below is confirmed in
+the pg_durable 0.2.6 development tree.
 
 1. **Failure-resilient recurring execution.** The backstop exists to recover
    debt after an immediate request fails and no later spill resubmits it. One
@@ -335,44 +335,19 @@ describe gaps confirmed in the pg_durable 0.2.6 development tree.
    long-lived instance, and runs no later ticks. It exposes generic execution
    history, but has no node retry or schedule-aware failure-continuation
    policy, and a loop terminates after 100,000 iterations.
-2. **Keyed schedule lifecycle.** Backstop installation must not create
-   duplicate schedules, and promotion must not leave multiple active
-   schedulers. pg_durable should register or update one database-scoped
-   schedule by stable key and enforce a single fenced executor. Persisted
-   workflows already resume after an ordinary PostgreSQL or worker restart,
-   and iterations within one `df.loop` are sequential. However, every
-   `df.start()` creates a new randomly identified instance; there is no keyed
-   schedule or cross-instance singleton.
 
-Two additional groups are production hardening rather than correctness
-requirements for this POC:
+Schedule identity and lifecycle do not require an upstream pg_durable
+facility. A production integration can run one recurring instance per BM25
+index, store its pg_durable instance ID in the index metapage, and serialize
+create, cancel, and replacement bookkeeping with the index's existing locks.
+pg_durable already supports cancellation by instance ID, sequential
+iterations within one `df.loop`, global admission limits, persisted workflow
+restart, generic execution history, metrics, heartbeat monitoring, and
+terminal-instance retention.
 
-- **Keyed work admission and lifecycle.** Immediate requests can overlap for
-  one index, consume connection slots, and leave obsolete no-op work after a
-  target is replaced. Structured target identity, per-target single-flight,
-  observable admission limits, and cancellation or tombstoning by target
-  would reduce that waste. pg_durable currently has global limits for
-  independent starts and SQL connections and cancellation by instance ID, but
-  no target key or per-target concurrency control. This requires a keyed API
-  in pg_durable and a matching wrapper change to pass BM25 target identity;
-  pg_durable cannot infer it from arbitrary SQL. pg_textsearch's existing
-  physical identity checks already keep stale work safe.
-- **Operations and execution profile.** Operators need to detect a dead
-  backstop, diagnose worker connection failures, prevent writer and worker
-  GUCs from drifting, retain useful failure history, and monitor deployments
-  across databases. Idempotent inspect, pause, resume, replace, delete, and
-  force-run controls would simplify that work. pg_durable exposes generic
-  instance and execution status, aggregate metrics, a worker heartbeat, and
-  terminal-instance retention; role and database identity are also available
-  in its metadata tables. It does not yet expose a schedule-specific health
-  view or a complete, configurable worker profile covering connection
-  details, `search_path`, and timeouts. Supplying required extension GUCs,
-  including `pg_textsearch.segments_per_level`, would also require a matching
-  change to this integration.
-
-Until the two required capabilities exist, level counts remain the recovery
-source of truth and operators are responsible for singleton registration,
-monitoring, and manual backstop restart.
+Until failure-resilient recurrence exists, level counts remain the recovery
+source of truth and operators must restart a failed recurring compaction
+instance manually.
 
 ## Verification boundaries
 
