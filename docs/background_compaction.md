@@ -242,8 +242,11 @@ These pg_textsearch GUCs are `PGC_SUSET`. Use `postgresql.conf`,
 Setting the threshold only in a writer session can enqueue a task whose worker
 uses a different threshold and completes without merging.
 
-Run the operator scripts in order as described in
-[`scripts/durable_compaction/README.md`](../scripts/durable_compaction/README.md).
+Run the operator scripts in order as described in the
+[durable compaction operator guide][operator-guide].
+
+[operator-guide]: https://github.com/timescale/pg_textsearch/blob/main/scripts/durable_compaction/README.md
+
 The pg_durable worker initializes asynchronously after extension creation and
 server restart; setup must wait for readiness before starting tasks.
 
@@ -258,11 +261,14 @@ After the canary succeeds, the script resolves the extension's exact
 `bm25_compact_pending()` member and takes a transaction-scoped advisory lock.
 It reuses the canonical pending/running
 `df.loop(df.wait_for_schedule(...) ~> bm25_compact_pending())` graph submitted
-by `textsearch_compactor`, or creates one replacement if only terminal
-instances remain. Its default cron expression is hourly and can be overridden
-with `-v cron=...`; rerunning with a different value does not alter an
-already-live schedule. The label is observability metadata, not authorization
-or a security boundary. Executions within one instance are sequential.
+by `textsearch_compactor` for the current database, or creates one replacement
+if only terminal instances remain. Its default cron expression is hourly and
+can be overridden with `-v cron=...`; rerunning with a different value does
+not alter an already-live schedule. The label is observability metadata, not
+authorization, identity, or a security boundary. If multiple canonical
+instances are already live, registration fails with their IDs so an operator
+can cancel all but one before retrying. Executions within one instance are
+sequential.
 
 The backstop body is one worker transaction. It calls whole-cascade
 compaction for each index, so one index holds its per-index exclusive lock for

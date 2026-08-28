@@ -224,6 +224,14 @@ jobs:
           exit 1
         fi
 
+        CANONICAL_OPERATOR_URL="https://github.com/timescale/pg_textsearch/blob/main/scripts/durable_compaction/README.md"
+        if ! tar -xOf "$ARCHIVE" \
+            "pg${{ matrix.pg_version }}/background_compaction.md" \
+            | grep -Fq "$CANONICAL_OPERATOR_URL"; then
+          echo "::error::Packaged background compaction design has no stable canonical operator link"
+          exit 1
+        fi
+
     - name: Upload build artifacts
       uses: actions/upload-artifact@v4
       with:

@@ -11,8 +11,9 @@
 -- identity that 02_wrapper.sql obtains via SECURITY DEFINER -- no
 -- definer function is needed here.
 --
--- Re-running this script reuses the canonical pending/running instance. If
--- only terminal instances exist, it creates one replacement.
+-- Re-running this script reuses exactly one canonical pending/running
+-- instance. If multiple canonical instances are live, it fails with their
+-- IDs; if only terminal instances exist, it creates one replacement.
 --
 -- The sweep cadence defaults to hourly and can be overridden with
 -- -v cron=... (e.g. for a faster cadence in a test harness):
@@ -233,10 +234,13 @@ BEGIN
               OR (attribute.attname OPERATOR(pg_catalog.=) 'submitted_by'
                   AND attribute.atttypid OPERATOR(pg_catalog.=)
                           'pg_catalog.regrole'::pg_catalog.regtype)
+              OR (attribute.attname OPERATOR(pg_catalog.=) 'database'
+                  AND attribute.atttypid OPERATOR(pg_catalog.=)
+                          'pg_catalog.text'::pg_catalog.regtype)
               OR (attribute.attname OPERATOR(pg_catalog.=) 'created_at'
                   AND attribute.atttypid OPERATOR(pg_catalog.=)
                           'pg_catalog.timestamptz'::pg_catalog.regtype)))
-           OPERATOR(pg_catalog.<>) 6
+           OPERATOR(pg_catalog.<>) 7
        OR NOT EXISTS (
         SELECT 1
         FROM pg_catalog.pg_class relation
@@ -417,9 +421,10 @@ SELECT pg_catalog.pg_advisory_xact_lock(
 
 DO $$
 DECLARE
-    instance         text;
-    extension_schema text;
-    body             text;
+    instance             text;
+    canonical_instances text[];
+    extension_schema     text;
+    body                 text;
 BEGIN
     SELECT namespace.nspname
     INTO extension_schema
@@ -449,43 +454,61 @@ BEGIN
         'SELECT %I.bm25_compact_pending()', extension_schema);
 
     -- The label remains observability metadata, not authorization or identity.
-    -- Match the submitter and exact loop/sequence/body graph before reusing a
-    -- live instance.
-    SELECT durable_instance.id
-    INTO instance
-    FROM df.instances durable_instance
-         JOIN df.nodes loop_node
-           ON loop_node.instance_id OPERATOR(pg_catalog.=)
-                  durable_instance.id
-          AND loop_node.id OPERATOR(pg_catalog.=)
-                  durable_instance.root_node
-         JOIN df.nodes sequence_node
-           ON sequence_node.instance_id OPERATOR(pg_catalog.=)
-                  durable_instance.id
-          AND sequence_node.id OPERATOR(pg_catalog.=) loop_node.left_node
-         JOIN df.nodes schedule_node
-           ON schedule_node.instance_id OPERATOR(pg_catalog.=)
-                  durable_instance.id
-          AND schedule_node.id OPERATOR(pg_catalog.=)
-                  sequence_node.left_node
-         JOIN df.nodes body_node
-           ON body_node.instance_id OPERATOR(pg_catalog.=)
-                  durable_instance.id
-          AND body_node.id OPERATOR(pg_catalog.=) sequence_node.right_node
-    WHERE durable_instance.label OPERATOR(pg_catalog.=)
-              'bm25-compaction-backstop'
-      AND durable_instance.submitted_by OPERATOR(pg_catalog.=)
-              pg_catalog.to_regrole(CURRENT_USER)
-      AND durable_instance.status OPERATOR(pg_catalog.=)
-              ANY (ARRAY['pending', 'running'])
-      AND loop_node.node_type OPERATOR(pg_catalog.=) 'LOOP'
-      AND loop_node.right_node IS NULL
-      AND sequence_node.node_type OPERATOR(pg_catalog.=) 'THEN'
-      AND schedule_node.node_type OPERATOR(pg_catalog.=) 'WAIT_SCHEDULE'
-      AND body_node.node_type OPERATOR(pg_catalog.=) 'SQL'
-      AND body_node.query OPERATOR(pg_catalog.=) body
-    ORDER BY durable_instance.created_at, durable_instance.id
-    LIMIT 1;
+    -- Match the database, submitter, and exact loop/sequence/body graph before
+    -- reusing a live instance.
+    SELECT pg_catalog.array_agg(
+               canonical.id ORDER BY canonical.created_at, canonical.id)
+    INTO canonical_instances
+    FROM (
+        SELECT DISTINCT durable_instance.id, durable_instance.created_at
+        FROM df.instances durable_instance
+             JOIN df.nodes loop_node
+               ON loop_node.instance_id OPERATOR(pg_catalog.=)
+                      durable_instance.id
+              AND loop_node.id OPERATOR(pg_catalog.=)
+                      durable_instance.root_node
+             JOIN df.nodes sequence_node
+               ON sequence_node.instance_id OPERATOR(pg_catalog.=)
+                      durable_instance.id
+              AND sequence_node.id OPERATOR(pg_catalog.=) loop_node.left_node
+             JOIN df.nodes schedule_node
+               ON schedule_node.instance_id OPERATOR(pg_catalog.=)
+                      durable_instance.id
+              AND schedule_node.id OPERATOR(pg_catalog.=)
+                      sequence_node.left_node
+             JOIN df.nodes body_node
+               ON body_node.instance_id OPERATOR(pg_catalog.=)
+                      durable_instance.id
+              AND body_node.id OPERATOR(pg_catalog.=)
+                      sequence_node.right_node
+        WHERE durable_instance.submitted_by OPERATOR(pg_catalog.=)
+                  pg_catalog.to_regrole(CURRENT_USER)
+          AND COALESCE(
+                  durable_instance.database,
+                  pg_catalog.current_database()::pg_catalog.text)
+                  OPERATOR(pg_catalog.=) pg_catalog.current_database()
+          AND durable_instance.status OPERATOR(pg_catalog.=)
+                  ANY (ARRAY['pending', 'running'])
+          AND loop_node.node_type OPERATOR(pg_catalog.=) 'LOOP'
+          AND loop_node.right_node IS NULL
+          AND sequence_node.node_type OPERATOR(pg_catalog.=) 'THEN'
+          AND schedule_node.node_type OPERATOR(pg_catalog.=) 'WAIT_SCHEDULE'
+          AND body_node.node_type OPERATOR(pg_catalog.=) 'SQL'
+          AND body_node.query OPERATOR(pg_catalog.=) body
+    ) canonical;
+
+    IF pg_catalog.cardinality(canonical_instances) OPERATOR(pg_catalog.>) 1
+    THEN
+        RAISE EXCEPTION
+            'multiple live canonical backstops found: %',
+            pg_catalog.array_to_string(canonical_instances, ', ')
+            USING HINT =
+                'Cancel all but one listed instance with '
+                'SELECT df.cancel(''<instance-id>''); wait for terminal '
+                'status, then rerun this script.';
+    END IF;
+
+    instance := canonical_instances[1];
 
     IF instance IS NULL THEN
         SELECT df.start(
@@ -501,6 +524,9 @@ BEGIN
     ELSE
         RAISE NOTICE 'reusing live backstop instance %', instance;
     END IF;
+
+    PERFORM pg_catalog.set_config(
+        'pg_textsearch_backstop.instance', instance, false);
 END
 $$;
 
@@ -510,7 +536,8 @@ COMMIT;
 -- terminal history remains available but is not printed here.
 SELECT id, label, status, submitted_by, created_at
 FROM df.instances
-WHERE label OPERATOR(pg_catalog.=) 'bm25-compaction-backstop'
+WHERE id OPERATOR(pg_catalog.=)
+          pg_catalog.current_setting('pg_textsearch_backstop.instance')
   AND submitted_by OPERATOR(pg_catalog.=)
           pg_catalog.to_regrole(CURRENT_USER)
   AND status OPERATOR(pg_catalog.=) ANY (ARRAY['pending', 'running'])

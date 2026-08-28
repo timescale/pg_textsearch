@@ -147,6 +147,38 @@ label_for() {
     sql_super -c "SELECT 'bm25-compact-' || '${1}'::regclass::oid;"
 }
 
+canonical_backstop_ids() {
+    sql_super -c "SELECT durable_instance.id
+        FROM df.instances durable_instance
+        JOIN df.nodes loop_node
+          ON loop_node.instance_id = durable_instance.id
+         AND loop_node.id = durable_instance.root_node
+        JOIN df.nodes sequence_node
+          ON sequence_node.instance_id = durable_instance.id
+         AND sequence_node.id = loop_node.left_node
+        JOIN df.nodes schedule_node
+          ON schedule_node.instance_id = durable_instance.id
+         AND schedule_node.id = sequence_node.left_node
+        JOIN df.nodes body_node
+          ON body_node.instance_id = durable_instance.id
+         AND body_node.id = sequence_node.right_node
+        WHERE durable_instance.submitted_by =
+                  'textsearch_compactor'::pg_catalog.regrole
+          AND COALESCE(
+                  durable_instance.database,
+                  pg_catalog.current_database()::pg_catalog.text) =
+                  pg_catalog.current_database()
+          AND durable_instance.status IN ('pending', 'running')
+          AND loop_node.node_type = 'LOOP'
+          AND loop_node.right_node IS NULL
+          AND sequence_node.node_type = 'THEN'
+          AND schedule_node.node_type = 'WAIT_SCHEDULE'
+          AND body_node.node_type = 'SQL'
+          AND body_node.query =
+                  'SELECT ${EXT_SCHEMA}.bm25_compact_pending()'
+        ORDER BY durable_instance.created_at, durable_instance.id;"
+}
+
 assert_eq() {
     local desc="$1" expected="$2" actual="$3"
     if [ "$expected" != "$actual" ]; then
@@ -1875,6 +1907,50 @@ ${backstop_status}"
         ORDER BY created_at DESC LIMIT 1;")
     assert_eq "repeated registration reuses the canonical backstop" \
         "$backstop_id" "$reused_backstop_id"
+
+    sql_super -c "UPDATE df.instances
+        SET label = 'operator-renamed-backstop'
+        WHERE id = '${backstop_id}';" >/dev/null
+    PGOPTIONS="-c search_path=hostile_path,pg_catalog,public,${EXT_SCHEMA},df" \
+        sql_as textsearch_compactor -f "${GLUE_DIR}/03_backstop.sql" \
+        -v cron='* * * * *' >/dev/null
+    assert_eq "changed observability label still reuses canonical backstop" \
+        "$backstop_id" "$(canonical_backstop_ids)"
+
+    local duplicate_id multiple_output canonical_ids canonical_count
+    duplicate_id=$(sql_as textsearch_compactor -c "SELECT df.start(
+        df.loop(
+            df.wait_for_schedule('0 0 1 1 *')
+            OPERATOR(pg_catalog.~>)
+            'SELECT ${EXT_SCHEMA}.bm25_compact_pending()'),
+        label => 'operator-duplicate-backstop');")
+    multiple_output="${DATA_DIR}/multiple-backstop.out"
+    if PGOPTIONS="\
+-c search_path=hostile_path,pg_catalog,public,${EXT_SCHEMA},df" \
+        sql_as textsearch_compactor -f "${GLUE_DIR}/03_backstop.sql" \
+        -v cron='* * * * *' >"${multiple_output}" 2>&1; then
+        error "ASSERTION FAILED: registration accepted multiple live \
+canonical backstops (${backstop_id}, ${duplicate_id})"
+    fi
+    if ! grep -Fq "${backstop_id}" "${multiple_output}" \
+        || ! grep -Fq "${duplicate_id}" "${multiple_output}" \
+        || ! grep -Fq "Cancel all but one listed instance" \
+            "${multiple_output}"; then
+        error "ASSERTION FAILED: multiple-backstop failure did not provide \
+both IDs and cancellation guidance: $(tr '\n' ' ' <"${multiple_output}")"
+    fi
+    canonical_ids=$(canonical_backstop_ids)
+    canonical_count=$(printf '%s\n' "${canonical_ids}" | grep -c .)
+    assert_eq "ambiguous registration creates no third canonical backstop" \
+        "2" "${canonical_count}"
+    log "PASS: multiple canonical live backstops fail closed with IDs \
+${backstop_id} and ${duplicate_id}"
+    sql_as textsearch_compactor -c \
+        "SELECT df.cancel('${duplicate_id}');" >/dev/null
+    assert_eq "duplicate backstop reaches terminal status" "cancelled" \
+        "$(wait_for_instance "$duplicate_id" 30)"
+    assert_eq "original renamed backstop remains canonical after cleanup" \
+        "$backstop_id" "$(canonical_backstop_ids)"
 
     local waited=0
     local l0_after="$l0_before"

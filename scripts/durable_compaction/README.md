@@ -162,12 +162,13 @@ psql -U textsearch_compactor -d application_database \
 ```
 
 Registration is idempotent. It takes a transaction-scoped advisory lock,
-reuses the canonical pending/running graph submitted by
-`textsearch_compactor`, and creates one replacement only when no live
-canonical instance remains. A different `-v cron=...` value does not modify
-an already-live instance; cancel it before rerunning to change cadence.
-The global label is observability metadata, not an authorization or security
-boundary.
+reuses exactly one canonical pending/running graph for the current database
+submitted by `textsearch_compactor`, and creates one replacement only when no
+live canonical instance remains. A different `-v cron=...` value does not
+modify an already-live instance; cancel it before rerunning to change cadence.
+The global label is observability metadata, not an authorization, identity, or
+security boundary. If multiple canonical instances are already live, the
+script fails closed with their IDs; cancel all but one and rerun it.
 
 Inspect orchestration as `textsearch_compactor` or a superuser because
 `df.instances` is protected by submitter-based row-level security:
