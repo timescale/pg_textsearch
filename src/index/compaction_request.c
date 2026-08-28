@@ -21,6 +21,7 @@
 #include <utils/regproc.h>
 #include <utils/resowner.h>
 #include <utils/snapmgr.h>
+#include <utils/varlena.h>
 
 #include "index/compaction_request.h"
 
@@ -28,6 +29,33 @@ int	  tp_compaction_mode			 = TP_COMPACTION_INLINE;
 char *tp_compaction_request_function = "";
 
 static List *tp_pending_compactions = NIL;
+
+bool
+tp_check_compaction_request_function(
+		char		   **newval,
+		void **extra	 pg_attribute_unused(),
+		GucSource source pg_attribute_unused())
+{
+	char *rawname;
+	List *names = NIL;
+	bool  valid;
+
+	if ((*newval)[0] == '\0')
+		return true;
+
+	rawname = pstrdup(*newval);
+	valid	= SplitIdentifierString(rawname, '.', &names);
+	valid	= valid && list_length(names) >= 1 && list_length(names) <= 2;
+	if (!valid)
+		GUC_check_errdetail(
+				"Must be empty, an unqualified identifier, or a "
+				"schema-qualified identifier.");
+
+	pfree(rawname);
+	list_free(names);
+
+	return valid;
+}
 
 void
 tp_compaction_request(Oid indexoid)

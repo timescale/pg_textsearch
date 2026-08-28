@@ -54,6 +54,10 @@ CREATE INDEX compaction_request_docs2_idx ON compaction_request_docs2
 
 SET pg_textsearch.compaction_request_function = 'log_compaction';
 
+-- Callback names must be valid unqualified or schema-qualified identifiers.
+SET pg_textsearch.compaction_request_function = 'invalid..callback';
+SET pg_textsearch.compaction_request_function = 'db.schema.callback';
+
 -- Seed each index below threshold so later spills exercise dispatch.
 INSERT INTO compaction_request_docs (body)
 SELECT 'seed doc ' || i FROM generate_series(1, 20) i;
@@ -156,8 +160,9 @@ SELECT bm25_spill_index('compaction_request_docs_idx') IS NOT NULL
 COMMIT;
 SELECT last_value - :calls_before AS missing_function_requests
 FROM compaction_request_calls;
-SELECT count(*) >= 100 AS missing_function_committed
-FROM compaction_request_docs;
+SELECT count(*) = 20 AS missing_function_committed
+FROM compaction_request_docs
+WHERE body LIKE 'missing function doc %';
 
 -- Empty request function warns once and writer data still commits.
 SELECT last_value AS calls_before FROM compaction_request_calls \gset
@@ -171,8 +176,9 @@ SELECT bm25_spill_index('compaction_request_docs_idx') IS NOT NULL
 COMMIT;
 SELECT last_value - :calls_before AS empty_function_requests
 FROM compaction_request_calls;
-SELECT count(*) >= 120 AS empty_function_committed
-FROM compaction_request_docs;
+SELECT count(*) = 20 AS empty_function_committed
+FROM compaction_request_docs
+WHERE body LIKE 'empty function doc %';
 
 -- Inline mode does not enqueue background requests.
 SELECT last_value AS calls_before FROM compaction_request_calls \gset
@@ -198,8 +204,9 @@ FROM generate_series(1, 20) i;
 SELECT bm25_spill_index('compaction_request_docs_idx') IS NOT NULL
        AS raising_function_spill;
 COMMIT;
-SELECT count(*) >= 160 AS raising_function_committed
-FROM compaction_request_docs;
+SELECT count(*) = 20 AS raising_function_committed
+FROM compaction_request_docs
+WHERE body LIKE 'raising function doc %';
 
 -- Query cancellation during dispatch aborts the writer transaction.
 CREATE TABLE compaction_cancel_docs (id serial PRIMARY KEY, body text);

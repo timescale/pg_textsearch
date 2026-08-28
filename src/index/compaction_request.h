@@ -8,6 +8,8 @@
 
 #include <postgres.h>
 
+#include <utils/guc.h>
+
 typedef enum TpCompactionMode
 {
 	TP_COMPACTION_INLINE = 0,
@@ -18,6 +20,8 @@ typedef enum TpCompactionMode
 extern int	 tp_compaction_mode;
 extern char *tp_compaction_request_function;
 
+extern bool tp_check_compaction_request_function(
+		char **newval, void **extra, GucSource source);
 extern void tp_compaction_request(Oid indexoid);
 extern void tp_compaction_drop_request(Oid indexoid);
 extern void tp_compaction_flush_requests(void);

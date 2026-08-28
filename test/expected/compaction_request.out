@@ -44,6 +44,13 @@ CREATE TABLE compaction_request_docs2 (
 CREATE INDEX compaction_request_docs2_idx ON compaction_request_docs2
     USING bm25(body) WITH (text_config = 'english');
 SET pg_textsearch.compaction_request_function = 'log_compaction';
+-- Callback names must be valid unqualified or schema-qualified identifiers.
+SET pg_textsearch.compaction_request_function = 'invalid..callback';
+ERROR:  invalid value for parameter "pg_textsearch.compaction_request_function": "invalid..callback"
+DETAIL:  Must be empty, an unqualified identifier, or a schema-qualified identifier.
+SET pg_textsearch.compaction_request_function = 'db.schema.callback';
+ERROR:  invalid value for parameter "pg_textsearch.compaction_request_function": "db.schema.callback"
+DETAIL:  Must be empty, an unqualified identifier, or a schema-qualified identifier.
 -- Seed each index below threshold so later spills exercise dispatch.
 INSERT INTO compaction_request_docs (body)
 SELECT 'seed doc ' || i FROM generate_series(1, 20) i;
@@ -192,8 +199,9 @@ FROM compaction_request_calls;
 missing_function_requests
 0
 (1 row)
-SELECT count(*) >= 100 AS missing_function_committed
-FROM compaction_request_docs;
+SELECT count(*) = 20 AS missing_function_committed
+FROM compaction_request_docs
+WHERE body LIKE 'missing function doc %';
 missing_function_committed
 t
 (1 row)
@@ -216,8 +224,9 @@ FROM compaction_request_calls;
 empty_function_requests
 0
 (1 row)
-SELECT count(*) >= 120 AS empty_function_committed
-FROM compaction_request_docs;
+SELECT count(*) = 20 AS empty_function_committed
+FROM compaction_request_docs
+WHERE body LIKE 'empty function doc %';
 empty_function_committed
 t
 (1 row)
@@ -254,8 +263,9 @@ t
 (1 row)
 COMMIT;
 WARNING:  bm25: background compaction request for index "compaction_request_docs_idx" failed: intentional request failure for compaction_request_docs_idx
-SELECT count(*) >= 160 AS raising_function_committed
-FROM compaction_request_docs;
+SELECT count(*) = 20 AS raising_function_committed
+FROM compaction_request_docs
+WHERE body LIKE 'raising function doc %';
 raising_function_committed
 t
 (1 row)

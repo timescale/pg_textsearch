@@ -652,7 +652,13 @@ test_prepared_transaction() {
     local label
     label=$(label_for t_prepared_idx)
 
-    sql_as app_owner <<'SQL' >/dev/null
+    # The prepared transaction adds well over 50 terms. A one-row transaction
+    # on the reused backend does not, so its row must remain in the memtable.
+    sql_super -c "ALTER ROLE app_owner SET \
+pg_textsearch.bulk_load_threshold = 50;" >/dev/null
+    local reuse_spill
+    reuse_spill=$(sql_as app_owner <<'SQL'
+\o /dev/null
 BEGIN;
 INSERT INTO t_prepared (body)
 SELECT 'prepared first ' || i || ' filler filler filler'
@@ -663,8 +669,17 @@ SELECT 'prepared second ' || i || ' filler filler filler'
 FROM generate_series(1, 20) i;
 SELECT bm25_spill_index('t_prepared_idx');
 PREPARE TRANSACTION 'bm25_compaction_prepare';
+\o
+INSERT INTO t_prepared (body) VALUES ('prepared backend reuse');
+SELECT bm25_spill_index('t_prepared_idx') IS NOT NULL;
+\o /dev/null
 COMMIT PREPARED 'bm25_compaction_prepare';
 SQL
+)
+    sql_super -c "ALTER ROLE app_owner RESET \
+pg_textsearch.bulk_load_threshold;" >/dev/null
+    assert_eq "PREPARE resets counters before backend reuse" \
+        "t" "$reuse_spill"
 
     local id st
     id=$(sql_super -c \

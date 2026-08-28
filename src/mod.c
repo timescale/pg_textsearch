@@ -313,7 +313,7 @@ _PG_init(void)
 			"",
 			PGC_SUSET,
 			0,
-			NULL,
+			tp_check_compaction_request_function,
 			NULL,
 			NULL);
 
@@ -632,6 +632,8 @@ tp_xact_callback(XactEvent event, void *arg pg_attribute_unused())
 		break;
 
 	case XACT_EVENT_PREPARE:
+		tp_release_all_index_locks();
+		tp_reset_bulk_load_counters();
 		tp_compaction_reset_requests();
 		break;
 	}
