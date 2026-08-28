@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1787908749540,
+  "lastUpdate": 1787908753634,
   "repoUrl": "https://github.com/timescale/pg_textsearch",
   "entries": {
     "cranfield Benchmarks": [
@@ -39774,6 +39774,133 @@ window.BENCHMARK_DATA = {
           {
             "name": "msmarco (8.8M docs) - Query Latency After Update VACUUM",
             "value": 8.55,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tjgreen@gmail.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "648b25c57f91635341fac01676c015405665d2bb",
+          "message": "ci: harden package-release against transient arm64 QEMU failures (#467)\n\nCloses #466.\n\n## Why\n\n`v1.4.0` was published without any `.deb` packages. The\n[Package Release run for the\ntag](https://github.com/timescale/pg_textsearch/actions/runs/32163720583)\nfailed in `build-packages (18, arm64)` while installing build\ndependencies inside the QEMU-emulated arm64 container:\n\n```\nProcessing triggers for libc-bin (2.35-0ubuntu3.14) ...\nqemu: uncaught target signal 11 (Segmentation fault) - core dumped\ndpkg: error processing package libc-bin (--configure):\n installed libc-bin package post-installation script subprocess returned error exit status 139\nE: Sub-process /usr/bin/dpkg returned an error code (1)\n##[error]Process completed with exit code 100.\n```\n\nThat is a spurious QEMU user-mode emulation crash, not a build\nproblem — re-running the job succeeded on the first retry.\n\nThe `release` job declares `needs: [build-packages, build-source]`, so\nthat single failed matrix leg skipped the asset upload entirely. The\nrelease ended up with only the tarballs from `release.yml` and none of\nthe `pg-textsearch-v1.4.0-pg*-*.zip` bundles containing the `.deb`s.\nThe v1.4.0 assets have since been restored by re-running the job.\n\n## What changed\n\n- **Retry dependency installation.** `apt-get update`/`install` moved\n  into an `install_deps` retry loop inside `build.sh`, with\n  `-o Acquire::Retries=3` and a `dpkg --configure -a` recovery between\n  attempts, so an interrupted maintainer script does not wedge the\n  next try.\n- **Retry the container build.** The whole `docker run` is retried up\n  to three times. This is idempotent: `build.sh` starts with\n  `make clean` and `scripts/package-deb.sh` does\n  `rm -rf \"${BUILDDIR}\" \"${DEBDIR}\"` on entry. Root-owned leftovers\n  from a failed attempt are removed between tries.\n- **Fail loudly instead of silently shipping nothing.** The `release`\n  job now verifies all four `pgNN-ARCH` zips are present before\n  uploading anything, and a new `release-status` job writes an explicit\n  error to the run summary when a tag push does not produce release\n  assets.\n\n`needs` on the `release` job is deliberately left strict — publishing a\npartial set of platform packages would be worse than publishing none.\n\n## Testing\n\nWorkflow changes cannot be exercised until a tag is pushed, so the\nlogic was validated out of band:\n\n- YAML parses; every `run:` block passes `bash -n`, including the\n  heredoc'd `build.sh`.\n- The `docker run` retry loop was simulated with a stubbed `docker`:\n  succeeds on attempt 2 when the first attempt fails (`rc=0`), and\n  exits `1` after three failures.\n- The asset completeness check was run against a mock `artifacts/`\n  tree; it reports `MISSING: pg18-arm64` for exactly the v1.4.0\n  failure mode and passes once all four zips exist.",
+          "timestamp": "2026-08-25T20:29:10Z",
+          "url": "https://github.com/timescale/pg_textsearch/commit/648b25c57f91635341fac01676c015405665d2bb"
+        },
+        "date": 1787908752754,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "msmarco (8.8M docs) - Index Build Time",
+            "value": 224314.18,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - 1 Token Query (p50)",
+            "value": 0.69,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - 2 Token Query (p50)",
+            "value": 1.35,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - 3 Token Query (p50)",
+            "value": 2.57,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - 4 Token Query (p50)",
+            "value": 3.89,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - 5 Token Query (p50)",
+            "value": 6.65,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - 6 Token Query (p50)",
+            "value": 9.38,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - 7 Token Query (p50)",
+            "value": 14.09,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - 8+ Token Query (p50)",
+            "value": 21.87,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - Weighted Latency (p50, ms)",
+            "value": 4.18,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - Weighted Throughput (avg ms/query)",
+            "value": 5.28,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - Index Size",
+            "value": 1216,
+            "unit": "MB"
+          },
+          {
+            "name": "msmarco (8.8M docs) - Partial VACUUM (concentrated delete)",
+            "value": 6337.6,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - Full VACUUM (uniform delete)",
+            "value": 6146.034,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - Full VACUUM (uniform update)",
+            "value": 4130.483,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - Index Size After Partial VACUUM",
+            "value": 2595.85,
+            "unit": "MB"
+          },
+          {
+            "name": "msmarco (8.8M docs) - Index Size After Full VACUUM",
+            "value": 2595.86,
+            "unit": "MB"
+          },
+          {
+            "name": "msmarco (8.8M docs) - Query Latency After Partial VACUUM",
+            "value": 8.24,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - Query Latency After Full VACUUM",
+            "value": 8.05,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - Index Size After Update VACUUM",
+            "value": 2595.86,
+            "unit": "MB"
+          },
+          {
+            "name": "msmarco (8.8M docs) - Query Latency After Update VACUUM",
+            "value": 8.74,
             "unit": "ms"
           }
         ]
