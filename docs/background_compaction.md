@@ -23,9 +23,12 @@ pg_durable integration is operator-installed SQL under
 ## Durable state and request flow
 
 Spills, segment merges, level heads, and level counts are physical page
-mutations WAL-logged with `GenericXLog`. The metapage level counts are the
-durable record of compaction debt. A pg_durable instance is only a
-best-effort accelerator for work described by those counts.
+mutations made with `GenericXLog`. For permanent relations, they are
+WAL-logged and survive crash recovery. Unlogged indexes are also eligible for
+background compaction, but retain PostgreSQL's normal crash-reset semantics
+and do not emit these mutations to WAL. In both cases, the metapage level
+counts are the authoritative record of compaction debt. A pg_durable instance
+is only a best-effort accelerator for work described by those counts.
 
 The flow is:
 
@@ -39,9 +42,9 @@ The flow is:
 3. Background mode still compacts temporary indexes inline because another
    backend cannot open them. Index builds also compact inline unless mode is
    `off`, because the new index is not yet visible to a worker.
-4. A permanent index request is appended to a deduplicated, backend-local OID
-   list. No SPI, catalog access, or relation open occurs while the per-index
-   lock is held.
+4. A non-temporary index request is appended to a deduplicated, backend-local
+   OID list. No SPI, catalog access, or relation open occurs while the
+   per-index lock is held.
 5. After the lock has been released,
    `XACT_EVENT_PRE_COMMIT` or `XACT_EVENT_PRE_PREPARE` calls the configured
    request function once per pending index. Parallel workers, recovery, and
@@ -77,9 +80,9 @@ The extension installs these public interfaces:
 |---|---|
 | `bm25_level_counts(regclass)` | Reads the eight metapage counts under an `AccessShareLock` and shared buffer lock. |
 | `bm25_needs_compaction(regclass)` | Tests compactable levels against the current session's threshold. |
-| `bm25_compact(regclass)` | Owner-only whole cascade. For a permanent index it rejects read-only transactions, opens with `RowExclusiveLock`, and holds the per-index `LW_EXCLUSIVE` lock until every eligible level is below threshold. |
+| `bm25_compact(regclass)` | Owner-only whole cascade. For a non-temporary index it rejects read-only transactions, opens with `RowExclusiveLock`, and holds the per-index `LW_EXCLUSIVE` lock until every eligible level is below threshold. |
 | `bm25_compact_step(regclass)` | Owner-only single batch at the lowest eligible level, with the same relation and per-index lock boundaries. Returns whether it merged a batch. |
-| `bm25_indexes_needing_compaction()` | Lists valid, ready, permanent physical BM25 indexes whose owners the caller can use. Storage-less partitioned parents and temporary indexes are excluded. |
+| `bm25_indexes_needing_compaction()` | Lists valid, ready, non-temporary physical BM25 indexes whose owners the caller can use. Storage-less partitioned parents are excluded. |
 | `bm25_compact_pending()` | Rechecks each candidate and runs whole-cascade compaction. Ordinary per-index errors become warnings so the sweep can continue; the return value counts successful indexes. |
 
 Whole-cascade compaction visits every compactable level, including higher

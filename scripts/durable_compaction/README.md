@@ -119,7 +119,7 @@ different threshold.
 | Value | Behavior |
 |---|---|
 | `inline` | Compact in the spilling backend; this is the default. |
-| `background` | Request a durable task only when a permanent index reaches the threshold. Temporary indexes and in-progress index builds compact inline. |
+| `background` | Request a durable task only when a non-temporary index reaches the threshold. Temporary indexes and in-progress index builds compact inline. |
 | `off` | Disable write-path compaction and requests; the backstop can still repair debt. |
 
 The wrapper uses `transaction_mode => 'new'`. A task submitted from
