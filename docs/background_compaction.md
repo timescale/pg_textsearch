@@ -321,57 +321,58 @@ this document in the parent package documentation directory.
 
 ## pg_durable follow-up
 
-Production use requires the following pg_durable capabilities:
+The integration works as a proof of concept, but two upstream capabilities
+are required to make the recurring backstop reliable. The statements below
+describe gaps confirmed in the pg_durable 0.2.6 development tree.
 
-1. **Retry and backoff.** Classify transient cron, connection, resource, and
-   serialization failures; retry them with bounded exponential backoff and a
-   terminal policy that does not silently disable future scheduled runs.
-2. **Non-overlapping recurring runs.** Give a schedule explicit singleton and
-   overlap semantics so a slow run cannot race its next tick.
-3. **Idempotent schedule lifecycle.** Create or update a schedule by stable
-   key, and support inspect, pause, resume, replace, and delete without
-   creating duplicate long-lived instances. Define missed-run, catch-up, and
-   clock-change behavior.
-4. **Schedule observability.** Expose last start, last success, last failure,
-   next expected run, retry count, duration, queue lag, and current execution
-   state.
-5. **Structured task metadata.** Store request kind, database, target key,
-   relation and physical identity, original login role, effective submitter,
-   and schedule identity instead of relying on labels.
-6. **Health alerts.** Provide stable metrics or queries for stuck instances,
-   stale schedules, queue growth, and repeated failures.
-7. **Connection diagnostics.** Expose the effective host or socket, port,
-   database, and submitted role without exposing credentials.
-8. **Single-flight and backpressure.** Deduplicate immediate work per target,
-   cap per-target concurrency, and apply a global queue or connection limit
-   with observable admission failures.
-9. **Structured partial failures.** Run backstop targets in isolated
-   transactions while retaining per-index success, error, and retry state so
-   a partially failed sweep cannot report unqualified success.
-10. **Crash and failover singleton semantics.** Define leases, abandoned
-    execution recovery, worker restart, and primary promotion so one logical
-    schedule has one active executor.
-11. **Operator controls.** Support cancel, retry, requeue, and force-run with
-    clear terminal reasons and exhausted work retained for diagnosis.
-12. **Predictable worker sessions.** Configure and expose `search_path`,
-    statement and lock timeouts, extension GUCs, role, and database for every
-    task. Writer and worker thresholds must not drift.
-13. **History retention.** Provide capacity guidance and pruning policies
-    that bound per-spill and recurring metadata while preserving recent
-    failures and audit records.
-14. **Commit-aware caller-mode handoff.** Independently of this integration's
-    `transaction_mode => 'new'`, replace caller-mode visibility polling with
-    a commit-aware handoff and explicit post-commit execution contract.
-15. **Stable target cancellation.** Cancel or tombstone queued work by stable
-    physical target identity after committed drop or replacement, preserve a
-    terminal obsolete reason for running work, and prune it safely.
-16. **Multi-database deployment.** Make the database scope explicit and
-    support either one independently monitored scheduler per database or
-    coordinated multi-database orchestration.
+1. **Failure-resilient recurring execution.** The backstop exists to recover
+   debt after an immediate request fails and no later spill resubmits it. One
+   transient connection, resource, or SQL failure therefore must not disable
+   all future sweeps. Each scheduled tick should have a schedule-aware durable
+   outcome, use bounded retry and backoff where appropriate, and record an
+   exhausted or skipped run before advancing to the next tick. pg_durable
+   currently propagates a failed SQL body through `df.loop`, fails the
+   long-lived instance, and runs no later ticks. It exposes generic execution
+   history, but has no node retry or schedule-aware failure-continuation
+   policy, and a loop terminates after 100,000 iterations.
+2. **Keyed schedule lifecycle.** Backstop installation must not create
+   duplicate schedules, and promotion must not leave multiple active
+   schedulers. pg_durable should register or update one database-scoped
+   schedule by stable key and enforce a single fenced executor. Persisted
+   workflows already resume after an ordinary PostgreSQL or worker restart,
+   and iterations within one `df.loop` are sequential. However, every
+   `df.start()` creates a new randomly identified instance; there is no keyed
+   schedule or cross-instance singleton.
 
-Until these exist, level counts remain the recovery source of truth and
-operators are responsible for monitoring, singleton registration, and manual
-restart.
+Two additional groups are production hardening rather than correctness
+requirements for this POC:
+
+- **Keyed work admission and lifecycle.** Immediate requests can overlap for
+  one index, consume connection slots, and leave obsolete no-op work after a
+  target is replaced. Structured target identity, per-target single-flight,
+  observable admission limits, and cancellation or tombstoning by target
+  would reduce that waste. pg_durable currently has global limits for
+  independent starts and SQL connections and cancellation by instance ID, but
+  no target key or per-target concurrency control. This requires a keyed API
+  in pg_durable and a matching wrapper change to pass BM25 target identity;
+  pg_durable cannot infer it from arbitrary SQL. pg_textsearch's existing
+  physical identity checks already keep stale work safe.
+- **Operations and execution profile.** Operators need to detect a dead
+  backstop, diagnose worker connection failures, prevent writer and worker
+  GUCs from drifting, retain useful failure history, and monitor deployments
+  across databases. Idempotent inspect, pause, resume, replace, delete, and
+  force-run controls would simplify that work. pg_durable exposes generic
+  instance and execution status, aggregate metrics, a worker heartbeat, and
+  terminal-instance retention; role and database identity are also available
+  in its metadata tables. It does not yet expose a schedule-specific health
+  view or a complete, configurable worker profile covering connection
+  details, `search_path`, and timeouts. Supplying required extension GUCs,
+  including `pg_textsearch.segments_per_level`, would also require a matching
+  change to this integration.
+
+Until the two required capabilities exist, level counts remain the recovery
+source of truth and operators are responsible for singleton registration,
+monitoring, and manual backstop restart.
 
 ## Verification boundaries
 
