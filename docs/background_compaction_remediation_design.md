@@ -48,6 +48,35 @@ request dispatcher will rethrow those errors after restoring PostgreSQL
 subtransaction state and releasing its detached request list. Other enqueue
 failures remain warnings.
 
+## Required pg_durable Follow-up
+
+PR #471 uses pg_durable's current primitives but does not make the recurring
+backstop production-ready by itself. The following pg_durable work will be
+designed in a separate thread:
+
+- **Transient-failure resilience.** A failed backstop execution must not
+  permanently terminate its cron schedule. The follow-up must define
+  retryable failures, backoff and retry limits, non-overlap behavior, and how
+  the next scheduled execution proceeds after retries are exhausted.
+- **Monitoring and observability.** Operators need durable visibility into
+  the schedule's last start, success, and failure; next expected run; current
+  instance and node state; retry count; execution duration and queue lag; and
+  the latest error with enough context to diagnose connection, permission,
+  and SQL failures.
+- **Health and alerting contract.** pg_durable should expose stable queries or
+  metrics for stale schedules, stuck nonterminal instances, and repeated
+  failures. Immediate per-index tasks must remain correlatable by label and
+  target index OID, while the backstop must have a stable schedule identity.
+- **Connection diagnostics.** The effective host, port, database, and
+  submitted role used by worker connections should be inspectable without
+  exposing credentials, so socket/authentication mistakes are distinguishable
+  from task failures.
+
+The exact APIs, retry policy, and storage model are intentionally deferred to
+that pg_durable design. Until then, the index level counts remain the durable
+record of compaction debt, but operators must monitor the backstop instance
+and manually restart a schedule that terminates.
+
 ## Compaction Scheduling
 
 After a spill is finalized, background mode will inspect the metapage while
