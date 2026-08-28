@@ -226,6 +226,40 @@ label_for() {
     sql_super -c "SELECT 'bm25-compact-' || '${1}'::regclass::oid;"
 }
 
+drain_background_work() {
+    local idx="$1" label pending waited=0
+    label=$(label_for "$idx")
+
+    while [ "$waited" -lt 300 ]; do
+        pending=$(sql_super -c "
+            SELECT count(*)
+            FROM df.instances
+            WHERE label = '${label}'
+              AND status NOT IN ('completed', 'failed');")
+        [ "$pending" = "0" ] && break
+        sleep 1
+        waited=$((waited + 1))
+    done
+
+    [ "$pending" = "0" ] ||
+        error "background compaction did not drain for ${idx}"
+
+    local failed
+    failed=$(sql_super -c "
+        SELECT count(*)
+        FROM df.instances
+        WHERE label = '${label}'
+          AND status = 'failed';")
+    [ "$failed" = "0" ] ||
+        error "background compaction failed for ${idx}"
+
+    local needs
+    needs=$(sql_super -c \
+        "SELECT bm25_needs_compaction('${idx}'::regclass);")
+    [ "$needs" = "f" ] ||
+        error "background compaction left work for ${idx}"
+}
+
 # Run one spill-round transaction (20-row INSERT + bm25_spill_index())
 # and echo its wall-clock duration in seconds, high resolution.
 time_one_round() {
@@ -286,21 +320,7 @@ bench_mode() {
     # Drain any background compaction this table's spills queued, so
     # it does not bleed CPU/IO into the next mode's measurement.
     if [ "$mode" = "background" ]; then
-        local label id st waited=0
-        label=$(label_for "$idx")
-        id=$(sql_super -c \
-            "SELECT id FROM df.instances WHERE label = '${label}' \
-             ORDER BY created_at DESC LIMIT 1;")
-        if [ -n "$id" ]; then
-            while [ "$waited" -lt 30 ]; do
-                st=$(sql_super -c \
-                    "SELECT status FROM df.instances WHERE id = \
-'${id}';")
-                [ "$st" = "completed" ] || [ "$st" = "failed" ] && break
-                sleep 1
-                waited=$((waited + 1))
-            done
-        fi
+        drain_background_work "$idx"
     fi
 }
 
@@ -373,7 +393,14 @@ SELECT bm25_spill_index('${idx}');
 COMMIT;
 SQL
     end=$(date +%s.%N)
-    awk "BEGIN { printf \"%.3f\", ${end} - ${start} }"
+    local duration
+    duration=$(awk "BEGIN { printf \"%.3f\", ${end} - ${start} }")
+
+    if [ "$mode" = "background" ]; then
+        drain_background_work "$idx"
+    fi
+
+    echo "$duration"
 }
 
 # ---------------------------------------------------------------------
@@ -396,7 +423,8 @@ for rounds in $BENCH_ROUNDS; do
     printf "%-8s %-10s %-12s %-12s\n" "$rounds" "inline" \
         "$inline_p50" "$inline_p99"
 
-    read -r bg_p50 bg_p99 <<< "$(bench_mode background "$rounds")"
+    bg_result=$(bench_mode background "$rounds")
+    read -r bg_p50 bg_p99 <<< "$bg_result"
     printf "%-8s %-10s %-12s %-12s\n" "$rounds" "background" \
         "$bg_p50" "$bg_p99"
 done
