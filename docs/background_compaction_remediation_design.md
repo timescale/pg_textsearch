@@ -12,8 +12,9 @@ The compaction traversal, request gating, temporary-index handling, read-only
 enforcement, cancellation propagation, and prepared-transaction callbacks are
 implemented and independently reviewed. The pg_durable role, wrapper, socket
 authentication, partition authorization, and backstop candidate hardening are
-implemented and undergoing final re-review. Benchmark draining, packaging,
-and the final operator-documentation pass remain.
+implemented and undergoing final re-review. Dropped-index task cleanup,
+benchmark draining, packaging, and the final operator-documentation pass
+remain.
 
 ## Request Semantics
 
@@ -91,6 +92,10 @@ designed in a separate thread:
   pressure, and serialization failures need different handling from revoked
   privileges or a dropped/reindexed target. Operators need cancel, retry,
   requeue, and force-run controls, with exhausted work retained for diagnosis.
+- **Target cancellation and tombstoning.** pg_durable needs an idempotent way
+  to cancel or mark obsolete all queued work for a stable target key after a
+  committed index drop. Running nodes must retain their terminal reason, and
+  retention cleanup must eventually remove the obsolete task history.
 - **Execution environment.** Task connections must receive a predictable set
   of role, database, `search_path`, timeout, and extension GUC settings.
   In particular, the writer and worker must agree on
@@ -141,6 +146,43 @@ exception.
 The backstop candidate query excludes storage-less partitioned parent indexes
 and returns their physical leaf indexes instead. This prevents metapage access
 on relations without storage while preserving compaction of every leaf.
+
+## Dropped-Index Lifecycle
+
+Dropping an index removes the compaction debt with the index, so neither an
+immediate task nor the backstop should treat the missing target as a failure
+that needs retry.
+
+- PostgreSQL relation locks serialize a running compaction step with
+  `DROP INDEX`: whichever obtains the relation lock first completes before the
+  other proceeds. No background code may retain an unlocked relation pointer
+  across a task transaction.
+- The existing object-access hook continues to release the index's shared
+  registry and cache state. It will also remove that OID from the backend's
+  not-yet-dispatched request list without invoking SPI or pg_durable from the
+  hook.
+- A durable per-index task will carry the database OID, relation OID, and
+  expected physical storage identity captured at submission. Every body and
+  condition execution will validate that identity while holding a relation
+  lock. A missing relation, non-BM25 replacement, or changed storage identity
+  is a terminal **obsolete target**, not a retryable failure.
+- A committed drop should cancel or tombstone queued tasks by this stable
+  target key once pg_durable exposes that operation. Until then, stale tasks
+  must self-terminate through target validation, and normal history retention
+  must prune their metadata.
+- No irreversible pg_durable cancellation may run directly from the
+  object-access hook because the surrounding `DROP` can roll back. If local
+  request state is discarded and the drop aborts, the index remains valid and
+  the next spill or backstop recreates any needed accelerator.
+- `DROP TABLE ... CASCADE` and partition-tree drops apply the same rules to
+  every physical leaf index. Storage-less partitioned parent indexes are never
+  backstop candidates.
+- `REINDEX` changes the physical storage identity and makes old work obsolete.
+  Any debt in the replacement storage is rediscovered from its level counts.
+
+This lifecycle makes deletion safe before dispatch, while queued, during an
+active step, and after task completion. It also avoids an OID-reuse window in
+which stale work could target an unrelated replacement relation.
 
 ## Privilege Model
 
@@ -207,6 +249,13 @@ Tests are added before implementation:
    movement.
 11. Benchmark draining fails if any matching task remains nonterminal.
 12. Package checks assert the setup scripts and documentation are present.
+13. Dropping an index before PRE_COMMIT removes its pending request.
+14. Dropping or reindexing a queued target makes the durable task terminate as
+    obsolete without retrying or touching a replacement relation.
+15. Concurrent compaction and drop serialize cleanly; drop rollback leaves the
+    index discoverable by the next request or backstop.
+16. Cascaded partition drops leave no runnable leaf tasks or shared registry
+    state.
 
 Existing install/upgrade SQL parity, formatting, regression, pg_durable
 end-to-end, and package checks remain required.
