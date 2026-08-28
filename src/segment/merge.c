@@ -1616,6 +1616,13 @@ tp_merge_level_segments(Relation index, uint32 level, uint32 max_merge)
 		return InvalidBlockNumber;
 	}
 
+	{
+		TpIndexMetaPage current_metap = tp_get_metapage(index);
+
+		tp_check_level_count_increment(current_metap, level + 1);
+		pfree(current_metap);
+	}
+
 	/* Perform N-way merge */
 	while (true)
 	{

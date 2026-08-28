@@ -145,6 +145,124 @@ RESET pg_textsearch.compaction_mode;
 DROP TABLE compaction_mode_bg CASCADE;
 DROP TABLE compaction_mode_off CASCADE;
 
+-- Persisted level counts fail closed before the metapage swap is published.
+SET pg_textsearch.segments_per_level = 2;
+SET pg_textsearch.compaction_mode = 'off';
+SET pg_textsearch.debug_segment_count_limit = 2;
+
+CREATE TABLE segment_count_l0 (id serial PRIMARY KEY, body text);
+INSERT INTO segment_count_l0 (body)
+SELECT 'initial build document ' || i || ' filler filler'
+FROM generate_series(1, 20) i;
+CREATE INDEX segment_count_l0_idx ON segment_count_l0
+    USING bm25(body) WITH (text_config = 'english');
+
+INSERT INTO segment_count_l0 (body)
+SELECT 'second L0 segment document ' || i || ' filler filler'
+FROM generate_series(1, 20) i;
+SELECT bm25_spill_index('segment_count_l0_idx') IS NOT NULL
+       AS segment_count_l0_second;
+
+CREATE TEMP TABLE segment_count_l0_before AS
+SELECT counts[1] AS l0_count,
+       (regexp_match(summary, 'L0 Segment 1: block=([0-9]+),'))[1]::bigint
+           AS l0_head
+FROM (
+    SELECT bm25_level_counts('segment_count_l0_idx'::regclass) AS counts,
+           bm25_summarize_index('segment_count_l0_idx') AS summary
+) state;
+
+INSERT INTO segment_count_l0 (body)
+SELECT 'rejected L0 segment document ' || i || ' filler filler'
+FROM generate_series(1, 20) i;
+SELECT bm25_spill_index('segment_count_l0_idx');
+
+WITH current_state AS (
+    SELECT bm25_level_counts('segment_count_l0_idx'::regclass) AS counts,
+           bm25_summarize_index('segment_count_l0_idx') AS summary
+)
+SELECT current_state.counts[1] = before.l0_count
+       AND
+       (regexp_match(
+           current_state.summary,
+           'L0 Segment 1: block=([0-9]+),'))[1]::bigint = before.l0_head
+       AS segment_count_l0_unchanged
+FROM current_state, segment_count_l0_before before;
+
+RESET pg_textsearch.debug_segment_count_limit;
+DROP TABLE segment_count_l0 CASCADE;
+
+SET pg_textsearch.debug_segment_count_limit = 2;
+CREATE TABLE segment_count_promotion (id serial PRIMARY KEY, body text);
+CREATE INDEX segment_count_promotion_idx ON segment_count_promotion
+    USING bm25(body) WITH (text_config = 'english');
+
+DO $$
+DECLARE
+    n integer;
+BEGIN
+    FOR n IN 1..2 LOOP
+        INSERT INTO segment_count_promotion (body)
+        SELECT format(
+            'promotion batch %s first segment document %s filler', n, i)
+        FROM generate_series(1, 20) i;
+        PERFORM bm25_spill_index('segment_count_promotion_idx');
+
+        INSERT INTO segment_count_promotion (body)
+        SELECT format(
+            'promotion batch %s second segment document %s filler', n, i)
+        FROM generate_series(1, 20) i;
+        PERFORM bm25_spill_index('segment_count_promotion_idx');
+        PERFORM bm25_compact_step(
+            'segment_count_promotion_idx'::regclass);
+    END LOOP;
+
+    FOR n IN 1..2 LOOP
+        INSERT INTO segment_count_promotion (body)
+        SELECT format(
+            'rejected promotion source %s document %s filler', n, i)
+        FROM generate_series(1, 20) i;
+        PERFORM bm25_spill_index('segment_count_promotion_idx');
+    END LOOP;
+END $$;
+
+CREATE TEMP TABLE segment_count_promotion_before AS
+SELECT counts[1] AS l0_count,
+       counts[2] AS l1_count,
+       (regexp_match(summary, 'L0 Segment 1: block=([0-9]+),'))[1]::bigint
+           AS l0_head,
+       (regexp_match(summary, 'L1 Segment 1: block=([0-9]+),'))[1]::bigint
+           AS l1_head
+FROM (
+    SELECT bm25_level_counts(
+               'segment_count_promotion_idx'::regclass) AS counts,
+           bm25_summarize_index('segment_count_promotion_idx') AS summary
+) state;
+
+SELECT bm25_compact_step('segment_count_promotion_idx'::regclass);
+
+WITH current_state AS (
+    SELECT bm25_level_counts(
+               'segment_count_promotion_idx'::regclass) AS counts,
+           bm25_summarize_index('segment_count_promotion_idx') AS summary
+)
+SELECT current_state.counts[1] = before.l0_count
+       AND current_state.counts[2] = before.l1_count
+       AND
+       (regexp_match(
+           current_state.summary,
+           'L0 Segment 1: block=([0-9]+),'))[1]::bigint = before.l0_head
+       AND
+       (regexp_match(
+           current_state.summary,
+           'L1 Segment 1: block=([0-9]+),'))[1]::bigint = before.l1_head
+       AS segment_count_promotion_unchanged
+FROM current_state, segment_count_promotion_before before;
+
+RESET pg_textsearch.debug_segment_count_limit;
+RESET pg_textsearch.compaction_mode;
+DROP TABLE segment_count_promotion CASCADE;
+
 -- bm25_compact reduces the occupied lower level and promotes upward.
 SET pg_textsearch.segments_per_level = 64;
 CREATE TABLE compaction_manual (id serial PRIMARY KEY, body text);

@@ -1281,6 +1281,10 @@ tp_release_index_lock(TpLocalIndexState *local_state)
 		return;
 	}
 
+	/* ereport(ERROR) resets the holdoff before PG_FINALLY cleanup. */
+	if (InterruptHoldoffCount == 0)
+		HOLD_INTERRUPTS();
+
 	/*
 	 * The LWLockRelease provides release semantics (memory barrier),
 	 * ensuring our writes are visible to the next lock acquirer.

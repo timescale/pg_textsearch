@@ -26,6 +26,7 @@
 #include "access/am.h"
 #include "constants.h"
 #include "index/compaction_request.h"
+#include "index/metapage.h"
 #include "index/registry.h"
 #include "index/state.h"
 #include "planner/hooks.h"
@@ -106,6 +107,9 @@ bool tp_log_cache_state = false;
 
 /* Debug: trigger PANIC after spill finalize for crash-safety testing */
 bool tp_debug_panic_after_spill_finalize = false;
+
+/* Debug: lower the persisted segment-count limit for regression testing */
+int tp_debug_segment_count_limit = PG_UINT16_MAX;
 
 /*
  * Soft+hard memory budget for the in-memory memtable cache, in
@@ -406,6 +410,20 @@ _PG_init(void)
 			false,
 			PGC_SUSET, /* superuser-only: forces a server-wide PANIC,
 						* so unprivileged roles must not reach it */
+			0,
+			NULL,
+			NULL,
+			NULL);
+
+	DefineCustomIntVariable(
+			"pg_textsearch.debug_segment_count_limit",
+			"Set the maximum persisted segment count per level.",
+			"Testing-only limit for exercising segment-count overflow.",
+			&tp_debug_segment_count_limit,
+			PG_UINT16_MAX,
+			1,
+			PG_UINT16_MAX,
+			PGC_SUSET,
 			0,
 			NULL,
 			NULL,

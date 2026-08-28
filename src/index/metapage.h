@@ -153,8 +153,12 @@ StaticAssertDecl(
 /*
  * Metapage operations
  */
+extern int tp_debug_segment_count_limit;
+
 extern void			   tp_init_metapage(Page page, Oid text_config_oid);
 extern TpIndexMetaPage tp_get_metapage(Relation index);
+extern void
+tp_check_level_count_increment(TpIndexMetaPage metap, uint32 level);
 
 /*
  * Read the on-disk memtable chain head/tail from a buffer page,

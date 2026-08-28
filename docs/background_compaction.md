@@ -301,6 +301,9 @@ this document in the parent package documentation directory.
 - One merge batch still holds the per-index `LW_EXCLUSIVE` lock for its full
   CPU and I/O duration. Background mode releases writers between batches, not
   during a batch.
+- Persisted level counts remain 16-bit. The extension fails closed at 65,535
+  segments in one level; compaction or `REINDEX` is required before another
+  segment can be published. Widening the on-disk format is follow-up work.
 - The backstop uses whole-cascade compaction per index in one node
   transaction, so its lock window is longer than an immediate stepped task.
 - Immediate tasks can overlap for one index. Rechecks make them safe, but

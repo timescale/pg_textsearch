@@ -346,6 +346,8 @@ tp_link_l0_chain_head(Relation index, BlockNumber segment_root)
 	metapage = GenericXLogRegisterBuffer(state, metabuf, 0);
 	metap	 = (TpIndexMetaPage)PageGetContents(metapage);
 
+	tp_check_level_count_increment(metap, 0);
+
 	if (metap->level_heads[0] != InvalidBlockNumber)
 	{
 		Page			 seg_page;
