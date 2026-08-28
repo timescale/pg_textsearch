@@ -3,7 +3,9 @@
 These operator scripts move eligible BM25 segment merges off the write path
 and into [pg_durable](https://github.com/timescale/pg_durable). pg_textsearch
 itself has no pg_durable dependency: it calls a configured SQL function, and
-the index level counts remain the durable record of outstanding work.
+the index level counts remain the authoritative record of outstanding work.
+Permanent indexes WAL-log that state; unlogged indexes retain PostgreSQL's
+normal crash-reset semantics.
 
 See [`docs/background_compaction.md`](../../docs/background_compaction.md) for
 the architecture, transaction and lock boundaries, security model, lifecycle
