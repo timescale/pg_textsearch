@@ -24,17 +24,20 @@ measured behavior — it does not print canned or fabricated numbers.
   timeout. The merge still happens — off the triggering transaction,
   driven by `pg_durable` — and the index's level counts are checked
   to have actually changed, not just the instance status.
-- **Act 3 (concurrency correctness).** While a background cascade is
-  confirmed still `running`, the demo runs, concurrently: a
+- **Act 3 (recovery and concurrency correctness).** Before starting the main
+  cascade, the demo proves that an explicit `ROLLBACK` submits no
+  immediate accelerator even though the physical spill leaves compaction
+  debt, then runs the same sweep used by the periodic backstop and verifies
+  that it repairs that debt. A committed spill then submits an independent
+  immediate request. While the main cascade is confirmed still `running`,
+  the demo runs, concurrently: a
   ranking-invariance check (top-20 results for a fixed query term
   are compared by document identity across samples taken during and
   after the cascade), a "no torn reads" check (one continuous
   `REPEATABLE READ` transaction samples the same query three times,
-  spanning before/during/after the cascade), a transactional
-  atomicity check (`ROLLBACK` enqueues nothing, `COMMIT` enqueues
-  exactly one durable instance), a concurrent writer loop against the
-  *same* index being merged (with its worst observed latency printed
-  honestly), and a final row-count sanity check. Every one of these
+  spanning before/during/after the cascade), a concurrent writer loop
+  against the *same* index being merged (with its worst observed latency
+  printed honestly), and a final row-count sanity check. Every one of these
   is a hard, non-vacuous assertion that exits non-zero on failure.
 
 ## How to run it
@@ -75,9 +78,6 @@ milliseconds. It is a real, measured stall, printed unconditionally
 by the demo's closing summary rather than hidden or averaged away.
 Such a writer cannot be cancelled while it waits, either: the lock
 holder runs with interrupts held off, so `statement_timeout` does
-not apply until the merge releases the lock (see
-`docs/background_compaction_report.md`). See
-`docs/background_compaction.md`'s "Future work: non-blocking merges"
-section for the proposed (out-of-scope-for-this-POC) fix: since
-segments are immutable, a merge could build its output out-of-band
-and take the exclusive lock only for the metapage pointer swap.
+not apply until the merge releases the lock. See
+`docs/background_compaction.md` for the transaction, cancellation,
+and locking boundaries.

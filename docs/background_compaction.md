@@ -1,316 +1,369 @@
-# Background compaction via pg_durable
+# Background compaction with pg_durable
 
 Status: proof of concept.
 
-## Why
+## Scope and goals
 
-Compaction runs **synchronously inside the writing transaction** by
-default. `tp_do_spill()` spills the memtable to an L0 segment, then
-`tp_maybe_compact_level(index_rel, 0)` merges any level that is over
-`pg_textsearch.segments_per_level`, recursing into higher levels —
-all while holding the per-index `LW_EXCLUSIVE` lock, and all charged
-to whichever writer's transaction happened to trigger the spill.
+By default, a memtable spill and every resulting segment merge run in the
+writing backend. Background mode keeps the spill on that path but moves
+eligible segment merges to
+[pg_durable](https://github.com/timescale/pg_durable). Its goals are to:
 
-This POC moves that merge work off the write path and into a
-[pg_durable](https://github.com/timescale/pg_durable) background
-task, answering one narrow question: does pg_textsearch's storage
-model fit pg_durable's execution model at all? It does, with one
-real limitation documented below.
+- remove a whole compaction cascade from the transaction that triggered it;
+- release the per-index lock between merge batches;
+- recover missed or failed immediate requests from durable index state; and
+- keep pg_textsearch independent of pg_durable through a configurable SQL
+  callback.
 
-pg_textsearch itself gains no dependency on pg_durable — none of its
-C code mentions `df.*`. The bridge is a single GUC that names a SQL
-function to call; the pg_durable-specific glue lives entirely in
-[`scripts/durable_compaction/`](../scripts/durable_compaction/) as
-scripts, not compiled code.
+This POC does not make an individual merge batch non-blocking, make physical
+index changes transactional, or embed pg_durable in the extension. The
+pg_durable integration is operator-installed SQL under
+`scripts/durable_compaction/`.
 
-## Architecture
+## Durable state and request flow
 
+Spills, segment merges, level heads, and level counts are physical page
+mutations WAL-logged with `GenericXLog`. The metapage level counts are the
+durable record of compaction debt. A pg_durable instance is only a
+best-effort accelerator for work described by those counts.
+
+The flow is:
+
+1. `tp_do_spill()` finalizes the physical L0 segment while holding the
+   per-index `LW_EXCLUSIVE` lock.
+2. `pg_textsearch.compaction_mode` selects the spill-time action:
+   - `inline` runs the whole compaction cascade immediately;
+   - `background` checks all compactable level counts and records a request
+     only if one has reached `pg_textsearch.segments_per_level`;
+   - `off` records no request and performs no automatic compaction.
+3. Background mode still compacts temporary indexes inline because another
+   backend cannot open them. Index builds also compact inline unless mode is
+   `off`, because the new index is not yet visible to a worker.
+4. A permanent index request is appended to a deduplicated, backend-local OID
+   list. No SPI, catalog access, or relation open occurs while the per-index
+   lock is held.
+5. After the lock has been released,
+   `XACT_EVENT_PRE_COMMIT` or `XACT_EVENT_PRE_PREPARE` calls the configured
+   request function once per pending index. Parallel workers, recovery, and
+   autovacuum workers do not dispatch requests.
+6. The operator wrapper starts a fixed `df.loop` with
+   `transaction_mode => 'new'`. The independent loopback transaction persists
+   the task before returning to the writer.
+7. Each loop body calls the private physical-target form of
+   `bm25_compact_step()`. Each condition calls the matching
+   `bm25_needs_compaction()` helper. pg_durable runs node executions on
+   separate connections and transactions, so the per-index lock is released
+   between merge batches.
+8. The periodic backstop calls `bm25_compact_pending()` to find any remaining
+   debt directly from level counts.
+
+Physical spills and completed merge batches are not undone by SQL rollback.
+A request started at PRE_COMMIT or PRE_PREPARE is independent and survives a
+later caller failure. An explicit rollback before either callback submits no
+request, but the physical level counts still expose the surviving debt to the
+next spill and the backstop. Savepoint rollback likewise does not remove a
+request for a physical spill that remains in the index.
+
+The independent worker may run before the writer finishes committing. It may
+therefore observe no work, and multiple spills may create redundant tasks.
+Every step re-reads the physical target and level counts, so early or
+duplicate work is a safe no-op rather than a correctness dependency.
+
+## Compaction interfaces and boundaries
+
+The extension installs these public interfaces:
+
+| Function | Purpose and boundary |
+|---|---|
+| `bm25_level_counts(regclass)` | Reads the eight metapage counts under an `AccessShareLock` and shared buffer lock. |
+| `bm25_needs_compaction(regclass)` | Tests compactable levels against the current session's threshold. |
+| `bm25_compact(regclass)` | Owner-only whole cascade. For a permanent index it rejects read-only transactions, opens with `RowExclusiveLock`, and holds the per-index `LW_EXCLUSIVE` lock until every eligible level is below threshold. |
+| `bm25_compact_step(regclass)` | Owner-only single batch at the lowest eligible level, with the same relation and per-index lock boundaries. Returns whether it merged a batch. |
+| `bm25_indexes_needing_compaction()` | Lists valid, ready, permanent physical BM25 indexes whose owners the caller can use. Storage-less partitioned parents and temporary indexes are excluded. |
+| `bm25_compact_pending()` | Rechecks each candidate and runs whole-cascade compaction. Ordinary per-index errors become warnings so the sweep can continue; the return value counts successful indexes. |
+
+Whole-cascade compaction visits every compactable level, including higher
+levels when a lower one is already below threshold. A step merges exactly one
+`segments_per_level` batch from the lowest eligible level and promotes one
+segment upward. The top level is not compactable.
+
+Two physical-target helpers,
+`bm25_compact_step_if_current(oid, oid, oid, oid)` and
+`bm25_needs_compaction_if_current(oid, oid, oid, oid)`, are private worker
+interfaces. `PUBLIC` has no `EXECUTE`; the setup script grants them only to
+`textsearch_compactor`. They validate the database OID, relation OID,
+tablespace OID, relfilenumber, access method, and relation persistence while
+holding a relation lock. A missing or replaced target returns `false`.
+
+`public.bm25_request_compaction(regclass)` is operator glue, not an extension
+API. It validates the caller and target, captures the physical identity, and
+constructs only the two fixed helper calls from numeric OIDs.
+
+## Cancellation and errors
+
+Immediate dispatch is best-effort for ordinary errors. An unset or
+unresolvable request function, a pg_durable start failure, or a wrapper error
+emits a warning and lets the writer commit. Query cancellation, administrative
+shutdown, and crash shutdown are rethrown and abort the writer transaction.
+The dispatcher uses nested internal subtransactions and an explicit snapshot
+because it runs from the transaction callback after normal portals are gone.
+
+A worker SQL error fails that pg_durable instance. The current pg_durable POC
+does not retry failed nodes. A later spill can submit another accelerator, and
+the backstop remains the repair path for an index that receives no more
+writes.
+
+Cancellation does not bound a merge batch. The caller holds the per-index
+`LW_EXCLUSIVE` lock throughout the merge, and PostgreSQL holds interrupts off
+while that lock is held. `statement_timeout` or client cancellation is
+observed only after the batch releases the lock. Already applied
+`GenericXLog` page mutations remain even when the SQL transaction then aborts.
+A writer waiting behind the same lock is subject to the same delayed
+cancellation.
+
+`bm25_compact_pending()` catches ordinary errors separately for each index,
+warns, and continues. Consequently, a backstop node can appear successful to
+pg_durable even when one or more indexes failed. Operators must inspect server
+warnings and verify remaining debt, not rely only on instance status.
+
+## Index lifecycle
+
+The target lifecycle avoids sending old work to a new physical index:
+
+- Dropping an index removes its OID from the current backend's
+  not-yet-dispatched list. This also applies to indexes removed by
+  `DROP TABLE ... CASCADE` and partition-tree drops.
+- A drop that commits removes the compaction debt with the physical index.
+  Storage-less partitioned parents are never backstop candidates; their
+  physical leaf indexes are.
+- A drop that rolls back has already removed the pending accelerator, but its
+  surviving physical index remains discoverable by the next spill or
+  backstop.
+- A queued task carries the database OID, relation OID, tablespace OID, and
+  relfilenumber captured at submission. Drop/recreate, `REINDEX`, replacement
+  by another access method, and OID reuse fail this identity check and
+  terminate as a successful obsolete-target no-op.
+- A running step holds a PostgreSQL relation lock, so `DROP` or `REINDEX`
+  serializes with that step. No relation pointer survives across worker
+  transactions.
+
+Current pg_durable cannot cancel all queued tasks by stable target key.
+Physical identity validation prevents corruption; target tombstoning and
+queue cleanup are follow-up requirements below.
+
+## Security model
+
+The operator setup uses three identities:
+
+- Each BM25 index has an explicit, non-superuser `index_owner`.
+- `textsearch_compactor` is a `LOGIN NOSUPERUSER INHERIT` role. It receives
+  inherited membership in each configured owner with `SET FALSE`, so worker
+  sessions pass the index owner check without being able to `SET ROLE` to the
+  owner.
+- Application writers receive only `EXECUTE` on
+  `public.bm25_request_compaction(regclass)` from the operator setup, not
+  access to `df.*` or the private physical-target helpers. The public
+  compaction mutators still enforce index ownership.
+
+`01_setup_role.sql` rejects missing or superuser owners, direct or transitive
+superuser membership, and any alternate membership path that lets the
+compactor set the owner role. It discovers the extension schema and grants
+only the schema and function privileges needed for immediate and backstop
+compaction.
+
+The `SECURITY DEFINER` wrapper has a fixed safe `search_path`, rejects
+non-BM25 and temporary targets, and authorizes the login identity
+(`session_user`) by `INSERT` privilege on the indexed table or a partition
+ancestor. Its task DSL contains only fixed function names and numeric target
+identity. Reinstallation is transactional, recreates the function, removes
+all non-owner ACL entries including default-privilege grants, and grants only
+the configured writer role. Untrusted roles must not have `CREATE` on the
+wrapper schema.
+
+pg_durable connects as the task submitter without supplying a password.
+Production must use a scoped, authenticated passwordless route such as
+peer/ident mapping. Set `PGHOST` to the Unix-socket directory in the
+PostgreSQL service environment before server start. `trust` is acceptable
+only in the disposable test and demo clusters.
+
+## Operations
+
+### Requirements and configuration
+
+Both libraries must be preloaded and the server restarted:
+
+```conf
+shared_preload_libraries = 'pg_durable,pg_textsearch'
+pg_durable.database = 'application_database'
 ```
-INSERT ... -> tp_auto_spill_if_needed()
-                 |
-                 v
-            tp_do_spill()                [holds LW_EXCLUSIVE]
-                 |
-      mode=inline| mode=background   mode=off
-                 |        |             |
-   tp_maybe_compact_level |          (nothing)
-                          v
-              tp_compaction_request(relid)
-                 append OID to a backend-local List in
-                 TopMemoryContext (no SPI, no catalog access,
-                 no locks -- the per-index LWLock is held here)
-                          |
-                 ... rest of transaction ...
-                          |
-                          v
-            XACT_EVENT_PRE_COMMIT  (src/mod.c tp_xact_callback)
-                          |
-                 tp_compaction_flush_requests()
-                   for each requested relid:
-                     two nested BeginInternalSubTransaction()
-                       PushActiveSnapshot + SPI:
-                         SELECT <request_fn>(<oid>::oid::regclass)
-                     Release / Rollback -> WARNING, xact still commits
-                          |
-                          v
-     bm25_request_compaction(regclass)   [SECURITY DEFINER, owned by
-                                          textsearch_compactor]
-                          |
-                 df.start(df.loop(body, cond), label,
-                          transaction_mode => 'caller')
-                          |
-                    (row in df.instances, same xact as the spill)
-                          |
-                     COMMIT  <-- the writer's transaction ends here
-                          |
-                          v
-     pg_durable bgworker connects as textsearch_compactor,
-     on its own libpq connection, per node execution
-                          |
-        each df.loop iteration is a SEPARATE transaction on a
-        separate backend, so the per-index LW_EXCLUSIVE lock is
-        released between merge batches instead of held for the
-        whole cascade
-                          |
-                 SELECT bm25_compact_step(<oid>::oid::regclass)
-                          |
-                    tp_compact_step()  -> one merge batch,
-                                          one level at a time
-```
 
-Two layers of failure coverage, because pg_durable v0.2.6 has **no
-retry**:
+The `df` schema, wrapper, and BM25 indexes must be in that database.
+`transaction_mode => 'new'` opens a loopback connection to persist every
+immediate task. Size `pg_durable.max_new_transaction_starts` for expected
+concurrency and set `pg_durable.new_transaction_start_timeout` to the maximum
+time a writer may wait for a slot. Exhaustion or timeout is an ordinary
+best-effort dispatch failure: the writer gets a warning and the backstop must
+repair the debt.
 
-1. **Next-spill retry.** Level counts stay over threshold, so the
-   next spill on that index enqueues another request. Free for any
-   index still being written to.
-2. **Hourly cron backstop.** A single long-lived
-   `df.loop(df.wait_for_schedule('0 * * * *') ~>
-   'SELECT bm25_compact_pending()')` instance, started once, sweeps
-   every BM25 index the caller has rights on and compacts any that
-   are over threshold. Covers an index that stops receiving writes
-   right after a failed compaction — the case next-spill retry
-   cannot reach, and exactly when queries are slowest relative to
-   the outstanding work.
+Configure pg_textsearch at a scope visible to both writer and worker sessions:
 
-The backstop is the guarantee; the spill-time request is an
-accelerator on top of it.
+| GUC | Required behavior |
+|---|---|
+| `pg_textsearch.compaction_mode` | `inline` by default; set `background` for immediate tasks or `off` for backstop-only operation. |
+| `pg_textsearch.compaction_request_function` | Set to the schema-qualified wrapper name, normally `public.bm25_request_compaction`. |
+| `pg_textsearch.segments_per_level` | Must have the same effective value in writer and compactor sessions. |
 
-### The decoupling seam
+These pg_textsearch GUCs are `PGC_SUSET`. Use `postgresql.conf`,
+`ALTER SYSTEM`, `ALTER DATABASE ... SET`, or a compatible role setting.
+Setting the threshold only in a writer session can enqueue a task whose worker
+uses a different threshold and completes without merging.
 
-`pg_textsearch.compaction_request_function` (string, `PGC_SUSET`,
-default `''`) names a one-argument `regclass` SQL function called at
-`XACT_EVENT_PRE_COMMIT`, once per index that requested compaction
-during the transaction. pg_textsearch does not care what that
-function does; the pg_durable wrapper
-(`scripts/durable_compaction/02_wrapper.sql`) is one implementation
-of it, supplied as an operator script rather than built in. This
-also lets the SQL regression suite exercise the whole hook mechanism
-— including commit/rollback atomicity — against a trivial logging
-function, with no pg_durable installed, so CI stays green without
-the dependency.
-
-## GUCs
-
-| GUC | Description | Default |
-|-----|-------------|---------|
-| `pg_textsearch.compaction_mode` | `inline` merges during the spilling transaction (unchanged default behavior); `background` records a request, dispatched at pre-commit, instead; `off` disables automatic compaction entirely (pair with the cron backstop). | `inline` |
-| `pg_textsearch.compaction_request_function` | Schema-qualified name of a one-argument `regclass` function called at pre-commit for each index that requested compaction. Unset or unresolvable: a `WARNING` is logged and the writer's transaction still commits. | `''` |
-| `pg_textsearch.segments_per_level` | Also read by `bm25_needs_compaction()` — see the GUC-scope trap below. | `8` |
-
-Both new GUCs are `PGC_SUSET`: a plain writer role cannot `SET`
-them, so misconfiguring `compaction_request_function` requires
-superuser access, not an ordinary application bug.
-
-## Setup checklist
-
-Full detail, rationale, and copy-pasteable commands are in
+Run the operator scripts in order as described in
 [`scripts/durable_compaction/README.md`](../scripts/durable_compaction/README.md).
-In order:
+The pg_durable worker initializes asynchronously after extension creation and
+server restart; setup must wait for readiness before starting tasks.
 
-1. **Preload both extensions** —
-   `shared_preload_libraries = 'pg_durable,pg_textsearch'` — and
-   restart the server.
-2. **Put pg_textsearch's BM25 indexes in the database named by
-   `pg_durable.database`.** `df.start()` must run inside the
-   writer's own transaction for the atomicity guarantee to hold, so
-   the `df` schema and the indexes have to share a database.
-   `df.start`'s `database =>` parameter selects where the *nodes*
-   run, not where the instance row is written, so it does not help
-   here.
-3. **Create the `textsearch_compactor` role**
-   (`01_setup_role.sql`) — `LOGIN`, `NOSUPERUSER`, `INHERIT`, and a
-   member of the index owner's role (needed because
-   `bm25_compact_step()` and friends gate on `object_ownercheck()`,
-   which resolves through inherited membership).
-4. **Add a passwordless `pg_hba.conf` entry for that role.** The
-   worker opens a fresh libpq connection as `submitted_by` with no
-   password and no host, so it hits the unix socket — where `peer`
-   fails for a role that is not the OS user.
-5. **Wait for the pg_durable background worker to initialize.** It
-   connects and starts the duroxide runtime asynchronously after
-   `CREATE EXTENSION pg_durable` and after every restart; `df.start()`
-   fails with "background worker not yet initialized" until it does.
-6. **Install the SECURITY DEFINER wrapper** (`02_wrapper.sql`), owned
-   by `textsearch_compactor`, and grant `EXECUTE` on it to writer
-   roles — and nothing else pg_durable-related to them.
-7. **Start the cron backstop once**, running *as*
-   `textsearch_compactor` (`03_backstop.sql`), so
-   `df.instances.submitted_by` matches what the SECURITY DEFINER
-   path produces.
-8. **Set `compaction_mode = background`** and
-   `compaction_request_function =
-   'public.bm25_request_compaction'`, then
-   `SELECT pg_reload_conf();`.
-9. **Set `segments_per_level` where the *worker* session sees it** —
-   see immediately below. This step is easy to skip and produces a
-   silent no-op, not an error.
+### Backstop and failure handling
 
-### The GUC-scope trap
+`03_backstop.sql` starts one long-lived
+`df.loop(df.wait_for_schedule(...) ~> bm25_compact_pending())` instance. Its
+default cron expression is hourly and can be overridden with `-v cron=...`.
+Executions within one instance are sequential, but registration is not
+idempotent: rerunning the script starts another schedule. Operators must
+ensure exactly one live instance per database.
 
-`segments_per_level` decides two different things in two different
-sessions:
+The backstop body is one worker transaction. It calls whole-cascade
+compaction for each index, so one index holds its per-index exclusive lock for
+its full cascade. Per-index ordinary failures are warnings and the sweep
+continues. An uncaught node or connection failure terminates the long-lived
+instance because the current pg_durable release has no retry.
 
-| Decision | Evaluated in |
-|----------|--------------|
-| enqueue a request at `XACT_EVENT_PRE_COMMIT` | the **writer's** session |
-| `bm25_needs_compaction()`, the `df.loop` condition | the **compactor's worker** session |
-
-The worker connects fresh as `textsearch_compactor` and inherits
-nothing from the writer's session. Lowering the threshold only for
-the writer produces an instance that reaches `completed` having
-merged nothing, while level counts never move — success with no
-effect:
+Monitor both orchestration state and physical debt:
 
 ```sql
--- writer session: SET pg_textsearch.segments_per_level = 2
--- worker session never saw it, still uses the default 8
-SELECT bm25_level_counts('my_idx');    -- {4,0,0,0,0,0,0,0}
--- ... df.loop instance completes ...
-SELECT bm25_level_counts('my_idx');    -- {4,0,0,0,0,0,0,0}  (unchanged)
+SELECT id, label, status, created_at, completed_at
+FROM df.instances
+WHERE label LIKE 'bm25-%'
+ORDER BY created_at DESC;
+
+SELECT * FROM bm25_indexes_needing_compaction();
+SELECT bm25_level_counts('my_index'::regclass);
+SELECT bm25_needs_compaction('my_index'::regclass);
 ```
 
-Set it somewhere both sessions inherit — `postgresql.conf`,
-`ALTER SYSTEM`, `ALTER DATABASE ... SET` — or explicitly on the
-compactor role with
-`ALTER ROLE textsearch_compactor SET pg_textsearch.segments_per_level
-= <n>`. The same applies to any other GUC that `bm25_compact_step()`
-or `bm25_needs_compaction()` reads.
+In pg_durable 0.2.6, the useful worker error is in the PostgreSQL server log;
+`df.nodes.error` is empty. Keep server logging available. If an immediate task
+fails, restore the underlying permission, connection, or resource condition
+and either let the next spill resubmit or run the backstop sweep. If the
+long-lived backstop terminates, start a replacement manually after resolving
+the cause.
 
-## Two-layer failure story
+### Packaged files
 
-pg_durable 0.2.6 has no retry, backoff, or `on_failure`: a node that
-raises an error kills its instance outright. Coverage is therefore
-deliberately two layers, not one:
+Repository and source archives contain:
 
-- A **failed** compaction leaves level counts unchanged, so the very
-  next spill against that index enqueues a fresh request. This is
-  free and requires no operator action for an actively-written
-  index.
-- The **hourly backstop** (`bm25_compact_pending()`, driven by
-  `df.wait_for_schedule`) catches everything else: an index that
-  stops being written to right after a failure, or one that was
-  never wired to the spill hook at all (`compaction_mode = 'off'`).
-  It iterates every index `bm25_indexes_needing_compaction()`
-  returns, wraps each in its own `EXCEPTION WHEN OTHERS`, and reports
-  the count actually compacted — one broken index cannot take the
-  whole sweep down.
+- `scripts/durable_compaction/{01_setup_role.sql,02_wrapper.sql,03_backstop.sql}`;
+- `scripts/durable_compaction/README.md`; and
+- `docs/background_compaction.md`.
 
-Both were exercised end-to-end in
-[`test/scripts/durable_compaction.sh`](../test/scripts/durable_compaction.sh):
-revoking the compactor's membership in the index owner's role forces
-a compaction failure (instance `failed`), and restoring it lets the
-next spill self-heal; and disabling the spill hook entirely
-(`compaction_mode = 'off'`) still lets the backstop compact a
-degraded index with no writer involvement at all.
+Versioned PostgreSQL binary archives place the scripts and operator README in
+`durable_compaction/` and this document at the archive root. Debian packages
+install the SQL scripts under
+`$(pg_config --sharedir)/extension/pg_textsearch/durable_compaction/`, the
+operator README under
+`/usr/share/doc/pg-textsearch-postgresql-<major>/durable_compaction/`, and
+this document in the parent package documentation directory.
 
-## The honest limitation
+## Current POC limitations
 
-Background compaction moves the merge CPU and I/O off the
-triggering transaction, but `bm25_compact` still holds the
-per-index `LW_EXCLUSIVE` lock for the duration of the merge.
-Concurrent writers therefore still block; only the spilling
-transaction is freed. Removing that serialization is out of
-scope for this POC.
+- One merge batch still holds the per-index `LW_EXCLUSIVE` lock for its full
+  CPU and I/O duration. Background mode releases writers between batches, not
+  during a batch.
+- The backstop uses whole-cascade compaction per index in one node
+  transaction, so its lock window is longer than an immediate stepped task.
+- Immediate tasks can overlap for one index. Rechecks make them safe, but
+  duplicate work consumes connections and adds lock contention.
+- pg_durable 0.2.6 has no node retry or backoff. A transient uncaught failure
+  terminates the instance, including the long-lived schedule.
+- Backstop per-index errors are swallowed after a warning, so a partially
+  failed sweep can appear successful.
+- Independent task start adds loopback connection and metadata overhead to a
+  threshold-crossing spill. Compaction still performs the same total I/O.
+- `df.loop` has a one-second minimum iteration duration, and `df.nodes` rows
+  are reused across loop generations, limiting progress diagnostics.
+- This setup operates in one configured database and relies on manual
+  singleton schedule management.
 
-The stepped cascade (`bm25_compact_step()` driven by `df.loop`)
-narrows the exclusive window from "the whole multi-level cascade" to
-"one merge batch at one level" — each `df.loop` iteration runs on
-its own backend in its own transaction, so the lock is dropped and a
-writer can commit between levels. But within a single batch, the
-lock is still held for as long as that merge takes, exactly as it
-would be for `bm25_compact()` called inline.
+## pg_durable follow-up
 
-**`statement_timeout` does not bound a merge.** The merge runs while
-the backend holds that `LW_EXCLUSIVE`, and `LWLockAcquire()` holds
-off interrupts for the duration of the hold, so the
-`CHECK_FOR_INTERRUPTS()` calls inside `src/segment/merge.c` cannot
-fire and the cancel is deferred until the lock is released. Under
-`inline` mode a client that trips a large cascade therefore waits
-for the *entire* merge and then receives `canceling statement due to
-statement timeout` — and because segment pages are physical,
-`GenericXLog`-logged mutations rather than transactional data, the
-merge is not undone by the abort. The client pays the full cost, the
-write is lost, and the compaction happens anyway. A writer blocked
-behind a merge batch is uncancellable for the same reason. This is
-the strongest practical argument for `background` mode, and it is
-measured in `docs/background_compaction_report.md`.
+Production use requires the following pg_durable capabilities:
 
-## When background mode is worth enabling
+1. **Retry and backoff.** Classify transient cron, connection, resource, and
+   serialization failures; retry them with bounded exponential backoff and a
+   terminal policy that does not silently disable future scheduled runs.
+2. **Non-overlapping recurring runs.** Give a schedule explicit singleton and
+   overlap semantics so a slow run cannot race its next tick.
+3. **Idempotent schedule lifecycle.** Create or update a schedule by stable
+   key, and support inspect, pause, resume, replace, and delete without
+   creating duplicate long-lived instances. Define missed-run, catch-up, and
+   clock-change behavior.
+4. **Schedule observability.** Expose last start, last success, last failure,
+   next expected run, retry count, duration, queue lag, and current execution
+   state.
+5. **Structured task metadata.** Store request kind, database, target key,
+   relation and physical identity, original login role, effective submitter,
+   and schedule identity instead of relying on labels.
+6. **Health alerts.** Provide stable metrics or queries for stuck instances,
+   stale schedules, queue growth, and repeated failures.
+7. **Connection diagnostics.** Expose the effective host or socket, port,
+   database, and submitted role without exposing credentials.
+8. **Single-flight and backpressure.** Deduplicate immediate work per target,
+   cap per-target concurrency, and apply a global queue or connection limit
+   with observable admission failures.
+9. **Structured partial failures.** Run backstop targets in isolated
+   transactions while retaining per-index success, error, and retry state so
+   a partially failed sweep cannot report unqualified success.
+10. **Crash and failover singleton semantics.** Define leases, abandoned
+    execution recovery, worker restart, and primary promotion so one logical
+    schedule has one active executor.
+11. **Operator controls.** Support cancel, retry, requeue, and force-run with
+    clear terminal reasons and exhausted work retained for diagnosis.
+12. **Predictable worker sessions.** Configure and expose `search_path`,
+    statement and lock timeouts, extension GUCs, role, and database for every
+    task. Writer and worker thresholds must not drift.
+13. **History retention.** Provide capacity guidance and pruning policies
+    that bound per-spill and recurring metadata while preserving recent
+    failures and audit records.
+14. **Commit-aware caller-mode handoff.** Independently of this integration's
+    `transaction_mode => 'new'`, replace caller-mode visibility polling with
+    a commit-aware handoff and explicit post-commit execution contract.
+15. **Stable target cancellation.** Cancel or tombstone queued work by stable
+    physical target identity after committed drop or replacement, preserve a
+    terminal obsolete reason for running work, and prune it safely.
+16. **Multi-database deployment.** Make the database scope explicit and
+    support either one independently monitored scheduler per database or
+    coordinated multi-database orchestration.
 
-Background mode is a latency-*variance* trade, not a free win. It
-adds a roughly constant **~0.06s** to every spill that requests
-compaction — two nested subtransactions, SPI, and `df.start()`'s own
-writes to `df.instances`/`df.nodes` — and removes the merge from the
-tail. Measured with
-[`benchmarks/durable_compaction_latency.sh`](../benchmarks/durable_compaction_latency.sh):
+Until these exist, level counts remain the recovery source of truth and
+operators are responsible for monitoring, singleton registration, and manual
+restart.
 
-| | inline | background |
-|---|---|---|
-| typical spill, no merge triggered | ~0.020s | ~0.079s |
-| spill that triggers a merge (200k-row corpus) | 0.982s | 0.084s |
+## Verification boundaries
 
-At `segments_per_level = 2` over the same corpus, forcing a deeper
-cascade, the triggering transaction measured **2.794s inline versus
-0.097s background** — and both modes converged on the identical final
-layout, so the background path defers the work rather than skipping
-it.
+The PostgreSQL 17 and 18 regression suites cover threshold gating,
+deduplication, ordinary request failures, cancellation propagation, whole and
+stepped traversal, read-only enforcement, temporary-index inline behavior,
+pending-request removal on drop, and the public SQL helpers.
 
-The implication for operators: enable background mode when merges are
-expensive relative to the enqueue, which on commodity hardware means
-roughly tens of thousands of non-trivial documents and up. Below that,
-inline is simply cheaper, and turning background mode on will make
-every write marginally slower for no benefit.
+`make test-durable` is an opt-in integration suite that requires pg_durable.
+It starts a disposable cluster and covers independent request persistence,
+explicit rollback plus backstop repair, PREPARE, real low-privilege worker
+execution, ACL normalization, partition authorization, stale physical
+targets, cascade-drop cleanup, stepped progress, and the scheduled backstop.
+It is not part of `make test-all`.
 
-## Future work: non-blocking merges
-
-Segments are immutable, and
-the metapage reaches them only through `level_heads[]`. A merge
-can therefore build its output segment entirely out-of-band while
-readers and writers continue against the existing segments, and
-take an exclusive lock only for the metapage pointer swap that
-publishes the result and unlinks the sources. Displaced source
-pages already have a standby-safe reclaim path — the
-`pending_free_head` tombstone chain from #380 — which is exactly
-the mechanism needed to keep in-flight readers valid after the
-swap. This would shrink the exclusive window from "duration of
-the merge" to "duration of one buffer update", unblocking both
-readers and writers.
-
-The stepped cascade introduced by `bm25_compact_step()` is the
-first move in that direction: it already reduces the exclusive
-window from "the whole cascade" to "one merge batch". Making a
-single batch non-blocking is the remaining step.
-
-## See also
-
-- [`scripts/durable_compaction/README.md`](../scripts/durable_compaction/README.md)
-  — setup commands, operating queries, and pg_durable-specific
-  known limitations.
-- [`test/scripts/durable_compaction.sh`](../test/scripts/durable_compaction.sh)
-  — the end-to-end verification test (`make test-durable`).
-- [`benchmarks/durable_compaction_latency.sh`](../benchmarks/durable_compaction_latency.sh)
-  — p50/p99 insert latency, `inline` vs `background`.
-- [`docs/background_compaction_report.md`](background_compaction_report.md)
-  — the POC report-back: findings, measured numbers, and pg_durable
-  limitations discovered along the way.
+The demo is a manual, resource-intensive validation of write-path latency,
+physical rollback semantics, ranking stability, repeatable reads, and
+concurrent writer stalls. Package workflows verify file presence. These tests
+do not validate production authentication integration, high availability,
+multi-database orchestration, retry policy, or long-term metadata retention.

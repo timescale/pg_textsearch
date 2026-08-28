@@ -1,10 +1,9 @@
 #!/bin/bash
 #
 # Runnable demo for background BM25 segment compaction via pg_durable
-# (see docs/superpowers/plans/2026-08-26-background-compaction-pg-durable.md,
-# Task 9; docs/background_compaction.md for the architecture and the
-# honest LW_EXCLUSIVE limitation; and test/scripts/durable_compaction.sh,
-# whose cluster/role/glue setup this script's structure is modeled on).
+# (see docs/background_compaction.md for the architecture and the
+# LW_EXCLUSIVE limitation, and test/scripts/durable_compaction.sh for
+# the integration coverage).
 #
 # Tells the story in three acts:
 #
@@ -22,13 +21,13 @@
 #           inside the same statement_timeout. The merge itself still
 #           happens -- out of band, driven by pg_durable -- and level
 #           counts are shown to actually change.
-#   Act 3 - a reader loop and a writer loop run concurrently with a
-#           background cascade in flight, and every correctness
-#           property is a hard assertion: ranking invariance, no torn
-#           reads under REPEATABLE READ, transactional atomicity of
-#           the enqueue, forward progress for a concurrent writer
-#           (with its worst observed latency printed, unflattering or
-#           not), and a final row-count sanity check.
+#   Act 3 - explicit rollback leaves physical compaction debt but no
+#           immediate request, the backstop sweep repairs that debt,
+#           and a committed spill submits an independent accelerator.
+#           A reader loop and writer loop then run concurrently with a
+#           background cascade, asserting ranking invariance, no torn
+#           reads under REPEATABLE READ, writer progress, and the final
+#           row count.
 #
 # This demo is NOT part of `make test-all` or any CI target: it needs
 # pg_durable installed (module + control/SQL files discoverable via
@@ -250,10 +249,10 @@ log_filename = 'postgres.log'
 pg_durable.database = '${DEMO_DB}'
 EOF
 
-    # Passwordless route for the compactor: pg_durable's worker opens
-    # a fresh libpq connection as df.instances.submitted_by with no
-    # password and no host, so it hits the unix socket, where `peer`
-    # fails for a role that is not the OS user.
+    # Passwordless routes for this disposable cluster. pg_durable
+    # connects as df.instances.submitted_by without a password and
+    # defaults to loopback TCP when PGHOST is unset. Production must
+    # use authenticated peer/ident or an equivalent scoped mechanism.
     cat > "${DATA_DIR}/pg_hba.conf.new" << EOF
 local   all   textsearch_compactor   trust
 host    all   textsearch_compactor   127.0.0.1/32   trust
@@ -513,7 +512,7 @@ $(cat "$stderr_file")"
     if [ "$l0_after" -ge "$((DEMO_SEGMENTS + 1))" ]; then
         error "ASSERTION FAILED: expected the merge to have \
 progressed (L0 dropped) despite the cancelled statement -- L0 is \
-still ${l0_after}. See the comment above run_atomicity_check for \
+still ${l0_after}. See the physical-mutation comment above for \
 why this is what we actually measure."
     fi
     log "PASS: L0 dropped from $((DEMO_SEGMENTS + 1)) to \
@@ -636,12 +635,12 @@ ORDER BY body <@> to_bm25query('${ACT3_QUERY_TERM}', '${idx}'), ctid \
 LIMIT 20;"
 }
 
-# Rollback must enqueue nothing; commit must enqueue exactly one
-# instance. Runs against its own small table so it cannot be confused
-# with the main act3_docs cascade, which shares no label with it.
-run_atomicity_check() {
-    log "Atomicity check (own table, concurrently with the main \
-cascade)..."
+# An explicit rollback never reaches PRE_COMMIT, so it submits no immediate
+# request even though its physical spill survives. Prove that the periodic
+# backstop's sweep repairs that durable debt, then prove that a committed
+# threshold crossing submits an independent accelerator.
+run_request_recovery_check() {
+    log "Request recovery check (immediate accelerator vs backstop)..."
     build_corpus atomic_docs atomic_idx 2 50
     set_guc pg_textsearch.compaction_mode background
 
@@ -654,7 +653,7 @@ cascade)..."
     sql_as demo_owner << 'SQL' >/dev/null
 SET client_min_messages = warning;
 BEGIN;
-INSERT INTO atomic_docs (body) VALUES ('atomicity rollback probe');
+INSERT INTO atomic_docs (body) VALUES ('rollback recovery probe');
 SELECT bm25_spill_index('atomic_idx');
 ROLLBACK;
 SQL
@@ -663,15 +662,31 @@ SQL
     after_rollback_rows=$(sql_super -c "SELECT count(*) FROM atomic_docs;")
     after_rollback_instances=$(sql_super -c \
         "SELECT count(*) FROM df.instances WHERE label = '${label}';")
-    assert_eq "atomicity: ROLLBACK leaves row count unchanged" \
+    assert_eq "ROLLBACK restores the heap row count" \
         "$before_rows" "$after_rollback_rows"
-    assert_eq "atomicity: ROLLBACK enqueues zero compaction instances" \
+    assert_eq "explicit ROLLBACK submits no immediate accelerator" \
         "$before_instances" "$after_rollback_instances"
+
+    local debt_after_rollback
+    debt_after_rollback=$(sql_super -c \
+        "SELECT bm25_needs_compaction('atomic_idx'::regclass);")
+    assert_eq "rolled-back physical spill leaves durable compaction debt" \
+        "t" "$debt_after_rollback"
+
+    log "Running the sweep used by the periodic backstop..."
+    local compacted
+    compacted=$(sql_as textsearch_compactor -c \
+        "SELECT bm25_compact_pending();")
+    assert_eq "backstop sweep repairs the rolled-back physical debt" \
+        "1" "$compacted"
+    assert_eq "backstop leaves no compaction debt for atomic_idx" "f" \
+        "$(sql_super -c \
+           "SELECT bm25_needs_compaction('atomic_idx'::regclass);")"
 
     sql_as demo_owner << 'SQL' >/dev/null
 SET client_min_messages = warning;
 BEGIN;
-INSERT INTO atomic_docs (body) VALUES ('atomicity commit probe');
+INSERT INTO atomic_docs (body) VALUES ('committed accelerator probe');
 SELECT bm25_spill_index('atomic_idx');
 COMMIT;
 SQL
@@ -680,17 +695,17 @@ SQL
     after_commit_rows=$(sql_super -c "SELECT count(*) FROM atomic_docs;")
     after_commit_instances=$(sql_super -c \
         "SELECT count(*) FROM df.instances WHERE label = '${label}';")
-    assert_eq "atomicity: COMMIT makes the row visible" \
+    assert_eq "COMMIT makes the row visible" \
         "$((before_rows + 1))" "$after_commit_rows"
-    assert_eq "atomicity: COMMIT enqueues exactly one compaction \
-instance" "$((before_instances + 1))" "$after_commit_instances"
+    assert_eq "committed spill submits one immediate accelerator" \
+        "$((before_instances + 1))" "$after_commit_instances"
 
     local id
     id=$(sql_super -c \
         "SELECT id FROM df.instances WHERE label = '${label}' \
          ORDER BY created_at DESC LIMIT 1;")
     [ -n "$id" ] && wait_for_instance "$id" 30 >/dev/null
-    log "Atomicity check done."
+    log "Request recovery check done."
 }
 
 # Background job: insert one row roughly every 100ms into $1 until
@@ -747,6 +762,7 @@ SQL
 
 act3() {
     act "Act 3: transactional correctness under concurrency"
+    run_request_recovery_check
     build_corpus act3_docs act3_idx "$DEMO_SEGMENTS" "$DEMO_ROWS_PER_SEGMENT"
     set_guc pg_textsearch.compaction_mode background
 
@@ -815,10 +831,6 @@ readers and writers against it now"
     torn_reads_session act3_idx act3_docs "$torn1" "$torn2" "$torn3" \
         "$sleep1" "$sleep2" >/dev/null &
     local torn_pid=$!
-
-    # Atomicity runs concurrently too -- a fully independent index,
-    # so it cannot interfere with the cascade above.
-    run_atomicity_check
 
     # --- ranking-invariance loop (foreground) ---------------------
     local max_iters=150
@@ -960,20 +972,15 @@ SUMMARY
 This is a real, measured stall, not a rounding artifact: a
 concurrent writer was blocked for up to ${ACT3_MAX_WRITER_LATENCY}s
 by a single merge batch's LW_EXCLUSIVE hold. This POC does not hide
-that. It is exactly the motivation for the non-blocking-merge design
-in docs/background_compaction.md ("Future work: non-blocking
-merges"): segments are immutable, so a merge could build its output
-out-of-band and take the exclusive lock only for the metapage
-pointer swap, shrinking the window from "duration of one batch" to
-"duration of one buffer update".
+that. See docs/background_compaction.md for this locking boundary
+and the out-of-scope production requirements.
 STALL
     fi
 
     cat << SUMMARY2
 
-See docs/background_compaction.md ("Future work: non-blocking
-merges") for the proposed fix, which is intentionally out of scope
-for this POC.
+See docs/background_compaction.md for the current locking boundary
+and the out-of-scope production follow-up.
 SUMMARY2
 }
 
