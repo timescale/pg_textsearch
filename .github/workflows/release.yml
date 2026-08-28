@@ -216,6 +216,14 @@ jobs:
           fi
         done
 
+        CANONICAL_DOC_URL="https://github.com/timescale/pg_textsearch/blob/main/docs/background_compaction.md"
+        if ! tar -xOf "$ARCHIVE" \
+            "pg${{ matrix.pg_version }}/durable_compaction/README.md" \
+            | grep -Fq "$CANONICAL_DOC_URL"; then
+          echo "::error::Packaged durable compaction README has no stable canonical documentation link"
+          exit 1
+        fi
+
     - name: Upload build artifacts
       uses: actions/upload-artifact@v4
       with:

@@ -7,9 +7,10 @@ the index level counts remain the authoritative record of outstanding work.
 Permanent indexes WAL-log that state; unlogged indexes retain PostgreSQL's
 normal crash-reset semantics.
 
-See [`docs/background_compaction.md`](../../docs/background_compaction.md) for
-the architecture, transaction and lock boundaries, security model, lifecycle
-rules, limitations, and required pg_durable follow-up.
+See the
+[canonical background-compaction design](https://github.com/timescale/pg_textsearch/blob/main/docs/background_compaction.md)
+for the architecture, transaction and lock boundaries, security model,
+lifecycle rules, limitations, and required pg_durable follow-up.
 
 ## Requirements
 
@@ -22,6 +23,9 @@ rules, limitations, and required pg_durable follow-up.
 
 - Install both extensions, the wrapper, and the BM25 indexes in
   `pg_durable.database`.
+- Use pg_durable 0.2.6 or newer. Each operator script verifies its exact
+  required function, operator, table-column, and default-argument surface
+  before changing roles, ACLs, wrappers, canaries, or schedules.
 - Set `PGHOST` to the PostgreSQL Unix-socket directory in the PostgreSQL
   service environment before server start.
 - Provide a passwordless authenticated mapping for
@@ -100,9 +104,11 @@ TO another_writer;
 ```
 
 pg_durable initializes its worker asynchronously after extension creation and
-server restart. `03_backstop.sql` waits for its readiness sentinel and retries
-the initial `df.start()`. Other automation should also wait before submitting
-work.
+server restart. Before registration, `03_backstop.sql` commits a trivial
+`SELECT 1` task as `textsearch_compactor`, waits on that exact instance, and
+verifies its terminal node result. A failure proves the worker cannot execute
+as the compactor and aborts registration with the failed-node diagnostic and
+server-log guidance.
 
 ## Configure pg_textsearch
 
@@ -155,8 +161,13 @@ psql -U textsearch_compactor -d application_database \
   -f 03_backstop.sql -v cron='*/15 * * * *'
 ```
 
-Run the setup exactly once per database. It is not idempotent and a second
-invocation creates a second schedule.
+Registration is idempotent. It takes a transaction-scoped advisory lock,
+reuses the canonical pending/running graph submitted by
+`textsearch_compactor`, and creates one replacement only when no live
+canonical instance remains. A different `-v cron=...` value does not modify
+an already-live instance; cancel it before rerunning to change cadence.
+The global label is observability metadata, not an authorization or security
+boundary.
 
 Inspect orchestration as `textsearch_compactor` or a superuser because
 `df.instances` is protected by submitter-based row-level security:
@@ -168,7 +179,7 @@ WHERE label LIKE 'bm25-%'
 ORDER BY created_at DESC
 LIMIT 20;
 
-SELECT id, node_type, status, status_details, left(query, 80)
+SELECT id, node_type, status, status_details, result, left(query, 80)
 FROM df.nodes
 WHERE instance_id = '<instance-id>';
 ```
@@ -196,10 +207,12 @@ resource error and let the next spill resubmit, run
 `bm25_compact_pending()` as the compactor, or replace a terminated backstop
 schedule.
 
-In pg_durable 0.2.6, `df.nodes.error` is empty; the worker error is in the
-PostgreSQL server log. Keep logging available. Also inspect server warnings:
-`bm25_compact_pending()` continues after ordinary per-index failures, so a
-partially failed sweep can look successful to pg_durable.
+In pg_durable 0.2.6, a failed node's worker diagnostic is persisted in
+`df.nodes.result`; `df.nodes.error` remains empty. Keep PostgreSQL server
+logging available for connection and worker context. Also inspect server
+warnings: `bm25_compact_pending()` catches ordinary per-index failures and
+continues, so those warnings are not failed node results and a partially
+failed sweep can look successful to pg_durable.
 
 ## Packaged locations
 
@@ -210,6 +223,7 @@ partially failed sweep can look successful to pg_durable.
 - Debian operator README:
   `/usr/share/doc/pg-textsearch-postgresql-<major>/durable_compaction/`.
 
-The canonical design is included beside these artifacts as
-`background_compaction.md` or in the package's parent documentation
-directory.
+The canonical design is available at
+<https://github.com/timescale/pg_textsearch/blob/main/docs/background_compaction.md>.
+Packages also include it as `background_compaction.md` beside the binary
+archive artifacts or in the Debian package's parent documentation directory.

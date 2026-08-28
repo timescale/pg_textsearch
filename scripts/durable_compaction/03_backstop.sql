@@ -11,7 +11,8 @@
 -- identity that 02_wrapper.sql obtains via SECURITY DEFINER -- no
 -- definer function is needed here.
 --
--- Start this once.  It is a single long-lived instance.
+-- Re-running this script reuses the canonical pending/running instance. If
+-- only terminal instances exist, it creates one replacement.
 --
 -- The sweep cadence defaults to hourly and can be overridden with
 -- -v cron=... (e.g. for a faster cadence in a test harness):
@@ -84,6 +85,217 @@
 
 \set ON_ERROR_STOP on
 
+BEGIN;
+
+SET LOCAL search_path = pg_catalog, pg_temp;
+
+-- Validate every pg_durable object this script calls or reads before starting
+-- a canary or registering a schedule.
+DO $$
+DECLARE
+    durable_oid     pg_catalog.oid;
+    durable_version pg_catalog.text;
+    version_parts   pg_catalog.text[];
+BEGIN
+    SELECT extension.oid, extension.extversion
+    INTO durable_oid, durable_version
+    FROM pg_catalog.pg_extension extension
+    WHERE extension.extname OPERATOR(pg_catalog.=) 'pg_durable';
+
+    IF durable_oid IS NULL THEN
+        RAISE EXCEPTION
+            'pg_durable 0.2.6 or newer is required; extension is not installed'
+            USING HINT =
+                'Install pg_durable in this database, then rerun this script.';
+    END IF;
+
+    version_parts := pg_catalog.regexp_match(
+        durable_version, '^([0-9]+)\.([0-9]+)\.([0-9]+)');
+    IF version_parts IS NULL
+       OR ARRAY[
+              version_parts[1]::pg_catalog.int4,
+              version_parts[2]::pg_catalog.int4,
+              version_parts[3]::pg_catalog.int4
+          ] OPERATOR(pg_catalog.<) ARRAY[0, 2, 6]
+    THEN
+        RAISE EXCEPTION
+            'pg_durable 0.2.6 or newer is required; found %',
+            durable_version
+            USING HINT =
+                'Upgrade pg_durable, then rerun this script.';
+    END IF;
+
+    IF NOT EXISTS (
+        SELECT 1
+        FROM pg_catalog.pg_proc procedure
+             JOIN pg_catalog.pg_depend dependency
+               ON dependency.classid OPERATOR(pg_catalog.=)
+                      'pg_catalog.pg_proc'::pg_catalog.regclass
+              AND dependency.objid OPERATOR(pg_catalog.=) procedure.oid
+              AND dependency.refclassid OPERATOR(pg_catalog.=)
+                      'pg_catalog.pg_extension'::pg_catalog.regclass
+              AND dependency.refobjid OPERATOR(pg_catalog.=) durable_oid
+              AND dependency.deptype OPERATOR(pg_catalog.=) 'e'
+        WHERE procedure.oid OPERATOR(pg_catalog.=)
+                  pg_catalog.to_regprocedure(
+                      'df.start(pg_catalog.text,pg_catalog.text,'
+                      'pg_catalog.text,pg_catalog.text)')
+          AND procedure.prorettype OPERATOR(pg_catalog.=)
+                  'pg_catalog.text'::pg_catalog.regtype
+          AND procedure.pronargdefaults OPERATOR(pg_catalog.=) 3
+          AND procedure.proargnames OPERATOR(pg_catalog.=)
+                  ARRAY['fut', 'label', 'database', 'transaction_mode'])
+       OR NOT EXISTS (
+        SELECT 1
+        FROM pg_catalog.pg_proc procedure
+             JOIN pg_catalog.pg_depend dependency
+               ON dependency.classid OPERATOR(pg_catalog.=)
+                      'pg_catalog.pg_proc'::pg_catalog.regclass
+              AND dependency.objid OPERATOR(pg_catalog.=) procedure.oid
+              AND dependency.refclassid OPERATOR(pg_catalog.=)
+                      'pg_catalog.pg_extension'::pg_catalog.regclass
+              AND dependency.refobjid OPERATOR(pg_catalog.=) durable_oid
+              AND dependency.deptype OPERATOR(pg_catalog.=) 'e'
+        WHERE procedure.oid OPERATOR(pg_catalog.=)
+                  pg_catalog.to_regprocedure(
+                      'df.loop(pg_catalog.text,pg_catalog.text)')
+          AND procedure.prorettype OPERATOR(pg_catalog.=)
+                  'pg_catalog.text'::pg_catalog.regtype
+          AND procedure.pronargdefaults OPERATOR(pg_catalog.=) 1)
+       OR NOT EXISTS (
+        SELECT 1
+        FROM pg_catalog.pg_proc procedure
+             JOIN pg_catalog.pg_depend dependency
+               ON dependency.classid OPERATOR(pg_catalog.=)
+                      'pg_catalog.pg_proc'::pg_catalog.regclass
+              AND dependency.objid OPERATOR(pg_catalog.=) procedure.oid
+              AND dependency.refclassid OPERATOR(pg_catalog.=)
+                      'pg_catalog.pg_extension'::pg_catalog.regclass
+              AND dependency.refobjid OPERATOR(pg_catalog.=) durable_oid
+              AND dependency.deptype OPERATOR(pg_catalog.=) 'e'
+        WHERE procedure.oid OPERATOR(pg_catalog.=)
+                  pg_catalog.to_regprocedure(
+                      'df.wait_for_schedule(pg_catalog.text)')
+          AND procedure.prorettype OPERATOR(pg_catalog.=)
+                  'pg_catalog.text'::pg_catalog.regtype)
+       OR NOT EXISTS (
+        SELECT 1
+        FROM pg_catalog.pg_operator operator
+             JOIN pg_catalog.pg_depend dependency
+               ON dependency.classid OPERATOR(pg_catalog.=)
+                      'pg_catalog.pg_operator'::pg_catalog.regclass
+              AND dependency.objid OPERATOR(pg_catalog.=) operator.oid
+              AND dependency.refclassid OPERATOR(pg_catalog.=)
+                      'pg_catalog.pg_extension'::pg_catalog.regclass
+              AND dependency.refobjid OPERATOR(pg_catalog.=) durable_oid
+              AND dependency.deptype OPERATOR(pg_catalog.=) 'e'
+        WHERE operator.oid OPERATOR(pg_catalog.=)
+                  pg_catalog.to_regoperator(
+                      'pg_catalog.~>(pg_catalog.text,pg_catalog.text)')
+          AND operator.oprresult OPERATOR(pg_catalog.=)
+                  'pg_catalog.text'::pg_catalog.regtype
+          AND operator.oprcode OPERATOR(pg_catalog.=)
+                  pg_catalog.to_regprocedure(
+                      'df.seq(pg_catalog.text,pg_catalog.text)'))
+       OR NOT EXISTS (
+        SELECT 1
+        FROM pg_catalog.pg_class relation
+             JOIN pg_catalog.pg_depend dependency
+               ON dependency.classid OPERATOR(pg_catalog.=)
+                      'pg_catalog.pg_class'::pg_catalog.regclass
+              AND dependency.objid OPERATOR(pg_catalog.=) relation.oid
+              AND dependency.refclassid OPERATOR(pg_catalog.=)
+                      'pg_catalog.pg_extension'::pg_catalog.regclass
+              AND dependency.refobjid OPERATOR(pg_catalog.=) durable_oid
+              AND dependency.deptype OPERATOR(pg_catalog.=) 'e'
+        WHERE relation.oid OPERATOR(pg_catalog.=)
+                  pg_catalog.to_regclass('df.instances'))
+       OR (
+        SELECT pg_catalog.count(*)
+        FROM pg_catalog.pg_attribute attribute
+        WHERE attribute.attrelid OPERATOR(pg_catalog.=)
+                  pg_catalog.to_regclass('df.instances')
+          AND attribute.attnum OPERATOR(pg_catalog.>) 0
+          AND NOT attribute.attisdropped
+          AND (
+              (attribute.attname OPERATOR(pg_catalog.=) 'id'
+               AND attribute.atttypid OPERATOR(pg_catalog.=)
+                       'pg_catalog.varchar'::pg_catalog.regtype)
+              OR (attribute.attname OPERATOR(pg_catalog.=) 'root_node'
+                  AND attribute.atttypid OPERATOR(pg_catalog.=)
+                          'pg_catalog.varchar'::pg_catalog.regtype)
+              OR (attribute.attname OPERATOR(pg_catalog.=) 'label'
+                  AND attribute.atttypid OPERATOR(pg_catalog.=)
+                          'pg_catalog.text'::pg_catalog.regtype)
+              OR (attribute.attname OPERATOR(pg_catalog.=) 'status'
+                  AND attribute.atttypid OPERATOR(pg_catalog.=)
+                          'pg_catalog.text'::pg_catalog.regtype)
+              OR (attribute.attname OPERATOR(pg_catalog.=) 'submitted_by'
+                  AND attribute.atttypid OPERATOR(pg_catalog.=)
+                          'pg_catalog.regrole'::pg_catalog.regtype)
+              OR (attribute.attname OPERATOR(pg_catalog.=) 'created_at'
+                  AND attribute.atttypid OPERATOR(pg_catalog.=)
+                          'pg_catalog.timestamptz'::pg_catalog.regtype)))
+           OPERATOR(pg_catalog.<>) 6
+       OR NOT EXISTS (
+        SELECT 1
+        FROM pg_catalog.pg_class relation
+             JOIN pg_catalog.pg_depend dependency
+               ON dependency.classid OPERATOR(pg_catalog.=)
+                      'pg_catalog.pg_class'::pg_catalog.regclass
+              AND dependency.objid OPERATOR(pg_catalog.=) relation.oid
+              AND dependency.refclassid OPERATOR(pg_catalog.=)
+                      'pg_catalog.pg_extension'::pg_catalog.regclass
+              AND dependency.refobjid OPERATOR(pg_catalog.=) durable_oid
+              AND dependency.deptype OPERATOR(pg_catalog.=) 'e'
+        WHERE relation.oid OPERATOR(pg_catalog.=)
+                  pg_catalog.to_regclass('df.nodes'))
+       OR (
+        SELECT pg_catalog.count(*)
+        FROM pg_catalog.pg_attribute attribute
+        WHERE attribute.attrelid OPERATOR(pg_catalog.=)
+                  pg_catalog.to_regclass('df.nodes')
+          AND attribute.attnum OPERATOR(pg_catalog.>) 0
+          AND NOT attribute.attisdropped
+          AND (
+              (attribute.attname OPERATOR(pg_catalog.=) 'id'
+               AND attribute.atttypid OPERATOR(pg_catalog.=)
+                       'pg_catalog.varchar'::pg_catalog.regtype)
+              OR (attribute.attname OPERATOR(pg_catalog.=) 'instance_id'
+                  AND attribute.atttypid OPERATOR(pg_catalog.=)
+                          'pg_catalog.varchar'::pg_catalog.regtype)
+              OR (attribute.attname OPERATOR(pg_catalog.=) 'node_type'
+                  AND attribute.atttypid OPERATOR(pg_catalog.=)
+                          'pg_catalog.text'::pg_catalog.regtype)
+              OR (attribute.attname OPERATOR(pg_catalog.=) 'query'
+                  AND attribute.atttypid OPERATOR(pg_catalog.=)
+                          'pg_catalog.text'::pg_catalog.regtype)
+              OR (attribute.attname OPERATOR(pg_catalog.=) 'left_node'
+                  AND attribute.atttypid OPERATOR(pg_catalog.=)
+                          'pg_catalog.varchar'::pg_catalog.regtype)
+              OR (attribute.attname OPERATOR(pg_catalog.=) 'right_node'
+                  AND attribute.atttypid OPERATOR(pg_catalog.=)
+                          'pg_catalog.varchar'::pg_catalog.regtype)
+              OR (attribute.attname OPERATOR(pg_catalog.=) 'status'
+                  AND attribute.atttypid OPERATOR(pg_catalog.=)
+                          'pg_catalog.text'::pg_catalog.regtype)
+              OR (attribute.attname OPERATOR(pg_catalog.=) 'result'
+                  AND attribute.atttypid OPERATOR(pg_catalog.=)
+                          'pg_catalog.jsonb'::pg_catalog.regtype)))
+           OPERATOR(pg_catalog.<>) 8
+    THEN
+        RAISE EXCEPTION
+            'pg_durable 0.2.6 API is incomplete: required start/loop/schedule '
+            'functions, text ~> operator, or instance/node diagnostics '
+            'do not match'
+            USING HINT =
+                'Install or upgrade pg_durable, then rerun this script.';
+    END IF;
+END
+$$;
+
+COMMIT;
+
 SET search_path = pg_catalog, pg_temp;
 
 \if :{?cron}
@@ -98,13 +310,116 @@ SET search_path = pg_catalog, pg_temp;
 -- apply, and read it back with current_setting() below.
 SELECT pg_catalog.set_config('pg_textsearch_backstop.cron', :'cron', false);
 
+-- Submit this outside the registration transaction so the worker can see it.
+-- The label is observability metadata only; the exact returned id is the
+-- identity used for every status and result check.
+BEGIN;
+
+SET LOCAL search_path = pg_catalog, pg_temp;
+
+DO $$
+BEGIN
+    IF CURRENT_USER OPERATOR(pg_catalog.<>) 'textsearch_compactor'
+    THEN
+        RAISE EXCEPTION
+            '03_backstop.sql must run as textsearch_compactor; current user is %',
+            CURRENT_USER;
+    END IF;
+END
+$$;
+
+SELECT pg_catalog.set_config(
+    'pg_textsearch_backstop.canary_instance',
+    df.start(
+        'SELECT 1 AS pg_textsearch_canary',
+        label => 'bm25-compaction-canary'),
+    false);
+
+COMMIT;
+
+DO $$
+DECLARE
+    canary_id      pg_catalog.text :=
+        pg_catalog.current_setting(
+            'pg_textsearch_backstop.canary_instance');
+    instance_state pg_catalog.text;
+    node_state     pg_catalog.text;
+    node_result    pg_catalog.jsonb;
+    deadline       pg_catalog.timestamptz :=
+        pg_catalog.clock_timestamp() + interval '60 seconds';
+BEGIN
+    LOOP
+        SELECT instance.status, node.status, node.result
+        INTO instance_state, node_state, node_result
+        FROM df.instances instance
+             LEFT JOIN df.nodes node
+               ON node.instance_id OPERATOR(pg_catalog.=) instance.id
+              AND node.id OPERATOR(pg_catalog.=) instance.root_node
+        WHERE instance.id OPERATOR(pg_catalog.=) canary_id;
+
+        IF instance_state OPERATOR(pg_catalog.=) 'completed' THEN
+            IF node_state OPERATOR(pg_catalog.<>) 'completed'
+               OR pg_catalog.jsonb_extract_path_text(
+                      node_result,
+                      'rows',
+                      '0',
+                      'pg_textsearch_canary')
+                      IS DISTINCT FROM '1'
+            THEN
+                RAISE EXCEPTION
+                    'textsearch_compactor execution canary returned an '
+                    'unexpected result (instance %, node status %, result %)',
+                    canary_id, node_state, node_result;
+            END IF;
+            RAISE NOTICE
+                'textsearch_compactor execution canary % completed',
+                canary_id;
+            EXIT;
+        ELSIF instance_state OPERATOR(pg_catalog.=)
+                  ANY (ARRAY['failed', 'cancelled'])
+        THEN
+            RAISE EXCEPTION
+                'textsearch_compactor execution canary failed '
+                '(instance %, status %, result %)',
+                canary_id, instance_state, node_result
+                USING HINT =
+                    'Fix textsearch_compactor LOGIN/authentication and inspect '
+                    'the PostgreSQL server log before registering the backstop.';
+        END IF;
+
+        IF pg_catalog.clock_timestamp() OPERATOR(pg_catalog.>=) deadline THEN
+            RAISE EXCEPTION
+                'textsearch_compactor execution canary failed to reach a '
+                'terminal state within 60 seconds (instance %, status %)',
+                canary_id, instance_state
+                USING HINT =
+                    'Verify the pg_durable worker is running and inspect the '
+                    'PostgreSQL server log before registering the backstop.';
+        END IF;
+
+        PERFORM pg_catalog.pg_sleep(1);
+    END LOOP;
+END
+$$;
+
+BEGIN;
+
+SET LOCAL search_path = pg_catalog, pg_temp;
+
+-- Concurrent installers share a cluster-wide advisory namespace, so include
+-- the database name in the stable key and hold it through registration.
+SELECT pg_catalog.pg_advisory_xact_lock(
+    pg_catalog.hashtextextended(
+        pg_catalog.current_database()::pg_catalog.text
+        OPERATOR(pg_catalog.||)
+        ':pg_textsearch:bm25-compaction-backstop',
+        0));
+
 DO $$
 DECLARE
     instance         text;
     extension_schema text;
     body             text;
-    attempts         int := 0;
-    ready            bool;
 BEGIN
     SELECT namespace.nspname
     INTO extension_schema
@@ -133,54 +448,70 @@ BEGIN
     body := pg_catalog.format(
         'SELECT %I.bm25_compact_pending()', extension_schema);
 
-    -- The background worker initializes ASYNCHRONOUSLY after
-    -- CREATE EXTENSION pg_durable / after a server restart.  Until
-    -- it has written its epoch sentinel, df.start() cannot hand the
-    -- instance to the durable engine.  Wait for the sentinel first
-    -- (best effort -- df._worker_epoch is internal and may not be
-    -- readable), then retry df.start() itself.
-    FOR i IN 1..60 LOOP
-        BEGIN
-            SELECT EXISTS (
-                SELECT 1 FROM df._worker_epoch
-                WHERE last_seen_at > pg_catalog.clock_timestamp()
-                                     - interval '2 minutes')
-            INTO ready;
-        EXCEPTION WHEN OTHERS THEN
-            ready := true;  -- cannot probe; fall through to retry
-        END;
-        EXIT WHEN ready;
-        PERFORM pg_catalog.pg_sleep(1);
-    END LOOP;
+    -- The label remains observability metadata, not authorization or identity.
+    -- Match the submitter and exact loop/sequence/body graph before reusing a
+    -- live instance.
+    SELECT durable_instance.id
+    INTO instance
+    FROM df.instances durable_instance
+         JOIN df.nodes loop_node
+           ON loop_node.instance_id OPERATOR(pg_catalog.=)
+                  durable_instance.id
+          AND loop_node.id OPERATOR(pg_catalog.=)
+                  durable_instance.root_node
+         JOIN df.nodes sequence_node
+           ON sequence_node.instance_id OPERATOR(pg_catalog.=)
+                  durable_instance.id
+          AND sequence_node.id OPERATOR(pg_catalog.=) loop_node.left_node
+         JOIN df.nodes schedule_node
+           ON schedule_node.instance_id OPERATOR(pg_catalog.=)
+                  durable_instance.id
+          AND schedule_node.id OPERATOR(pg_catalog.=)
+                  sequence_node.left_node
+         JOIN df.nodes body_node
+           ON body_node.instance_id OPERATOR(pg_catalog.=)
+                  durable_instance.id
+          AND body_node.id OPERATOR(pg_catalog.=) sequence_node.right_node
+    WHERE durable_instance.label OPERATOR(pg_catalog.=)
+              'bm25-compaction-backstop'
+      AND durable_instance.submitted_by OPERATOR(pg_catalog.=)
+              pg_catalog.to_regrole(CURRENT_USER)
+      AND durable_instance.status OPERATOR(pg_catalog.=)
+              ANY (ARRAY['pending', 'running'])
+      AND loop_node.node_type OPERATOR(pg_catalog.=) 'LOOP'
+      AND loop_node.right_node IS NULL
+      AND sequence_node.node_type OPERATOR(pg_catalog.=) 'THEN'
+      AND schedule_node.node_type OPERATOR(pg_catalog.=) 'WAIT_SCHEDULE'
+      AND body_node.node_type OPERATOR(pg_catalog.=) 'SQL'
+      AND body_node.query OPERATOR(pg_catalog.=) body
+    ORDER BY durable_instance.created_at, durable_instance.id
+    LIMIT 1;
 
-    LOOP
-        BEGIN
-            SELECT df.start(
-                df.loop(
-                    df.wait_for_schedule(
-                        pg_catalog.current_setting('pg_textsearch_backstop.cron'))
-                    OPERATOR(pg_catalog.~>) body),
-                label => 'bm25-compaction-backstop')
-            INTO instance;
+    IF instance IS NULL THEN
+        SELECT df.start(
+            df.loop(
+                df.wait_for_schedule(
+                    pg_catalog.current_setting(
+                        'pg_textsearch_backstop.cron'))
+                OPERATOR(pg_catalog.~>) body),
+            label => 'bm25-compaction-backstop')
+        INTO instance;
 
-            RAISE NOTICE 'backstop started as instance %', instance;
-            EXIT;
-        EXCEPTION WHEN OTHERS THEN
-            attempts := attempts + 1;
-            IF attempts >= 30 THEN
-                RAISE;
-            END IF;
-            RAISE NOTICE
-                'pg_durable not ready yet (%); retrying', SQLERRM;
-            PERFORM pg_catalog.pg_sleep(2);
-        END;
-    END LOOP;
+        RAISE NOTICE 'backstop started as instance %', instance;
+    ELSE
+        RAISE NOTICE 'reusing live backstop instance %', instance;
+    END IF;
 END
 $$;
 
--- Confirm it is live.  Exactly one row should be here, and it should
--- stay 'running' forever -- the loop never terminates on its own.
+COMMIT;
+
+-- Confirm the canonical instance is live. It should stay 'running' forever;
+-- terminal history remains available but is not printed here.
 SELECT id, label, status, submitted_by, created_at
 FROM df.instances
-WHERE label = 'bm25-compaction-backstop'
+WHERE label OPERATOR(pg_catalog.=) 'bm25-compaction-backstop'
+  AND submitted_by OPERATOR(pg_catalog.=)
+          pg_catalog.to_regrole(CURRENT_USER)
+  AND status OPERATOR(pg_catalog.=) ANY (ARRAY['pending', 'running'])
 ORDER BY created_at DESC;

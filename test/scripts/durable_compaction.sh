@@ -52,8 +52,14 @@ TEST_SIZE_MULTIPLIER=${TEST_SIZE_MULTIPLIER:-1.0}
 # pg_textsearch.so is discoverable -- relying on an ambient PATH
 # silently picks up a system Postgres that has neither extension and
 # fails much later with a bare "could not access file".
-PGBINDIR="$(pg_config --bindir)"
-PKGLIBDIR="$(pg_config --pkglibdir)"
+PG_CONFIG="${PG_CONFIG:-pg_config}"
+PGBINDIR="$("${PG_CONFIG}" --bindir)"
+PKGLIBDIR="$("${PG_CONFIG}" --pkglibdir)"
+
+if [ "${DURABLE_PG_CONFIG_PROBE:-0}" = "1" ]; then
+    printf '%s|%s\n' "${PGBINDIR}" "${PKGLIBDIR}"
+    exit 0
+fi
 
 # Scale a loop count by TEST_SIZE_MULTIPLIER (minimum 1).
 scaled_count() {
@@ -167,7 +173,8 @@ wait_for_instance() {
     while [ "$waited" -lt "$timeout" ]; do
         st=$(sql_super -c \
             "SELECT status FROM df.instances WHERE id = '${id}';")
-        if [ "$st" = "completed" ] || [ "$st" = "failed" ]; then
+        if [ "$st" = "completed" ] || [ "$st" = "failed" ] \
+            || [ "$st" = "cancelled" ]; then
             echo "$st"
             return 0
         fi
@@ -226,8 +233,9 @@ setup_test_cluster() {
         if [ ! -f "${PKGLIBDIR}/${lib}.so" ]; then
             error "${lib}.so not found in ${PKGLIBDIR}. This test \
 needs both pg_durable and pg_textsearch installed into the Postgres \
-that '$(command -v pg_config)' points at. Put the intended \
-installation's bin directory first on PATH, or run 'make install'."
+that '${PG_CONFIG}' points at. Set PG_CONFIG to the intended pg_config, \
+put that installation's bin directory first on PATH, or run \
+'make install'."
         fi
     done
 
@@ -290,6 +298,116 @@ WITH SCHEMA ${EXT_SCHEMA};"
         RIGHTARG = pg_catalog.name);"
     sql_super -c "GRANT USAGE ON SCHEMA hostile_path TO PUBLIC;"
     log "Test cluster ready (db=${TEST_DB})"
+}
+
+test_pg_durable_preflight() {
+    log "=== Test: pg_durable capability preflight ==="
+    local failures=0 output setup_succeeded wrapper_succeeded
+    local backstop_succeeded wrapper_oid_before wrapper_oid_after
+    local backstops_before backstops_after
+
+    sql_super -c "CREATE ROLE preflight_owner LOGIN;"
+
+    sql_super -c "UPDATE pg_catalog.pg_extension
+        SET extversion = '0.2.5'
+        WHERE extname = 'pg_durable';"
+    setup_succeeded=f
+    if output=$(sql_super -f "${GLUE_DIR}/01_setup_role.sql" \
+        -v index_owner=preflight_owner 2>&1); then
+        setup_succeeded=t
+    fi
+    if [ "$setup_succeeded" = "t" ] \
+        || [[ "$output" != \
+*"pg_durable 0.2.6 or newer is required"* ]] \
+        || [ "$(sql_super -c "SELECT EXISTS (
+            SELECT 1 FROM pg_catalog.pg_roles
+            WHERE rolname = 'textsearch_compactor');")" != "f" ]; then
+        warn "RED: role setup did not reject unsupported pg_durable \
+before creating textsearch_compactor (succeeded=${setup_succeeded}, \
+output='${output}')"
+        failures=$((failures + 1))
+    fi
+    sql_super -c "UPDATE pg_catalog.pg_extension
+        SET extversion = '0.2.6'
+        WHERE extname = 'pg_durable';"
+
+    if [ "$(sql_super -c "SELECT EXISTS (
+        SELECT 1 FROM pg_catalog.pg_roles
+        WHERE rolname = 'textsearch_compactor');")" = "f" ]; then
+        sql_super -c "CREATE ROLE textsearch_compactor LOGIN;"
+        sql_super -c "SELECT df.grant_usage(
+            'textsearch_compactor');" >/dev/null
+    fi
+
+    sql_super <<'SQL'
+CREATE FUNCTION public.bm25_request_compaction(pg_catalog.regclass)
+RETURNS pg_catalog.text
+LANGUAGE sql
+RETURN 'preflight-sentinel'::pg_catalog.text;
+SQL
+    wrapper_oid_before=$(sql_super -c "SELECT
+        'public.bm25_request_compaction(pg_catalog.regclass)'
+            ::pg_catalog.regprocedure::pg_catalog.oid;")
+    sql_super -c "ALTER FUNCTION
+        df.start(pg_catalog.text, pg_catalog.text, pg_catalog.text,
+                 pg_catalog.text)
+        RENAME TO start_missing;"
+    wrapper_succeeded=f
+    if output=$(sql_super -f "${GLUE_DIR}/02_wrapper.sql" 2>&1); then
+        wrapper_succeeded=t
+    fi
+    sql_super -c "ALTER FUNCTION
+        df.start_missing(pg_catalog.text, pg_catalog.text, pg_catalog.text,
+                         pg_catalog.text)
+        RENAME TO start;"
+    wrapper_oid_after=$(sql_super -c "SELECT
+        'public.bm25_request_compaction(pg_catalog.regclass)'
+            ::pg_catalog.regprocedure::pg_catalog.oid;")
+    if [ "$wrapper_succeeded" = "t" ] \
+        || [[ "$output" != *"pg_durable 0.2.6 API is incomplete"* ]] \
+        || [ "$wrapper_oid_after" != "$wrapper_oid_before" ]; then
+        warn "RED: wrapper setup did not reject incomplete pg_durable \
+before replacing the wrapper (succeeded=${wrapper_succeeded}, \
+oid=${wrapper_oid_before}->${wrapper_oid_after}, output='${output}')"
+        failures=$((failures + 1))
+    fi
+
+    sql_super -c "ALTER TABLE df.instances
+        RENAME COLUMN created_at TO created_at_missing;"
+    backstops_before=$(sql_super -c "SELECT count(*) FROM df.instances
+        WHERE label = 'bm25-compaction-backstop'
+          AND status IN ('pending', 'running');")
+    backstop_succeeded=f
+    if output=$(sql_as textsearch_compactor \
+        -f "${GLUE_DIR}/03_backstop.sql" 2>&1); then
+        backstop_succeeded=t
+    fi
+    sql_super -c "ALTER TABLE df.instances
+        RENAME COLUMN created_at_missing TO created_at;"
+    backstops_after=$(sql_super -c "SELECT count(*) FROM df.instances
+        WHERE label = 'bm25-compaction-backstop'
+          AND status IN ('pending', 'running');")
+    if [ "$backstop_succeeded" = "t" ] \
+        || [[ "$output" != *"pg_durable 0.2.6 API is incomplete"* ]] \
+        || [ "$backstops_after" != "$backstops_before" ]; then
+        warn "RED: backstop setup did not reject incomplete pg_durable \
+before registration (succeeded=${backstop_succeeded}, \
+live=${backstops_before}->${backstops_after}, output='${output}')"
+        failures=$((failures + 1))
+    fi
+
+    if [ "$failures" -ne 0 ]; then
+        error "${failures} pg_durable preflight assertions failed"
+    fi
+
+    sql_super -c "DROP FUNCTION
+        public.bm25_request_compaction(pg_catalog.regclass);"
+    sql_super -c "SELECT df.revoke_usage(
+        'textsearch_compactor');" >/dev/null
+    sql_super -c "DROP OWNED BY textsearch_compactor;"
+    sql_super -c "DROP ROLE textsearch_compactor;"
+    sql_super -c "DROP ROLE preflight_owner;"
+    log "PASS: every operator script preflights pg_durable before side effects"
 }
 
 setup_roles_and_glue() {
@@ -660,6 +778,78 @@ wait_for_durable_worker() {
     error "pg_durable background worker never became ready"
 }
 
+test_backstop_canary_failure() {
+    log "=== Test: failed compactor execution canary ==="
+    sql_super <<'SQL'
+CREATE FUNCTION public.block_compactor_canary_connections()
+RETURNS void
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = pg_catalog, pg_temp
+AS $fn$
+BEGIN
+    EXECUTE 'ALTER ROLE textsearch_compactor CONNECTION LIMIT 0';
+END
+$fn$;
+REVOKE ALL ON FUNCTION public.block_compactor_canary_connections()
+FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION public.block_compactor_canary_connections()
+TO textsearch_compactor;
+SQL
+
+    local live_before live_after output script_succeeded=f
+    live_before=$(sql_super -c "SELECT count(*) FROM df.instances
+        WHERE label = 'bm25-compaction-backstop'
+          AND status IN ('pending', 'running');")
+    if output=$(sql_as textsearch_compactor 2>&1 <<SQL
+SELECT public.block_compactor_canary_connections();
+\i ${GLUE_DIR}/03_backstop.sql
+SQL
+); then
+        script_succeeded=t
+    fi
+    sql_super -c "ALTER ROLE textsearch_compactor
+        CONNECTION LIMIT -1;"
+    sql_super -c "DROP FUNCTION
+        public.block_compactor_canary_connections();"
+
+    live_after=$(sql_super -c "SELECT count(*) FROM df.instances
+        WHERE label = 'bm25-compaction-backstop'
+          AND status IN ('pending', 'running');")
+    if [ "$script_succeeded" = "t" ]; then
+        error "ASSERTION FAILED: backstop registration ignored a failed \
+compactor execution canary (output='${output}')"
+    fi
+    if [[ "$output" != *"compactor execution canary failed"* ]]; then
+        error "ASSERTION FAILED: failed execution canary was not reported \
+actionably (output='${output}')"
+    fi
+    assert_eq "failed canary aborts before backstop registration" \
+        "$live_before" "$live_after"
+
+    local canary_id canary_status canary_result
+    canary_id=$(sql_super -c "SELECT id FROM df.instances
+        WHERE label = 'bm25-compaction-canary'
+        ORDER BY created_at DESC LIMIT 1;")
+    if [ -z "$canary_id" ]; then
+        error "ASSERTION FAILED: failed execution canary was not persisted"
+    fi
+    canary_status=$(sql_super -c "SELECT status FROM df.instances
+        WHERE id = '${canary_id}';")
+    assert_eq "failed execution canary reaches terminal status" \
+        "failed" "$canary_status"
+    canary_result=$(sql_super -c "SELECT result #>> '{}'
+        FROM df.nodes
+        WHERE instance_id = '${canary_id}'
+          AND status = 'failed'
+        ORDER BY updated_at DESC LIMIT 1;")
+    if [ -z "$canary_result" ]; then
+        error "ASSERTION FAILED: failed canary diagnostic was not persisted \
+in df.nodes.result"
+    fi
+    log "PASS: failed canary diagnostic persisted in df.nodes.result"
+}
+
 # Build ${1} rounds of INSERT + bm25_spill_index() on ${3} against index
 # ${2} inside a single transaction, as ${4} (the index owner, since
 # bm25_spill_index() requires ownership). Returns nothing; caller reads
@@ -966,14 +1156,34 @@ test_actually_compacts() {
     local label
     label=$(label_for t_actual_idx)
 
-    spill_rounds app_owner t_actual_idx t_actual 2
+    local l0_before
+    l0_before=$(sql_as app_owner <<'SQL'
+SET client_min_messages = warning;
+BEGIN;
+DO $body$
+BEGIN
+    FOR n IN 1..2 LOOP
+        INSERT INTO t_actual (body)
+        SELECT format(
+            'doc %s round %s filler filler filler', i, n)
+        FROM generate_series(1, 20) i;
+        PERFORM bm25_spill_index('t_actual_idx');
+    END LOOP;
+END
+$body$;
+SELECT (bm25_level_counts('t_actual_idx'::regclass))[1];
+COMMIT;
+SQL
+)
+    if [ "$l0_before" -lt 2 ]; then
+        error "ASSERTION FAILED: pre-COMMIT L0 sample did not capture \
+both physical spills (L0 = ${l0_before})"
+    fi
+    log "PASS: physical L0 was sampled before COMMIT released the callback"
+
     local id
     id=$(sql_super -c \
         "SELECT id FROM df.instances WHERE label = '${label}';")
-
-    local l0_before
-    l0_before=$(sql_super -c \
-        "SELECT (bm25_level_counts('t_actual_idx'::regclass))[1];")
 
     local st
     st=$(wait_for_instance "$id" 30)
@@ -1073,6 +1283,20 @@ test_failure_path() {
          ORDER BY created_at DESC LIMIT 1;")
     st=$(wait_for_instance "$id" 30)
     assert_eq "instance fails without ownership" "failed" "$st"
+
+    local failure_result
+    failure_result=$(sql_super -c "SELECT result #>> '{}'
+        FROM df.nodes
+        WHERE instance_id = '${id}'
+          AND node_type = 'SQL'
+          AND status = 'failed'
+        ORDER BY updated_at DESC LIMIT 1;")
+    if [[ "$failure_result" != \
+*"must be owner of index t_failure_idx"* ]]; then
+        error "ASSERTION FAILED: failed SQL node diagnostic was not \
+persisted in df.nodes.result (result='${failure_result}')"
+    fi
+    log "PASS: failed SQL node diagnostic persisted in df.nodes.result"
 
     local l0_unchanged
     l0_unchanged=$(sql_super -c \
@@ -1629,6 +1853,29 @@ SQL
     log "PASS: long-lived backstop instance ${backstop_id} is \
 ${backstop_status}"
 
+    PGOPTIONS="-c search_path=hostile_path,pg_catalog,public,${EXT_SCHEMA},df" \
+        sql_as textsearch_compactor -f "${GLUE_DIR}/03_backstop.sql" \
+        -v cron='* * * * *' >/dev/null
+
+    local live_backstop_count reused_backstop_id
+    live_backstop_count=$(sql_super -c "SELECT count(*)
+        FROM df.instances
+        WHERE label = 'bm25-compaction-backstop'
+          AND submitted_by =
+                'textsearch_compactor'::pg_catalog.regrole
+          AND status IN ('pending', 'running');")
+    assert_eq "repeated registration keeps one live backstop" \
+        "1" "$live_backstop_count"
+    reused_backstop_id=$(sql_super -c "SELECT id
+        FROM df.instances
+        WHERE label = 'bm25-compaction-backstop'
+          AND submitted_by =
+                'textsearch_compactor'::pg_catalog.regrole
+          AND status IN ('pending', 'running')
+        ORDER BY created_at DESC LIMIT 1;")
+    assert_eq "repeated registration reuses the canonical backstop" \
+        "$backstop_id" "$reused_backstop_id"
+
     local waited=0
     local l0_after="$l0_before"
     local trap_calls=0
@@ -1662,7 +1909,29 @@ ${EXT_SCHEMA} \
 (L0 ${l0_before} -> ${l0_after}) after waiting ${waited}s"
 
     sql_as textsearch_compactor -c \
-        "SELECT df.cancel('${backstop_id}');" >/dev/null 2>&1 || true
+        "SELECT df.cancel('${backstop_id}');" >/dev/null
+    assert_eq "cancelled backstop reaches terminal status" "cancelled" \
+        "$(wait_for_instance "$backstop_id" 30)"
+
+    PGOPTIONS="-c search_path=hostile_path,pg_catalog,public,${EXT_SCHEMA},df" \
+        sql_as textsearch_compactor -f "${GLUE_DIR}/03_backstop.sql" \
+        -v cron='* * * * *' >/dev/null
+    local replacement_id
+    replacement_id=$(sql_super -c "SELECT id
+        FROM df.instances
+        WHERE label = 'bm25-compaction-backstop'
+          AND submitted_by =
+                'textsearch_compactor'::pg_catalog.regrole
+          AND status IN ('pending', 'running')
+        ORDER BY created_at DESC LIMIT 1;")
+    if [ -z "$replacement_id" ] || [ "$replacement_id" = "$backstop_id" ]; then
+        error "ASSERTION FAILED: terminal backstop was not replaced \
+(old=${backstop_id}, replacement=${replacement_id})"
+    fi
+    log "PASS: terminal backstop ${backstop_id} was replaced by \
+${replacement_id}"
+    sql_as textsearch_compactor -c \
+        "SELECT df.cancel('${replacement_id}');" >/dev/null
 }
 
 # ---------------------------------------------------------------------
@@ -1670,8 +1939,10 @@ ${EXT_SCHEMA} \
 # ---------------------------------------------------------------------
 
 setup_test_cluster
+test_pg_durable_preflight
 setup_roles_and_glue
 wait_for_durable_worker
+test_backstop_canary_failure
 
 test_atomicity
 test_independent_request

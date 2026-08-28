@@ -68,6 +68,70 @@ BEGIN;
 
 SET LOCAL search_path = pg_catalog, pg_temp;
 
+-- Fail before changing roles or privileges when pg_durable is too old or its
+-- operator-facing grant helper does not match the 0.2.6 contract.
+DO $$
+DECLARE
+    durable_oid     pg_catalog.oid;
+    durable_version pg_catalog.text;
+    version_parts   pg_catalog.text[];
+BEGIN
+    SELECT extension.oid, extension.extversion
+    INTO durable_oid, durable_version
+    FROM pg_catalog.pg_extension extension
+    WHERE extension.extname OPERATOR(pg_catalog.=) 'pg_durable';
+
+    IF durable_oid IS NULL THEN
+        RAISE EXCEPTION
+            'pg_durable 0.2.6 or newer is required; extension is not installed'
+            USING HINT =
+                'Install pg_durable in this database, then rerun this script.';
+    END IF;
+
+    version_parts := pg_catalog.regexp_match(
+        durable_version, '^([0-9]+)\.([0-9]+)\.([0-9]+)');
+    IF version_parts IS NULL
+       OR ARRAY[
+              version_parts[1]::pg_catalog.int4,
+              version_parts[2]::pg_catalog.int4,
+              version_parts[3]::pg_catalog.int4
+          ] OPERATOR(pg_catalog.<) ARRAY[0, 2, 6]
+    THEN
+        RAISE EXCEPTION
+            'pg_durable 0.2.6 or newer is required; found %',
+            durable_version
+            USING HINT =
+                'Upgrade pg_durable, then rerun this script.';
+    END IF;
+
+    IF NOT EXISTS (
+        SELECT 1
+        FROM pg_catalog.pg_proc procedure
+             JOIN pg_catalog.pg_depend dependency
+               ON dependency.classid OPERATOR(pg_catalog.=)
+                      'pg_catalog.pg_proc'::pg_catalog.regclass
+              AND dependency.objid OPERATOR(pg_catalog.=) procedure.oid
+              AND dependency.refclassid OPERATOR(pg_catalog.=)
+                      'pg_catalog.pg_extension'::pg_catalog.regclass
+              AND dependency.refobjid OPERATOR(pg_catalog.=) durable_oid
+              AND dependency.deptype OPERATOR(pg_catalog.=) 'e'
+        WHERE procedure.oid OPERATOR(pg_catalog.=)
+                  pg_catalog.to_regprocedure(
+                      'df.grant_usage(pg_catalog.text,pg_catalog.bool,'
+                      'pg_catalog.bool)')
+          AND procedure.prorettype OPERATOR(pg_catalog.=)
+                  'pg_catalog.void'::pg_catalog.regtype
+          AND procedure.pronargdefaults OPERATOR(pg_catalog.=) 2)
+    THEN
+        RAISE EXCEPTION
+            'pg_durable 0.2.6 API is incomplete: required extension member '
+            'df.grant_usage(text, boolean, boolean) with two defaults'
+            USING HINT =
+                'Install or upgrade pg_durable, then rerun this script.';
+    END IF;
+END
+$$;
+
 \if :{?index_owner}
 \else
 \echo 'index_owner is required'

@@ -214,6 +214,13 @@ shared_preload_libraries = 'pg_durable,pg_textsearch'
 pg_durable.database = 'application_database'
 ```
 
+The operator scripts require pg_durable 0.2.6 or newer. Before each script's
+first persistent side effect, it verifies the exact pg_durable extension
+members, defaults, operator signature, and diagnostic columns that script
+uses. An unsupported version or incomplete installation fails with an
+upgrade/reinstall hint rather than leaving partial role, wrapper, canary, or
+schedule state.
+
 The `df` schema, wrapper, and BM25 indexes must be in that database.
 `transaction_mode => 'new'` opens a loopback connection to persist every
 immediate task. Size `pg_durable.max_new_transaction_starts` for expected
@@ -242,14 +249,20 @@ server restart; setup must wait for readiness before starting tasks.
 
 ### Backstop and failure handling
 
-`03_backstop.sql` resolves the extension's exact
-`bm25_compact_pending()` member and starts one long-lived
-`df.loop(df.wait_for_schedule(...) ~> bm25_compact_pending())` instance
-bound to that schema-qualified function. Its default cron expression is
-hourly and can be overridden with `-v cron=...`. Executions within one
-instance are sequential, but registration is not idempotent: rerunning the
-script starts another schedule. Operators must ensure exactly one live
-instance per database.
+`03_backstop.sql` first commits a trivial `SELECT 1` task as
+`textsearch_compactor`, waits on that exact instance, and verifies the
+terminal node result. This proves the worker can open an execution connection
+as the compactor; worker readiness or catalog access alone does not.
+
+After the canary succeeds, the script resolves the extension's exact
+`bm25_compact_pending()` member and takes a transaction-scoped advisory lock.
+It reuses the canonical pending/running
+`df.loop(df.wait_for_schedule(...) ~> bm25_compact_pending())` graph submitted
+by `textsearch_compactor`, or creates one replacement if only terminal
+instances remain. Its default cron expression is hourly and can be overridden
+with `-v cron=...`; rerunning with a different value does not alter an
+already-live schedule. The label is observability metadata, not authorization
+or a security boundary. Executions within one instance are sequential.
 
 The backstop body is one worker transaction. It calls whole-cascade
 compaction for each index, so one index holds its per-index exclusive lock for
@@ -265,6 +278,10 @@ FROM df.instances
 WHERE label LIKE 'bm25-%'
 ORDER BY created_at DESC;
 
+SELECT id, node_type, status, status_details, result, left(query, 80)
+FROM df.nodes
+WHERE instance_id = '<instance-id>';
+
 -- Run as a superuser for fleet-wide physical debt.
 SELECT candidate.idx,
        bm25_level_counts(candidate.idx) AS level_counts
@@ -275,13 +292,15 @@ SELECT bm25_level_counts('my_index'::regclass);
 SELECT bm25_needs_compaction('my_index'::regclass);
 ```
 
-In pg_durable 0.2.6, the useful worker error is in the PostgreSQL server log;
-`df.nodes.error` is empty. Keep server logging available and monitor
-`bm25_compact_pending()` warnings separately for ownership or authorization
-drift. If an immediate task fails, restore the underlying permission,
-connection, or resource condition and either let the next spill resubmit or
-run the backstop sweep. If the long-lived backstop terminates, start a
-replacement manually after resolving the cause.
+In pg_durable 0.2.6, a failed node's worker diagnostic is persisted in
+`df.nodes.result`; `df.nodes.error` is empty. Keep server logging available for
+connection and worker context. Monitor `bm25_compact_pending()` warnings
+separately for ownership or authorization drift: those per-index errors are
+caught so the node result is successful. If an immediate task fails, restore
+the underlying permission, connection, or resource condition and either let
+the next spill resubmit or run the backstop sweep. If the long-lived backstop
+terminates, resolve the cause and rerun `03_backstop.sql` to create its single
+replacement.
 
 ### Packaged files
 
@@ -319,8 +338,9 @@ this document in the parent package documentation directory.
   threshold-crossing spill. Compaction still performs the same total I/O.
 - `df.loop` has a one-second minimum iteration duration, and `df.nodes` rows
   are reused across loop generations, limiting progress diagnostics.
-- This setup operates in one configured database and relies on manual
-  singleton schedule management.
+- This setup operates in one configured database and uses one global backstop
+  singleton. It does not implement the future per-index metapage schedule
+  identity.
 
 ## pg_durable follow-up
 
@@ -349,8 +369,8 @@ restart, generic execution history, metrics, heartbeat monitoring, and
 terminal-instance retention.
 
 Until failure-resilient recurrence exists, level counts remain the recovery
-source of truth and operators must restart a failed recurring compaction
-instance manually.
+source of truth and operators must rerun `03_backstop.sql` after resolving a
+failed recurring compaction instance.
 
 ## Verification boundaries
 
@@ -364,7 +384,10 @@ It starts a disposable cluster and covers independent request persistence,
 explicit rollback plus backstop repair, PREPARE, real low-privilege worker
 execution, ACL normalization, partition authorization, stale physical
 targets, cascade-drop cleanup, stepped progress, and the scheduled backstop.
-It is not part of `make test-all`.
+It also covers pg_durable capability preflight, a failed worker-connection
+canary, singleton registration, failed-node diagnostics, pre-COMMIT physical
+L0 sampling, and explicit `PG_CONFIG` propagation. It is not part of
+`make test-all`.
 
 The demo is a manual, resource-intensive validation of write-path latency,
 physical rollback semantics, ranking stability, repeatable reads, and

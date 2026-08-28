@@ -43,6 +43,89 @@ BEGIN;
 
 SET LOCAL search_path = pg_catalog, pg_temp;
 
+-- The wrapper body is parsed without resolving its callees. Check the exact
+-- pg_durable contract before dropping the previously installed wrapper.
+DO $$
+DECLARE
+    durable_oid     pg_catalog.oid;
+    durable_version pg_catalog.text;
+    version_parts   pg_catalog.text[];
+BEGIN
+    SELECT extension.oid, extension.extversion
+    INTO durable_oid, durable_version
+    FROM pg_catalog.pg_extension extension
+    WHERE extension.extname OPERATOR(pg_catalog.=) 'pg_durable';
+
+    IF durable_oid IS NULL THEN
+        RAISE EXCEPTION
+            'pg_durable 0.2.6 or newer is required; extension is not installed'
+            USING HINT =
+                'Install pg_durable in this database, then rerun this script.';
+    END IF;
+
+    version_parts := pg_catalog.regexp_match(
+        durable_version, '^([0-9]+)\.([0-9]+)\.([0-9]+)');
+    IF version_parts IS NULL
+       OR ARRAY[
+              version_parts[1]::pg_catalog.int4,
+              version_parts[2]::pg_catalog.int4,
+              version_parts[3]::pg_catalog.int4
+          ] OPERATOR(pg_catalog.<) ARRAY[0, 2, 6]
+    THEN
+        RAISE EXCEPTION
+            'pg_durable 0.2.6 or newer is required; found %',
+            durable_version
+            USING HINT =
+                'Upgrade pg_durable, then rerun this script.';
+    END IF;
+
+    IF NOT EXISTS (
+        SELECT 1
+        FROM pg_catalog.pg_proc procedure
+             JOIN pg_catalog.pg_depend dependency
+               ON dependency.classid OPERATOR(pg_catalog.=)
+                      'pg_catalog.pg_proc'::pg_catalog.regclass
+              AND dependency.objid OPERATOR(pg_catalog.=) procedure.oid
+              AND dependency.refclassid OPERATOR(pg_catalog.=)
+                      'pg_catalog.pg_extension'::pg_catalog.regclass
+              AND dependency.refobjid OPERATOR(pg_catalog.=) durable_oid
+              AND dependency.deptype OPERATOR(pg_catalog.=) 'e'
+        WHERE procedure.oid OPERATOR(pg_catalog.=)
+                  pg_catalog.to_regprocedure(
+                      'df.start(pg_catalog.text,pg_catalog.text,'
+                      'pg_catalog.text,pg_catalog.text)')
+          AND procedure.prorettype OPERATOR(pg_catalog.=)
+                  'pg_catalog.text'::pg_catalog.regtype
+          AND procedure.pronargdefaults OPERATOR(pg_catalog.=) 3
+          AND procedure.proargnames OPERATOR(pg_catalog.=)
+                  ARRAY['fut', 'label', 'database', 'transaction_mode'])
+       OR NOT EXISTS (
+        SELECT 1
+        FROM pg_catalog.pg_proc procedure
+             JOIN pg_catalog.pg_depend dependency
+               ON dependency.classid OPERATOR(pg_catalog.=)
+                      'pg_catalog.pg_proc'::pg_catalog.regclass
+              AND dependency.objid OPERATOR(pg_catalog.=) procedure.oid
+              AND dependency.refclassid OPERATOR(pg_catalog.=)
+                      'pg_catalog.pg_extension'::pg_catalog.regclass
+              AND dependency.refobjid OPERATOR(pg_catalog.=) durable_oid
+              AND dependency.deptype OPERATOR(pg_catalog.=) 'e'
+        WHERE procedure.oid OPERATOR(pg_catalog.=)
+                  pg_catalog.to_regprocedure(
+                      'df.loop(pg_catalog.text,pg_catalog.text)')
+          AND procedure.prorettype OPERATOR(pg_catalog.=)
+                  'pg_catalog.text'::pg_catalog.regtype
+          AND procedure.pronargdefaults OPERATOR(pg_catalog.=) 1)
+    THEN
+        RAISE EXCEPTION
+            'pg_durable 0.2.6 API is incomplete: required extension members '
+            'df.start(text, text, text, text) and df.loop(text, text)'
+            USING HINT =
+                'Install or upgrade pg_durable, then rerun this script.';
+    END IF;
+END
+$$;
+
 DROP FUNCTION IF EXISTS
     public.bm25_request_compaction(pg_catalog.regclass);
 

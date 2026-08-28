@@ -1,0 +1,4 @@
+#!/bin/sh
+
+echo "ambient pg_config fixture was selected" >&2
+exit 99

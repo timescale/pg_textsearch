@@ -104,7 +104,8 @@ REGRESS = abort aerodocs basic binary_io bmw bmw_skip_advance bulk_load \
 REGRESS_OPTS = --inputdir=test --outputdir=test
 
 PG_CONFIG ?= pg_config
-PGXS := $(shell $(PG_CONFIG) --pgxs)
+PG_CONFIG_PATH := $(realpath $(shell command -v $(PG_CONFIG) 2>/dev/null))
+PGXS := $(shell $(PG_CONFIG_PATH) --pgxs)
 include $(PGXS)
 
 # SQL regression tests
@@ -164,7 +165,17 @@ test-stress:
 # have pg_durable. See scripts/durable_compaction/README.md for setup.
 test-durable:
 	@echo "Running pg_durable background compaction test..."
-	@cd test/scripts && ./durable_compaction.sh
+	@expected="$$($(PG_CONFIG_PATH) --bindir)|$$($(PG_CONFIG_PATH) --pkglibdir)"; \
+		actual="$$(cd test/scripts && \
+			PATH="$$PWD/fixtures:$$PATH" \
+			PG_CONFIG="$(PG_CONFIG_PATH)" \
+			DURABLE_PG_CONFIG_PROBE=1 ./durable_compaction.sh)"; \
+		test "$$actual" = "$$expected" || { \
+			echo "PG_CONFIG propagation failed: expected '$$expected', got '$$actual'"; \
+			exit 1; \
+		}
+	@cd test/scripts && \
+		PG_CONFIG="$(PG_CONFIG_PATH)" ./durable_compaction.sh
 
 test-cic:
 	@echo "Running CREATE INDEX CONCURRENTLY tests..."

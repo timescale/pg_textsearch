@@ -22,18 +22,14 @@ rm -rf "${BUILDDIR}" "${DEBDIR}"
 mkdir -p "${BUILDDIR}/DEBIAN"
 mkdir -p "${DEBDIR}"
 
-# Get PostgreSQL directories
-# Support both Docker (TimescaleDB) and regular PostgreSQL installations
-if [ -x "/usr/local/bin/pg_config" ]; then
-    PG_CONFIG="/usr/local/bin/pg_config"
-elif [ -x "/usr/lib/postgresql/${PG_VERSION}/bin/pg_config" ]; then
-    PG_CONFIG="/usr/lib/postgresql/${PG_VERSION}/bin/pg_config"
-else
-    echo "Error: pg_config not found in expected locations"
+# Get PostgreSQL directories from the caller-selected installation.
+PG_CONFIG="${PG_CONFIG:-pg_config}"
+if ! command -v "${PG_CONFIG}" >/dev/null 2>&1; then
+    echo "Error: PG_CONFIG '${PG_CONFIG}' is not executable"
     exit 1
 fi
-LIBDIR=$($PG_CONFIG --pkglibdir)
-SHAREDIR=$($PG_CONFIG --sharedir)
+LIBDIR="$("${PG_CONFIG}" --pkglibdir)"
+SHAREDIR="$("${PG_CONFIG}" --sharedir)"
 
 # Create package directory structure
 mkdir -p "${BUILDDIR}${LIBDIR}"
