@@ -270,6 +270,29 @@ RETURNS boolean
 AS 'MODULE_PATHNAME', 'tp_compact_index_step'
 LANGUAGE C VOLATILE STRICT;
 
+CREATE FUNCTION @extschema@.bm25_compact_step_if_current(
+    index_oid oid,
+    database_oid oid,
+    tablespace_oid oid,
+    relfilenumber oid)
+RETURNS boolean
+AS 'MODULE_PATHNAME', 'tp_compact_index_step_if_current'
+LANGUAGE C VOLATILE STRICT;
+
+CREATE FUNCTION @extschema@.bm25_needs_compaction_if_current(
+    index_oid oid,
+    database_oid oid,
+    tablespace_oid oid,
+    relfilenumber oid)
+RETURNS boolean
+AS 'MODULE_PATHNAME', 'tp_needs_compaction_if_current'
+LANGUAGE C STABLE STRICT;
+
+REVOKE ALL ON FUNCTION
+    @extschema@.bm25_compact_step_if_current(oid, oid, oid, oid),
+    @extschema@.bm25_needs_compaction_if_current(oid, oid, oid, oid)
+FROM PUBLIC;
+
 CREATE FUNCTION @extschema@.bm25_needs_compaction(idx regclass)
 RETURNS boolean
 LANGUAGE sql STABLE

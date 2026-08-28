@@ -522,6 +522,8 @@ tp_object_access(
 		 * entries and shared memory in those cases.
 		 */
 
+		tp_compaction_drop_request(objectId);
+
 		/* Check if this is one of our indexes */
 		if (!tp_registry_is_registered(objectId))
 			return;

@@ -212,6 +212,26 @@ SELECT bm25_spill_index('compaction_threshold_docs_idx') IS NOT NULL;
 SELECT count(*) AS threshold_requests FROM compaction_log
 WHERE idx = 'compaction_threshold_docs_idx'::regclass;
 
+-- Dropping an index before PRE_COMMIT removes its pending request.
+TRUNCATE compaction_log;
+CREATE TABLE compaction_drop_docs (id serial PRIMARY KEY, body text);
+CREATE INDEX compaction_drop_docs_idx ON compaction_drop_docs
+    USING bm25(body) WITH (text_config = 'english');
+
+INSERT INTO compaction_drop_docs (body)
+SELECT 'drop seed ' || i FROM generate_series(1, 20) i;
+SELECT bm25_spill_index('compaction_drop_docs_idx') IS NOT NULL;
+
+BEGIN;
+INSERT INTO compaction_drop_docs (body)
+SELECT 'drop pending ' || i FROM generate_series(1, 20) i;
+SELECT bm25_spill_index('compaction_drop_docs_idx') IS NOT NULL;
+DROP INDEX compaction_drop_docs_idx;
+COMMIT;
+
+SELECT count(*) AS dropped_index_requests FROM compaction_log;
+DROP TABLE compaction_drop_docs;
+
 -- Temporary indexes must compact inline because workers cannot access them.
 TRUNCATE compaction_log;
 CREATE TEMP TABLE compaction_temp_docs (id serial PRIMARY KEY, body text);

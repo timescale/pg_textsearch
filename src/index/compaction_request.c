@@ -48,6 +48,12 @@ tp_compaction_request(Oid indexoid)
 }
 
 void
+tp_compaction_drop_request(Oid indexoid)
+{
+	tp_pending_compactions = list_delete_oid(tp_pending_compactions, indexoid);
+}
+
+void
 tp_compaction_reset_requests(void)
 {
 	list_free(tp_pending_compactions);

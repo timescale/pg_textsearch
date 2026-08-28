@@ -221,8 +221,10 @@ GRANT USAGE ON SCHEMA :"ext_schema" TO textsearch_compactor;
 GRANT EXECUTE ON FUNCTION
     :"ext_schema".bm25_compact(regclass),
     :"ext_schema".bm25_compact_step(regclass),
+    :"ext_schema".bm25_compact_step_if_current(oid, oid, oid, oid),
     :"ext_schema".bm25_level_counts(regclass),
     :"ext_schema".bm25_needs_compaction(regclass),
+    :"ext_schema".bm25_needs_compaction_if_current(oid, oid, oid, oid),
     :"ext_schema".bm25_indexes_needing_compaction(),
     :"ext_schema".bm25_compact_pending()
 TO textsearch_compactor;

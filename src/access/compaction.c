@@ -55,6 +55,49 @@ tp_open_bm25_index(Oid indexoid, LOCKMODE lockmode, bool need_owner)
 	return index_rel;
 }
 
+/*
+ * Durable tasks use a relation OID plus its physical locator.  Return NULL
+ * when that target has become obsolete; errors from a live target still
+ * propagate normally.
+ */
+static Relation
+tp_open_current_bm25_index(
+		Oid			  indexoid,
+		Oid			  databaseoid,
+		Oid			  tablespaceoid,
+		RelFileNumber relfilenumber,
+		LOCKMODE	  lockmode)
+{
+	Relation index_rel;
+
+	if (databaseoid != MyDatabaseId)
+		return NULL;
+
+	index_rel = try_relation_open(indexoid, lockmode);
+	if (index_rel == NULL)
+		return NULL;
+
+	if (index_rel->rd_indam == NULL ||
+		index_rel->rd_indam->ambuild != tp_build ||
+		index_rel->rd_locator.spcOid != tablespaceoid ||
+		index_rel->rd_locator.dbOid != databaseoid ||
+		index_rel->rd_locator.relNumber != relfilenumber)
+	{
+		relation_close(index_rel, lockmode);
+		return NULL;
+	}
+
+	if (!object_ownercheck(RelationRelationId, indexoid, GetUserId()))
+	{
+		char *relname = pstrdup(RelationGetRelationName(index_rel));
+
+		relation_close(index_rel, lockmode);
+		aclcheck_error(ACLCHECK_NOT_OWNER, OBJECT_INDEX, relname);
+	}
+
+	return index_rel;
+}
+
 PG_FUNCTION_INFO_V1(tp_level_counts);
 
 Datum
@@ -170,4 +213,87 @@ tp_compact_index_step(PG_FUNCTION_ARGS)
 	PG_END_TRY();
 
 	PG_RETURN_BOOL(more_work);
+}
+
+PG_FUNCTION_INFO_V1(tp_compact_index_step_if_current);
+
+Datum
+tp_compact_index_step_if_current(PG_FUNCTION_ARGS)
+{
+	Oid				   indexoid		 = PG_GETARG_OID(0);
+	Oid				   databaseoid	 = PG_GETARG_OID(1);
+	Oid				   tablespaceoid = PG_GETARG_OID(2);
+	RelFileNumber	   relfilenumber = PG_GETARG_OID(3);
+	Relation		   index_rel;
+	TpLocalIndexState *index_state;
+	bool			   more_work;
+
+	if (RecoveryInProgress())
+		ereport(ERROR,
+				(errcode(ERRCODE_READ_ONLY_SQL_TRANSACTION),
+				 errmsg("cannot compact a bm25 index during recovery")));
+
+	index_rel = tp_open_current_bm25_index(
+			indexoid,
+			databaseoid,
+			tablespaceoid,
+			relfilenumber,
+			RowExclusiveLock);
+	if (index_rel == NULL)
+		PG_RETURN_BOOL(false);
+
+	if (!RelationUsesLocalBuffers(index_rel))
+		PreventCommandIfReadOnly("bm25 index compaction");
+
+	index_state = tp_get_local_index_state(indexoid);
+	if (index_state == NULL)
+	{
+		char *relname = pstrdup(RelationGetRelationName(index_rel));
+
+		relation_close(index_rel, RowExclusiveLock);
+		ereport(ERROR,
+				(errcode(ERRCODE_INTERNAL_ERROR),
+				 errmsg("could not get index state for \"%s\"", relname)));
+	}
+
+	tp_acquire_index_lock(index_state, LW_EXCLUSIVE);
+	PG_TRY();
+	{
+		more_work = tp_compact_step(index_rel);
+	}
+	PG_FINALLY();
+	{
+		tp_release_index_lock(index_state);
+		relation_close(index_rel, RowExclusiveLock);
+	}
+	PG_END_TRY();
+
+	PG_RETURN_BOOL(more_work);
+}
+
+PG_FUNCTION_INFO_V1(tp_needs_compaction_if_current);
+
+Datum
+tp_needs_compaction_if_current(PG_FUNCTION_ARGS)
+{
+	Oid			  indexoid		= PG_GETARG_OID(0);
+	Oid			  databaseoid	= PG_GETARG_OID(1);
+	Oid			  tablespaceoid = PG_GETARG_OID(2);
+	RelFileNumber relfilenumber = PG_GETARG_OID(3);
+	Relation	  index_rel;
+	bool		  needed;
+
+	index_rel = tp_open_current_bm25_index(
+			indexoid,
+			databaseoid,
+			tablespaceoid,
+			relfilenumber,
+			AccessShareLock);
+	if (index_rel == NULL)
+		PG_RETURN_BOOL(false);
+
+	needed = tp_compaction_needed(index_rel);
+	relation_close(index_rel, AccessShareLock);
+
+	PG_RETURN_BOOL(needed);
 }

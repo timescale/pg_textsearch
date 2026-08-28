@@ -25,7 +25,7 @@
 -- The caller supplies only a regclass and must be the login role with
 -- INSERT privilege on the indexed heap or one of its partition
 -- ancestors.  The DSL shape and function names are fixed here; only
--- the numeric index OID is constructed into the SQL text.
+-- the numeric target identity is constructed into the SQL text.
 
 \set ON_ERROR_STOP on
 
@@ -48,10 +48,13 @@ SECURITY DEFINER
 SET search_path = pg_catalog, pg_temp
 AS $fn$
 DECLARE
-    ext_schema text;
-    idx_oid    text;
-    body       text;
-    cond       text;
+    ext_schema     text;
+    idx_oid        text;
+    database_oid   text;
+    tablespace_oid text;
+    relfilenumber  text;
+    body           text;
+    cond           text;
 BEGIN
     -- Reject anything that is not a bm25 index before enqueuing a
     -- task that could only ever fail.  EXECUTE on this function is
@@ -61,7 +64,9 @@ BEGIN
         SELECT 1
         FROM pg_catalog.pg_class c
              JOIN pg_catalog.pg_am am ON am.oid = c.relam
-        WHERE c.oid = idx AND am.amname = 'bm25')
+        WHERE c.oid = idx
+          AND c.relkind = 'i'
+          AND am.amname = 'bm25')
     THEN
         RAISE EXCEPTION '"%" is not a bm25 index', idx::text;
     END IF;
@@ -94,19 +99,24 @@ BEGIN
         RAISE EXCEPTION 'extension pg_textsearch is not installed here';
     END IF;
 
-    -- Pass the index as a bare OID reconstituted with
-    -- <oid>::oid::regclass.  The worker session has its own
-    -- search_path, so a name would be ambiguous; an OID is
-    -- search_path-independent and, being an integer, leaves no room
-    -- for injection.
-    idx_oid := idx::oid::text;
+    SELECT idx::oid::text,
+           db.oid::text,
+           coalesce(nullif(c.reltablespace, 0), db.dattablespace)::text,
+           pg_catalog.pg_relation_filenode(idx)::text
+    INTO idx_oid, database_oid, tablespace_oid, relfilenumber
+    FROM pg_catalog.pg_class c
+         JOIN pg_catalog.pg_database db
+           ON db.datname = pg_catalog.current_database()
+    WHERE c.oid = idx;
 
     body := pg_catalog.format(
-        'SELECT %I.bm25_compact_step(%s::oid::regclass)',
-        ext_schema, idx_oid);
+        'SELECT %I.bm25_compact_step_if_current('
+        '%s::oid, %s::oid, %s::oid, %s::oid)',
+        ext_schema, idx_oid, database_oid, tablespace_oid, relfilenumber);
     cond := pg_catalog.format(
-        'SELECT %I.bm25_needs_compaction(%s::oid::regclass)',
-        ext_schema, idx_oid);
+        'SELECT %I.bm25_needs_compaction_if_current('
+        '%s::oid, %s::oid, %s::oid, %s::oid)',
+        ext_schema, idx_oid, database_oid, tablespace_oid, relfilenumber);
 
     -- The stepped shape.  df.loop(body, condition) runs the body,
     -- then evaluates the condition as an INDEPENDENT SQL expression

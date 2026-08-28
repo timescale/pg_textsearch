@@ -19,5 +19,6 @@ extern int	 tp_compaction_mode;
 extern char *tp_compaction_request_function;
 
 extern void tp_compaction_request(Oid indexoid);
+extern void tp_compaction_drop_request(Oid indexoid);
 extern void tp_compaction_flush_requests(void);
 extern void tp_compaction_reset_requests(void);

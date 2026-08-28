@@ -10,26 +10,13 @@
 # scripts/durable_compaction/ exactly as an operator would, and then
 # verifies every criterion from the plan's "acceptance criteria" section:
 #
-#   1. PRE_COMMIT gating - a rolled-back spill enqueues nothing; a
-#                          committed spill enqueues exactly one instance.
-#   2. Independent start - a direct request survives caller rollback.
-#   3. It actually compacts - background mode really drops segment counts.
-#   4. Write latency     - inline vs background wall-clock is recorded.
-#   5. Failure path       - a compactor without ownership fails the
-#                          instance; restoring ownership self-heals on the
-#                          next spill.
-#   6. Cascade splits across transactions - a multi-level cascade shows up
-#                          as more than one node execution in the server
-#                          log, and a concurrent writer can commit while
-#                          the cascade is still running.
-#   7. Permissions        - a writer with ONLY EXECUTE on
-#                          bm25_request_compaction (no df privileges at
-#                          all) can still enqueue a task, attributed to
-#                          textsearch_compactor, but cannot target a heap
-#                          on which its login role lacks INSERT.
-#   8. Backstop           - the scheduled sweep compacts an index with
-#                          compaction_mode = 'off' and no writer
-#                          involvement at all.
+#   1. Transaction boundaries: rollback, independent start, and PREPARE.
+#   2. Temporary indexes compact inline without durable work.
+#   3. Background compaction, latency, cascades, and permission failures.
+#   4. Dropped and reindexed durable targets terminate without touching
+#      replacement storage.
+#   5. Dropped pending requests, including partition cascades, are removed.
+#   6. The scheduled backstop repairs undispatched compaction debt.
 #
 # This test requires the pg_durable extension to be installed
 # (module + control/SQL files discoverable via pg_config). It is NOT part
@@ -170,6 +157,27 @@ wait_for_instance() {
 ${timeout}s (last status: '${st}')"
 }
 
+wait_for_sleep_node() {
+    local timeout="$1"
+    local waited=0
+    local active=""
+    while [ "$waited" -lt "$timeout" ]; do
+        active=$(sql_super -c "SELECT EXISTS (
+            SELECT 1
+            FROM pg_catalog.pg_stat_activity
+            WHERE usename = 'textsearch_compactor'
+              AND state = 'active'
+              AND wait_event = 'PgSleep'
+              AND query LIKE '%pg_sleep(15)%');")
+        if [ "$active" = "t" ]; then
+            return 0
+        fi
+        sleep 1
+        waited=$((waited + 1))
+    done
+    error "pg_durable blocker did not start within ${timeout}s"
+}
+
 # Count distinct orchestration generations (execution_id values) the
 # server log recorded for a durable instance. df.nodes is NOT usable for
 # this: pg_durable reuses node rows across continue_as_new generations, so
@@ -220,7 +228,9 @@ shared_preload_libraries = 'pg_durable,pg_textsearch'
 logging_collector = on
 log_directory = '.'
 log_filename = 'postgres.log'
+max_prepared_transactions = 10
 pg_durable.database = '${TEST_DB}'
+pg_durable.max_user_connections = 1
 EOF
 
     # pg_durable defaults PGHOST to 127.0.0.1.  Set it in the server
@@ -270,6 +280,30 @@ setup_roles_and_glue() {
 
     sql_super -f "${GLUE_DIR}/01_setup_role.sql" -v index_owner=app_owner \
         >/dev/null
+
+    local writer_can_step_current compactor_can_step_current
+    writer_can_step_current=$(sql_super -c "SELECT
+        has_function_privilege(
+            'app_writer',
+            'public.bm25_compact_step_if_current(oid,oid,oid,oid)',
+            'EXECUTE')
+        OR has_function_privilege(
+            'app_writer',
+            'public.bm25_needs_compaction_if_current(oid,oid,oid,oid)',
+            'EXECUTE');")
+    compactor_can_step_current=$(sql_super -c "SELECT
+        has_function_privilege(
+            'textsearch_compactor',
+            'public.bm25_compact_step_if_current(oid,oid,oid,oid)',
+            'EXECUTE')
+        AND has_function_privilege(
+            'textsearch_compactor',
+            'public.bm25_needs_compaction_if_current(oid,oid,oid,oid)',
+            'EXECUTE');")
+    assert_eq "durable target helpers are revoked from writers" \
+        "f" "$writer_can_step_current"
+    assert_eq "durable target helpers are granted to compactor" \
+        "t" "$compactor_can_step_current"
 
     if sql_as textsearch_compactor -c "SET ROLE app_owner;" \
         >/dev/null 2>&1; then
@@ -499,10 +533,17 @@ test_atomicity() {
     sql_as app_owner << SQL >/dev/null
 SET client_min_messages = warning;
 BEGIN;
-INSERT INTO t_atomic (body)
-SELECT 'rollback doc ' || i || ' filler filler filler'
-FROM generate_series(1, 20) i;
-SELECT bm25_spill_index('t_atomic_idx');
+    DO \$body\$
+    BEGIN
+        FOR n IN 1..2 LOOP
+            INSERT INTO t_atomic (body)
+            SELECT format(
+                'rollback round %s doc %s filler filler filler', n, i)
+            FROM generate_series(1, 20) i;
+            PERFORM bm25_spill_index('t_atomic_idx');
+        END LOOP;
+    END
+    \$body\$;
 ROLLBACK;
 SQL
     local rollback_count
@@ -510,7 +551,17 @@ SQL
         "SELECT count(*) FROM df.instances WHERE label = '${label}';")
     assert_eq "rollback enqueues nothing" "0" "$rollback_count"
 
-    spill_rounds app_owner t_atomic_idx t_atomic 1
+    assert_eq "rolled-back physical spills remain discoverable" "t" \
+        "$(sql_super -c \
+           "SELECT bm25_needs_compaction('t_atomic_idx'::regclass);")"
+    assert_eq "backstop compacts rolled-back physical spills" "1" \
+        "$(sql_as textsearch_compactor -c \
+           "SELECT bm25_compact_pending();")"
+    assert_eq "rollback backstop clears compaction debt" "f" \
+        "$(sql_super -c \
+           "SELECT bm25_needs_compaction('t_atomic_idx'::regclass);")"
+
+    spill_rounds app_owner t_atomic_idx t_atomic 2
     local commit_count
     commit_count=$(sql_super -c \
         "SELECT count(*) FROM df.instances WHERE label = '${label}';")
@@ -519,7 +570,9 @@ SQL
     local id
     id=$(sql_super -c \
         "SELECT id FROM df.instances WHERE label = '${label}';")
-    wait_for_instance "$id" 30 >/dev/null
+    local st
+    st=$(wait_for_instance "$id" 30)
+    assert_eq "committed spill instance completes" "completed" "$st"
 }
 
 # ---------------------------------------------------------------------
@@ -532,11 +585,13 @@ test_independent_request() {
     local label
     label=$(label_for t_independent_idx)
 
-    sql_as app_owner << SQL >/dev/null
+    local id
+    id=$(sql_as app_owner << SQL
 BEGIN;
 SELECT public.bm25_request_compaction('t_independent_idx');
 ROLLBACK;
 SQL
+)
 
     local request_count
     request_count=$(sql_super -c \
@@ -544,14 +599,117 @@ SQL
     assert_eq "direct request survives caller rollback" \
         "1" "$request_count"
 
-    local id
-    id=$(sql_super -c \
-        "SELECT id FROM df.instances WHERE label = '${label}';")
-    wait_for_instance "$id" 30 >/dev/null
+    assert_eq "direct request returns persisted instance id" \
+        "$id" "$(sql_super -c \
+            "SELECT id FROM df.instances WHERE label = '${label}';")"
+
+    local st
+    st=$(wait_for_instance "$id" 30)
+    assert_eq "independent request completes" "completed" "$st"
 }
 
 # ---------------------------------------------------------------------
-# Test 3: it actually compacts
+# Test 3: PREPARE flushes pending requests
+# ---------------------------------------------------------------------
+
+test_prepared_transaction() {
+    log "=== Test: prepared transaction dispatch ==="
+    create_owned_table t_prepared t_prepared_idx
+    local label
+    label=$(label_for t_prepared_idx)
+
+    sql_as app_owner <<'SQL' >/dev/null
+BEGIN;
+INSERT INTO t_prepared (body)
+SELECT 'prepared first ' || i || ' filler filler filler'
+FROM generate_series(1, 20) i;
+SELECT bm25_spill_index('t_prepared_idx');
+INSERT INTO t_prepared (body)
+SELECT 'prepared second ' || i || ' filler filler filler'
+FROM generate_series(1, 20) i;
+SELECT bm25_spill_index('t_prepared_idx');
+PREPARE TRANSACTION 'bm25_compaction_prepare';
+COMMIT PREPARED 'bm25_compaction_prepare';
+SQL
+
+    local id st
+    id=$(sql_super -c \
+        "SELECT id FROM df.instances WHERE label = '${label}' \
+         ORDER BY created_at DESC LIMIT 1;")
+    if [ -z "$id" ]; then
+        error "ASSERTION FAILED: PREPARE did not dispatch a durable task"
+    fi
+    st=$(wait_for_instance "$id" 30)
+    assert_eq "prepared transaction instance completes" "completed" "$st"
+}
+
+# ---------------------------------------------------------------------
+# Test 4: temporary indexes compact inline
+# ---------------------------------------------------------------------
+
+test_temp_index() {
+    log "=== Test: temporary index stays backend-local ==="
+    local output temp_oid temp_compacted task_count
+    output=$(sql_as app_owner <<'SQL'
+CREATE TEMP TABLE t_temp (id serial PRIMARY KEY, body text);
+CREATE INDEX t_temp_idx ON t_temp
+    USING bm25(body) WITH (text_config = 'english');
+SELECT 't_temp_idx'::regclass::oid;
+INSERT INTO t_temp (body)
+SELECT 'temp first ' || i FROM generate_series(1, 20) i;
+SELECT bm25_spill_index('t_temp_idx') IS NOT NULL;
+INSERT INTO t_temp (body)
+SELECT 'temp second ' || i FROM generate_series(1, 20) i;
+SELECT bm25_spill_index('t_temp_idx') IS NOT NULL;
+SELECT NOT bm25_needs_compaction('t_temp_idx'::regclass);
+SQL
+)
+    temp_oid=$(printf '%s\n' "$output" | sed -n '1p')
+    temp_compacted=$(printf '%s\n' "$output" | sed -n '4p')
+    assert_eq "temporary index compacts inline" "t" "$temp_compacted"
+
+    task_count=$(sql_super -c "SELECT count(*) FROM df.instances
+        WHERE label = 'bm25-compact-${temp_oid}';")
+    assert_eq "temporary index creates no durable task" "0" "$task_count"
+}
+
+# ---------------------------------------------------------------------
+# Test 5: a rolled-back drop remains repairable
+# ---------------------------------------------------------------------
+
+test_drop_rollback() {
+    log "=== Test: dropped index rollback remains repairable ==="
+    create_owned_table t_drop_rollback t_drop_rollback_idx
+    local label
+    label=$(label_for t_drop_rollback_idx)
+
+    sql_as app_owner <<'SQL' >/dev/null
+BEGIN;
+INSERT INTO t_drop_rollback (body)
+SELECT 'drop rollback first ' || i FROM generate_series(1, 20) i;
+SELECT bm25_spill_index('t_drop_rollback_idx');
+INSERT INTO t_drop_rollback (body)
+SELECT 'drop rollback second ' || i FROM generate_series(1, 20) i;
+SELECT bm25_spill_index('t_drop_rollback_idx');
+DROP INDEX t_drop_rollback_idx;
+ROLLBACK;
+SQL
+
+    assert_eq "rolled-back drop dispatches no task" "0" \
+        "$(sql_super -c "SELECT count(*) FROM df.instances
+            WHERE label = '${label}';")"
+    assert_eq "rolled-back drop retains physical compaction debt" "t" \
+        "$(sql_super -c "SELECT bm25_needs_compaction(
+            't_drop_rollback_idx'::regclass);")"
+    sql_as textsearch_compactor -c \
+        "SELECT bm25_compact_pending();" >/dev/null
+    assert_eq "backstop repairs rolled-back drop" "f" \
+        "$(sql_super -c "SELECT bm25_needs_compaction(
+            't_drop_rollback_idx'::regclass);")"
+}
+
+# ---------------------------------------------------------------------
+# Test 6: it actually compacts
 # ---------------------------------------------------------------------
 
 test_actually_compacts() {
@@ -589,7 +747,7 @@ test_actually_compacts() {
 }
 
 # ---------------------------------------------------------------------
-# Test 4: write latency, inline vs background
+# Test 7: write latency, inline vs background
 # ---------------------------------------------------------------------
 
 time_rounds() {
@@ -646,7 +804,7 @@ number (got '${val}')"
 }
 
 # ---------------------------------------------------------------------
-# Test 5: failure path
+# Test 8: failure path
 # ---------------------------------------------------------------------
 
 test_failure_path() {
@@ -702,7 +860,7 @@ ${l0_after})"
 }
 
 # ---------------------------------------------------------------------
-# Test 6: cascade splits across transactions
+# Test 9: cascade splits across transactions
 # ---------------------------------------------------------------------
 
 test_cascade() {
@@ -795,7 +953,7 @@ for the cascade, server log shows ${generations}"
 }
 
 # ---------------------------------------------------------------------
-# Test 7: permissions
+# Test 10: permissions
 # ---------------------------------------------------------------------
 
 test_permissions() {
@@ -883,11 +1041,16 @@ for a writer that only holds EXECUTE on bm25_request_compaction"
     assert_eq "instance is attributed to textsearch_compactor" \
         "textsearch_compactor" "$submitted_by"
 
-    wait_for_instance "$id" 30 >/dev/null
+    local st
+    st=$(wait_for_instance "$id" 60)
+    assert_eq "permission-path instance completes" "completed" "$st"
+    assert_eq "permission-path compaction clears L0" "f" \
+        "$(sql_super -c \
+           "SELECT bm25_needs_compaction('t_perm_idx'::regclass);")"
 }
 
 # ---------------------------------------------------------------------
-# Test 8: partition ancestors authorize physical leaf indexes
+# Test 11: partition ancestors authorize physical leaf indexes
 # ---------------------------------------------------------------------
 
 test_partition_permissions() {
@@ -975,7 +1138,131 @@ ${deep_leaf_index}"
 }
 
 # ---------------------------------------------------------------------
-# Test 9: backstop (run LAST -- its per-minute sweep would otherwise
+# Test 12: stale durable targets terminate safely
+# ---------------------------------------------------------------------
+
+test_stale_targets() {
+    log "=== Test: dropped and reindexed durable targets ==="
+    create_owned_table t_stale_drop t_stale_drop_idx
+    create_owned_table t_stale_reindex t_stale_reindex_idx
+
+    local blocker_id
+    blocker_id=$(sql_as textsearch_compactor -c \
+        "SELECT df.start(
+            'SELECT pg_catalog.pg_sleep(15)',
+            label => 'bm25-stale-target-blocker');")
+    wait_for_sleep_node 15
+
+    local drop_id reindex_id
+    drop_id=$(sql_as app_owner -c \
+        "SELECT public.bm25_request_compaction('t_stale_drop_idx');")
+    reindex_id=$(sql_as app_owner -c \
+        "SELECT public.bm25_request_compaction('t_stale_reindex_idx');")
+
+    local numeric_dsl
+    numeric_dsl=$(sql_super -c "SELECT count(*) = 4
+        AND bool_and(query ~ (
+            '^SELECT public\\.bm25_' ||
+            '(compact_step|needs_compaction)_if_current\\(' ||
+            '[0-9]+::oid, [0-9]+::oid, [0-9]+::oid, ' ||
+            '[0-9]+::oid\\)$'))
+        FROM df.nodes
+        WHERE instance_id IN ('${drop_id}', '${reindex_id}')
+          AND node_type = 'SQL';")
+    assert_eq "durable task DSL contains only fixed helper calls and OIDs" \
+        "t" "$numeric_dsl"
+
+    sql_as app_owner -c "DROP TABLE t_stale_drop CASCADE;" >/dev/null
+    create_owned_table t_stale_drop t_stale_drop_idx
+
+    sql_as app_owner -c \
+        "REINDEX INDEX t_stale_reindex_idx;" >/dev/null
+
+    set_guc pg_textsearch.compaction_mode 'off'
+    spill_rounds app_owner t_stale_drop_idx t_stale_drop 2
+    spill_rounds app_owner t_stale_reindex_idx t_stale_reindex 2
+    set_guc pg_textsearch.compaction_mode 'background'
+
+    local blocker_status drop_status reindex_status
+    blocker_status=$(wait_for_instance "$blocker_id" 30)
+    assert_eq "stale-target blocker completes" "completed" "$blocker_status"
+    drop_status=$(wait_for_instance "$drop_id" 30)
+    reindex_status=$(wait_for_instance "$reindex_id" 30)
+    assert_eq "dropped target task terminates successfully" \
+        "completed" "$drop_status"
+    assert_eq "reindexed target task terminates successfully" \
+        "completed" "$reindex_status"
+
+    assert_eq "dropped target task leaves replacement untouched" "t" \
+        "$(sql_super -c "SELECT bm25_needs_compaction(
+            't_stale_drop_idx'::regclass);")"
+    assert_eq "reindexed target task leaves replacement untouched" "t" \
+        "$(sql_super -c "SELECT bm25_needs_compaction(
+            't_stale_reindex_idx'::regclass);")"
+}
+
+# ---------------------------------------------------------------------
+# Test 13: partition cascade removes pending leaf requests
+# ---------------------------------------------------------------------
+
+test_partition_drop_cleanup() {
+    log "=== Test: partition cascade clears pending leaf requests ==="
+    sql_as app_owner <<'SQL'
+CREATE TABLE t_drop_partitioned (part_key integer, body text)
+PARTITION BY RANGE (part_key);
+CREATE TABLE t_drop_partitioned_a PARTITION OF t_drop_partitioned
+    FOR VALUES FROM (0) TO (10);
+CREATE TABLE t_drop_partitioned_b PARTITION OF t_drop_partitioned
+    FOR VALUES FROM (10) TO (20);
+CREATE INDEX t_drop_partitioned_idx ON t_drop_partitioned
+    USING bm25(body) WITH (text_config = 'english');
+SQL
+
+    local leaf_a leaf_b oid_a oid_b
+    leaf_a=$(sql_super -c "SELECT i.indexrelid::regclass::text
+        FROM pg_catalog.pg_index i
+        JOIN pg_catalog.pg_class c ON c.oid = i.indexrelid
+        JOIN pg_catalog.pg_am am ON am.oid = c.relam
+        WHERE i.indrelid = 't_drop_partitioned_a'::regclass
+          AND am.amname = 'bm25';")
+    leaf_b=$(sql_super -c "SELECT i.indexrelid::regclass::text
+        FROM pg_catalog.pg_index i
+        JOIN pg_catalog.pg_class c ON c.oid = i.indexrelid
+        JOIN pg_catalog.pg_am am ON am.oid = c.relam
+        WHERE i.indrelid = 't_drop_partitioned_b'::regclass
+          AND am.amname = 'bm25';")
+    oid_a=$(sql_super -c "SELECT '${leaf_a}'::regclass::oid;")
+    oid_b=$(sql_super -c "SELECT '${leaf_b}'::regclass::oid;")
+
+    sql_as app_owner << SQL >/dev/null
+INSERT INTO t_drop_partitioned_a (part_key, body)
+SELECT 1, 'cascade seed a ' || i FROM generate_series(1, 20) i;
+SELECT bm25_spill_index('${leaf_a}');
+INSERT INTO t_drop_partitioned_b (part_key, body)
+SELECT 11, 'cascade seed b ' || i FROM generate_series(1, 20) i;
+SELECT bm25_spill_index('${leaf_b}');
+SQL
+
+    sql_as app_owner << SQL >/dev/null
+BEGIN;
+INSERT INTO t_drop_partitioned_a (part_key, body)
+SELECT 1, 'cascade a ' || i FROM generate_series(1, 20) i;
+SELECT bm25_spill_index('${leaf_a}');
+INSERT INTO t_drop_partitioned_b (part_key, body)
+SELECT 11, 'cascade b ' || i FROM generate_series(1, 20) i;
+SELECT bm25_spill_index('${leaf_b}');
+DROP TABLE t_drop_partitioned CASCADE;
+COMMIT;
+SQL
+
+    assert_eq "partition cascade dispatches no leaf tasks" "0" \
+        "$(sql_super -c "SELECT count(*) FROM df.instances
+            WHERE label IN (
+                'bm25-compact-${oid_a}', 'bm25-compact-${oid_b}');")"
+}
+
+# ---------------------------------------------------------------------
+# Test 14: backstop (run LAST -- its per-minute sweep would otherwise
 # compact every pending index in the database, corrupting the carefully
 # staged segment counts the other tests depend on).
 # ---------------------------------------------------------------------
@@ -1053,12 +1340,17 @@ wait_for_durable_worker
 
 test_atomicity
 test_independent_request
+test_prepared_transaction
+test_temp_index
+test_drop_rollback
 test_actually_compacts
 test_write_latency
 test_failure_path
 test_cascade
 test_permissions
 test_partition_permissions
+test_stale_targets
+test_partition_drop_cleanup
 test_backstop
 
 log "All tests passed!"
