@@ -57,6 +57,7 @@ AS $$
          JOIN pg_catalog.pg_am am ON am.oid = c.relam
          JOIN pg_catalog.pg_index i ON i.indexrelid = c.oid
     WHERE am.amname = 'bm25'
+      AND c.relkind = 'i'
       AND c.relpersistence <> 't'
       AND i.indisvalid
       AND i.indisready
