@@ -71,6 +71,17 @@ BEGIN
         RAISE EXCEPTION '"%" is not a bm25 index', idx::text;
     END IF;
 
+    IF EXISTS (
+        SELECT 1
+        FROM pg_catalog.pg_class c
+        WHERE c.oid = idx
+          AND c.relpersistence = 't')
+    THEN
+        RAISE EXCEPTION
+            'temporary bm25 indexes cannot use background compaction'
+            USING ERRCODE = 'feature_not_supported';
+    END IF;
+
     IF NOT EXISTS (
         SELECT 1
         FROM pg_catalog.pg_index i

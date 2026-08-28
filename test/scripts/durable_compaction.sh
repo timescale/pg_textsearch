@@ -649,6 +649,21 @@ SQL
 
 test_temp_index() {
     log "=== Test: temporary index stays backend-local ==="
+    local direct_count_before direct_count_after
+    direct_count_before=$(sql_super -c "SELECT count(*) FROM df.instances;")
+    if sql_as app_owner <<'SQL' >/dev/null 2>&1
+CREATE TEMP TABLE t_temp_direct (id serial PRIMARY KEY, body text);
+CREATE INDEX t_temp_direct_idx ON t_temp_direct
+    USING bm25(body) WITH (text_config = 'english');
+SELECT public.bm25_request_compaction('t_temp_direct_idx');
+SQL
+    then
+        error "direct wrapper call accepted a temporary index"
+    fi
+    direct_count_after=$(sql_super -c "SELECT count(*) FROM df.instances;")
+    assert_eq "rejected temporary target creates no durable task" \
+        "$direct_count_before" "$direct_count_after"
+
     local output temp_oid temp_compacted task_count
     output=$(sql_as app_owner <<'SQL'
 CREATE TEMP TABLE t_temp (id serial PRIMARY KEY, body text);
