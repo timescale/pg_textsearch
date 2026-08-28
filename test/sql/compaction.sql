@@ -175,6 +175,8 @@ FROM (
 INSERT INTO segment_count_l0 (body)
 SELECT 'rejected L0 segment document ' || i || ' filler filler'
 FROM generate_series(1, 20) i;
+CREATE TEMP TABLE segment_count_l0_size_before AS
+SELECT pg_relation_size('segment_count_l0_idx') AS relation_size;
 SELECT bm25_spill_index('segment_count_l0_idx');
 
 WITH current_state AS (
@@ -188,6 +190,10 @@ SELECT current_state.counts[1] = before.l0_count
            'L0 Segment 1: block=([0-9]+),'))[1]::bigint = before.l0_head
        AS segment_count_l0_unchanged
 FROM current_state, segment_count_l0_before before;
+
+SELECT pg_relation_size('segment_count_l0_idx') = before.relation_size
+       AS segment_count_l0_size_unchanged
+FROM segment_count_l0_size_before before;
 
 RESET pg_textsearch.debug_segment_count_limit;
 DROP TABLE segment_count_l0 CASCADE;

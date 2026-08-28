@@ -233,6 +233,8 @@ FROM (
 INSERT INTO segment_count_l0 (body)
 SELECT 'rejected L0 segment document ' || i || ' filler filler'
 FROM generate_series(1, 20) i;
+CREATE TEMP TABLE segment_count_l0_size_before AS
+SELECT pg_relation_size('segment_count_l0_idx') AS relation_size;
 SELECT bm25_spill_index('segment_count_l0_idx');
 ERROR:  bm25 segment count limit reached at level 0
 WITH current_state AS (
@@ -247,6 +249,12 @@ SELECT current_state.counts[1] = before.l0_count
        AS segment_count_l0_unchanged
 FROM current_state, segment_count_l0_before before;
 segment_count_l0_unchanged
+t
+(1 row)
+SELECT pg_relation_size('segment_count_l0_idx') = before.relation_size
+       AS segment_count_l0_size_unchanged
+FROM segment_count_l0_size_before before;
+segment_count_l0_size_unchanged
 t
 (1 row)
 RESET pg_textsearch.debug_segment_count_limit;

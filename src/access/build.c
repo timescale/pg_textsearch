@@ -185,6 +185,11 @@ tp_do_spill(
 	}
 	else
 	{
+		TpIndexMetaPage metap = tp_get_metapage(index_rel);
+
+		tp_check_level_count_increment(metap, 0);
+		pfree(metap);
+
 		root = tp_write_segment(index_rel, terms, num_terms, docmap);
 	}
 
