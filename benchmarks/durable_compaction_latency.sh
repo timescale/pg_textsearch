@@ -33,6 +33,7 @@
 # actually measured -- rerun at the scale you care about instead.
 
 set -e
+set -o pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 GLUE_DIR="${SCRIPT_DIR}/../scripts/durable_compaction"
@@ -102,8 +103,8 @@ set_guc() {
     # ALTER SYSTEM cannot run inside a transaction block, and psql
     # folds multiple -c statements into an implicit transaction, so
     # this must be two separate invocations.
-    sql_super -c "ALTER SYSTEM SET ${1} = '${2}';" >/dev/null
-    sql_super -c "SELECT pg_reload_conf();" >/dev/null
+    sql_super -c "ALTER SYSTEM SET ${1} = '${2}';" >/dev/null || return
+    sql_super -c "SELECT pg_reload_conf();" >/dev/null || return
 }
 
 # ---------------------------------------------------------------------
@@ -228,14 +229,15 @@ label_for() {
 
 drain_background_work() {
     local idx="$1" label pending waited=0
-    label=$(label_for "$idx")
+    label=$(label_for "$idx") || return
 
     while [ "$waited" -lt 300 ]; do
         pending=$(sql_super -c "
             SELECT count(*)
             FROM df.instances
             WHERE label = '${label}'
-              AND status NOT IN ('completed', 'failed');")
+              AND (status IS NULL OR status NOT IN
+                   ('completed', 'failed', 'cancelled'));") || return
         [ "$pending" = "0" ] && break
         sleep 1
         waited=$((waited + 1))
@@ -249,13 +251,13 @@ drain_background_work() {
         SELECT count(*)
         FROM df.instances
         WHERE label = '${label}'
-          AND status = 'failed';")
+          AND status IN ('failed', 'cancelled');") || return
     [ "$failed" = "0" ] ||
-        error "background compaction failed for ${idx}"
+        error "background compaction failed or was cancelled for ${idx}"
 
     local needs
     needs=$(sql_super -c \
-        "SELECT bm25_needs_compaction('${idx}'::regclass);")
+        "SELECT bm25_needs_compaction('${idx}'::regclass);") || return
     [ "$needs" = "f" ] ||
         error "background compaction left work for ${idx}"
 }
@@ -265,8 +267,8 @@ drain_background_work() {
 time_one_round() {
     local idx="$1" table="$2" n="$3"
     local start end
-    start=$(date +%s.%N)
-    sql_as app_owner << SQL >/dev/null
+    start=$(date +%s.%N) || return
+    sql_as app_owner << SQL >/dev/null || return
 SET client_min_messages = warning;
 BEGIN;
 INSERT INTO ${table} (body)
@@ -275,7 +277,7 @@ FROM generate_series(1, 20) i;
 SELECT bm25_spill_index('${idx}');
 COMMIT;
 SQL
-    end=$(date +%s.%N)
+    end=$(date +%s.%N) || return
     awk "BEGIN { printf \"%.6f\", ${end} - ${start} }"
 }
 
@@ -300,28 +302,29 @@ bench_mode() {
     local mode="$1" rounds="$2"
     local table="bench_${mode}_${rounds}"
     local idx="${table}_idx"
-    create_owned_table "$table" "$idx"
-    set_guc pg_textsearch.compaction_mode "$mode"
+    create_owned_table "$table" "$idx" || return
+    set_guc pg_textsearch.compaction_mode "$mode" || return
 
     local samples_file="${DATA_DIR}/samples_${mode}_${rounds}.txt"
-    : > "$samples_file"
+    : > "$samples_file" || return
 
     local n
-    for n in $(seq 1 "$rounds"); do
-        time_one_round "$idx" "$table" "$n" >> "$samples_file"
-        echo >> "$samples_file"
+    for ((n = 1; n <= rounds; n++)); do
+        time_one_round "$idx" "$table" "$n" >> "$samples_file" || return
+        echo >> "$samples_file" || return
     done
 
     local p50 p99
-    p50=$(percentile 50 < "$samples_file")
-    p99=$(percentile 99 < "$samples_file")
-    echo "${p50} ${p99}"
+    p50=$(percentile 50 < "$samples_file") || return
+    p99=$(percentile 99 < "$samples_file") || return
 
     # Drain any background compaction this table's spills queued, so
     # it does not bleed CPU/IO into the next mode's measurement.
     if [ "$mode" = "background" ]; then
-        drain_background_work "$idx"
+        drain_background_work "$idx" || return
     fi
+
+    echo "${p50} ${p99}"
 }
 
 # ---------------------------------------------------------------------
@@ -346,18 +349,18 @@ time_trigger_commit() {
     local mode="$1"
     local table="bench_trigger_${mode}"
     local idx="${table}_idx"
-    create_owned_table "$table" "$idx"
+    create_owned_table "$table" "$idx" || return
 
     # Pile up segments with compaction off so none of this build cost
     # lands in the measured transaction. These thresholds are
     # PGC_SUSET, so they must go through ALTER SYSTEM as the
     # superuser -- app_owner cannot SET them in its own session.
-    set_guc pg_textsearch.compaction_mode off
-    set_guc pg_textsearch.memtable_pages_threshold 0
-    set_guc pg_textsearch.bulk_load_threshold 0
+    set_guc pg_textsearch.compaction_mode off || return
+    set_guc pg_textsearch.memtable_pages_threshold 0 || return
+    set_guc pg_textsearch.bulk_load_threshold 0 || return
     local i
-    for i in $(seq 1 "${BENCH_TRIGGER_SEGMENTS}"); do
-        sql_as app_owner << SQL >/dev/null
+    for ((i = 1; i <= BENCH_TRIGGER_SEGMENTS; i++)); do
+        sql_as app_owner << SQL >/dev/null || return
 SET client_min_messages = warning;
 INSERT INTO ${table} (body)
 SELECT 'segment ${i} document ' || g || ' ' ||
@@ -373,17 +376,17 @@ SQL
     # into timing an empty merge and reports meaningless numbers.
     local l0
     l0=$(sql_super -c \
-        "SELECT (bm25_level_counts('${idx}'::regclass))[1];")
+        "SELECT (bm25_level_counts('${idx}'::regclass))[1];") || return
     if [ "${l0:-0}" -lt "${BENCH_TRIGGER_SEGMENTS}" ]; then
         error "scenario 2 setup failed for mode '${mode}': expected \
 at least ${BENCH_TRIGGER_SEGMENTS} L0 segments, found '${l0}'"
     fi
 
-    set_guc pg_textsearch.compaction_mode "$mode"
+    set_guc pg_textsearch.compaction_mode "$mode" || return
 
     local start end
-    start=$(date +%s.%N)
-    sql_as app_owner << SQL >/dev/null
+    start=$(date +%s.%N) || return
+    sql_as app_owner << SQL >/dev/null || return
 SET client_min_messages = warning;
 BEGIN;
 INSERT INTO ${table} (body)
@@ -392,12 +395,13 @@ FROM generate_series(1, 20) g;
 SELECT bm25_spill_index('${idx}');
 COMMIT;
 SQL
-    end=$(date +%s.%N)
+    end=$(date +%s.%N) || return
     local duration
-    duration=$(awk "BEGIN { printf \"%.3f\", ${end} - ${start} }")
+    duration=$(awk \
+        "BEGIN { printf \"%.3f\", ${end} - ${start} }") || return
 
     if [ "$mode" = "background" ]; then
-        drain_background_work "$idx"
+        drain_background_work "$idx" || return
     fi
 
     echo "$duration"
@@ -419,11 +423,14 @@ printf "%-8s %-10s %-12s %-12s\n" "rounds" "mode" "p50 (s)" "p99 (s)"
 printf "%-8s %-10s %-12s %-12s\n" "------" "----" "-------" "-------"
 
 for rounds in $BENCH_ROUNDS; do
-    read -r inline_p50 inline_p99 <<< "$(bench_mode inline "$rounds")"
+    inline_result=$(bench_mode inline "$rounds") ||
+        error "inline benchmark failed for ${rounds} rounds"
+    read -r inline_p50 inline_p99 <<< "$inline_result"
     printf "%-8s %-10s %-12s %-12s\n" "$rounds" "inline" \
         "$inline_p50" "$inline_p99"
 
-    bg_result=$(bench_mode background "$rounds")
+    bg_result=$(bench_mode background "$rounds") ||
+        error "background benchmark failed for ${rounds} rounds"
     read -r bg_p50 bg_p99 <<< "$bg_result"
     printf "%-8s %-10s %-12s %-12s\n" "$rounds" "background" \
         "$bg_p50" "$bg_p99"
@@ -432,8 +439,10 @@ done
 echo ""
 log "Scenario 2: the single transaction that triggers a real merge \
 (${BENCH_TRIGGER_SEGMENTS} segments x ${BENCH_TRIGGER_ROWS} rows)"
-trigger_inline=$(time_trigger_commit inline)
-trigger_bg=$(time_trigger_commit background)
+trigger_inline=$(time_trigger_commit inline) ||
+    error "inline trigger benchmark failed"
+trigger_bg=$(time_trigger_commit background) ||
+    error "background trigger benchmark failed"
 printf "%-12s %-12s\n" "mode" "commit (s)"
 printf "%-12s %-12s\n" "----" "----------"
 printf "%-12s %-12s\n" "inline" "${trigger_inline}"
