@@ -71,6 +71,46 @@ designed in a separate thread:
   submitted role used by worker connections should be inspectable without
   exposing credentials, so socket/authentication mistakes are distinguishable
   from task failures.
+- **Singleton and backpressure semantics.** Repeated spills can submit
+  redundant tasks for one index. pg_durable should support a keyed
+  single-flight policy, plus per-key and global concurrency limits, so
+  duplicate work does not become lock contention or an unbounded queue.
+- **Schedule lifecycle.** Backstop registration should be idempotent and
+  support inspect, pause, resume, replace, and delete operations. The separate
+  design must define missed-run, catch-up, clock-change, and overlapping-tick
+  behavior.
+- **Per-index failure isolation.** The POC catches failures inside
+  `bm25_compact_pending()`, which lets the sweep continue but can make a
+  partially failed run look successful to pg_durable. A durable iteration
+  primitive should run each index in its own transaction, continue past
+  permanent per-index errors, and retain a structured partial-failure result.
+- **Crash and failover semantics.** Node leases, abandoned executions, primary
+  promotion, and worker restart must not leave work permanently stuck or
+  permit multiple schedulers to run the same logical backstop concurrently.
+- **Failure classification and operator controls.** Connection loss, resource
+  pressure, and serialization failures need different handling from revoked
+  privileges or a dropped/reindexed target. Operators need cancel, retry,
+  requeue, and force-run controls, with exhausted work retained for diagnosis.
+- **Execution environment.** Task connections must receive a predictable set
+  of role, database, `search_path`, timeout, and extension GUC settings.
+  In particular, the writer and worker must agree on
+  `pg_textsearch.segments_per_level`.
+- **Structured task metadata and auditability.** Labels alone are insufficient.
+  Tasks should record the request kind, database, index OID, original login
+  role, effective submitter, and schedule identity so immediate and rescue
+  work can be correlated safely.
+- **History retention.** Per-spill tasks and recurring executions will grow
+  pg_durable metadata continuously. Production use needs documented retention,
+  pruning, and capacity behavior that preserves recent failures and audit
+  records.
+- **Caller-mode handoff.** Although this integration uses
+  `transaction_mode => 'new'`, pg_durable should separately replace the
+  caller-mode graph-loading visibility timeout with a commit-aware handoff or
+  an explicit durable contract.
+- **Database scope.** The current worker targets one
+  `pg_durable.database`. Deployments with BM25 indexes in multiple databases
+  need one independently monitored scheduler per database or future
+  multi-database orchestration support.
 
 The exact APIs, retry policy, and storage model are intentionally deferred to
 that pg_durable design. Until then, the index level counts remain the durable
