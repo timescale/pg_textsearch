@@ -163,6 +163,11 @@ jobs:
         # Copy extension files
         cp pg_textsearch.control dist/pg${{ matrix.pg_version }}/
         cp sql/pg_textsearch--*.sql dist/pg${{ matrix.pg_version }}/
+        mkdir -p dist/pg${{ matrix.pg_version }}/durable_compaction
+        cp scripts/durable_compaction/{01_setup_role.sql,02_wrapper.sql,03_backstop.sql,README.md} \
+           dist/pg${{ matrix.pg_version }}/durable_compaction/
+        cp docs/background_compaction.md \
+           dist/pg${{ matrix.pg_version }}/
 
         # Copy built library with version info
         PG_LIB_DIR=$(pg_config --pkglibdir)
@@ -191,6 +196,25 @@ jobs:
         cd dist
         tar -czf ../pg_textsearch-pg${{ matrix.pg_version }}-${{ github.ref_name }}.tar.gz pg${{ matrix.pg_version }}/
         cd ..
+
+    - name: Verify binary archive contents
+      run: |
+        ARCHIVE=pg_textsearch-pg${{ matrix.pg_version }}-${{ github.ref_name }}.tar.gz
+        CONTENTS=$(tar -tf "$ARCHIVE")
+
+        for file in \
+          durable_compaction/01_setup_role.sql \
+          durable_compaction/02_wrapper.sql \
+          durable_compaction/03_backstop.sql \
+          durable_compaction/README.md \
+          background_compaction.md; do
+          if ! grep -Fxq \
+              "pg${{ matrix.pg_version }}/$file" \
+              <<< "$CONTENTS"; then
+            echo "::error::Missing $file from $ARCHIVE"
+            exit 1
+          fi
+        done
 
     - name: Upload build artifacts
       uses: actions/upload-artifact@v4

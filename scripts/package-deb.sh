@@ -38,6 +38,10 @@ SHAREDIR=$($PG_CONFIG --sharedir)
 # Create package directory structure
 mkdir -p "${BUILDDIR}${LIBDIR}"
 mkdir -p "${BUILDDIR}${SHAREDIR}/extension"
+mkdir -p \
+    "${BUILDDIR}${SHAREDIR}/extension/pg_textsearch/durable_compaction"
+mkdir -p \
+    "${BUILDDIR}/usr/share/doc/${PACKAGE_NAME}/durable_compaction"
 
 # Copy extension files
 cp "${BASEDIR}/pg_textsearch.so" "${BUILDDIR}${LIBDIR}/" || \
@@ -47,6 +51,12 @@ cp "${BASEDIR}/pg_textsearch.so" "${BUILDDIR}${LIBDIR}/" || \
 cp "${BASEDIR}/pg_textsearch.control" "${BUILDDIR}${SHAREDIR}/extension/"
 # Copy all SQL files for the extension
 cp "${BASEDIR}"/sql/pg_textsearch*.sql "${BUILDDIR}${SHAREDIR}/extension/"
+cp "${BASEDIR}"/scripts/durable_compaction/{01_setup_role.sql,02_wrapper.sql,03_backstop.sql} \
+   "${BUILDDIR}${SHAREDIR}/extension/pg_textsearch/durable_compaction/"
+cp "${BASEDIR}/scripts/durable_compaction/README.md" \
+   "${BUILDDIR}/usr/share/doc/${PACKAGE_NAME}/durable_compaction/"
+cp "${BASEDIR}/docs/background_compaction.md" \
+   "${BUILDDIR}/usr/share/doc/${PACKAGE_NAME}/"
 
 # Determine architecture
 if [ "$ARCH" = "arm64" ]; then

@@ -313,6 +313,28 @@ jobs:
 
         echo "✅ Package verification passed: PostgreSQL version is correct"
 
+    - name: Verify package contents
+      run: |
+        DEB_FILE=$(ls dist/*.deb)
+        CONTENTS=$(dpkg-deb -c "$DEB_FILE")
+
+        for file in 01_setup_role.sql 02_wrapper.sql 03_backstop.sql; do
+          if ! grep -Fq \
+              "/extension/pg_textsearch/durable_compaction/$file" \
+              <<< "$CONTENTS"; then
+            echo "::error::Missing durable_compaction/$file from $DEB_FILE"
+            exit 1
+          fi
+        done
+
+        DOC_DIR="./usr/share/doc/pg-textsearch-postgresql-${{ matrix.pg_version }}"
+        for file in durable_compaction/README.md background_compaction.md; do
+          if ! grep -Fq "$DOC_DIR/$file" <<< "$CONTENTS"; then
+            echo "::error::Missing $DOC_DIR/$file from $DEB_FILE"
+            exit 1
+          fi
+        done
+
     - name: Create zip archive
       run: |
         cd dist
@@ -356,6 +378,12 @@ jobs:
 
         # Copy source files
         cp -r src sql test benchmarks Makefile pg_textsearch.control README.md LICENSE pg_textsearch-${CLEAN_VERSION}/
+        mkdir -p pg_textsearch-${CLEAN_VERSION}/scripts \
+                 pg_textsearch-${CLEAN_VERSION}/docs
+        cp -r scripts/durable_compaction \
+              pg_textsearch-${CLEAN_VERSION}/scripts/
+        cp docs/background_compaction.md \
+           pg_textsearch-${CLEAN_VERSION}/docs/
 
         # Create tarball
         tar -czf pg_textsearch-${CLEAN_VERSION}.tar.gz pg_textsearch-${CLEAN_VERSION}/
@@ -365,6 +393,27 @@ jobs:
 
         mkdir -p dist
         mv pg_textsearch-${CLEAN_VERSION}.tar.* dist/
+
+    - name: Verify source archive contents
+      run: |
+        CLEAN_VERSION=${VERSION#v}
+
+        for archive in dist/pg_textsearch-${CLEAN_VERSION}.tar.*; do
+          CONTENTS=$(tar -tf "$archive")
+          for file in \
+            scripts/durable_compaction/01_setup_role.sql \
+            scripts/durable_compaction/02_wrapper.sql \
+            scripts/durable_compaction/03_backstop.sql \
+            scripts/durable_compaction/README.md \
+            docs/background_compaction.md; do
+            if ! grep -Fxq \
+                "pg_textsearch-${CLEAN_VERSION}/$file" \
+                <<< "$CONTENTS"; then
+              echo "::error::Missing $file from $archive"
+              exit 1
+            fi
+          done
+        done
 
     - name: Upload source artifacts
       uses: actions/upload-artifact@v4
