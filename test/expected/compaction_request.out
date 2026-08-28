@@ -51,6 +51,15 @@ DETAIL:  Must be empty, an unqualified identifier, or a schema-qualified identif
 SET pg_textsearch.compaction_request_function = 'db.schema.callback';
 ERROR:  invalid value for parameter "pg_textsearch.compaction_request_function": "db.schema.callback"
 DETAIL:  Must be empty, an unqualified identifier, or a schema-qualified identifier.
+SET pg_textsearch.compaction_request_function = '""';
+ERROR:  invalid value for parameter "pg_textsearch.compaction_request_function": """"
+DETAIL:  Must be empty, an unqualified identifier, or a schema-qualified identifier.
+SET pg_textsearch.compaction_request_function = 'schema.""';
+ERROR:  invalid value for parameter "pg_textsearch.compaction_request_function": "schema."""
+DETAIL:  Must be empty, an unqualified identifier, or a schema-qualified identifier.
+SET pg_textsearch.compaction_request_function = '"".callback';
+ERROR:  invalid value for parameter "pg_textsearch.compaction_request_function": """.callback"
+DETAIL:  Must be empty, an unqualified identifier, or a schema-qualified identifier.
 -- Seed each index below threshold so later spills exercise dispatch.
 INSERT INTO compaction_request_docs (body)
 SELECT 'seed doc ' || i FROM generate_series(1, 20) i;

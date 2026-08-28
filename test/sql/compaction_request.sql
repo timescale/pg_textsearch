@@ -57,6 +57,9 @@ SET pg_textsearch.compaction_request_function = 'log_compaction';
 -- Callback names must be valid unqualified or schema-qualified identifiers.
 SET pg_textsearch.compaction_request_function = 'invalid..callback';
 SET pg_textsearch.compaction_request_function = 'db.schema.callback';
+SET pg_textsearch.compaction_request_function = '""';
+SET pg_textsearch.compaction_request_function = 'schema.""';
+SET pg_textsearch.compaction_request_function = '"".callback';
 
 -- Seed each index below threshold so later spills exercise dispatch.
 INSERT INTO compaction_request_docs (body)

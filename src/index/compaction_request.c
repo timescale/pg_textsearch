@@ -46,6 +46,17 @@ tp_check_compaction_request_function(
 	rawname = pstrdup(*newval);
 	valid	= SplitIdentifierString(rawname, '.', &names);
 	valid	= valid && list_length(names) >= 1 && list_length(names) <= 2;
+	if (valid)
+	{
+		foreach_ptr(char, name, names)
+		{
+			if (name[0] == '\0')
+			{
+				valid = false;
+				break;
+			}
+		}
+	}
 	if (!valid)
 		GUC_check_errdetail(
 				"Must be empty, an unqualified identifier, or a "
