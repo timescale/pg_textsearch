@@ -1953,6 +1953,33 @@ tp_compaction_needed(Relation index)
 }
 
 /*
+ * Return the lowest level at or above first_level that needs compaction.
+ * If its destination is at capacity, compact that blocking level first.
+ * Stop at the last compactable level so a full top level still reaches
+ * the promotion guard and fails closed.
+ */
+static uint32
+tp_compaction_candidate(
+		const uint16 level_counts[TP_MAX_LEVELS], uint32 first_level)
+{
+	uint32 level;
+
+	for (level = first_level; level < TP_MAX_LEVELS - 1; level++)
+	{
+		if (level_counts[level] < (uint16)tp_segments_per_level)
+			continue;
+
+		while (level < TP_MAX_LEVELS - 2 &&
+			   level_counts[level + 1] >= tp_debug_segment_count_limit)
+			level++;
+
+		return level;
+	}
+
+	return TP_MAX_LEVELS;
+}
+
+/*
  * Check if a level needs compaction and trigger merge if so.
  */
 void
@@ -1961,53 +1988,41 @@ tp_maybe_compact_level(Relation index, uint32 level)
 	TpIndexMetaPage metap;
 	Buffer			metabuf;
 	Page			metapage;
-	uint16			level_count;
+	uint16			level_counts[TP_MAX_LEVELS];
+	uint32			candidate;
 
 	if (level >= TP_MAX_LEVELS - 1)
 		return;
 
-	/* Check if level needs compaction */
-	metabuf = ReadBuffer(index, 0);
-	LockBuffer(metabuf, BUFFER_LOCK_SHARE);
-	metapage = BufferGetPage(metabuf);
-	metap	 = (TpIndexMetaPage)PageGetContents(metapage);
-
-	level_count = metap->level_counts[level];
-
-	UnlockReleaseBuffer(metabuf);
-
-	if (level_count >= (uint16)tp_segments_per_level)
+	while (true)
 	{
-		/*
-		 * Merge batches of segments_per_level until the level is
-		 * below threshold.  Each batch produces one segment at
-		 * level+1; after the loop we check if that level also needs
-		 * compaction.
-		 */
-		while (level_count >= (uint16)tp_segments_per_level)
-		{
-			if (tp_merge_level_segments(
-						index, level, (uint32)tp_segments_per_level) ==
-				InvalidBlockNumber)
-				break;
+		metabuf = ReadBuffer(index, 0);
+		LockBuffer(metabuf, BUFFER_LOCK_SHARE);
+		metapage = BufferGetPage(metabuf);
+		metap	 = (TpIndexMetaPage)PageGetContents(metapage);
 
-			/* Re-read the level count after merge */
-			metabuf = ReadBuffer(index, 0);
-			LockBuffer(metabuf, BUFFER_LOCK_SHARE);
-			metapage	= BufferGetPage(metabuf);
-			metap		= (TpIndexMetaPage)PageGetContents(metapage);
-			level_count = metap->level_counts[level];
-			UnlockReleaseBuffer(metabuf);
+		memcpy(level_counts, metap->level_counts, sizeof(level_counts));
+
+		UnlockReleaseBuffer(metabuf);
+
+		candidate = tp_compaction_candidate(level_counts, level);
+		if (candidate >= TP_MAX_LEVELS - 1)
+			return;
+
+		if (tp_merge_level_segments(
+					index, candidate, (uint32)tp_segments_per_level) ==
+			InvalidBlockNumber)
+		{
+			tp_maybe_compact_level(index, candidate + 1);
+			return;
 		}
 	}
-
-	/* Check if next level now needs compaction */
-	tp_maybe_compact_level(index, level + 1);
 }
 
 /*
- * Perform at most one merge batch, at the lowest level that is over
- * threshold.
+ * Perform at most one merge batch, normally at the lowest level that
+ * is over threshold.  If that level cannot promote because its
+ * destination is full, compact the blocking destination first.
  *
  * Splitting a cascade into steps lets each step run in its own
  * transaction, so the per-index exclusive lock is released between
@@ -2031,20 +2046,15 @@ tp_compact_step(Relation index)
 
 	UnlockReleaseBuffer(metabuf);
 
-	for (level = 0; level < TP_MAX_LEVELS - 1; level++)
-	{
-		if (level_counts[level] < (uint16)tp_segments_per_level)
-			continue;
+	level = tp_compaction_candidate(level_counts, 0);
+	if (level >= TP_MAX_LEVELS - 1)
+		return false;
 
-		if (tp_merge_level_segments(
-					index, level, (uint32)tp_segments_per_level) ==
-			InvalidBlockNumber)
-			return false;
+	if (tp_merge_level_segments(index, level, (uint32)tp_segments_per_level) ==
+		InvalidBlockNumber)
+		return false;
 
-		return true;
-	}
-
-	return false;
+	return true;
 }
 
 /*

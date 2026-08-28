@@ -89,14 +89,17 @@ The extension installs these public interfaces:
 | `bm25_level_counts(regclass)` | Reads the eight metapage counts under an `AccessShareLock` and shared buffer lock. |
 | `bm25_needs_compaction(regclass)` | Tests compactable levels against the current session's threshold. |
 | `bm25_compact(regclass)` | Owner-only whole cascade. For a non-temporary index it rejects read-only transactions, opens with `RowExclusiveLock`, and holds the per-index `LW_EXCLUSIVE` lock until every eligible level is below threshold. |
-| `bm25_compact_step(regclass)` | Owner-only single batch at the lowest eligible level, with the same relation and per-index lock boundaries. Returns whether it merged a batch. |
+| `bm25_compact_step(regclass)` | Owner-only single batch, normally at the lowest eligible level. If that level's destination is full, the step compacts one batch from the blocking destination first. Uses the same relation and per-index lock boundaries and returns whether it merged a batch. |
 | `bm25_indexes_needing_compaction()` | Candidate enumeration: lists valid, ready, non-temporary physical BM25 indexes whose owners the caller can use. Storage-less partitioned parents are excluded. |
 | `bm25_compact_pending()` | Enumerates all physical candidates, checks their debt, and runs whole-cascade compaction. Ordinary per-index errors, including ownership drift, become warnings so the sweep can continue; the return value counts successful indexes. |
 
 Whole-cascade compaction visits every compactable level, including higher
-levels when a lower one is already below threshold. A step merges exactly one
-`segments_per_level` batch from the lowest eligible level and promotes one
-segment upward. The top level is not compactable.
+levels when a lower one is already below threshold. Both traversal forms
+normally select the lowest eligible level; when its destination is full, they
+compact the blocking destination first so the lower level can advance later.
+A step still merges exactly one `segments_per_level` batch and promotes one
+segment upward. The top level is not compactable, so a full top level still
+causes promotion into it to fail closed.
 
 Two physical-target helpers,
 `bm25_compact_step_if_current(oid, oid, oid, oid)` and
