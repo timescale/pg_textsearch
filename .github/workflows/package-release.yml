@@ -316,20 +316,19 @@ jobs:
     - name: Verify package contents
       run: |
         DEB_FILE=$(ls dist/*.deb)
-        CONTENTS=$(dpkg-deb -c "$DEB_FILE")
+        PACKAGE_PATHS=$(dpkg-deb -c "$DEB_FILE" | awk '{print $NF}')
 
+        SQL_DIR="./usr/share/postgresql/${{ matrix.pg_version }}/extension/pg_textsearch/durable_compaction"
         for file in 01_setup_role.sql 02_wrapper.sql 03_backstop.sql; do
-          if ! grep -Fq \
-              "/extension/pg_textsearch/durable_compaction/$file" \
-              <<< "$CONTENTS"; then
-            echo "::error::Missing durable_compaction/$file from $DEB_FILE"
+          if ! grep -Fxq "$SQL_DIR/$file" <<< "$PACKAGE_PATHS"; then
+            echo "::error::Missing $SQL_DIR/$file from $DEB_FILE"
             exit 1
           fi
         done
 
         DOC_DIR="./usr/share/doc/pg-textsearch-postgresql-${{ matrix.pg_version }}"
         for file in durable_compaction/README.md background_compaction.md; do
-          if ! grep -Fq "$DOC_DIR/$file" <<< "$CONTENTS"; then
+          if ! grep -Fxq "$DOC_DIR/$file" <<< "$PACKAGE_PATHS"; then
             echo "::error::Missing $DOC_DIR/$file from $DEB_FILE"
             exit 1
           fi
