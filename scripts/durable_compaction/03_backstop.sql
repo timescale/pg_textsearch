@@ -98,10 +98,39 @@ SELECT pg_catalog.set_config('pg_textsearch_backstop.cron', :'cron', false);
 
 DO $$
 DECLARE
-    instance text;
-    attempts int := 0;
-    ready    bool;
+    instance         text;
+    extension_schema text;
+    body             text;
+    attempts         int := 0;
+    ready            bool;
 BEGIN
+    SELECT namespace.nspname
+    INTO extension_schema
+    FROM pg_catalog.pg_extension extension
+         JOIN pg_catalog.pg_namespace namespace
+           ON namespace.oid = extension.extnamespace
+         JOIN pg_catalog.pg_proc procedure
+           ON procedure.oid = pg_catalog.to_regprocedure(
+               pg_catalog.format(
+                   '%I.bm25_compact_pending()', namespace.nspname))
+         JOIN pg_catalog.pg_depend dependency
+           ON dependency.classid =
+                  'pg_catalog.pg_proc'::pg_catalog.regclass
+          AND dependency.objid = procedure.oid
+          AND dependency.refclassid =
+                  'pg_catalog.pg_extension'::pg_catalog.regclass
+          AND dependency.refobjid = extension.oid
+          AND dependency.deptype = 'e'
+    WHERE extension.extname = 'pg_textsearch';
+
+    IF extension_schema IS NULL THEN
+        RAISE EXCEPTION
+            'pg_textsearch bm25_compact_pending() extension member not found';
+    END IF;
+
+    body := pg_catalog.format(
+        'SELECT %I.bm25_compact_pending()', extension_schema);
+
     -- The background worker initializes ASYNCHRONOUSLY after
     -- CREATE EXTENSION pg_durable / after a server restart.  Until
     -- it has written its epoch sentinel, df.start() cannot hand the
@@ -128,7 +157,7 @@ BEGIN
                 df.loop(
                     df.wait_for_schedule(
                         pg_catalog.current_setting('pg_textsearch_backstop.cron'))
-                    ~> 'SELECT public.bm25_compact_pending()'),
+                    ~> body),
                 label => 'bm25-compaction-backstop')
             INTO instance;
 

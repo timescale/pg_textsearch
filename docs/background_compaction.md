@@ -90,8 +90,8 @@ The extension installs these public interfaces:
 | `bm25_needs_compaction(regclass)` | Tests compactable levels against the current session's threshold. |
 | `bm25_compact(regclass)` | Owner-only whole cascade. For a non-temporary index it rejects read-only transactions, opens with `RowExclusiveLock`, and holds the per-index `LW_EXCLUSIVE` lock until every eligible level is below threshold. |
 | `bm25_compact_step(regclass)` | Owner-only single batch at the lowest eligible level, with the same relation and per-index lock boundaries. Returns whether it merged a batch. |
-| `bm25_indexes_needing_compaction()` | Lists valid, ready, non-temporary physical BM25 indexes whose owners the caller can use. Storage-less partitioned parents are excluded. |
-| `bm25_compact_pending()` | Rechecks each candidate and runs whole-cascade compaction. Ordinary per-index errors become warnings so the sweep can continue; the return value counts successful indexes. |
+| `bm25_indexes_needing_compaction()` | Candidate enumeration: lists valid, ready, non-temporary physical BM25 indexes whose owners the caller can use. Storage-less partitioned parents are excluded. |
+| `bm25_compact_pending()` | Enumerates all physical candidates, checks their debt, and runs whole-cascade compaction. Ordinary per-index errors, including ownership drift, become warnings so the sweep can continue; the return value counts successful indexes. |
 
 Whole-cascade compaction visits every compactable level, including higher
 levels when a lower one is already below threshold. A step merges exactly one
@@ -179,10 +179,11 @@ The operator setup uses three identities:
   compaction mutators still enforce index ownership.
 
 `01_setup_role.sql` rejects missing or superuser owners, direct or transitive
-superuser membership, and any alternate membership path that lets the
-compactor set the owner role. It discovers the extension schema and grants
-only the schema and function privileges needed for immediate and backstop
-compaction.
+superuser membership, any inbound member of the compactor role, and any
+alternate membership path that lets the compactor set the owner role. It
+does not revoke operator-managed memberships. It discovers the extension
+schema and grants only the schema and function privileges needed for
+immediate and backstop compaction.
 
 The `SECURITY DEFINER` wrapper has a fixed safe `search_path`, rejects
 non-BM25 and temporary targets, and authorizes the login identity
@@ -238,12 +239,14 @@ server restart; setup must wait for readiness before starting tasks.
 
 ### Backstop and failure handling
 
-`03_backstop.sql` starts one long-lived
-`df.loop(df.wait_for_schedule(...) ~> bm25_compact_pending())` instance. Its
-default cron expression is hourly and can be overridden with `-v cron=...`.
-Executions within one instance are sequential, but registration is not
-idempotent: rerunning the script starts another schedule. Operators must
-ensure exactly one live instance per database.
+`03_backstop.sql` resolves the extension's exact
+`bm25_compact_pending()` member and starts one long-lived
+`df.loop(df.wait_for_schedule(...) ~> bm25_compact_pending())` instance
+bound to that schema-qualified function. Its default cron expression is
+hourly and can be overridden with `-v cron=...`. Executions within one
+instance are sequential, but registration is not idempotent: rerunning the
+script starts another schedule. Operators must ensure exactly one live
+instance per database.
 
 The backstop body is one worker transaction. It calls whole-cascade
 compaction for each index, so one index holds its per-index exclusive lock for
@@ -259,17 +262,23 @@ FROM df.instances
 WHERE label LIKE 'bm25-%'
 ORDER BY created_at DESC;
 
-SELECT * FROM bm25_indexes_needing_compaction();
+-- Run as a superuser for fleet-wide physical debt.
+SELECT candidate.idx,
+       bm25_level_counts(candidate.idx) AS level_counts
+FROM bm25_indexes_needing_compaction() AS candidate(idx)
+WHERE bm25_needs_compaction(candidate.idx);
+
 SELECT bm25_level_counts('my_index'::regclass);
 SELECT bm25_needs_compaction('my_index'::regclass);
 ```
 
 In pg_durable 0.2.6, the useful worker error is in the PostgreSQL server log;
-`df.nodes.error` is empty. Keep server logging available. If an immediate task
-fails, restore the underlying permission, connection, or resource condition
-and either let the next spill resubmit or run the backstop sweep. If the
-long-lived backstop terminates, start a replacement manually after resolving
-the cause.
+`df.nodes.error` is empty. Keep server logging available and monitor
+`bm25_compact_pending()` warnings separately for ownership or authorization
+drift. If an immediate task fails, restore the underlying permission,
+connection, or resource condition and either let the next spill resubmit or
+run the backstop sweep. If the long-lived backstop terminates, start a
+replacement manually after resolving the cause.
 
 ### Packaged files
 

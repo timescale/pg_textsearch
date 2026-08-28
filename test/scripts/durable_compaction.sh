@@ -39,6 +39,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 GLUE_DIR="${SCRIPT_DIR}/../../scripts/durable_compaction"
 TEST_PORT=55447
 TEST_DB=durable_compaction_test
+EXT_SCHEMA=textsearch_ext
 DATA_DIR="${SCRIPT_DIR}/../tmp_durable_compaction"
 SOCKET_DIR="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 LOGFILE="${DATA_DIR}/postgres.log"
@@ -230,6 +231,7 @@ log_directory = '.'
 log_filename = 'postgres.log'
 max_prepared_transactions = 10
 pg_durable.database = '${TEST_DB}'
+pg_durable.worker_role = 'postgres'
 pg_durable.max_user_connections = 1
 EOF
 
@@ -248,7 +250,12 @@ EOF
     "${PGBINDIR}/createdb" -h "${SOCKET_DIR}" -p "${TEST_PORT}" \
         -U postgres "${TEST_DB}"
     sql_super -c "CREATE EXTENSION pg_durable;"
-    sql_super -c "CREATE EXTENSION pg_textsearch;"
+    sql_super -c "CREATE SCHEMA ${EXT_SCHEMA};"
+    sql_super -c "GRANT USAGE ON SCHEMA ${EXT_SCHEMA} TO PUBLIC;"
+    sql_super -c "ALTER DATABASE ${TEST_DB} \
+SET search_path = public, ${EXT_SCHEMA};"
+    sql_super -c "CREATE EXTENSION pg_textsearch \
+WITH SCHEMA ${EXT_SCHEMA};"
     log "Test cluster ready (db=${TEST_DB})"
 }
 
@@ -281,24 +288,51 @@ setup_roles_and_glue() {
     sql_super -f "${GLUE_DIR}/01_setup_role.sql" -v index_owner=app_owner \
         >/dev/null
 
+    sql_super -c "CREATE ROLE compactor_member LOGIN;"
+    sql_super -c "CREATE ROLE inbound_owner NOLOGIN;"
+    sql_super -c "GRANT textsearch_compactor TO compactor_member;"
+    local inbound_setup_failed=f
+    if ! sql_super -f "${GLUE_DIR}/01_setup_role.sql" \
+        -v index_owner=inbound_owner >/dev/null 2>&1; then
+        inbound_setup_failed=t
+    fi
+    local inbound_owner_granted inbound_membership_preserved
+    inbound_owner_granted=$(sql_super -c "SELECT pg_has_role(\
+'textsearch_compactor', 'inbound_owner', 'MEMBER');")
+    inbound_membership_preserved=$(sql_super -c "SELECT pg_has_role(\
+'compactor_member', 'textsearch_compactor', 'MEMBER');")
+    if [ "$inbound_setup_failed" != "t" ] \
+        || [ "$inbound_owner_granted" != "f" ]; then
+        error "ASSERTION FAILED: setup with an inbound compactor member \
+must fail transactionally (failed=${inbound_setup_failed}, \
+owner_granted=${inbound_owner_granted})"
+    fi
+    log "PASS: setup rejects inbound compactor membership without \
+granting the requested owner"
+    assert_eq "failed setup preserves operator-managed inbound membership" \
+        "t" "$inbound_membership_preserved"
+    sql_super -c "REVOKE textsearch_compactor FROM compactor_member;"
+    sql_super -c "DROP ROLE compactor_member;"
+    sql_super -c "DROP ROLE inbound_owner;"
+
     local writer_can_step_current compactor_can_step_current
     writer_can_step_current=$(sql_super -c "SELECT
         has_function_privilege(
             'app_writer',
-            'public.bm25_compact_step_if_current(oid,oid,oid,oid)',
+            '${EXT_SCHEMA}.bm25_compact_step_if_current(oid,oid,oid,oid)',
             'EXECUTE')
         OR has_function_privilege(
             'app_writer',
-            'public.bm25_needs_compaction_if_current(oid,oid,oid,oid)',
+            '${EXT_SCHEMA}.bm25_needs_compaction_if_current(oid,oid,oid,oid)',
             'EXECUTE');")
     compactor_can_step_current=$(sql_super -c "SELECT
         has_function_privilege(
             'textsearch_compactor',
-            'public.bm25_compact_step_if_current(oid,oid,oid,oid)',
+            '${EXT_SCHEMA}.bm25_compact_step_if_current(oid,oid,oid,oid)',
             'EXECUTE')
         AND has_function_privilege(
             'textsearch_compactor',
-            'public.bm25_needs_compaction_if_current(oid,oid,oid,oid)',
+            '${EXT_SCHEMA}.bm25_needs_compaction_if_current(oid,oid,oid,oid)',
             'EXECUTE');")
     assert_eq "durable target helpers are revoked from writers" \
         "f" "$writer_can_step_current"
@@ -1177,7 +1211,7 @@ test_stale_targets() {
     local numeric_dsl
     numeric_dsl=$(sql_super -c "SELECT count(*) = 4
         AND bool_and(query ~ (
-            '^SELECT public\\.bm25_' ||
+            '^SELECT ${EXT_SCHEMA}\\.bm25_' ||
             '(compact_step|needs_compaction)_if_current\\(' ||
             '[0-9]+::oid, [0-9]+::oid, [0-9]+::oid, ' ||
             '[0-9]+::oid\\)$'))
@@ -1277,7 +1311,60 @@ SQL
 }
 
 # ---------------------------------------------------------------------
-# Test 14: backstop (run LAST -- its per-minute sweep would otherwise
+# Test 14: ownership drift remains visible to the repair sweep
+# ---------------------------------------------------------------------
+
+test_ownership_drift_sweep() {
+    log "=== Test: ownership drift warning and sweep isolation ==="
+    sql_super -c "CREATE ROLE ownership_drift_owner LOGIN;"
+    create_owned_table t_ownership_drift t_ownership_drift_idx
+    create_owned_table t_ownership_eligible t_ownership_eligible_idx
+
+    set_guc pg_textsearch.compaction_mode 'off'
+    spill_rounds app_owner t_ownership_drift_idx t_ownership_drift 2
+    spill_rounds app_owner t_ownership_eligible_idx t_ownership_eligible 2
+    sql_super -c "ALTER TABLE t_ownership_drift \
+OWNER TO ownership_drift_owner;"
+
+    local candidates
+    candidates=$(sql_as textsearch_compactor -c "SELECT
+        NOT EXISTS (
+            SELECT 1 FROM bm25_indexes_needing_compaction() candidate(idx)
+            WHERE candidate.idx = 't_ownership_drift_idx'::regclass)
+        AND EXISTS (
+            SELECT 1 FROM bm25_indexes_needing_compaction() candidate(idx)
+            WHERE candidate.idx = 't_ownership_eligible_idx'::regclass);")
+    assert_eq "public candidate API preserves owner visibility" \
+        "t" "$candidates"
+
+    local sweep_output
+    sweep_output=$(sql_as textsearch_compactor -c \
+        "SELECT bm25_compact_pending();" 2>&1)
+    if [[ "$sweep_output" != \
+*"bm25: compaction of public.t_ownership_drift_idx failed:"* ]]; then
+        error "ASSERTION FAILED: ownership drift warning did not name \
+t_ownership_drift_idx (output='${sweep_output}')"
+    fi
+    log "PASS: ownership drift warning names the inaccessible index"
+
+    assert_eq "ownership-drift debt remains pending" "t" \
+        "$(sql_super -c "SELECT bm25_needs_compaction(
+            't_ownership_drift_idx'::regclass);")"
+    assert_eq "sweep continues to a later eligible index" "f" \
+        "$(sql_super -c "SELECT bm25_needs_compaction(
+            't_ownership_eligible_idx'::regclass);")"
+
+    sql_super -c "ALTER TABLE t_ownership_drift OWNER TO app_owner;"
+    sql_as textsearch_compactor -c \
+        "SELECT bm25_compact_pending();" >/dev/null
+    sql_super -c "DROP TABLE t_ownership_drift, \
+t_ownership_eligible CASCADE;"
+    sql_super -c "DROP ROLE ownership_drift_owner;"
+    set_guc pg_textsearch.compaction_mode 'background'
+}
+
+# ---------------------------------------------------------------------
+# Test 15: backstop (run LAST -- its per-minute sweep would otherwise
 # compact every pending index in the database, corrupting the carefully
 # staged segment counts the other tests depend on).
 # ---------------------------------------------------------------------
@@ -1306,6 +1393,22 @@ test_backstop() {
 threshold (L0 = ${l0_before})"
     fi
 
+    sql_super <<'SQL'
+CREATE TABLE public.backstop_trap_calls (calls integer NOT NULL);
+INSERT INTO public.backstop_trap_calls VALUES (0);
+CREATE FUNCTION public.bm25_compact_pending()
+RETURNS integer
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = pg_catalog, pg_temp
+AS $trap$
+BEGIN
+    UPDATE public.backstop_trap_calls SET calls = calls + 1;
+    RETURN 0;
+END
+$trap$;
+SQL
+
     sql_as textsearch_compactor -f "${GLUE_DIR}/03_backstop.sql" \
         -v cron='* * * * *' >/dev/null
 
@@ -1326,19 +1429,34 @@ ${backstop_status}"
 
     local waited=0
     local l0_after="$l0_before"
+    local trap_calls=0
     while [ "$waited" -lt 130 ]; do
         l0_after=$(sql_super -c \
             "SELECT (bm25_level_counts('t_backstop_idx'::regclass))[1];")
-        [ "$l0_after" -lt "$l0_before" ] && break
+        trap_calls=$(sql_super -c \
+            "SELECT calls FROM public.backstop_trap_calls;")
+        if [ "$l0_after" -lt "$l0_before" ] || [ "$trap_calls" -gt 0 ]; then
+            break
+        fi
         sleep 5
         waited=$((waited + 5))
     done
 
-    if [ "$l0_after" -ge "$l0_before" ]; then
-        error "ASSERTION FAILED: backstop sweep never compacted \
-t_backstop_idx within 130s (L0 stayed at ${l0_before})"
+    local bound_query
+    bound_query=$(sql_super -c "SELECT count(*) = 1
+        AND bool_and(query =
+            'SELECT ${EXT_SCHEMA}.bm25_compact_pending()')
+        FROM df.nodes
+        WHERE instance_id = '${backstop_id}'
+          AND query LIKE '%bm25_compact_pending%';")
+    if [ "$bound_query" != "t" ] || [ "$trap_calls" != "0" ] \
+        || [ "$l0_after" -ge "$l0_before" ]; then
+        error "ASSERTION FAILED: backstop did not bind only the extension \
+member (bound=${bound_query}, trap_calls=${trap_calls}, \
+L0=${l0_before}->${l0_after})"
     fi
-    log "PASS: backstop sweep compacted with no writer involvement \
+    log "PASS: backstop ignored the public trap and compacted through \
+${EXT_SCHEMA} \
 (L0 ${l0_before} -> ${l0_after}) after waiting ${waited}s"
 
     sql_as textsearch_compactor -c \
@@ -1366,6 +1484,7 @@ test_permissions
 test_partition_permissions
 test_stale_targets
 test_partition_drop_cleanup
+test_ownership_drift_sweep
 test_backstop
 
 log "All tests passed!"

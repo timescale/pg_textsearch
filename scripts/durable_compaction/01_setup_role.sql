@@ -164,6 +164,22 @@ BEGIN
 END
 $$;
 
+DO $$
+BEGIN
+    IF EXISTS (
+        SELECT 1
+        FROM pg_catalog.pg_auth_members member
+        WHERE member.roleid = (
+            SELECT oid
+            FROM pg_catalog.pg_roles
+            WHERE rolname = 'textsearch_compactor'))
+    THEN
+        RAISE EXCEPTION
+            'textsearch_compactor must not be granted to another role';
+    END IF;
+END
+$$;
+
 -- Grants schema USAGE on df plus the INSERT/SELECT privileges on
 -- df.instances and df.nodes that df.start() needs.  include_http is
 -- left false: compaction never makes HTTP calls.

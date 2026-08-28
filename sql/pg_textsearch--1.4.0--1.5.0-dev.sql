@@ -98,7 +98,16 @@ DECLARE
     n   integer := 0;
 BEGIN
     FOR idx IN
-        SELECT * FROM @extschema@.bm25_indexes_needing_compaction()
+        SELECT c.oid::pg_catalog.regclass
+        FROM pg_catalog.pg_class c
+             JOIN pg_catalog.pg_am am ON am.oid = c.relam
+             JOIN pg_catalog.pg_index i ON i.indexrelid = c.oid
+        WHERE am.amname = 'bm25'
+          AND c.relkind = 'i'
+          AND c.relpersistence <> 't'
+          AND i.indisvalid
+          AND i.indisready
+        ORDER BY c.oid
     LOOP
         BEGIN
             IF @extschema@.bm25_needs_compaction(idx) THEN

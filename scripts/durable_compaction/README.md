@@ -73,7 +73,9 @@ psql -U textsearch_compactor -d application_database \
 
 `index_owner` is mandatory and must be an existing non-superuser. The setup
 grants `textsearch_compactor` inherited membership with `SET FALSE` and
-rejects unsafe direct or transitive role paths.
+rejects unsafe direct or transitive role paths. It also rejects any role that
+is already a member of `textsearch_compactor` without revoking that
+operator-managed membership.
 
 The wrapper authorizes `session_user` by `INSERT` on the indexed table or a
 partition ancestor. The operator setup grants a writer only wrapper `EXECUTE`;
@@ -137,8 +139,9 @@ transaction independently.
 
 ## Operate
 
-`03_backstop.sql` starts a single long-lived schedule with an hourly default.
-Override the cadence when invoking psql:
+`03_backstop.sql` binds the scheduled call to the exact
+`bm25_compact_pending()` extension member and starts a single long-lived
+schedule with an hourly default. Override the cadence when invoking psql:
 
 ```sh
 psql -U textsearch_compactor -d application_database \
@@ -166,10 +169,19 @@ WHERE instance_id = '<instance-id>';
 Always compare orchestration state with physical debt:
 
 ```sql
-SELECT * FROM bm25_indexes_needing_compaction();
+-- Run as a superuser for fleet-wide physical debt.
+SELECT candidate.idx,
+       bm25_level_counts(candidate.idx) AS level_counts
+FROM bm25_indexes_needing_compaction() AS candidate(idx)
+WHERE bm25_needs_compaction(candidate.idx);
+
 SELECT bm25_level_counts('my_index'::regclass);
 SELECT bm25_needs_compaction('my_index'::regclass);
 ```
+
+`bm25_indexes_needing_compaction()` is candidate enumeration filtered by
+owner visibility, not a debt-only fleet report. Monitor server warnings from
+`bm25_compact_pending()` separately for ownership or authorization drift.
 
 An immediate request failure emits a warning and leaves level counts for the
 next spill or backstop. Resolve the connection, ownership, privilege, or

@@ -299,9 +299,14 @@ SELECT bm25_compact_pending() = 1 AS pending_compacted_one;
 SELECT NOT bm25_needs_compaction('compaction_pending_idx'::regclass)
        AS pending_needs_after;
 
--- A bad candidate warns, but the sweeper continues to the next index.
+-- Ownership drift warns, but the sweeper continues to the next index.
 SET pg_textsearch.segments_per_level = 64;
+CREATE ROLE compaction_sweeper LOGIN;
+CREATE ROLE compaction_drift_owner LOGIN;
+CREATE TABLE compaction_drift (id serial PRIMARY KEY, body text);
 CREATE TABLE compaction_resilient (id serial PRIMARY KEY, body text);
+CREATE INDEX compaction_drift_idx ON compaction_drift
+    USING bm25(body) WITH (text_config = 'english');
 CREATE INDEX compaction_resilient_idx ON compaction_resilient
     USING bm25(body) WITH (text_config = 'english');
 
@@ -310,30 +315,39 @@ DECLARE
     n integer;
 BEGIN
     FOR n IN 1..2 LOOP
+        INSERT INTO compaction_drift (body)
+        SELECT format('drift batch %s doc %s filler filler', n, i)
+        FROM generate_series(1, 20) i;
         INSERT INTO compaction_resilient (body)
         SELECT format('resilient batch %s doc %s filler filler', n, i)
         FROM generate_series(1, 20) i;
+        PERFORM bm25_spill_index('compaction_drift_idx');
         PERFORM bm25_spill_index('compaction_resilient_idx');
     END LOOP;
 END $$;
 
 SET pg_textsearch.segments_per_level = 2;
--- Mirror the real function's pinned search_path, so the stub resolves
--- names the same way the function it stands in for does.  That means
--- the relation reference must be schema-qualified.
-CREATE OR REPLACE FUNCTION bm25_indexes_needing_compaction()
-RETURNS SETOF regclass
-LANGUAGE sql STABLE
-SET search_path = pg_catalog, pg_temp
-AS $func$
-    VALUES (0::oid::regclass),
-           ('public.compaction_resilient_idx'::regclass);
-$func$;
+ALTER TABLE compaction_drift OWNER TO compaction_drift_owner;
+ALTER TABLE compaction_resilient OWNER TO compaction_sweeper;
+SET ROLE compaction_sweeper;
+SELECT NOT EXISTS (
+           SELECT 1
+           FROM bm25_indexes_needing_compaction() AS candidate(idx)
+           WHERE candidate.idx = 'compaction_drift_idx'::regclass)
+       AND EXISTS (
+           SELECT 1
+           FROM bm25_indexes_needing_compaction() AS candidate(idx)
+           WHERE candidate.idx = 'compaction_resilient_idx'::regclass)
+       AS pending_candidates_preserve_owner_visibility;
 SELECT bm25_compact_pending() = 1 AS pending_continued_after_warning;
 SELECT NOT bm25_needs_compaction('compaction_resilient_idx'::regclass)
        AS pending_resilience_completed;
+RESET ROLE;
 
+DROP TABLE compaction_drift CASCADE;
 DROP TABLE compaction_resilient CASCADE;
+DROP ROLE compaction_sweeper;
+DROP ROLE compaction_drift_owner;
 DROP TABLE compaction_pending CASCADE;
 DROP TABLE compaction_step_a CASCADE;
 DROP TABLE compaction_step_b CASCADE;
