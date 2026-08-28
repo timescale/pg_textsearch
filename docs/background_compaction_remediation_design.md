@@ -10,9 +10,10 @@ non-blocking compaction redesign.
 
 The compaction traversal, request gating, temporary-index handling, read-only
 enforcement, cancellation propagation, and prepared-transaction callbacks are
-implemented and independently reviewed. The pg_durable role and wrapper
-hardening is implemented and under review. Benchmark draining, packaging, and
-the final operator-documentation pass remain.
+implemented and independently reviewed. The pg_durable role, wrapper, socket
+authentication, partition authorization, and backstop candidate hardening are
+implemented and undergoing final re-review. Benchmark draining, packaging,
+and the final operator-documentation pass remain.
 
 ## Request Semantics
 
@@ -68,26 +69,34 @@ Both compaction mutators will call `PreventCommandIfReadOnly()` for permanent
 indexes. Local temporary indexes retain PostgreSQL's normal read-only
 exception.
 
+The backstop candidate query excludes storage-less partitioned parent indexes
+and returns their physical leaf indexes instead. This prevents metapage access
+on relations without storage while preserving compaction of every leaf.
+
 ## Privilege Model
 
 `01_setup_role.sql` will require an explicit `index_owner`. It will reject
-missing roles and roles with `rolsuper`, reject existing superuser
-memberships for `textsearch_compactor`, and grant owner membership with
-`INHERIT TRUE, SET FALSE`.
+missing roles and roles with `rolsuper`, recursively reject membership in any
+superuser role, and grant owner membership with `INHERIT TRUE, SET FALSE`.
+After the grant, it will reject any alternate direct or indirect membership
+path that still permits `SET ROLE` to the owner.
 
 The script will discover the extension schema and explicitly grant the
 compactor `USAGE` plus `EXECUTE` on the compaction functions required by the
 worker and backstop. Operation will no longer depend on default `PUBLIC`
 function privileges.
 
-`02_wrapper.sql` will drop and recreate its function so previous named ACLs
-cannot survive writer-role rotation. Before submitting work, the
+`02_wrapper.sql` will replace the function atomically, transfer ownership,
+remove every non-owner ACL entry (including named default-privilege grants),
+and grant only the configured writer. Before submitting work, the
 `SECURITY DEFINER` body will resolve the index's heap relation and require the
-login caller (`session_user`) to hold `INSERT` on that table. The fixed DSL
-and numeric OID construction remain unchanged.
+login caller (`session_user`) to hold `INSERT` on that table or a partition
+ancestor. The fixed DSL and numeric OID construction remain unchanged.
 
-Production documentation will recommend peer/ident authentication and treat
-`trust` as test/demo-only.
+Production documentation will require `PGHOST` to be set to the Unix-socket
+directory in PostgreSQL's service environment before recommending peer
+authentication. It will treat `trust` as test/demo-only and require untrusted
+roles to lack `CREATE` on the wrapper schema.
 
 ## Operational Artifacts
 
@@ -119,13 +128,16 @@ Tests are added before implementation:
 5. PREPARE flushes rather than discards a pending request.
 6. Background mode compacts temporary indexes inline and creates no durable
    task.
-7. A writer cannot request compaction for a table on which it lacks `INSERT`.
-8. Role setup rejects omitted and superuser owners, prevents `SET ROLE`, and
-   works when `PUBLIC EXECUTE` is revoked.
-9. The permission test requires a completed worker task and actual level
+7. A writer cannot request compaction for a table on which it lacks `INSERT`;
+   parent-only grants authorize physical indexes on nested partition leaves.
+8. Role setup rejects omitted and superuser owners, recursive superuser
+   membership, and alternate `SET ROLE` paths.
+9. Wrapper replacement is atomic and removes object-specific and named
+   default-privilege grants.
+10. The permission test requires a completed worker task and actual level
    movement.
-10. Benchmark draining fails if any matching task remains nonterminal.
-11. Package checks assert the setup scripts and documentation are present.
+11. Benchmark draining fails if any matching task remains nonterminal.
+12. Package checks assert the setup scripts and documentation are present.
 
 Existing install/upgrade SQL parity, formatting, regression, pg_durable
 end-to-end, and package checks remain required.
