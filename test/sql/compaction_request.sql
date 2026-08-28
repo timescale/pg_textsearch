@@ -5,12 +5,21 @@ SET client_min_messages = warning;
 SET pg_textsearch.segments_per_level = 2;
 SET pg_textsearch.compaction_mode = 'background';
 
-CREATE TABLE compaction_log (idx regclass);
+CREATE SEQUENCE compaction_request_calls;
+SELECT setval('compaction_request_calls', 1, true) AS calls_before \gset
 
 CREATE FUNCTION log_compaction(idx regclass) RETURNS void
 LANGUAGE sql AS $$
-    INSERT INTO compaction_log VALUES (idx);
+    SELECT nextval('compaction_request_calls');
 $$;
+
+CREATE TABLE request_parent (id integer PRIMARY KEY);
+CREATE TABLE request_child (
+    id integer REFERENCES request_parent(id)
+       DEFERRABLE INITIALLY DEFERRED
+);
+CREATE FUNCTION deferred_request(regclass) RETURNS void
+LANGUAGE sql AS $$ INSERT INTO request_child VALUES (1) $$;
 
 CREATE FUNCTION fail_compaction(idx regclass) RETURNS void
 LANGUAGE plpgsql AS $$
@@ -54,9 +63,9 @@ INSERT INTO compaction_request_docs2 (body)
 SELECT 'seed doc ' || i FROM generate_series(1, 20) i;
 SELECT bm25_spill_index('compaction_request_docs2_idx') IS NOT NULL
        AS request_seed_spill2;
-TRUNCATE compaction_log;
 
 -- Explicit rollback does not reach PRE_COMMIT dispatch.
+SELECT last_value AS calls_before FROM compaction_request_calls \gset
 BEGIN;
 INSERT INTO compaction_request_docs (body)
 SELECT 'rollback doc ' || i || ' ' || repeat('filler ', 4)
@@ -64,9 +73,11 @@ FROM generate_series(1, 20) i;
 SELECT bm25_spill_index('compaction_request_docs_idx') IS NOT NULL
        AS rollback_spill;
 ROLLBACK;
-SELECT count(*) AS rollback_log_rows FROM compaction_log;
+SELECT last_value - :calls_before AS rollback_requests
+FROM compaction_request_calls;
 
 -- Commit reaches PRE_COMMIT and dispatches one request.
+SELECT last_value AS calls_before FROM compaction_request_calls \gset
 BEGIN;
 INSERT INTO compaction_request_docs (body)
 SELECT 'commit doc ' || i || ' ' || repeat('filler ', 4)
@@ -74,12 +85,33 @@ FROM generate_series(1, 20) i;
 SELECT bm25_spill_index('compaction_request_docs_idx') IS NOT NULL
        AS commit_spill;
 COMMIT;
-SELECT count(*) AS commit_log_rows
-FROM compaction_log
-WHERE idx = 'compaction_request_docs_idx'::regclass;
+SELECT last_value - :calls_before AS commit_requests
+FROM compaction_request_calls;
+
+-- Successful callbacks discard local writes and deferred constraints.
+CREATE TABLE deferred_request_docs (
+    id serial PRIMARY KEY,
+    body text
+);
+CREATE INDEX deferred_request_docs_idx ON deferred_request_docs
+    USING bm25(body) WITH (text_config = 'english');
+INSERT INTO deferred_request_docs (body)
+SELECT 'deferred seed doc ' || i FROM generate_series(1, 20) i;
+SELECT bm25_spill_index('deferred_request_docs_idx') IS NOT NULL
+       AS deferred_request_seed_spill;
+SET pg_textsearch.compaction_request_function = 'deferred_request';
+BEGIN;
+INSERT INTO deferred_request_docs (body)
+SELECT 'deferred request doc ' || i || ' ' || repeat('filler ', 4)
+FROM generate_series(1, 20) i;
+SELECT bm25_spill_index('deferred_request_docs_idx') IS NOT NULL
+       AS deferred_request_spill;
+COMMIT;
+SELECT count(*) AS callback_local_rows FROM request_child;
+SET pg_textsearch.compaction_request_function = 'log_compaction';
 
 -- Two spills for the same index in one transaction are deduplicated.
-TRUNCATE compaction_log;
+SELECT last_value AS calls_before FROM compaction_request_calls \gset
 BEGIN;
 INSERT INTO compaction_request_docs (body)
 SELECT 'dedup first doc ' || i || ' ' || repeat('filler ', 4)
@@ -92,12 +124,11 @@ FROM generate_series(1, 20) i;
 SELECT bm25_spill_index('compaction_request_docs_idx') IS NOT NULL
        AS dedup_spill2;
 COMMIT;
-SELECT count(*) AS dedup_log_rows
-FROM compaction_log
-WHERE idx = 'compaction_request_docs_idx'::regclass;
+SELECT last_value - :calls_before AS deduplicated_requests
+FROM compaction_request_calls;
 
 -- Different indexes in one transaction each dispatch once.
-TRUNCATE compaction_log;
+SELECT last_value AS calls_before FROM compaction_request_calls \gset
 BEGIN;
 INSERT INTO compaction_request_docs (body)
 SELECT 'multi first doc ' || i || ' ' || repeat('filler ', 4)
@@ -110,13 +141,11 @@ FROM generate_series(1, 20) i;
 SELECT bm25_spill_index('compaction_request_docs2_idx') IS NOT NULL
        AS multi_spill2;
 COMMIT;
-SELECT idx::text, count(*) AS log_rows
-FROM compaction_log
-GROUP BY idx
-ORDER BY idx::text;
+SELECT last_value - :calls_before AS multiple_index_requests
+FROM compaction_request_calls;
 
 -- Missing request function warns once and writer data still commits.
-TRUNCATE compaction_log;
+SELECT last_value AS calls_before FROM compaction_request_calls \gset
 SET pg_textsearch.compaction_request_function = 'missing_compaction_fn';
 BEGIN;
 INSERT INTO compaction_request_docs (body)
@@ -125,12 +154,13 @@ FROM generate_series(1, 20) i;
 SELECT bm25_spill_index('compaction_request_docs_idx') IS NOT NULL
        AS missing_function_spill;
 COMMIT;
-SELECT count(*) AS missing_function_log_rows FROM compaction_log;
+SELECT last_value - :calls_before AS missing_function_requests
+FROM compaction_request_calls;
 SELECT count(*) >= 100 AS missing_function_committed
 FROM compaction_request_docs;
 
 -- Empty request function warns once and writer data still commits.
-TRUNCATE compaction_log;
+SELECT last_value AS calls_before FROM compaction_request_calls \gset
 SET pg_textsearch.compaction_request_function = '';
 BEGIN;
 INSERT INTO compaction_request_docs (body)
@@ -139,12 +169,13 @@ FROM generate_series(1, 20) i;
 SELECT bm25_spill_index('compaction_request_docs_idx') IS NOT NULL
        AS empty_function_spill;
 COMMIT;
-SELECT count(*) AS empty_function_log_rows FROM compaction_log;
+SELECT last_value - :calls_before AS empty_function_requests
+FROM compaction_request_calls;
 SELECT count(*) >= 120 AS empty_function_committed
 FROM compaction_request_docs;
 
 -- Inline mode does not enqueue background requests.
-TRUNCATE compaction_log;
+SELECT last_value AS calls_before FROM compaction_request_calls \gset
 SET pg_textsearch.compaction_request_function = 'log_compaction';
 SET pg_textsearch.compaction_mode = 'inline';
 BEGIN;
@@ -154,7 +185,8 @@ FROM generate_series(1, 20) i;
 SELECT bm25_spill_index('compaction_request_docs_idx') IS NOT NULL
        AS inline_spill;
 COMMIT;
-SELECT count(*) AS inline_log_rows FROM compaction_log;
+SELECT last_value - :calls_before AS inline_requests
+FROM compaction_request_calls;
 
 -- A raising request function is isolated; writer data still commits.
 SET pg_textsearch.compaction_mode = 'background';
@@ -195,29 +227,31 @@ SELECT count(*) AS canceled_rows FROM compaction_cancel_docs;
 -- Background requests start only when a level reaches its threshold.
 SET pg_textsearch.compaction_request_function = 'log_compaction';
 SET pg_textsearch.segments_per_level = 2;
-TRUNCATE compaction_log;
 
 CREATE TABLE compaction_threshold_docs (id serial PRIMARY KEY, body text);
 CREATE INDEX compaction_threshold_docs_idx ON compaction_threshold_docs
     USING bm25(body) WITH (text_config = 'english');
 
+SELECT last_value AS calls_before FROM compaction_request_calls \gset
 INSERT INTO compaction_threshold_docs (body)
 SELECT 'threshold first ' || i FROM generate_series(1, 20) i;
 SELECT bm25_spill_index('compaction_threshold_docs_idx') IS NOT NULL;
-SELECT count(*) AS below_threshold_requests FROM compaction_log;
+SELECT last_value - :calls_before AS below_threshold_requests
+FROM compaction_request_calls;
 
+SELECT last_value AS calls_before FROM compaction_request_calls \gset
 INSERT INTO compaction_threshold_docs (body)
 SELECT 'threshold second ' || i FROM generate_series(1, 20) i;
 SELECT bm25_spill_index('compaction_threshold_docs_idx') IS NOT NULL;
-SELECT count(*) AS threshold_requests FROM compaction_log
-WHERE idx = 'compaction_threshold_docs_idx'::regclass;
+SELECT last_value - :calls_before AS threshold_requests
+FROM compaction_request_calls;
 
 -- Dropping an index before PRE_COMMIT removes its pending request.
-TRUNCATE compaction_log;
 CREATE TABLE compaction_drop_docs (id serial PRIMARY KEY, body text);
 CREATE INDEX compaction_drop_docs_idx ON compaction_drop_docs
     USING bm25(body) WITH (text_config = 'english');
 
+SELECT last_value AS calls_before FROM compaction_request_calls \gset
 INSERT INTO compaction_drop_docs (body)
 SELECT 'drop seed ' || i FROM generate_series(1, 20) i;
 SELECT bm25_spill_index('compaction_drop_docs_idx') IS NOT NULL;
@@ -229,15 +263,16 @@ SELECT bm25_spill_index('compaction_drop_docs_idx') IS NOT NULL;
 DROP INDEX compaction_drop_docs_idx;
 COMMIT;
 
-SELECT count(*) AS dropped_index_requests FROM compaction_log;
+SELECT last_value - :calls_before AS dropped_index_requests
+FROM compaction_request_calls;
 DROP TABLE compaction_drop_docs;
 
 -- Temporary indexes must compact inline because workers cannot access them.
-TRUNCATE compaction_log;
 CREATE TEMP TABLE compaction_temp_docs (id serial PRIMARY KEY, body text);
 CREATE INDEX compaction_temp_docs_idx ON compaction_temp_docs
     USING bm25(body) WITH (text_config = 'english');
 
+SELECT last_value AS calls_before FROM compaction_request_calls \gset
 INSERT INTO compaction_temp_docs (body)
 SELECT 'temp first ' || i FROM generate_series(1, 20) i;
 SELECT bm25_spill_index('compaction_temp_docs_idx') IS NOT NULL;
@@ -245,7 +280,8 @@ INSERT INTO compaction_temp_docs (body)
 SELECT 'temp second ' || i FROM generate_series(1, 20) i;
 SELECT bm25_spill_index('compaction_temp_docs_idx') IS NOT NULL;
 
-SELECT count(*) AS temp_background_requests FROM compaction_log;
+SELECT last_value - :calls_before AS temp_background_requests
+FROM compaction_request_calls;
 SELECT NOT bm25_needs_compaction('compaction_temp_docs_idx'::regclass)
        AS temp_compacted_inline;
 
@@ -255,5 +291,8 @@ DROP TABLE compaction_cancel_docs CASCADE;
 DROP TABLE compaction_threshold_docs CASCADE;
 DROP TABLE compaction_request_docs2 CASCADE;
 DROP TABLE compaction_request_docs CASCADE;
-DROP TABLE compaction_log;
+DROP TABLE deferred_request_docs CASCADE;
+DROP TABLE request_child;
+DROP TABLE request_parent;
+DROP SEQUENCE compaction_request_calls CASCADE;
 DROP EXTENSION pg_textsearch CASCADE;

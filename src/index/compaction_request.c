@@ -151,8 +151,8 @@ tp_run_request(Oid funcoid, Oid indexoid)
 
 		PopActiveSnapshot();
 
-		/* Release the inner subtransaction. */
-		ReleaseCurrentSubTransaction();
+		/* Discard all local effects of the callback. */
+		RollbackAndReleaseCurrentSubTransaction();
 		MemoryContextSwitchTo(oldcxt);
 	}
 	PG_CATCH();

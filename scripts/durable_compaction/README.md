@@ -129,6 +129,12 @@ PRE_COMMIT or PRE_PREPARE is persisted in an independent loopback transaction.
 An explicit rollback before those callbacks submits nothing, while its
 physical spill remains visible to the backstop.
 
+The request callback runs late in PRE_COMMIT or PRE_PREPARE processing. The
+dispatcher always rolls back its local writes, portals, and deferred triggers,
+so callbacks must externalize durable work independently. The shipped wrapper's
+`transaction_mode => 'new'` task survives that rollback and the caller
+transaction independently.
+
 ## Operate
 
 `03_backstop.sql` starts a single long-lived schedule with an hourly default.

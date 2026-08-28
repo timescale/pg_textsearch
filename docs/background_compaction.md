@@ -47,8 +47,10 @@ The flow is:
    per-index lock is held.
 5. After the lock has been released,
    `XACT_EVENT_PRE_COMMIT` or `XACT_EVENT_PRE_PREPARE` calls the configured
-   request function once per pending index. Parallel workers, recovery, and
-   autovacuum workers do not dispatch requests.
+   request function once per pending index. The callback runs in a sandboxed
+   internal subtransaction whose local writes, portals, and deferred triggers
+   are always rolled back. Parallel workers, recovery, and autovacuum workers
+   do not dispatch requests.
 6. The operator wrapper starts a fixed `df.loop` with
    `transaction_mode => 'new'`. The independent loopback transaction persists
    the task before returning to the writer.
@@ -66,6 +68,12 @@ later caller failure. An explicit rollback before either callback submits no
 request, but the physical level counts still expose the surviving debt to the
 next spill and the backstop. Savepoint rollback likewise does not remove a
 request for a physical spill that remains in the index.
+
+Because dispatch runs late in PRE_COMMIT or PRE_PREPARE processing, callback
+SQL cannot safely add effects to the caller transaction. The dispatcher
+therefore discards every local transactional effect after a successful or
+failed call. A callback must externalize durable work independently; the
+shipped pg_durable wrapper does so with `transaction_mode => 'new'`.
 
 The independent worker may run before the writer finishes committing. It may
 therefore observe no work, and multiple spills may create redundant tasks.
@@ -110,6 +118,8 @@ emits a warning and lets the writer commit. Query cancellation, administrative
 shutdown, and crash shutdown are rethrown and abort the writer transaction.
 The dispatcher uses nested internal subtransactions and an explicit snapshot
 because it runs from the transaction callback after normal portals are gone.
+Successful callback SQL is also rolled back locally; independently committed
+external work is unaffected.
 
 A worker SQL error fails that pg_durable instance. The current pg_durable POC
 does not retry failed nodes. A later spill can submit another accelerator, and
