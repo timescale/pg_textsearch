@@ -23,9 +23,9 @@
 -- enqueue compaction that then runs with the index owner's rights.
 --
 -- The caller supplies only a regclass and must be the login role with
--- INSERT privilege on the indexed heap.  The DSL shape and function
--- names are fixed here; only the numeric index OID is constructed
--- into the SQL text.
+-- INSERT privilege on the indexed heap or one of its partition
+-- ancestors.  The DSL shape and function names are fixed here; only
+-- the numeric index OID is constructed into the SQL text.
 
 \set ON_ERROR_STOP on
 
@@ -34,10 +34,13 @@
 \set writer_role ''
 \endif
 
+BEGIN;
+
 DROP FUNCTION IF EXISTS public.bm25_request_compaction(regclass);
 
--- Recreate rather than replace so reinstalling this script removes
--- every prior named EXECUTE grant before applying writer_role below.
+-- Recreate rather than replace to discard old ACLs.  The surrounding
+-- transaction leaves the previous wrapper intact if any later step
+-- fails.
 CREATE FUNCTION public.bm25_request_compaction(idx regclass)
 RETURNS text
 LANGUAGE plpgsql
@@ -67,8 +70,15 @@ BEGIN
         SELECT 1
         FROM pg_catalog.pg_index i
         WHERE i.indexrelid = idx
-          AND pg_catalog.has_table_privilege(
-                  session_user, i.indrelid, 'INSERT'))
+          AND (
+              pg_catalog.has_table_privilege(
+                  session_user, i.indrelid, 'INSERT')
+              OR EXISTS (
+                  SELECT 1
+                  FROM pg_catalog.pg_partition_ancestors(i.indrelid)
+                       ancestor(relid)
+                  WHERE pg_catalog.has_table_privilege(
+                            session_user, ancestor.relid, 'INSERT'))))
     THEN
         RAISE EXCEPTION
             'permission denied to request compaction for %', idx
@@ -131,8 +141,34 @@ $fn$;
 ALTER FUNCTION public.bm25_request_compaction(regclass)
     OWNER TO textsearch_compactor;
 
-REVOKE EXECUTE ON FUNCTION public.bm25_request_compaction(regclass)
-    FROM PUBLIC;
+REVOKE ALL ON FUNCTION public.bm25_request_compaction(regclass)
+    FROM PUBLIC CASCADE;
+
+-- Default privileges can add named grants to a newly created function.
+-- Remove every non-owner grantee before adding the intended writer.
+DO $$
+DECLARE
+    grantee_name name;
+BEGIN
+    FOR grantee_name IN
+        SELECT DISTINCT role.rolname
+        FROM pg_catalog.pg_proc proc
+             CROSS JOIN LATERAL pg_catalog.aclexplode(
+                 coalesce(
+                     proc.proacl,
+                     pg_catalog.acldefault('f', proc.proowner))) acl
+             JOIN pg_catalog.pg_roles role ON role.oid = acl.grantee
+        WHERE proc.oid =
+                  'public.bm25_request_compaction(regclass)'::regprocedure
+          AND acl.grantee <> proc.proowner
+    LOOP
+        EXECUTE pg_catalog.format(
+            'REVOKE ALL ON FUNCTION '
+            'public.bm25_request_compaction(regclass) FROM %I CASCADE',
+            grantee_name);
+    END LOOP;
+END
+$$;
 
 -- Grant EXECUTE to the writer role, if one was supplied.  Without
 -- -v writer_role=... nothing is granted here; do it yourself with
@@ -147,6 +183,8 @@ SELECT CASE WHEN nullif(:'writer_role', '') IS NULL
 GRANT EXECUTE ON FUNCTION public.bm25_request_compaction(regclass)
     TO :"writer";
 \endif
+
+COMMIT;
 
 \echo 'bm25_request_compaction() ready.'
 \echo 'Now set, e.g. in postgresql.conf:'

@@ -30,10 +30,12 @@ df.loop(
 
 The SECURITY DEFINER wrapper accepts no DSL from the caller. It first
 requires the login identity (`session_user`) to have `INSERT` on the
-indexed heap, then constructs the fixed body and condition using only
-the numeric index OID. Re-running `02_wrapper.sql` drops and recreates
-the function, removing any stale named `EXECUTE` grants before
-granting the configured writer role.
+indexed heap or any ancestor returned by `pg_partition_ancestors()`,
+then constructs the fixed body and condition using only the numeric
+index OID. Re-running `02_wrapper.sql` atomically drops and recreates
+the function, transfers ownership, removes every non-owner ACL entry
+(including named grants introduced by default privileges), and grants
+only the configured writer role.
 
 pg_durable's background worker runs **each node execution on its own
 connection, in its own transaction**. So the cascade is split: each
@@ -82,14 +84,21 @@ written.
 ### Passwordless authenticated connection for the compactor
 
 The worker executes each SQL node on a fresh libpq connection opened
-as `df.instances.submitted_by`. `connect_as_user()`
-(pg_durable `src/types.rs:233`) builds the connection options from
-username, database and port only — no password, and no host, so it
-uses the Unix socket.
+as `df.instances.submitted_by`. pg_durable reads `PGHOST` for both its
+management connection and these per-user connections, defaulting to
+`127.0.0.1` when it is unset.
 
 For production, map the PostgreSQL server's OS account to the
-compactor role with peer authentication. Replace
-`<server-os-user>` with the account that runs PostgreSQL:
+compactor role with peer authentication. Set `PGHOST` to PostgreSQL's
+Unix socket directory in the **PostgreSQL service environment before
+starting the server**; setting it only in an interactive shell after
+startup does not affect the background worker. Replace
+`<socket-directory>` and `<server-os-user>` for your installation:
+
+```
+# PostgreSQL service environment
+PGHOST=<socket-directory>
+```
 
 ```
 # pg_ident.conf
@@ -99,8 +108,10 @@ pg_durable_compactor  <server-os-user>  textsearch_compactor
 local  all  textsearch_compactor  peer map=pg_durable_compactor
 ```
 
-Then run `SELECT pg_reload_conf();`. The integration test uses
-`trust` only for its disposable cluster; do not copy that
+Restart PostgreSQL after changing its service environment. An HBA-only
+reload does not update `PGHOST` in the running server process. The
+integration test rejects TCP authentication and uses `trust` only for
+local socket connections in its disposable cluster; do not copy that
 authentication setup into production.
 
 ### The compactor role must have LOGIN and must not be a superuser
@@ -166,13 +177,31 @@ attributed to that role.
 
 `index_owner` is required, must exist, and must not be a superuser.
 The setup grants `textsearch_compactor` inherited membership with
-`SET FALSE`; it also rejects any membership the compactor already has
-in a superuser role. Omitting `-v writer_role=...` grants `EXECUTE` to
-nobody; grant it yourself afterwards.
+`SET FALSE`; it rejects recursive membership in any superuser role and
+any alternate direct or indirect membership path that still permits
+`SET ROLE` to the owner. Omitting `-v writer_role=...` grants `EXECUTE`
+to nobody; grant it yourself afterwards.
+
+The wrapper schema must not be creatable by untrusted roles. The setup
+script rejects `PUBLIC` having `CREATE` on `public`; also revoke it from
+any named untrusted roles before installation:
+
+```sql
+REVOKE CREATE ON SCHEMA public FROM PUBLIC;
+REVOKE CREATE ON SCHEMA public FROM untrusted_role;
+```
+
+`02_wrapper.sql` performs replacement and ACL normalization in one
+transaction, so a failed owner transfer or grant rolls back to the
+previous wrapper without exposing a missing or partially secured
+function.
 
 Each writer role granted wrapper `EXECUTE` also needs ordinary
-`INSERT` privilege on the indexed heap. The wrapper checks the login
-role, not a role selected later with `SET ROLE`.
+`INSERT` privilege on the indexed heap or one of its partition
+ancestors. This permits a writer granted only on a partitioned parent
+to authorize the physical leaf index selected by pg_textsearch. The
+wrapper checks the login role, not a role selected later with
+`SET ROLE`.
 
 ## Configuration
 

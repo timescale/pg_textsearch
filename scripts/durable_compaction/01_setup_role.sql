@@ -36,10 +36,11 @@
 --     privileges but cannot become that role explicitly.
 --
 --   * pg_hba.conf must let this role connect WITHOUT a password.
---     connect_as_user() builds PgConnectOptions from username,
---     database and port only -- no password and no host, so it uses
---     the unix socket.  Production deployments should authenticate
---     the PostgreSQL server's OS account with a peer map, for example:
+--     pg_durable defaults PGHOST to 127.0.0.1, so peer authentication
+--     requires setting PGHOST to the Unix socket directory in the
+--     PostgreSQL service environment before server start.  Production
+--     deployments should authenticate the server's OS account with a
+--     peer map, for example:
 --
 --       # pg_ident.conf
 --       pg_durable_compactor  <server-os-user>  textsearch_compactor
@@ -47,9 +48,14 @@
 --       # pg_hba.conf
 --       local  all  textsearch_compactor  peer map=pg_durable_compactor
 --
---     Place the HBA entry above general rules and reload the
---     configuration.  The integration test uses trust only inside
---     its throwaway cluster.
+--     Place the HBA entry above general rules, set PGHOST before
+--     restarting PostgreSQL, and verify it is visible to the server.
+--     The integration test uses local trust only inside its throwaway
+--     cluster.
+--
+--   * Untrusted roles must not have CREATE on the wrapper schema.
+--     This script rejects PUBLIC CREATE on public; revoke CREATE from
+--     any other untrusted roles before installing the wrapper.
 
 \set ON_ERROR_STOP on
 
@@ -100,6 +106,28 @@ END
 $$;
 \endif
 
+SELECT EXISTS (
+           SELECT 1
+           FROM pg_catalog.pg_namespace schema
+                CROSS JOIN LATERAL pg_catalog.aclexplode(
+                    coalesce(
+                        schema.nspacl,
+                        pg_catalog.acldefault('n', schema.nspowner))) acl
+           WHERE schema.nspname = 'public'
+             AND acl.grantee = 0
+             AND acl.privilege_type = 'CREATE'
+       ) AS public_can_create_wrapper
+\gset
+
+\if :public_can_create_wrapper
+DO $$
+BEGIN
+    RAISE EXCEPTION
+        'PUBLIC must not have CREATE on wrapper schema public';
+END
+$$;
+\endif
+
 -- LOGIN: required by require_login_privilege().
 -- NOSUPERUSER: superuser submission is blocked by default.
 -- INHERIT: the owner-role membership granted below must be automatic,
@@ -121,13 +149,12 @@ DO $$
 BEGIN
     IF EXISTS (
         SELECT 1
-        FROM pg_catalog.pg_auth_members m
-             JOIN pg_catalog.pg_roles granted_role
-               ON granted_role.oid = m.roleid
-             JOIN pg_catalog.pg_roles member_role
-               ON member_role.oid = m.member
-        WHERE member_role.rolname = 'textsearch_compactor'
-          AND granted_role.rolsuper)
+        FROM pg_catalog.pg_roles granted_role
+        WHERE granted_role.rolsuper
+          AND pg_catalog.pg_has_role(
+                  'textsearch_compactor',
+                  granted_role.oid,
+                  'MEMBER'))
     THEN
         RAISE EXCEPTION
             'textsearch_compactor must not belong to a superuser role';
@@ -141,9 +168,25 @@ $$;
 SELECT df.grant_usage('textsearch_compactor');
 
 -- The worker inherits the owner's privileges, but cannot become that
--- role explicitly.
+-- role explicitly.  Reject another grantor or membership path that
+-- leaves SET ROLE available.
 GRANT :"index_owner" TO textsearch_compactor
     WITH INHERIT TRUE, SET FALSE;
+
+SELECT pg_catalog.pg_has_role(
+           'textsearch_compactor',
+           :'index_owner',
+           'SET') AS compactor_can_set_owner
+\gset
+
+\if :compactor_can_set_owner
+DO $$
+BEGIN
+    RAISE EXCEPTION
+        'textsearch_compactor must not be able to SET ROLE to index_owner';
+END
+$$;
+\endif
 
 -- Grant only the pg_textsearch entry points used by the per-index
 -- request and the periodic backstop.  Resolve the extension schema so

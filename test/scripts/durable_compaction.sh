@@ -210,7 +210,7 @@ installation's bin directory first on PATH, or run 'make install'."
     # from the per-node submitted_by connection. Matching it to the
     # cluster's superuser avoids a "role does not exist" surprise.
     "${PGBINDIR}/initdb" -D "${DATA_DIR}" -U postgres \
-        --auth-local=trust --auth-host=trust >/dev/null 2>&1
+        --auth-local=trust --auth-host=reject >/dev/null 2>&1
 
     cat >> "${DATA_DIR}/postgresql.conf" << EOF
 port = ${TEST_PORT}
@@ -223,24 +223,17 @@ log_filename = 'postgres.log'
 pg_durable.database = '${TEST_DB}'
 EOF
 
-    # Per scripts/durable_compaction/01_setup_role.sql: the worker opens a
-    # fresh libpq connection as df.instances.submitted_by for every node,
-    # with no password and no host -- it needs a passwordless route.
-    # initdb's --auth-local=trust already makes the whole pg_hba.conf
-    # trust-all for this throwaway cluster, so these lines are not load-
-    # bearing here, but they document (and would keep working under) the
-    # tighter, role-scoped hba the README actually recommends for a real
-    # deployment -- prepended above the general rules, as instructed.
-    cat > "${DATA_DIR}/pg_hba.conf.new" << EOF
-local   all   textsearch_compactor   trust
-host    all   textsearch_compactor   127.0.0.1/32   trust
-EOF
-    cat "${DATA_DIR}/pg_hba.conf" >> "${DATA_DIR}/pg_hba.conf.new"
-    mv "${DATA_DIR}/pg_hba.conf.new" "${DATA_DIR}/pg_hba.conf"
-
-    "${PGBINDIR}/pg_ctl" start -D "${DATA_DIR}" -l "${LOGFILE}" \
-        -w -o "-p ${TEST_PORT}" \
+    # pg_durable defaults PGHOST to 127.0.0.1.  Set it in the server
+    # environment so both worker and per-node connections use the socket.
+    PGHOST="${SOCKET_DIR}" "${PGBINDIR}/pg_ctl" start -D "${DATA_DIR}" \
+        -l "${LOGFILE}" -w -o "-p ${TEST_PORT}" \
         || error "Failed to start PostgreSQL"
+
+    if "${PGBINDIR}/psql" -h 127.0.0.1 -p "${TEST_PORT}" \
+        -U postgres -d postgres -c "SELECT 1" >/dev/null 2>&1; then
+        error "disposable cluster unexpectedly accepts TCP connections"
+    fi
+    log "PASS: disposable cluster permits local trust only"
 
     "${PGBINDIR}/createdb" -h "${SOCKET_DIR}" -p "${TEST_PORT}" \
         -U postgres "${TEST_DB}"
@@ -267,6 +260,14 @@ setup_roles_and_glue() {
     sql_super -c "CREATE ROLE app_owner LOGIN;"
     sql_super -c "CREATE ROLE app_writer LOGIN;"
 
+    sql_super -c "GRANT CREATE ON SCHEMA public TO PUBLIC;"
+    if sql_super -f "${GLUE_DIR}/01_setup_role.sql" \
+        -v index_owner=app_owner >/dev/null 2>&1; then
+        error "setup accepted PUBLIC CREATE on the wrapper schema"
+    fi
+    log "PASS: setup rejects PUBLIC CREATE on wrapper schema"
+    sql_super -c "REVOKE CREATE ON SCHEMA public FROM PUBLIC;"
+
     sql_super -f "${GLUE_DIR}/01_setup_role.sql" -v index_owner=app_owner \
         >/dev/null
 
@@ -275,6 +276,33 @@ setup_roles_and_glue() {
         error "compactor can SET ROLE app_owner"
     fi
     log "PASS: compactor cannot SET ROLE app_owner"
+
+    sql_super -c "CREATE ROLE owner_membership_grantor NOLOGIN;"
+    sql_super -c "GRANT app_owner TO owner_membership_grantor \
+WITH ADMIN TRUE;"
+    sql_super <<'SQL'
+SET ROLE owner_membership_grantor;
+GRANT app_owner TO textsearch_compactor
+    WITH INHERIT TRUE, SET TRUE;
+RESET ROLE;
+SQL
+    local compactor_can_set_owner
+    compactor_can_set_owner=$(sql_super -c "SELECT pg_has_role(\
+'textsearch_compactor', 'app_owner', 'SET');")
+    assert_eq "alternate grantor creates a SET path to owner" \
+        "t" "$compactor_can_set_owner"
+    if sql_super -f "${GLUE_DIR}/01_setup_role.sql" \
+        -v index_owner=app_owner >/dev/null 2>&1; then
+        error "setup accepted an alternate SET path to index owner"
+    fi
+    log "PASS: setup rejects alternate-grantor SET path to owner"
+    sql_super <<'SQL'
+SET ROLE owner_membership_grantor;
+REVOKE app_owner FROM textsearch_compactor;
+RESET ROLE;
+REVOKE app_owner FROM owner_membership_grantor;
+DROP ROLE owner_membership_grantor;
+SQL
 
     sql_super -c "CREATE ROLE compactor_superuser_parent \
 SUPERUSER NOLOGIN;"
@@ -288,6 +316,25 @@ textsearch_compactor WITH INHERIT TRUE, SET FALSE;"
     sql_super -c "REVOKE compactor_superuser_parent FROM \
 textsearch_compactor;"
     sql_super -c "DROP ROLE compactor_superuser_parent;"
+
+    sql_super -c "CREATE ROLE compactor_superuser_bridge NOLOGIN;"
+    sql_super -c "CREATE ROLE compactor_superuser_grandparent \
+SUPERUSER NOLOGIN;"
+    sql_super -c "GRANT compactor_superuser_grandparent TO \
+compactor_superuser_bridge WITH INHERIT TRUE, SET FALSE;"
+    sql_super -c "GRANT compactor_superuser_bridge TO \
+textsearch_compactor WITH INHERIT TRUE, SET FALSE;"
+    if sql_super -f "${GLUE_DIR}/01_setup_role.sql" \
+        -v index_owner=app_owner >/dev/null 2>&1; then
+        error "setup accepted transitive membership in a superuser role"
+    fi
+    log "PASS: setup rejects transitive superuser-role membership"
+    sql_super -c "REVOKE compactor_superuser_bridge FROM \
+textsearch_compactor;"
+    sql_super -c "REVOKE compactor_superuser_grandparent FROM \
+compactor_superuser_bridge;"
+    sql_super -c "DROP ROLE compactor_superuser_bridge;"
+    sql_super -c "DROP ROLE compactor_superuser_grandparent;"
 
     sql_super -f "${GLUE_DIR}/02_wrapper.sql" -v writer_role=app_writer \
         >/dev/null
@@ -303,6 +350,43 @@ public.bm25_request_compaction(regclass) TO old_writer;"
 'old_writer', 'public.bm25_request_compaction(regclass)', 'EXECUTE');")
     assert_eq "wrapper reinstall removes stale named EXECUTE grants" \
         "f" "$old_writer_can_execute"
+
+    sql_super -c "CREATE ROLE default_privilege_writer LOGIN;"
+    sql_super -c "ALTER DEFAULT PRIVILEGES FOR ROLE postgres \
+IN SCHEMA public GRANT EXECUTE ON FUNCTIONS \
+TO default_privilege_writer;"
+    sql_super -f "${GLUE_DIR}/02_wrapper.sql" -v writer_role=app_writer \
+        >/dev/null
+
+    local default_writer_can_execute
+    default_writer_can_execute=$(sql_super -c "SELECT \
+has_function_privilege('default_privilege_writer', \
+'public.bm25_request_compaction(regclass)', 'EXECUTE');")
+    assert_eq "wrapper removes named default EXECUTE grants" \
+        "f" "$default_writer_can_execute"
+    sql_super -c "ALTER DEFAULT PRIVILEGES FOR ROLE postgres \
+IN SCHEMA public REVOKE EXECUTE ON FUNCTIONS \
+FROM default_privilege_writer;"
+    sql_super -c "DROP ROLE default_privilege_writer;"
+
+    local wrapper_oid_before
+    wrapper_oid_before=$(sql_super -c "SELECT \
+'public.bm25_request_compaction(regclass)'::regprocedure::oid;")
+    if sql_super -f "${GLUE_DIR}/02_wrapper.sql" \
+        -v writer_role=missing_writer >/dev/null 2>&1; then
+        error "wrapper setup accepted a missing writer role"
+    fi
+    local wrapper_oid_after
+    wrapper_oid_after=$(sql_super -c "SELECT \
+'public.bm25_request_compaction(regclass)'::regprocedure::oid;")
+    assert_eq "failed wrapper replacement preserves old function" \
+        "$wrapper_oid_before" "$wrapper_oid_after"
+    local writer_still_can_execute
+    writer_still_can_execute=$(sql_super -c "SELECT \
+has_function_privilege('app_writer', \
+'public.bm25_request_compaction(regclass)', 'EXECUTE');")
+    assert_eq "failed wrapper replacement preserves writer grant" \
+        "t" "$writer_still_can_execute"
 
     # app_owner is used as the general spilling writer in most scenarios
     # below (it must own the index to call bm25_spill_index() at all);
@@ -784,7 +868,95 @@ for a writer that only holds EXECUTE on bm25_request_compaction"
 }
 
 # ---------------------------------------------------------------------
-# Test 8: backstop (run LAST -- its per-minute sweep would otherwise
+# Test 8: partition ancestors authorize physical leaf indexes
+# ---------------------------------------------------------------------
+
+test_partition_permissions() {
+    log "=== Test: partition-ancestor writer permissions ==="
+
+    sql_super -c "GRANT CREATE ON SCHEMA public TO app_owner;"
+    sql_as app_owner <<'SQL'
+CREATE TABLE t_auth_parent (
+    part_key integer,
+    body text
+) PARTITION BY RANGE (part_key);
+CREATE TABLE t_auth_leaf PARTITION OF t_auth_parent
+    FOR VALUES FROM (0) TO (10);
+CREATE INDEX t_auth_parent_idx ON t_auth_parent
+    USING bm25(body) WITH (text_config = 'english');
+
+CREATE TABLE t_auth_root (
+    region integer,
+    bucket integer,
+    body text
+) PARTITION BY RANGE (region);
+CREATE TABLE t_auth_middle PARTITION OF t_auth_root
+    FOR VALUES FROM (0) TO (10)
+    PARTITION BY RANGE (bucket);
+CREATE TABLE t_auth_deep_leaf PARTITION OF t_auth_middle
+    FOR VALUES FROM (0) TO (10);
+CREATE INDEX t_auth_root_idx ON t_auth_root
+    USING bm25(body) WITH (text_config = 'english');
+SQL
+    sql_super <<'SQL'
+GRANT INSERT ON t_auth_parent TO app_writer;
+GRANT INSERT ON t_auth_root TO app_writer;
+SQL
+
+    local leaf_index deep_leaf_index
+    leaf_index=$(sql_super -c "SELECT i.indexrelid::regclass::text \
+FROM pg_catalog.pg_index i \
+JOIN pg_catalog.pg_class c ON c.oid = i.indexrelid \
+JOIN pg_catalog.pg_am am ON am.oid = c.relam \
+WHERE i.indrelid = 't_auth_leaf'::regclass \
+  AND am.amname = 'bm25';")
+    deep_leaf_index=$(sql_super -c "SELECT i.indexrelid::regclass::text \
+FROM pg_catalog.pg_index i \
+JOIN pg_catalog.pg_class c ON c.oid = i.indexrelid \
+JOIN pg_catalog.pg_am am ON am.oid = c.relam \
+WHERE i.indrelid = 't_auth_deep_leaf'::regclass \
+  AND am.amname = 'bm25';")
+
+    local leaf_insert deep_leaf_insert
+    leaf_insert=$(sql_super -c "SELECT has_table_privilege(\
+'app_writer', 't_auth_leaf', 'INSERT');")
+    deep_leaf_insert=$(sql_super -c "SELECT has_table_privilege(\
+'app_writer', 't_auth_deep_leaf', 'INSERT');")
+    assert_eq "writer lacks direct INSERT on leaf" "f" "$leaf_insert"
+    assert_eq "writer lacks direct INSERT on deep leaf" \
+        "f" "$deep_leaf_insert"
+
+    local parent_allowed=f parent_instance=""
+    local multilevel_allowed=f multilevel_instance=""
+    if parent_instance=$(sql_as app_writer -c "SELECT \
+public.bm25_request_compaction('${leaf_index}'::regclass);" \
+        2>/dev/null); then
+        parent_allowed=t
+    fi
+    if multilevel_instance=$(sql_as app_writer -c "SELECT \
+public.bm25_request_compaction('${deep_leaf_index}'::regclass);" \
+        2>/dev/null); then
+        multilevel_allowed=t
+    fi
+
+    if [ "$parent_allowed" != "t" ] \
+        || [ "$multilevel_allowed" != "t" ]; then
+        error "ASSERTION FAILED: partition ancestor INSERT did not \
+authorize physical leaf indexes (parent-only=${parent_allowed}, \
+multilevel=${multilevel_allowed})"
+    fi
+    log "PASS: parent-only INSERT authorizes leaf index ${leaf_index}"
+    log "PASS: root-only INSERT authorizes deep leaf index \
+${deep_leaf_index}"
+
+    wait_for_instance "$parent_instance" 30 >/dev/null
+    wait_for_instance "$multilevel_instance" 30 >/dev/null
+    sql_super -c "DROP TABLE t_auth_parent, t_auth_root CASCADE;" \
+        >/dev/null
+}
+
+# ---------------------------------------------------------------------
+# Test 9: backstop (run LAST -- its per-minute sweep would otherwise
 # compact every pending index in the database, corrupting the carefully
 # staged segment counts the other tests depend on).
 # ---------------------------------------------------------------------
@@ -867,6 +1039,7 @@ test_write_latency
 test_failure_path
 test_cascade
 test_permissions
+test_partition_permissions
 test_backstop
 
 log "All tests passed!"
