@@ -95,7 +95,7 @@ extern void tp_maybe_compact_level(Relation index, uint32 level);
 extern bool tp_compact_step(Relation index);
 
 /*
- * Compact all segments across all levels into one segment per level.
+ * Compact all segments across all levels into one segment.
  *
  * Unlike tp_maybe_compact_level, this ignores the segments_per_level
  * threshold and merges ALL segments at each level in one batch.

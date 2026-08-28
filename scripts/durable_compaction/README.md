@@ -79,7 +79,11 @@ psql -U textsearch_compactor -d application_database \
 grants `textsearch_compactor` inherited membership with `SET FALSE` and
 rejects unsafe direct or transitive role paths. It also rejects any role that
 is already a member of `textsearch_compactor` without revoking that
-operator-managed membership.
+operator-managed membership. Before granting owner or `df` privileges, it
+also rejects objects already owned by the compactor in any database. The
+exact current-database
+`public.bm25_request_compaction(pg_catalog.regclass)` wrapper is the only
+allowed owner dependency, so clean operator-script reruns remain supported.
 
 The wrapper authorizes `session_user` by `INSERT` on the indexed table or a
 partition ancestor. The operator setup grants a writer only wrapper `EXECUTE`;
@@ -168,7 +172,9 @@ live canonical instance remains. A different `-v cron=...` value does not
 modify an already-live instance; cancel it before rerunning to change cadence.
 The global label is observability metadata, not an authorization, identity, or
 security boundary. If multiple canonical instances are already live, the
-script fails closed with their IDs; cancel all but one and rerun it.
+script fails closed with their IDs; cancel all but one and rerun it. After
+registration commits, the script also raises unless its exact recorded
+instance is still pending/running and owned by the current submitter.
 
 Inspect orchestration as `textsearch_compactor` or a superuser because
 `df.instances` is protected by submitter-based row-level security:

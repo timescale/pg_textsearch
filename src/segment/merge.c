@@ -1473,6 +1473,26 @@ tp_merge_level_segments(Relation index, uint32 level, uint32 max_merge)
 	}
 
 	/*
+	 * Read and validate the source and destination counts before doing work.
+	 */
+	metabuf = ReadBuffer(index, 0);
+	LockBuffer(metabuf, BUFFER_LOCK_SHARE);
+	metapage = BufferGetPage(metabuf);
+	metap	 = (TpIndexMetaPage)PageGetContents(metapage);
+
+	first_segment  = metap->level_heads[level];
+	total_at_level = metap->level_counts[level];
+	if (first_segment != InvalidBlockNumber && total_at_level > 0)
+		tp_check_level_count_increment(metap, level + 1);
+
+	UnlockReleaseBuffer(metabuf);
+
+	if (first_segment == InvalidBlockNumber || total_at_level == 0)
+	{
+		return InvalidBlockNumber;
+	}
+
+	/*
 	 * Opportunistically return any already-past-horizon displaced
 	 * pages to the FSM so the tombstone chain doesn't grow unbounded
 	 * between vacuums.  The merge caller already holds the per-index
@@ -1485,22 +1505,6 @@ tp_merge_level_segments(Relation index, uint32 level, uint32 max_merge)
 
 		if (drained > 0)
 			IndexFreeSpaceMapVacuum(index);
-	}
-
-	/* Read metapage to get segment chain */
-	metabuf = ReadBuffer(index, 0);
-	LockBuffer(metabuf, BUFFER_LOCK_SHARE);
-	metapage = BufferGetPage(metabuf);
-	metap	 = (TpIndexMetaPage)PageGetContents(metapage);
-
-	first_segment  = metap->level_heads[level];
-	total_at_level = metap->level_counts[level];
-
-	UnlockReleaseBuffer(metabuf);
-
-	if (first_segment == InvalidBlockNumber || total_at_level == 0)
-	{
-		return InvalidBlockNumber;
 	}
 
 	/*
@@ -2062,26 +2066,65 @@ tp_compact_step(Relation index)
  * forceMerge(1).  Merges ALL segments at each level in a single
  * batch, ignoring the segments_per_level threshold.
  */
+static BlockNumber
+tp_force_merge_level(Relation index, uint32 level)
+{
+	TpIndexMetaPage metap;
+	uint16			destination_count;
+	uint16			source_count;
+
+	Assert(level < TP_MAX_LEVELS - 1);
+
+	metap			  = tp_get_metapage(index);
+	source_count	  = metap->level_counts[level];
+	destination_count = metap->level_counts[level + 1];
+	pfree(metap);
+
+	if (source_count == 0)
+		return InvalidBlockNumber;
+
+	/*
+	 * A full compactable destination is recoverable: drain it upward, then
+	 * retry the original level.  The top level has no destination and must
+	 * continue to fail through the merge capacity guard.
+	 */
+	if (destination_count >= tp_debug_segment_count_limit &&
+		level < TP_MAX_LEVELS - 2)
+	{
+		if (tp_force_merge_level(index, level + 1) == InvalidBlockNumber)
+			return InvalidBlockNumber;
+	}
+
+	return tp_merge_level_segments(index, level, UINT32_MAX);
+}
+
 void
 tp_force_merge_all(Relation index)
 {
 	for (uint32 level = 0; level < TP_MAX_LEVELS - 1; level++)
 	{
-		Buffer			metabuf;
-		Page			metapage;
 		TpIndexMetaPage metap;
 		uint16			count;
+		bool			has_higher_segment = false;
 
-		metabuf = ReadBuffer(index, 0);
-		LockBuffer(metabuf, BUFFER_LOCK_SHARE);
-		metapage = BufferGetPage(metabuf);
-		metap	 = (TpIndexMetaPage)PageGetContents(metapage);
-		count	 = metap->level_counts[level];
-		UnlockReleaseBuffer(metabuf);
+		metap = tp_get_metapage(index);
+		count = metap->level_counts[level];
+		for (uint32 higher = level + 1; higher < TP_MAX_LEVELS; higher++)
+		{
+			if (metap->level_counts[higher] > 0)
+			{
+				has_higher_segment = true;
+				break;
+			}
+		}
+		pfree(metap);
 
-		if (count < 2)
-			break; /* Nothing to merge at this level or above */
+		if (count == 0)
+			continue;
+		if (count == 1 && !has_higher_segment)
+			return;
 
-		tp_merge_level_segments(index, level, UINT32_MAX);
+		if (tp_force_merge_level(index, level) == InvalidBlockNumber)
+			return;
 	}
 }

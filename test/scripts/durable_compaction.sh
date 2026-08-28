@@ -536,6 +536,36 @@ SQL
     sql_super -c "DROP ROLE hostile_grantor;"
     sql_super -c "DROP ROLE hostile_parent;"
 
+    sql_super <<'SQL'
+CREATE FUNCTION public.compactor_owner_trap()
+RETURNS name
+LANGUAGE sql
+SECURITY DEFINER
+SET search_path = pg_catalog, pg_temp
+AS 'SELECT current_user';
+ALTER FUNCTION public.compactor_owner_trap()
+    OWNER TO textsearch_compactor;
+SQL
+    if sql_super -f "${GLUE_DIR}/01_setup_role.sql" \
+        -v index_owner=app_owner >/dev/null 2>&1; then
+        error "setup accepted an unexpected compactor-owned object"
+    fi
+    assert_compactor_ungranted \
+        "owned-object rejection happens before owner/df grants"
+    assert_eq "failed setup preserves the hostile owner object" "t" \
+        "$(sql_super -c "SELECT
+            proowner = 'textsearch_compactor'::pg_catalog.regrole
+            AND prosecdef
+            AND has_function_privilege(
+                'app_writer',
+                'public.compactor_owner_trap()',
+                'EXECUTE')
+            FROM pg_catalog.pg_proc
+            WHERE oid =
+                'public.compactor_owner_trap()'::pg_catalog.regprocedure;")"
+    log "PASS: setup rejects unexpected compactor-owned objects before grants"
+    sql_super -c "DROP FUNCTION public.compactor_owner_trap();"
+
     sql_super -c "GRANT CREATE ON SCHEMA public TO PUBLIC;"
     if sql_super -f "${GLUE_DIR}/01_setup_role.sql" \
         -v index_owner=app_owner >/dev/null 2>&1; then
@@ -711,6 +741,9 @@ compactor_superuser_bridge;"
     PGOPTIONS="-c search_path=hostile_path,pg_catalog,public,${EXT_SCHEMA},df" \
         sql_super -f "${GLUE_DIR}/02_wrapper.sql" \
         -v writer_role=app_writer >/dev/null
+    sql_super -f "${GLUE_DIR}/01_setup_role.sql" \
+        -v index_owner=app_owner >/dev/null
+    log "PASS: role setup rerun accepts the exact managed wrapper"
     assert_eq "wrapper signature uses pg_catalog.regclass" "regclass" \
         "$(sql_super -c "SELECT pg_catalog.format_type(proargtypes[0], NULL)
             FROM pg_catalog.pg_proc
@@ -880,6 +913,59 @@ actionably (output='${output}')"
 in df.nodes.result"
     fi
     log "PASS: failed canary diagnostic persisted in df.nodes.result"
+}
+
+test_terminal_backstop_confirmation() {
+    log "=== Test: terminal backstop registration confirmation ==="
+
+    sql_super <<'SQL'
+CREATE FUNCTION public.force_terminal_backstop()
+RETURNS trigger
+LANGUAGE plpgsql
+SET search_path = pg_catalog, pg_temp
+AS $fn$
+BEGIN
+    IF NEW.label = 'bm25-compaction-backstop' THEN
+        NEW.status := 'cancelled';
+    END IF;
+    RETURN NEW;
+END
+$fn$;
+CREATE TRIGGER force_terminal_backstop
+BEFORE INSERT ON df.instances
+FOR EACH ROW
+EXECUTE FUNCTION public.force_terminal_backstop();
+SQL
+
+    local output script_succeeded=f terminal_id
+    if output=$(sql_as textsearch_compactor \
+        -f "${GLUE_DIR}/03_backstop.sql" 2>&1); then
+        script_succeeded=t
+    fi
+    terminal_id=$(sql_super -c "SELECT id
+        FROM df.instances
+        WHERE label = 'bm25-compaction-backstop'
+          AND status = 'cancelled'
+        ORDER BY created_at DESC
+        LIMIT 1;")
+
+    sql_super -c "DROP TRIGGER force_terminal_backstop ON df.instances;"
+    sql_super -c "DROP FUNCTION public.force_terminal_backstop();"
+
+    if [ "$script_succeeded" = "t" ] \
+        || [ -z "$terminal_id" ] \
+        || [[ "$output" != *"$terminal_id"* ]] \
+        || [[ "$output" != *"no longer pending or running"* ]]; then
+        error "ASSERTION FAILED: terminal registration was not rejected \
+(succeeded=${script_succeeded}, id=${terminal_id}, output=${output})"
+    fi
+    assert_eq "terminal confirmation leaves no live backstop" "0" \
+        "$(sql_super -c "SELECT count(*)
+            FROM df.instances
+            WHERE label = 'bm25-compaction-backstop'
+              AND status IN ('pending', 'running');")"
+    log "PASS: terminal registration fails with recorded instance \
+${terminal_id}"
 }
 
 # Build ${1} rounds of INSERT + bm25_spill_index() on ${3} against index
@@ -2019,6 +2105,7 @@ test_pg_durable_preflight
 setup_roles_and_glue
 wait_for_durable_worker
 test_backstop_canary_failure
+test_terminal_backstop_confirmation
 
 test_atomicity
 test_independent_request

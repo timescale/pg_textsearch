@@ -116,13 +116,14 @@ constructs only the two fixed helper calls from numeric OIDs.
 ## Cancellation and errors
 
 Immediate dispatch is best-effort for ordinary errors. An unset or
-unresolvable request function, a pg_durable start failure, or a wrapper error
-emits a warning and lets the writer commit. Query cancellation, administrative
-shutdown, and crash shutdown are rethrown and abort the writer transaction.
-The dispatcher uses nested internal subtransactions and an explicit snapshot
-because it runs from the transaction callback after normal portals are gone.
-Successful callback SQL is also rolled back locally; independently committed
-external work is unaffected.
+unresolvable request function (including lookup permission errors), a
+pg_durable start failure, or a wrapper error emits a warning and lets the
+writer commit. Query cancellation, administrative shutdown, and crash shutdown
+are rethrown and abort the writer transaction. Both callback lookup and
+execution use nested internal subtransactions; execution also supplies an
+explicit snapshot because it runs from the transaction callback after normal
+portals are gone. Successful callback SQL is rolled back locally;
+independently committed external work is unaffected.
 
 A worker SQL error fails that pg_durable instance. The current pg_durable POC
 does not retry failed nodes. A later spill can submit another accelerator, and
@@ -184,9 +185,12 @@ The operator setup uses three identities:
 `01_setup_role.sql` rejects missing or superuser owners, direct or transitive
 superuser membership, any inbound member of the compactor role, and any
 alternate membership path that lets the compactor set the owner role. It
-does not revoke operator-managed memberships. It discovers the extension
-schema and grants only the schema and function privileges needed for
-immediate and backstop compaction.
+does not revoke operator-managed memberships. Before any owner or `df` grant,
+it rejects cluster-wide owner dependencies for the compactor role except the
+exact current-database
+`public.bm25_request_compaction(pg_catalog.regclass)` wrapper retained by a
+clean rerun. It discovers the extension schema and grants only the schema and
+function privileges needed for immediate and backstop compaction.
 
 The `SECURITY DEFINER` wrapper has a fixed safe `search_path`, rejects
 non-BM25 and temporary targets, and authorizes the login identity
@@ -268,7 +272,10 @@ not alter an already-live schedule. The label is observability metadata, not
 authorization, identity, or a security boundary. If multiple canonical
 instances are already live, registration fails with their IDs so an operator
 can cancel all but one before retrying. Executions within one instance are
-sequential.
+sequential. After committing registration, the script asserts that the exact
+recorded instance still belongs to the current submitter and remains
+pending/running; a terminal or mismatched row fails the installation instead
+of succeeding with an empty result.
 
 The backstop body is one worker transaction. It calls whole-cascade
 compaction for each index, so one index holds its per-index exclusive lock for

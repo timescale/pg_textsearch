@@ -102,15 +102,82 @@ tp_compaction_reset_requests(void)
 static Oid
 tp_lookup_request_function(void)
 {
-	List *names;
-	Oid	  argtypes[1] = {REGCLASSOID};
+	MemoryContext oldcxt		= CurrentMemoryContext;
+	ResourceOwner oldowner		= CurrentResourceOwner;
+	Oid			  funcoid		= InvalidOid;
+	bool		  lookup_failed = false;
 
 	if (tp_compaction_request_function == NULL ||
 		tp_compaction_request_function[0] == '\0')
+	{
+		ereport(WARNING,
+				(errmsg("bm25: pg_textsearch.compaction_request_function "
+						"is unset or unresolvable; skipping background "
+						"compaction")));
 		return InvalidOid;
+	}
 
-	names = stringToQualifiedNameList(tp_compaction_request_function, NULL);
-	return LookupFuncName(names, 1, argtypes, true);
+	/*
+	 * Name resolution can ERROR on catalog permissions.  Use the same
+	 * double-subtransaction shield as callback execution because this runs
+	 * from PRE_COMMIT/PRE_PREPARE too.
+	 */
+	BeginInternalSubTransaction(NULL);
+	BeginInternalSubTransaction(NULL);
+	PG_TRY();
+	{
+		List *names;
+		Oid	  argtypes[1] = {REGCLASSOID};
+
+		names = stringToQualifiedNameList(
+				tp_compaction_request_function, NULL);
+		funcoid = LookupFuncName(names, 1, argtypes, true);
+
+		RollbackAndReleaseCurrentSubTransaction();
+		MemoryContextSwitchTo(oldcxt);
+	}
+	PG_CATCH();
+	{
+		ErrorData *edata;
+
+		MemoryContextSwitchTo(oldcxt);
+		edata = CopyErrorData();
+		FlushErrorState();
+
+		RollbackAndReleaseCurrentSubTransaction();
+		MemoryContextSwitchTo(oldcxt);
+		funcoid		  = InvalidOid;
+		lookup_failed = true;
+
+		if (edata->sqlerrcode == ERRCODE_QUERY_CANCELED ||
+			edata->sqlerrcode == ERRCODE_ADMIN_SHUTDOWN ||
+			edata->sqlerrcode == ERRCODE_CRASH_SHUTDOWN)
+		{
+			ReleaseCurrentSubTransaction();
+			MemoryContextSwitchTo(oldcxt);
+			CurrentResourceOwner = oldowner;
+			ReThrowError(edata);
+		}
+
+		ereport(WARNING,
+				(errmsg("bm25: background compaction callback lookup failed: "
+						"%s; skipping background compaction",
+						edata->message)));
+		FreeErrorData(edata);
+	}
+	PG_END_TRY();
+
+	ReleaseCurrentSubTransaction();
+	MemoryContextSwitchTo(oldcxt);
+	CurrentResourceOwner = oldowner;
+
+	if (!OidIsValid(funcoid) && !lookup_failed)
+		ereport(WARNING,
+				(errmsg("bm25: pg_textsearch.compaction_request_function "
+						"is unset or unresolvable; skipping background "
+						"compaction")));
+
+	return funcoid;
 }
 
 static void
@@ -257,12 +324,7 @@ tp_compaction_flush_requests(void)
 	PG_TRY();
 	{
 		funcoid = tp_lookup_request_function();
-		if (!OidIsValid(funcoid))
-			ereport(WARNING,
-					(errmsg("bm25: pg_textsearch.compaction_request_function "
-							"is unset or unresolvable; skipping background "
-							"compaction")));
-		else
+		if (OidIsValid(funcoid))
 			foreach (lc, pending)
 				tp_run_request(funcoid, lfirst_oid(lc));
 	}

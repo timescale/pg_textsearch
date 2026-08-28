@@ -167,6 +167,41 @@ SELECT count(*) = 20 AS missing_function_committed
 FROM compaction_request_docs
 WHERE body LIKE 'missing function doc %';
 
+-- Callback lookup errors are isolated; writer data still commits.
+CREATE ROLE request_lookup_owner;
+CREATE ROLE request_lookup_writer;
+CREATE SCHEMA request_lookup_private AUTHORIZATION request_lookup_owner;
+CREATE FUNCTION request_lookup_private.hidden_compaction(regclass)
+RETURNS void
+LANGUAGE sql
+AS $$ SELECT NULL::void $$;
+ALTER FUNCTION request_lookup_private.hidden_compaction(regclass)
+    OWNER TO request_lookup_owner;
+REVOKE ALL ON SCHEMA request_lookup_private FROM PUBLIC;
+
+CREATE TABLE request_lookup_docs (id integer PRIMARY KEY, body text);
+CREATE INDEX request_lookup_docs_idx ON request_lookup_docs
+    USING bm25(body) WITH (text_config = 'english');
+ALTER TABLE request_lookup_docs OWNER TO request_lookup_writer;
+
+SET pg_textsearch.compaction_request_function =
+    'request_lookup_private.hidden_compaction';
+SET ROLE request_lookup_writer;
+INSERT INTO request_lookup_docs
+SELECT i, 'lookup seed doc ' || i FROM generate_series(1, 20) i;
+SELECT bm25_spill_index('request_lookup_docs_idx') IS NOT NULL
+       AS lookup_error_seed_spill;
+BEGIN;
+INSERT INTO request_lookup_docs
+SELECT i, 'lookup commit doc ' || i FROM generate_series(21, 40) i;
+SELECT bm25_spill_index('request_lookup_docs_idx') IS NOT NULL
+       AS lookup_error_commit_spill;
+COMMIT;
+SELECT count(*) = 20 AS lookup_error_committed
+FROM request_lookup_docs
+WHERE id > 20;
+RESET ROLE;
+
 -- Empty request function warns once and writer data still commits.
 SELECT last_value AS calls_before FROM compaction_request_calls \gset
 SET pg_textsearch.compaction_request_function = '';
@@ -297,6 +332,10 @@ SELECT NOT bm25_needs_compaction('compaction_temp_docs_idx'::regclass)
 
 RESET pg_textsearch.compaction_mode;
 RESET pg_textsearch.compaction_request_function;
+DROP TABLE request_lookup_docs CASCADE;
+DROP SCHEMA request_lookup_private CASCADE;
+DROP ROLE request_lookup_writer;
+DROP ROLE request_lookup_owner;
 DROP TABLE compaction_cancel_docs CASCADE;
 DROP TABLE compaction_threshold_docs CASCADE;
 DROP TABLE compaction_request_docs2 CASCADE;

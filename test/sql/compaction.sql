@@ -201,9 +201,12 @@ DROP TABLE segment_count_l0 CASCADE;
 SET pg_textsearch.debug_segment_count_limit = 2;
 CREATE TABLE segment_count_step (id serial PRIMARY KEY, body text);
 CREATE TABLE segment_count_full (id serial PRIMARY KEY, body text);
+CREATE TABLE segment_count_force (id serial PRIMARY KEY, body text);
 CREATE INDEX segment_count_step_idx ON segment_count_step
     USING bm25(body) WITH (text_config = 'english');
 CREATE INDEX segment_count_full_idx ON segment_count_full
+    USING bm25(body) WITH (text_config = 'english');
+CREATE INDEX segment_count_force_idx ON segment_count_force
     USING bm25(body) WITH (text_config = 'english');
 
 DO $$
@@ -219,8 +222,13 @@ BEGIN
         SELECT format(
             'recovery batch %s first segment document %s filler', n, i)
         FROM generate_series(1, 20) i;
+        INSERT INTO segment_count_force (body)
+        SELECT format(
+            'recovery batch %s first segment document %s filler', n, i)
+        FROM generate_series(1, 20) i;
         PERFORM bm25_spill_index('segment_count_step_idx');
         PERFORM bm25_spill_index('segment_count_full_idx');
+        PERFORM bm25_spill_index('segment_count_force_idx');
 
         INSERT INTO segment_count_step (body)
         SELECT format(
@@ -230,10 +238,16 @@ BEGIN
         SELECT format(
             'recovery batch %s second segment document %s filler', n, i)
         FROM generate_series(1, 20) i;
+        INSERT INTO segment_count_force (body)
+        SELECT format(
+            'recovery batch %s second segment document %s filler', n, i)
+        FROM generate_series(1, 20) i;
         PERFORM bm25_spill_index('segment_count_step_idx');
         PERFORM bm25_spill_index('segment_count_full_idx');
+        PERFORM bm25_spill_index('segment_count_force_idx');
         PERFORM bm25_compact_step('segment_count_step_idx'::regclass);
         PERFORM bm25_compact_step('segment_count_full_idx'::regclass);
+        PERFORM bm25_compact_step('segment_count_force_idx'::regclass);
     END LOOP;
 
     FOR n IN 1..2 LOOP
@@ -245,8 +259,13 @@ BEGIN
         SELECT format(
             'blocked source %s document %s filler', n, i)
         FROM generate_series(1, 20) i;
+        INSERT INTO segment_count_force (body)
+        SELECT format(
+            'blocked source %s document %s filler', n, i)
+        FROM generate_series(1, 20) i;
         PERFORM bm25_spill_index('segment_count_step_idx');
         PERFORM bm25_spill_index('segment_count_full_idx');
+        PERFORM bm25_spill_index('segment_count_force_idx');
     END LOOP;
 END $$;
 
@@ -254,6 +273,9 @@ SELECT bm25_level_counts('segment_count_step_idx'::regclass) =
            ARRAY[2, 2, 0, 0, 0, 0, 0, 0]
        AND
        bm25_level_counts('segment_count_full_idx'::regclass) =
+           ARRAY[2, 2, 0, 0, 0, 0, 0, 0]
+       AND
+       bm25_level_counts('segment_count_force_idx'::regclass) =
            ARRAY[2, 2, 0, 0, 0, 0, 0, 0]
        AS segment_count_recovery_starts_blocked;
 
@@ -290,9 +312,24 @@ FROM (
     ORDER BY body <@> to_bm25query('filler', 'segment_count_full_idx')
 ) ranked;
 
+SELECT bm25_force_merge('segment_count_force_idx');
+SELECT (
+           SELECT pg_catalog.sum(segment_count)
+           FROM pg_catalog.unnest(
+               bm25_level_counts('segment_count_force_idx'::regclass))
+               AS counts(segment_count)
+       ) = 1 AS segment_count_force_single_segment;
+SELECT count(*) = 120 AS segment_count_force_preserves_documents
+FROM (
+    SELECT 1
+    FROM segment_count_force
+    ORDER BY body <@> to_bm25query('filler', 'segment_count_force_idx')
+) ranked;
+
 RESET pg_textsearch.debug_segment_count_limit;
 DROP TABLE segment_count_step CASCADE;
 DROP TABLE segment_count_full CASCADE;
+DROP TABLE segment_count_force CASCADE;
 
 -- A full noncompactable L7 leaves L6 promotion safely blocked.
 CREATE TABLE segment_count_terminal (id serial PRIMARY KEY, body text);
@@ -321,18 +358,33 @@ SELECT bm25_level_counts('segment_count_terminal_idx'::regclass) =
            ARRAY[0, 0, 0, 0, 0, 0, 2, 2]
        AS segment_count_terminal_starts_blocked;
 CREATE TEMP TABLE segment_count_terminal_before AS
-SELECT bm25_level_counts('segment_count_terminal_idx'::regclass) AS counts;
+SELECT bm25_level_counts('segment_count_terminal_idx'::regclass) AS counts,
+       bm25_pending_free_pages('segment_count_terminal_idx')
+           AS pending_free_pages;
+SELECT pending_free_pages > 0
+       AS segment_count_terminal_has_reclaimable_work
+FROM segment_count_terminal_before;
 
 SELECT bm25_compact_step('segment_count_terminal_idx'::regclass);
 SELECT bm25_level_counts('segment_count_terminal_idx'::regclass) =
            before.counts
        AS segment_count_terminal_step_fails_closed
 FROM segment_count_terminal_before before;
+SELECT bm25_pending_free_pages('segment_count_terminal_idx') =
+           before.pending_free_pages
+       AS segment_count_terminal_rejects_before_reclaim
+FROM segment_count_terminal_before before;
 
 SELECT bm25_compact('segment_count_terminal_idx'::regclass);
 SELECT bm25_level_counts('segment_count_terminal_idx'::regclass) =
            before.counts
        AS segment_count_terminal_full_fails_closed
+FROM segment_count_terminal_before before;
+
+SELECT bm25_force_merge('segment_count_terminal_idx');
+SELECT bm25_level_counts('segment_count_terminal_idx'::regclass) =
+           before.counts
+       AS segment_count_terminal_force_fails_closed
 FROM segment_count_terminal_before before;
 
 SELECT count(*) = 384 AS segment_count_terminal_preserves_documents

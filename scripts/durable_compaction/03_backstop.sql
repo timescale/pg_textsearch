@@ -532,13 +532,30 @@ $$;
 
 COMMIT;
 
--- Confirm the canonical instance is live. It should stay 'running' forever;
--- terminal history remains available but is not printed here.
-SELECT id, label, status, submitted_by, created_at
-FROM df.instances
-WHERE id OPERATOR(pg_catalog.=)
-          pg_catalog.current_setting('pg_textsearch_backstop.instance')
-  AND submitted_by OPERATOR(pg_catalog.=)
-          pg_catalog.to_regrole(CURRENT_USER)
-  AND status OPERATOR(pg_catalog.=) ANY (ARRAY['pending', 'running'])
-ORDER BY created_at DESC;
+-- A SELECT that returns no rows still succeeds in psql. Raise explicitly if
+-- the exact instance recorded by registration is no longer live or no longer
+-- belongs to this submitter.
+DO $$
+DECLARE
+    instance pg_catalog.text :=
+        pg_catalog.current_setting('pg_textsearch_backstop.instance');
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1
+        FROM df.instances durable_instance
+        WHERE durable_instance.id OPERATOR(pg_catalog.=) instance
+          AND durable_instance.submitted_by OPERATOR(pg_catalog.=)
+                  pg_catalog.to_regrole(CURRENT_USER)
+          AND durable_instance.status OPERATOR(pg_catalog.=)
+                  ANY (ARRAY['pending', 'running']))
+    THEN
+        RAISE EXCEPTION
+            'registered backstop instance % is no longer pending or running '
+            'for submitter %',
+            instance, CURRENT_USER
+            USING HINT =
+                'Inspect the instance status and pg_durable worker log, then '
+                'rerun this script to register a replacement.';
+    END IF;
+END
+$$;

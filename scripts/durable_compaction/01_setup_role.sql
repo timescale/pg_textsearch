@@ -60,7 +60,9 @@
 --   * Reusing textsearch_compactor is allowed only when it remains a
 --     dedicated passwordless role with no privileged attributes, custom
 --     connection limit, unsafe search_path/identity defaults, or unexpected
---     memberships. Failed validation happens before owner or df grants.
+--     memberships or owned objects. The exact managed request wrapper is the
+--     only allowed owner dependency. Failed validation happens before owner or
+--     df grants.
 
 \set ON_ERROR_STOP on
 
@@ -300,6 +302,80 @@ BEGIN
     THEN
         RAISE EXCEPTION
             'existing textsearch_compactor role has privileged attributes';
+    END IF;
+END
+$$;
+
+-- A SECURITY DEFINER object planted under this role would inherit the owner
+-- privileges granted below. pg_shdepend is cluster-wide, so this also rejects
+-- owner dependencies in other databases. A clean rerun may retain only the
+-- exact request wrapper installed by 02_wrapper.sql in this database.
+DO $$
+DECLARE
+    compactor_oid pg_catalog.oid;
+    database_oid  pg_catalog.oid;
+    wrapper_oid   pg_catalog.oid;
+BEGIN
+    SELECT oid
+    INTO compactor_oid
+    FROM pg_catalog.pg_roles
+    WHERE rolname = 'textsearch_compactor';
+
+    IF compactor_oid IS NULL THEN
+        RETURN;
+    END IF;
+
+    SELECT oid
+    INTO database_oid
+    FROM pg_catalog.pg_database
+    WHERE datname = pg_catalog.current_database();
+
+    wrapper_oid := pg_catalog.to_regprocedure(
+        'public.bm25_request_compaction(pg_catalog.regclass)');
+
+    IF EXISTS (
+        SELECT 1
+        FROM pg_catalog.pg_shdepend dependency
+        WHERE dependency.refclassid OPERATOR(pg_catalog.=)
+                  'pg_catalog.pg_authid'::pg_catalog.regclass
+          AND dependency.refobjid OPERATOR(pg_catalog.=) compactor_oid
+          AND dependency.deptype OPERATOR(pg_catalog.=) 'o'
+          AND NOT (
+              wrapper_oid IS NOT NULL
+              AND dependency.dbid OPERATOR(pg_catalog.=) database_oid
+              AND dependency.classid OPERATOR(pg_catalog.=)
+                      'pg_catalog.pg_proc'::pg_catalog.regclass
+              AND dependency.objid OPERATOR(pg_catalog.=) wrapper_oid
+              AND dependency.objsubid OPERATOR(pg_catalog.=) 0
+              AND EXISTS (
+                  SELECT 1
+                  FROM pg_catalog.pg_proc procedure
+                       JOIN pg_catalog.pg_namespace namespace
+                         ON namespace.oid OPERATOR(pg_catalog.=)
+                                procedure.pronamespace
+                  WHERE procedure.oid OPERATOR(pg_catalog.=) wrapper_oid
+                    AND namespace.nspname OPERATOR(pg_catalog.=) 'public'
+                    AND procedure.proname OPERATOR(pg_catalog.=)
+                            'bm25_request_compaction'
+                    AND procedure.proowner OPERATOR(pg_catalog.=)
+                            compactor_oid
+                    AND procedure.prokind OPERATOR(pg_catalog.=) 'f'
+                    AND procedure.prorettype OPERATOR(pg_catalog.=)
+                            'pg_catalog.text'::pg_catalog.regtype
+                    AND procedure.pronargs OPERATOR(pg_catalog.=) 1
+                    AND procedure.proargtypes[0]
+                            OPERATOR(pg_catalog.=)
+                            'pg_catalog.regclass'::pg_catalog.regtype)
+          )
+    )
+    THEN
+        RAISE EXCEPTION
+            'existing textsearch_compactor role owns unexpected objects'
+            USING HINT =
+                'Drop or reassign every object owned by '
+                'textsearch_compactor except the managed '
+                'public.bm25_request_compaction(regclass) wrapper, then '
+                'rerun this script.';
     END IF;
 END
 $$;
