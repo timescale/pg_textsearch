@@ -9,7 +9,8 @@
 -- This is the function that pg_textsearch calls at PRE_COMMIT when
 -- pg_textsearch.compaction_mode = 'background'.  The extension emits
 --
---     SELECT <compaction_request_function>(<oid>::oid::regclass)
+--     SELECT <compaction_request_function>(
+--         <oid>::pg_catalog.oid::pg_catalog.regclass)
 --
 -- once per index that requested compaction during the transaction.
 --
@@ -26,6 +27,10 @@
 -- INSERT privilege on the indexed heap or one of its partition
 -- ancestors.  The DSL shape and function names are fixed here; only
 -- the numeric target identity is constructed into the SQL text.
+-- Granting EXECUTE deliberately also permits direct calls: this function
+-- is the approved writer's durable-job submission capability, not a
+-- callback-provenance gate. Labels are observability metadata, not
+-- authorization or deduplication.
 
 \set ON_ERROR_STOP on
 
@@ -36,25 +41,28 @@
 
 BEGIN;
 
-DROP FUNCTION IF EXISTS public.bm25_request_compaction(regclass);
+SET LOCAL search_path = pg_catalog, pg_temp;
+
+DROP FUNCTION IF EXISTS
+    public.bm25_request_compaction(pg_catalog.regclass);
 
 -- Recreate rather than replace to discard old ACLs.  The surrounding
 -- transaction leaves the previous wrapper intact if any later step
 -- fails.
-CREATE FUNCTION public.bm25_request_compaction(idx regclass)
-RETURNS text
+CREATE FUNCTION public.bm25_request_compaction(idx pg_catalog.regclass)
+RETURNS pg_catalog.text
 LANGUAGE plpgsql
 SECURITY DEFINER
 SET search_path = pg_catalog, pg_temp
 AS $fn$
 DECLARE
-    ext_schema     text;
-    idx_oid        text;
-    database_oid   text;
-    tablespace_oid text;
-    relfilenumber  text;
-    body           text;
-    cond           text;
+    ext_schema     pg_catalog.text;
+    idx_oid        pg_catalog.text;
+    database_oid   pg_catalog.text;
+    tablespace_oid pg_catalog.text;
+    relfilenumber  pg_catalog.text;
+    body           pg_catalog.text;
+    cond           pg_catalog.text;
 BEGIN
     -- Reject anything that is not a bm25 index before enqueuing a
     -- task that could only ever fail.  EXECUTE on this function is
@@ -68,7 +76,8 @@ BEGIN
           AND c.relkind = 'i'
           AND am.amname = 'bm25')
     THEN
-        RAISE EXCEPTION '"%" is not a bm25 index', idx::text;
+        RAISE EXCEPTION
+            '"%" is not a bm25 index', idx::pg_catalog.text;
     END IF;
 
     IF EXISTS (
@@ -110,10 +119,12 @@ BEGIN
         RAISE EXCEPTION 'extension pg_textsearch is not installed here';
     END IF;
 
-    SELECT idx::oid::text,
-           db.oid::text,
-           coalesce(nullif(c.reltablespace, 0), db.dattablespace)::text,
-           pg_catalog.pg_relation_filenode(idx)::text
+    SELECT idx::pg_catalog.oid::pg_catalog.text,
+           db.oid::pg_catalog.text,
+           coalesce(
+               nullif(c.reltablespace, 0),
+               db.dattablespace)::pg_catalog.text,
+           pg_catalog.pg_relation_filenode(idx)::pg_catalog.text
     INTO idx_oid, database_oid, tablespace_oid, relfilenumber
     FROM pg_catalog.pg_class c
          JOIN pg_catalog.pg_database db
@@ -122,11 +133,13 @@ BEGIN
 
     body := pg_catalog.format(
         'SELECT %I.bm25_compact_step_if_current('
-        '%s::oid, %s::oid, %s::oid, %s::oid)',
+        '%s::pg_catalog.oid, %s::pg_catalog.oid, '
+        '%s::pg_catalog.oid, %s::pg_catalog.oid)',
         ext_schema, idx_oid, database_oid, tablespace_oid, relfilenumber);
     cond := pg_catalog.format(
         'SELECT %I.bm25_needs_compaction_if_current('
-        '%s::oid, %s::oid, %s::oid, %s::oid)',
+        '%s::pg_catalog.oid, %s::pg_catalog.oid, '
+        '%s::pg_catalog.oid, %s::pg_catalog.oid)',
         ext_schema, idx_oid, database_oid, tablespace_oid, relfilenumber);
 
     -- The stepped shape.  df.loop(body, condition) runs the body,
@@ -159,10 +172,11 @@ BEGIN
 END;
 $fn$;
 
-ALTER FUNCTION public.bm25_request_compaction(regclass)
+ALTER FUNCTION public.bm25_request_compaction(pg_catalog.regclass)
     OWNER TO textsearch_compactor;
 
-REVOKE ALL ON FUNCTION public.bm25_request_compaction(regclass)
+REVOKE ALL ON FUNCTION
+    public.bm25_request_compaction(pg_catalog.regclass)
     FROM PUBLIC CASCADE;
 
 -- Default privileges can add named grants to a newly created function.
@@ -180,12 +194,14 @@ BEGIN
                      pg_catalog.acldefault('f', proc.proowner))) acl
              JOIN pg_catalog.pg_roles role ON role.oid = acl.grantee
         WHERE proc.oid =
-                  'public.bm25_request_compaction(regclass)'::regprocedure
+                  'public.bm25_request_compaction(pg_catalog.regclass)'
+                      ::pg_catalog.regprocedure
           AND acl.grantee <> proc.proowner
     LOOP
         EXECUTE pg_catalog.format(
             'REVOKE ALL ON FUNCTION '
-            'public.bm25_request_compaction(regclass) FROM %I CASCADE',
+            'public.bm25_request_compaction(pg_catalog.regclass) '
+            'FROM %I CASCADE',
             grantee_name);
     END LOOP;
 END
@@ -201,7 +217,8 @@ SELECT CASE WHEN nullif(:'writer_role', '') IS NULL
 \gset
 
 \if :have_writer
-GRANT EXECUTE ON FUNCTION public.bm25_request_compaction(regclass)
+GRANT EXECUTE ON FUNCTION
+    public.bm25_request_compaction(pg_catalog.regclass)
     TO :"writer";
 \endif
 

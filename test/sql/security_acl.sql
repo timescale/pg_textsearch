@@ -3,7 +3,25 @@
 -- index for scoring bypasses the executor's range-table permission
 -- checks, so the operator function performs the ACL check itself.
 
+CREATE ROLE bm25_default_exec;
+ALTER DEFAULT PRIVILEGES IN SCHEMA public
+    GRANT EXECUTE ON FUNCTIONS TO bm25_default_exec;
+
 CREATE EXTENSION pg_textsearch;
+
+SELECT NOT (
+    pg_catalog.has_function_privilege(
+        'bm25_default_exec',
+        'bm25_compact_step_if_current(oid,oid,oid,oid)',
+        'EXECUTE')
+    OR pg_catalog.has_function_privilege(
+        'bm25_default_exec',
+        'bm25_needs_compaction_if_current(oid,oid,oid,oid)',
+        'EXECUTE'))
+    AS private_helpers_owner_only;
+
+ALTER DEFAULT PRIVILEGES IN SCHEMA public
+    REVOKE EXECUTE ON FUNCTIONS FROM bm25_default_exec;
 
 -- Victim objects live in a schema the attacker cannot use.
 CREATE SCHEMA victim;
@@ -83,6 +101,40 @@ GRANT SELECT (body) ON victim.part_docs TO bm25_predreader;
 SELECT ('alpha'::text <@>
         (SELECT to_bm25query('alpha', 'victim.docs_bm25'))) < 0
     AS owner_present;
+
+------------------------------------------------------------------
+-- Private physical-target helpers reject even the current session's
+-- temporary indexes. Public owner APIs keep supporting local temp
+-- compaction.
+------------------------------------------------------------------
+SET pg_textsearch.compaction_mode = 'off';
+SET pg_textsearch.segments_per_level = 2;
+CREATE TEMP TABLE temp_docs (body text);
+CREATE INDEX temp_docs_bm25 ON temp_docs USING bm25(body)
+    WITH (text_config='english');
+INSERT INTO temp_docs SELECT 'first ' || i FROM generate_series(1, 20) i;
+SELECT bm25_spill_index('temp_docs_bm25') > 0 AS temp_first_spill;
+INSERT INTO temp_docs SELECT 'second ' || i FROM generate_series(1, 20) i;
+SELECT bm25_spill_index('temp_docs_bm25') > 0 AS temp_second_spill;
+SELECT bm25_needs_compaction('temp_docs_bm25') AS temp_public_pending;
+
+SELECT NOT bm25_needs_compaction_if_current(
+        c.oid,
+        d.oid,
+        coalesce(nullif(c.reltablespace, 0), d.dattablespace),
+        pg_catalog.pg_relation_filenode(c.oid)::oid)
+    AS private_temp_rejected
+FROM pg_catalog.pg_class c
+JOIN pg_catalog.pg_database d
+  ON d.datname = pg_catalog.current_database()
+WHERE c.oid = 'temp_docs_bm25'::regclass;
+
+SELECT bm25_compact_step('temp_docs_bm25') IS NOT NULL
+    AS temp_public_compact_called;
+SELECT NOT bm25_needs_compaction('temp_docs_bm25')
+    AS temp_public_compacted;
+RESET pg_textsearch.compaction_mode;
+RESET pg_textsearch.segments_per_level;
 
 ------------------------------------------------------------------
 -- Attacker: every standalone scoring path must be denied.
@@ -182,4 +234,7 @@ DROP ROLE bm25_wrongcol;
 DROP ROLE bm25_nousage;
 DROP ROLE bm25_exprreader;
 DROP ROLE bm25_predreader;
+DROP OWNED BY bm25_default_exec;
+DROP ROLE bm25_default_exec;
+DROP TABLE temp_docs;
 DROP EXTENSION pg_textsearch;

@@ -293,6 +293,54 @@ REVOKE ALL ON FUNCTION
     @extschema@.bm25_needs_compaction_if_current(oid, oid, oid, oid)
 FROM PUBLIC;
 
+-- Named ALTER DEFAULT PRIVILEGES grants are copied onto new functions and
+-- survive a PUBLIC-only revoke. Keep physical-target helpers owner-only;
+-- the operator setup grants the dedicated compactor after installation.
+DO $$
+DECLARE
+    helper record;
+BEGIN
+    FOR helper IN
+        SELECT namespace.nspname,
+               procedure.proname,
+               grantee.rolname AS grantee_name
+        FROM pg_catalog.pg_extension extension
+             JOIN pg_catalog.pg_depend dependency
+               ON dependency.refclassid =
+                      'pg_catalog.pg_extension'::pg_catalog.regclass
+              AND dependency.refobjid = extension.oid
+              AND dependency.classid =
+                      'pg_catalog.pg_proc'::pg_catalog.regclass
+              AND dependency.deptype = 'e'
+             JOIN pg_catalog.pg_proc procedure
+               ON procedure.oid = dependency.objid
+             JOIN pg_catalog.pg_namespace namespace
+               ON namespace.oid = procedure.pronamespace
+             CROSS JOIN LATERAL pg_catalog.aclexplode(
+                 coalesce(
+                     procedure.proacl,
+                     pg_catalog.acldefault(
+                         'f', procedure.proowner))) acl
+             JOIN pg_catalog.pg_roles grantee
+               ON grantee.oid = acl.grantee
+        WHERE extension.extname = 'pg_textsearch'
+          AND procedure.proname IN (
+                  'bm25_compact_step_if_current',
+                  'bm25_needs_compaction_if_current')
+          AND procedure.pronargs = 4
+          AND acl.grantee <> procedure.proowner
+    LOOP
+        EXECUTE pg_catalog.format(
+            'REVOKE ALL ON FUNCTION %I.%I('
+            'pg_catalog.oid, pg_catalog.oid, pg_catalog.oid, pg_catalog.oid'
+            ') FROM %I CASCADE',
+            helper.nspname,
+            helper.proname,
+            helper.grantee_name);
+    END LOOP;
+END
+$$;
+
 CREATE FUNCTION @extschema@.bm25_needs_compaction(idx regclass)
 RETURNS boolean
 LANGUAGE sql STABLE

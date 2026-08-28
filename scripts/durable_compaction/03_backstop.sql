@@ -84,6 +84,8 @@
 
 \set ON_ERROR_STOP on
 
+SET search_path = pg_catalog, pg_temp;
+
 \if :{?cron}
 \else
 \set cron '0 * * * *'
@@ -157,7 +159,7 @@ BEGIN
                 df.loop(
                     df.wait_for_schedule(
                         pg_catalog.current_setting('pg_textsearch_backstop.cron'))
-                    ~> body),
+                    OPERATOR(pg_catalog.~>) body),
                 label => 'bm25-compaction-backstop')
             INTO instance;
 

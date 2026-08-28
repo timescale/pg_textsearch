@@ -103,6 +103,26 @@ sql_as() {
 
 sql_super() { sql_as postgres "$@"; }
 
+assert_compactor_ungranted() {
+    local desc="$1"
+    local granted
+    granted=$(sql_super -c "SELECT
+        EXISTS (
+            SELECT 1
+            FROM pg_catalog.pg_auth_members member
+            WHERE member.member =
+                    'textsearch_compactor'::pg_catalog.regrole
+              AND member.roleid = 'app_owner'::pg_catalog.regrole)
+        OR EXISTS (
+            SELECT 1
+            FROM pg_catalog.pg_namespace namespace
+            CROSS JOIN LATERAL pg_catalog.aclexplode(namespace.nspacl) acl
+            WHERE namespace.nspname = 'df'
+              AND acl.grantee =
+                    'textsearch_compactor'::pg_catalog.regrole);")
+    assert_eq "$desc" "f" "$granted"
+}
+
 set_guc() {
     # ALTER SYSTEM cannot run inside a transaction block, and psql folds
     # multiple statements passed to one -c into an implicit transaction
@@ -256,6 +276,19 @@ EOF
 SET search_path = public, ${EXT_SCHEMA};"
     sql_super -c "CREATE EXTENSION pg_textsearch \
 WITH SCHEMA ${EXT_SCHEMA};"
+    sql_super -c "CREATE SCHEMA hostile_path;"
+    sql_super -c "CREATE DOMAIN hostile_path.oid AS pg_catalog.text;"
+    sql_super -c "CREATE DOMAIN hostile_path.regclass AS pg_catalog.text;"
+    sql_super -c "CREATE FUNCTION hostile_path.name_equal(
+        pg_catalog.name, pg_catalog.name)
+        RETURNS pg_catalog.bool
+        LANGUAGE sql IMMUTABLE
+        RETURN false;"
+    sql_super -c "CREATE OPERATOR hostile_path.= (
+        FUNCTION = hostile_path.name_equal,
+        LEFTARG = pg_catalog.name,
+        RIGHTARG = pg_catalog.name);"
+    sql_super -c "GRANT USAGE ON SCHEMA hostile_path TO PUBLIC;"
     log "Test cluster ready (db=${TEST_DB})"
 }
 
@@ -277,6 +310,82 @@ setup_roles_and_glue() {
     sql_super -c "CREATE ROLE app_owner LOGIN;"
     sql_super -c "CREATE ROLE app_writer LOGIN;"
 
+    sql_super -c "CREATE ROLE textsearch_compactor LOGIN
+        PASSWORD 'must-not-survive';"
+    if sql_super -f "${GLUE_DIR}/01_setup_role.sql" \
+        -v index_owner=app_owner >/dev/null 2>&1; then
+        error "setup accepted a credentialed compactor role"
+    fi
+    log "PASS: setup rejects a credentialed compactor role"
+    assert_compactor_ungranted \
+        "credential rejection happens before owner/df grants"
+    sql_super -c "ALTER ROLE textsearch_compactor PASSWORD NULL;"
+
+    sql_super -c "ALTER ROLE textsearch_compactor
+        SUPERUSER CREATEDB CREATEROLE REPLICATION BYPASSRLS;"
+    if sql_super -f "${GLUE_DIR}/01_setup_role.sql" \
+        -v index_owner=app_owner >/dev/null 2>&1; then
+        error "setup accepted a privileged compactor role"
+    fi
+    log "PASS: setup rejects privileged compactor attributes"
+    assert_compactor_ungranted \
+        "attribute rejection happens before owner/df grants"
+    sql_super -c "ALTER ROLE textsearch_compactor
+        NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS;"
+
+    sql_super -c "ALTER ROLE textsearch_compactor CONNECTION LIMIT 2;"
+    if sql_super -f "${GLUE_DIR}/01_setup_role.sql" \
+        -v index_owner=app_owner >/dev/null 2>&1; then
+        error "setup accepted a compactor connection limit"
+    fi
+    log "PASS: setup rejects a non-default compactor connection limit"
+    assert_compactor_ungranted \
+        "connection-limit rejection happens before owner/df grants"
+    sql_super -c "ALTER ROLE textsearch_compactor CONNECTION LIMIT -1;"
+
+    sql_super -c "ALTER ROLE textsearch_compactor IN DATABASE ${TEST_DB}
+        SET search_path = hostile_path, pg_catalog;"
+    if sql_super -f "${GLUE_DIR}/01_setup_role.sql" \
+        -v index_owner=app_owner >/dev/null 2>&1; then
+        error "setup accepted an unsafe compactor search_path setting"
+    fi
+    log "PASS: setup rejects unsafe role/database settings"
+    assert_compactor_ungranted \
+        "setting rejection happens before owner/df grants"
+    sql_super -c "ALTER ROLE textsearch_compactor IN DATABASE ${TEST_DB}
+        RESET search_path;"
+    sql_super -c "ALTER ROLE textsearch_compactor
+        SET statement_timeout = 0;"
+
+    sql_super -c "CREATE ROLE hostile_parent NOLOGIN;"
+    sql_super -c "CREATE ROLE hostile_grantor NOLOGIN;"
+    sql_super -c "GRANT hostile_parent TO hostile_grantor
+        WITH ADMIN TRUE;"
+    sql_super <<'SQL'
+SET ROLE hostile_grantor;
+GRANT hostile_parent TO textsearch_compactor
+    WITH INHERIT TRUE, SET FALSE;
+RESET ROLE;
+SQL
+    if sql_super -f "${GLUE_DIR}/01_setup_role.sql" \
+        -v index_owner=app_owner >/dev/null 2>&1; then
+        error "setup accepted an unexpected compactor membership"
+    fi
+    log "PASS: setup rejects non-operator compactor memberships"
+    assert_compactor_ungranted \
+        "membership rejection happens before owner/df grants"
+    assert_eq "failed setup preserves the unexpected membership" "t" \
+        "$(sql_super -c "SELECT pg_has_role(
+            'textsearch_compactor', 'hostile_parent', 'MEMBER');")"
+    sql_super <<'SQL'
+SET ROLE hostile_grantor;
+REVOKE hostile_parent FROM textsearch_compactor;
+RESET ROLE;
+SQL
+    sql_super -c "REVOKE hostile_parent FROM hostile_grantor;"
+    sql_super -c "DROP ROLE hostile_grantor;"
+    sql_super -c "DROP ROLE hostile_parent;"
+
     sql_super -c "GRANT CREATE ON SCHEMA public TO PUBLIC;"
     if sql_super -f "${GLUE_DIR}/01_setup_role.sql" \
         -v index_owner=app_owner >/dev/null 2>&1; then
@@ -285,8 +394,34 @@ setup_roles_and_glue() {
     log "PASS: setup rejects PUBLIC CREATE on wrapper schema"
     sql_super -c "REVOKE CREATE ON SCHEMA public FROM PUBLIC;"
 
-    sql_super -f "${GLUE_DIR}/01_setup_role.sql" -v index_owner=app_owner \
-        >/dev/null
+    PGOPTIONS="-c search_path=hostile_path,pg_catalog,public,${EXT_SCHEMA},df" \
+        sql_super -f "${GLUE_DIR}/01_setup_role.sql" \
+        -v index_owner=app_owner >/dev/null
+
+    sql_super -c "CREATE ROLE app_owner_two LOGIN;"
+    sql_super -f "${GLUE_DIR}/01_setup_role.sql" \
+        -v index_owner=app_owner_two >/dev/null
+    sql_super -f "${GLUE_DIR}/01_setup_role.sql" \
+        -v index_owner=app_owner >/dev/null
+    assert_eq "clean multi-owner reruns preserve owner memberships" "t" \
+        "$(sql_super -c "SELECT
+            pg_has_role('textsearch_compactor', 'app_owner', 'MEMBER')
+            AND pg_has_role(
+                'textsearch_compactor', 'app_owner_two', 'MEMBER');")"
+    assert_eq "owner memberships never grant SET ROLE" "f" \
+        "$(sql_super -c "SELECT
+            pg_has_role('textsearch_compactor', 'app_owner', 'SET')
+            OR pg_has_role(
+                'textsearch_compactor', 'app_owner_two', 'SET');")"
+    assert_eq "clean reruns preserve harmless role settings" "t" \
+        "$(sql_super -c "SELECT EXISTS (
+            SELECT 1
+            FROM pg_catalog.pg_db_role_setting setting
+            CROSS JOIN LATERAL
+                pg_catalog.unnest(setting.setconfig) config(value)
+            WHERE setting.setrole =
+                    'textsearch_compactor'::pg_catalog.regrole
+              AND config.value = 'statement_timeout=0');")"
 
     sql_super -c "CREATE ROLE compactor_member LOGIN;"
     sql_super -c "CREATE ROLE inbound_owner NOLOGIN;"
@@ -423,8 +558,14 @@ compactor_superuser_bridge;"
     sql_super -c "DROP ROLE compactor_superuser_bridge;"
     sql_super -c "DROP ROLE compactor_superuser_grandparent;"
 
-    sql_super -f "${GLUE_DIR}/02_wrapper.sql" -v writer_role=app_writer \
-        >/dev/null
+    PGOPTIONS="-c search_path=hostile_path,pg_catalog,public,${EXT_SCHEMA},df" \
+        sql_super -f "${GLUE_DIR}/02_wrapper.sql" \
+        -v writer_role=app_writer >/dev/null
+    assert_eq "wrapper signature uses pg_catalog.regclass" "regclass" \
+        "$(sql_super -c "SELECT pg_catalog.format_type(proargtypes[0], NULL)
+            FROM pg_catalog.pg_proc
+            WHERE oid =
+                'public.bm25_request_compaction(regclass)'::regprocedure;")"
 
     sql_super -c "CREATE ROLE old_writer LOGIN;"
     sql_super -c "GRANT EXECUTE ON FUNCTION \
@@ -738,7 +879,50 @@ SQL
 }
 
 # ---------------------------------------------------------------------
-# Test 5: a rolled-back drop remains repairable
+# Test 5: hostile writer search_path cannot redirect casts or operators
+# ---------------------------------------------------------------------
+
+test_hostile_search_path() {
+    log "=== Test: hostile search_path resolution ==="
+    sql_super -c "ALTER ROLE app_owner IN DATABASE ${TEST_DB}
+        SET search_path =
+            hostile_path, pg_catalog, public, ${EXT_SCHEMA}, df;"
+    create_owned_table t_hostile_path t_hostile_path_idx
+    local label
+    label=$(label_for t_hostile_path_idx)
+
+    spill_rounds app_owner t_hostile_path_idx t_hostile_path 2
+
+    local id
+    id=$(sql_super -c "SELECT id FROM df.instances
+        WHERE label = '${label}' ORDER BY created_at DESC LIMIT 1;")
+    if [ -z "$id" ]; then
+        error "ASSERTION FAILED: hostile search_path prevented dispatch"
+    fi
+
+    local qualified_dsl
+    qualified_dsl=$(sql_super -c "SELECT count(*) = 2
+        AND bool_and(query ~ (
+            '^SELECT ${EXT_SCHEMA}\\.bm25_' ||
+            '(compact_step|needs_compaction)_if_current\\(' ||
+            '[0-9]+::pg_catalog\\.oid, ' ||
+            '[0-9]+::pg_catalog\\.oid, ' ||
+            '[0-9]+::pg_catalog\\.oid, ' ||
+            '[0-9]+::pg_catalog\\.oid\\)$'))
+        FROM df.nodes
+        WHERE instance_id = '${id}'
+          AND node_type = 'SQL';")
+    assert_eq "worker SQL schema-qualifies built-in casts" \
+        "t" "$qualified_dsl"
+    assert_eq "hostile-search-path request completes" "completed" \
+        "$(wait_for_instance "$id" 30)"
+
+    sql_super -c "ALTER ROLE app_owner IN DATABASE ${TEST_DB}
+        RESET search_path;"
+}
+
+# ---------------------------------------------------------------------
+# Test 6: a rolled-back drop remains repairable
 # ---------------------------------------------------------------------
 
 test_drop_rollback() {
@@ -773,7 +957,7 @@ SQL
 }
 
 # ---------------------------------------------------------------------
-# Test 6: it actually compacts
+# Test 7: it actually compacts
 # ---------------------------------------------------------------------
 
 test_actually_compacts() {
@@ -811,7 +995,7 @@ test_actually_compacts() {
 }
 
 # ---------------------------------------------------------------------
-# Test 7: write latency, inline vs background
+# Test 8: write latency, inline vs background
 # ---------------------------------------------------------------------
 
 time_rounds() {
@@ -868,7 +1052,7 @@ number (got '${val}')"
 }
 
 # ---------------------------------------------------------------------
-# Test 8: failure path
+# Test 9: failure path
 # ---------------------------------------------------------------------
 
 test_failure_path() {
@@ -924,7 +1108,7 @@ ${l0_after})"
 }
 
 # ---------------------------------------------------------------------
-# Test 9: cascade splits across transactions
+# Test 10: cascade splits across transactions
 # ---------------------------------------------------------------------
 
 test_cascade() {
@@ -1017,7 +1201,7 @@ for the cascade, server log shows ${generations}"
 }
 
 # ---------------------------------------------------------------------
-# Test 10: permissions
+# Test 11: permissions
 # ---------------------------------------------------------------------
 
 test_permissions() {
@@ -1114,7 +1298,7 @@ for a writer that only holds EXECUTE on bm25_request_compaction"
 }
 
 # ---------------------------------------------------------------------
-# Test 11: partition ancestors authorize physical leaf indexes
+# Test 12: partition ancestors authorize physical leaf indexes
 # ---------------------------------------------------------------------
 
 test_partition_permissions() {
@@ -1202,7 +1386,7 @@ ${deep_leaf_index}"
 }
 
 # ---------------------------------------------------------------------
-# Test 12: stale durable targets terminate safely
+# Test 13: stale durable targets terminate safely
 # ---------------------------------------------------------------------
 
 test_stale_targets() {
@@ -1228,8 +1412,10 @@ test_stale_targets() {
         AND bool_and(query ~ (
             '^SELECT ${EXT_SCHEMA}\\.bm25_' ||
             '(compact_step|needs_compaction)_if_current\\(' ||
-            '[0-9]+::oid, [0-9]+::oid, [0-9]+::oid, ' ||
-            '[0-9]+::oid\\)$'))
+            '[0-9]+::pg_catalog\\.oid, ' ||
+            '[0-9]+::pg_catalog\\.oid, ' ||
+            '[0-9]+::pg_catalog\\.oid, ' ||
+            '[0-9]+::pg_catalog\\.oid\\)$'))
         FROM df.nodes
         WHERE instance_id IN ('${drop_id}', '${reindex_id}')
           AND node_type = 'SQL';")
@@ -1266,7 +1452,7 @@ test_stale_targets() {
 }
 
 # ---------------------------------------------------------------------
-# Test 13: partition cascade removes pending leaf requests
+# Test 14: partition cascade removes pending leaf requests
 # ---------------------------------------------------------------------
 
 test_partition_drop_cleanup() {
@@ -1326,7 +1512,7 @@ SQL
 }
 
 # ---------------------------------------------------------------------
-# Test 14: ownership drift remains visible to the repair sweep
+# Test 15: ownership drift remains visible to the repair sweep
 # ---------------------------------------------------------------------
 
 test_ownership_drift_sweep() {
@@ -1379,7 +1565,7 @@ t_ownership_eligible CASCADE;"
 }
 
 # ---------------------------------------------------------------------
-# Test 15: backstop (run LAST -- its per-minute sweep would otherwise
+# Test 16: backstop (run LAST -- its per-minute sweep would otherwise
 # compact every pending index in the database, corrupting the carefully
 # staged segment counts the other tests depend on).
 # ---------------------------------------------------------------------
@@ -1424,7 +1610,8 @@ END
 $trap$;
 SQL
 
-    sql_as textsearch_compactor -f "${GLUE_DIR}/03_backstop.sql" \
+    PGOPTIONS="-c search_path=hostile_path,pg_catalog,public,${EXT_SCHEMA},df" \
+        sql_as textsearch_compactor -f "${GLUE_DIR}/03_backstop.sql" \
         -v cron='* * * * *' >/dev/null
 
     local backstop_id backstop_status
@@ -1490,6 +1677,7 @@ test_atomicity
 test_independent_request
 test_prepared_transaction
 test_temp_index
+test_hostile_search_path
 test_drop_rollback
 test_actually_compacts
 test_write_latency

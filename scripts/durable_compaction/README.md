@@ -84,6 +84,13 @@ Public compaction mutators separately enforce index ownership. Re-running
 `02_wrapper.sql` transactionally normalizes the wrapper ACL to the newly
 configured writer.
 
+Treat wrapper `EXECUTE` as an explicit durable-job submission capability.
+An approved writer may call `bm25_request_compaction()` directly, not only
+through pg_textsearch's pre-commit callback, for any BM25 index whose table it
+may insert into. The wrapper still fixes the task shape and validates the
+target; it does not try to prove callback provenance. Instance labels are
+observability metadata, not a security boundary or a deduplication key.
+
 Omitting `-v writer_role=...` grants wrapper execution to nobody. Grant
 additional approved writers explicitly:
 

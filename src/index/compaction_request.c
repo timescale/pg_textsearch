@@ -143,7 +143,7 @@ tp_run_request(Oid funcoid, Oid indexoid)
 	 */
 	appendStringInfo(
 			&sql,
-			"SELECT %s(%u::oid::regclass)",
+			"SELECT %s(%u::pg_catalog.oid::pg_catalog.regclass)",
 			quote_qualified_identifier(nspname, funcname),
 			indexoid);
 

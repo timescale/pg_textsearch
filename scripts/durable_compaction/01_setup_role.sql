@@ -56,10 +56,17 @@
 --   * Untrusted roles must not have CREATE on the wrapper schema.
 --     This script rejects PUBLIC CREATE on public; revoke CREATE from
 --     any other untrusted roles before installing the wrapper.
+--
+--   * Reusing textsearch_compactor is allowed only when it remains a
+--     dedicated passwordless role with no privileged attributes, custom
+--     connection limit, unsafe search_path/identity defaults, or unexpected
+--     memberships. Failed validation happens before owner or df grants.
 
 \set ON_ERROR_STOP on
 
 BEGIN;
+
+SET LOCAL search_path = pg_catalog, pg_temp;
 
 \if :{?index_owner}
 \else
@@ -134,6 +141,105 @@ $$;
 -- NOSUPERUSER: superuser submission is blocked by default.
 -- INHERIT: the owner-role membership granted below must be automatic,
 --          because the worker never issues SET ROLE.
+DO $$
+BEGIN
+    IF EXISTS (
+        SELECT 1
+        FROM pg_catalog.pg_authid
+        WHERE rolname = 'textsearch_compactor'
+          AND rolpassword IS NOT NULL)
+    THEN
+        RAISE EXCEPTION
+            'existing textsearch_compactor role must not have credentials';
+    END IF;
+END
+$$;
+
+-- Only settings that can redirect name resolution or session identity are
+-- rejected. Resource and timeout settings are not privilege escalations.
+DO $$
+BEGIN
+    IF EXISTS (
+        SELECT 1
+        FROM pg_catalog.pg_db_role_setting setting
+             CROSS JOIN LATERAL
+                 pg_catalog.unnest(setting.setconfig) config(value)
+        WHERE setting.setrole = (
+                  SELECT oid
+                  FROM pg_catalog.pg_roles
+                  WHERE rolname = 'textsearch_compactor')
+          AND setting.setdatabase IN (
+                  0,
+                  (SELECT oid
+                   FROM pg_catalog.pg_database
+                   WHERE datname = pg_catalog.current_database()))
+          AND pg_catalog.split_part(config.value, '=', 1) IN
+                  ('search_path', 'role', 'session_authorization'))
+    THEN
+        RAISE EXCEPTION
+            'existing textsearch_compactor role has unsafe role/database '
+            'settings';
+    END IF;
+END
+$$;
+
+-- A prior successful run leaves direct, inherited, non-SET memberships
+-- granted by a superuser. Preserve only that exact operator-created shape.
+DO $$
+BEGIN
+    IF EXISTS (
+        SELECT 1
+        FROM pg_catalog.pg_auth_members member
+             JOIN pg_catalog.pg_roles grantor
+               ON grantor.oid = member.grantor
+        WHERE member.member = (
+                  SELECT oid
+                  FROM pg_catalog.pg_roles
+                  WHERE rolname = 'textsearch_compactor')
+          AND (member.admin_option
+               OR NOT member.inherit_option
+               OR member.set_option
+               OR NOT grantor.rolsuper))
+    THEN
+        RAISE EXCEPTION
+            'existing textsearch_compactor role has unexpected memberships';
+    END IF;
+END
+$$;
+
+DO $$
+BEGIN
+    IF EXISTS (
+        SELECT 1
+        FROM pg_catalog.pg_authid
+        WHERE rolname = 'textsearch_compactor'
+          AND rolconnlimit <> -1)
+    THEN
+        RAISE EXCEPTION
+            'existing textsearch_compactor role must use the default '
+            'connection limit';
+    END IF;
+END
+$$;
+
+DO $$
+BEGIN
+    IF EXISTS (
+        SELECT 1
+        FROM pg_catalog.pg_authid
+        WHERE rolname = 'textsearch_compactor'
+          AND (rolsuper
+               OR rolcreatedb
+               OR rolcreaterole
+               OR rolreplication
+               OR rolbypassrls))
+    THEN
+        RAISE EXCEPTION
+            'existing textsearch_compactor role has privileged attributes';
+    END IF;
+END
+$$;
+
 DO $$
 BEGIN
     IF NOT EXISTS (
