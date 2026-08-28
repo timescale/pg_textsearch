@@ -179,8 +179,10 @@ attributed to that role.
 The setup grants `textsearch_compactor` inherited membership with
 `SET FALSE`; it rejects recursive membership in any superuser role and
 any alternate direct or indirect membership path that still permits
-`SET ROLE` to the owner. Omitting `-v writer_role=...` grants `EXECUTE`
-to nobody; grant it yourself afterwards.
+`SET ROLE` to the owner. The role creation, validation, membership, and
+function grants run in one transaction, so a rejected owner leaves no
+partial privileges. Omitting `-v writer_role=...` grants `EXECUTE` to nobody;
+grant it yourself afterwards.
 
 The wrapper schema must not be creatable by untrusted roles. The setup
 script rejects `PUBLIC` having `CREATE` on `public`; also revoke it from

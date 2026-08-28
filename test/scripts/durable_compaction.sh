@@ -277,6 +277,25 @@ setup_roles_and_glue() {
     fi
     log "PASS: compactor cannot SET ROLE app_owner"
 
+    sql_super -c "CREATE ROLE unsafe_owner NOLOGIN;"
+    sql_super -c "CREATE ROLE unsafe_owner_superuser \
+SUPERUSER NOLOGIN;"
+    sql_super -c "GRANT unsafe_owner_superuser TO unsafe_owner \
+WITH INHERIT TRUE, SET FALSE;"
+    if sql_super -f "${GLUE_DIR}/01_setup_role.sql" \
+        -v index_owner=unsafe_owner >/dev/null 2>&1; then
+        error "setup accepted an owner nested under a superuser role"
+    fi
+    log "PASS: setup rejects owner membership in a superuser role"
+    local unsafe_owner_membership
+    unsafe_owner_membership=$(sql_super -c "SELECT pg_has_role(\
+'textsearch_compactor', 'unsafe_owner', 'MEMBER');")
+    assert_eq "failed owner setup rolls back compactor membership" \
+        "f" "$unsafe_owner_membership"
+    sql_super -c "REVOKE unsafe_owner_superuser FROM unsafe_owner;"
+    sql_super -c "DROP ROLE unsafe_owner;"
+    sql_super -c "DROP ROLE unsafe_owner_superuser;"
+
     sql_super -c "CREATE ROLE owner_membership_grantor NOLOGIN;"
     sql_super -c "GRANT app_owner TO owner_membership_grantor \
 WITH ADMIN TRUE;"

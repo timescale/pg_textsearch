@@ -190,7 +190,10 @@ which stale work could target an unrelated replacement relation.
 missing roles and roles with `rolsuper`, recursively reject membership in any
 superuser role, and grant owner membership with `INHERIT TRUE, SET FALSE`.
 After the grant, it will reject any alternate direct or indirect membership
-path that still permits `SET ROLE` to the owner.
+path that still permits `SET ROLE` to the owner, then rerun the recursive
+superuser check because the owner grant can introduce a new transitive path.
+The complete role setup runs in one transaction so rejection leaves no
+partial membership or function privileges.
 
 The script will discover the extension schema and explicitly grant the
 compactor `USAGE` plus `EXECUTE` on the compaction functions required by the

@@ -59,6 +59,8 @@
 
 \set ON_ERROR_STOP on
 
+BEGIN;
+
 \if :{?index_owner}
 \else
 \echo 'index_owner is required'
@@ -173,6 +175,24 @@ SELECT df.grant_usage('textsearch_compactor');
 GRANT :"index_owner" TO textsearch_compactor
     WITH INHERIT TRUE, SET FALSE;
 
+-- The owner grant can introduce a new transitive superuser path.
+DO $$
+BEGIN
+    IF EXISTS (
+        SELECT 1
+        FROM pg_catalog.pg_roles granted_role
+        WHERE granted_role.rolsuper
+          AND pg_catalog.pg_has_role(
+                  'textsearch_compactor',
+                  granted_role.oid,
+                  'MEMBER'))
+    THEN
+        RAISE EXCEPTION
+            'textsearch_compactor must not belong to a superuser role';
+    END IF;
+END
+$$;
+
 SELECT pg_catalog.pg_has_role(
            'textsearch_compactor',
            :'index_owner',
@@ -206,5 +226,7 @@ GRANT EXECUTE ON FUNCTION
     :"ext_schema".bm25_indexes_needing_compaction(),
     :"ext_schema".bm25_compact_pending()
 TO textsearch_compactor;
+
+COMMIT;
 
 \echo 'textsearch_compactor ready.'
