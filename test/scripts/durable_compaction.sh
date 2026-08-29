@@ -427,6 +427,11 @@ psql_super -c "GRANT EXECUTE ON FUNCTION
     public.bm25_request_compaction(regclass) TO app_owner;"
 psql_super -c "ALTER SYSTEM SET
     pg_textsearch.segments_per_level = '2';"
+psql_super -c "ALTER SYSTEM SET
+    pg_textsearch.compaction_mode = 'background';"
+psql_super -c "ALTER SYSTEM SET
+    pg_textsearch.compaction_request_function =
+        'public.bm25_request_compaction';"
 psql_super -c "SELECT pg_catalog.pg_reload_conf();" >/dev/null
 psql_super <<'SQL'
 CREATE TABLE compact_docs (id integer PRIMARY KEY, body text);
@@ -436,6 +441,7 @@ ALTER TABLE compact_docs OWNER TO app_owner;
 ALTER INDEX compact_docs_idx OWNER TO app_owner;
 SQL
 levels_before=$(psql_as app_owner <<SQL
+BEGIN;
 INSERT INTO compact_docs
 SELECT i, 'first batch ' || i FROM generate_series(1, 20) i;
 SELECT ${EXT_SCHEMA}.bm25_spill_index('compact_docs_idx');
@@ -443,19 +449,58 @@ INSERT INTO compact_docs
 SELECT i, 'second batch ' || i FROM generate_series(21, 40) i;
 SELECT ${EXT_SCHEMA}.bm25_spill_index('compact_docs_idx');
 SELECT (${EXT_SCHEMA}.bm25_level_counts('compact_docs_idx'))[1];
+COMMIT;
 SQL
 )
 levels_before=$(printf '%s\n' "${levels_before}" | tail -1)
 [ "${levels_before}" -ge 2 ] \
     || fail "test did not create compaction debt"
-compact_instance=$(psql_as app_owner -c "SELECT
-    public.bm25_request_compaction('compact_docs_idx');")
+compact_label=$(psql_super -c "SELECT
+    'bm25-compact-' || 'compact_docs_idx'::regclass::oid;")
+compact_instance=$(psql_super -c "SELECT id
+    FROM df.instances
+    WHERE label = '${compact_label}'
+    ORDER BY created_at DESC
+    LIMIT 1;")
+[ -n "${compact_instance}" ] \
+    || fail "PRE_COMMIT did not persist an adapter request"
 [ "$(wait_for_instance "${compact_instance}")" = "completed" ] \
-    || fail "stepped compaction request did not complete"
+    || fail "PRE_COMMIT adapter request did not complete"
 levels_after=$(psql_super -c "SELECT
     (${EXT_SCHEMA}.bm25_level_counts('compact_docs_idx'))[1];")
 [ "${levels_after}" -lt "${levels_before}" ] \
-    || fail "stepped task did not reduce L0"
+    || fail "PRE_COMMIT adapter task did not reduce L0"
+
+psql_super <<'SQL'
+CREATE TABLE prepare_docs (id integer PRIMARY KEY, body text);
+CREATE INDEX prepare_docs_idx ON prepare_docs
+    USING bm25(body) WITH (text_config = 'english');
+ALTER TABLE prepare_docs OWNER TO app_owner;
+ALTER INDEX prepare_docs_idx OWNER TO app_owner;
+SQL
+psql_as app_owner <<SQL >/dev/null
+INSERT INTO prepare_docs
+SELECT i, 'prepare seed ' || i FROM generate_series(1, 20) i;
+SELECT ${EXT_SCHEMA}.bm25_spill_index('prepare_docs_idx');
+BEGIN;
+INSERT INTO prepare_docs
+SELECT i, 'prepare pending ' || i FROM generate_series(21, 40) i;
+SELECT ${EXT_SCHEMA}.bm25_spill_index('prepare_docs_idx');
+PREPARE TRANSACTION 'durable_compaction_prepare';
+SQL
+prepare_label=$(psql_super -c "SELECT
+    'bm25-compact-' || 'prepare_docs_idx'::regclass::oid;")
+prepare_instance=$(psql_super -c "SELECT id
+    FROM df.instances
+    WHERE label = '${prepare_label}'
+    ORDER BY created_at DESC
+    LIMIT 1;")
+[ -n "${prepare_instance}" ] \
+    || fail "PREPARE did not persist an adapter request"
+[ "$(wait_for_instance "${prepare_instance}")" = "completed" ] \
+    || fail "PREPARE adapter request did not complete"
+psql_as app_owner -c \
+    "ROLLBACK PREPARED 'durable_compaction_prepare';" >/dev/null
 
 stale_identity=$(psql_super -c "SELECT
     relation.oid::text || '|' ||
