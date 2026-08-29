@@ -12,7 +12,7 @@ REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 SOURCE_FILE="${REPO_ROOT}/src/segment/merge.c"
 
 force_merge_body="$(
-    sed -n '/^tp_force_merge_all(Relation index)/,$p' "${SOURCE_FILE}"
+    sed -n '/^tp_force_merge_all(Relation index)$/,/^}$/p' "${SOURCE_FILE}"
 )"
 
 require_text() {
