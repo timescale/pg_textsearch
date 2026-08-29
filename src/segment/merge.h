@@ -95,6 +95,12 @@ extern void tp_maybe_compact_level(Relation index, uint32 level);
 extern bool tp_compact_step(Relation index);
 
 /*
+ * Reject force-merge layouts that cannot reach one segment without
+ * consolidating L7. Returns false when one lone L7 is already complete.
+ */
+extern bool tp_force_merge_preflight(Relation index);
+
+/*
  * Compact all segments across all levels into one segment.
  *
  * Unlike tp_maybe_compact_level, this ignores the segments_per_level

@@ -305,6 +305,70 @@ GRANT EXECUTE ON FUNCTION
     TO :"writer";
 \endif
 
+-- TP_MANAGED_WRAPPER_PROSRC_MD5: keep this hash synchronized with the
+-- allowlist in 01_setup_role.sql. This postcondition makes a body-only edit
+-- fail transactionally before 01 can silently reject a legitimate rerun.
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1
+        FROM pg_catalog.pg_proc procedure
+             JOIN pg_catalog.pg_namespace namespace
+               ON namespace.oid OPERATOR(pg_catalog.=)
+                      procedure.pronamespace
+             JOIN pg_catalog.pg_language language
+               ON language.oid OPERATOR(pg_catalog.=) procedure.prolang
+        WHERE procedure.oid OPERATOR(pg_catalog.=)
+                  'public.bm25_request_compaction(pg_catalog.regclass)'
+                      ::pg_catalog.regprocedure
+          AND namespace.nspname OPERATOR(pg_catalog.=) 'public'
+          AND procedure.proname OPERATOR(pg_catalog.=)
+                  'bm25_request_compaction'
+          AND procedure.proowner OPERATOR(pg_catalog.=)
+                  'textsearch_compactor'::pg_catalog.regrole
+          AND procedure.prokind OPERATOR(pg_catalog.=) 'f'
+          AND procedure.pronargs OPERATOR(pg_catalog.=) 1
+          AND procedure.proargtypes[0] OPERATOR(pg_catalog.=)
+                  'pg_catalog.regclass'::pg_catalog.regtype
+          AND procedure.provariadic OPERATOR(pg_catalog.=) 0
+          AND procedure.prorettype OPERATOR(pg_catalog.=)
+                  'pg_catalog.text'::pg_catalog.regtype
+          AND NOT procedure.proretset
+          AND procedure.pronargdefaults OPERATOR(pg_catalog.=) 0
+          AND procedure.proallargtypes IS NULL
+          AND procedure.proargmodes IS NULL
+          AND procedure.proargnames OPERATOR(pg_catalog.=)
+                  ARRAY['idx']::pg_catalog.text[]
+          AND language.lanname OPERATOR(pg_catalog.=) 'plpgsql'
+          AND procedure.prosecdef
+          AND NOT procedure.proleakproof
+          AND NOT procedure.proisstrict
+          AND procedure.provolatile OPERATOR(pg_catalog.=) 'v'
+          AND procedure.proparallel OPERATOR(pg_catalog.=) 'u'
+          AND procedure.prosupport OPERATOR(pg_catalog.=) 0
+          AND procedure.proconfig OPERATOR(pg_catalog.=)
+                  ARRAY['search_path=pg_catalog, pg_temp']
+                      ::pg_catalog.text[]
+          AND pg_catalog.md5(procedure.prosrc) OPERATOR(pg_catalog.=)
+                  'c8304e8b8d9218c92625ccd8752864ce'
+          AND NOT EXISTS (
+              SELECT 1
+              FROM pg_catalog.aclexplode(
+                  coalesce(
+                      procedure.proacl,
+                      pg_catalog.acldefault('f', procedure.proowner))) acl
+              WHERE acl.grantee OPERATOR(pg_catalog.=) 0
+                AND acl.privilege_type OPERATOR(pg_catalog.=) 'EXECUTE'))
+    THEN
+        RAISE EXCEPTION
+            'managed bm25_request_compaction wrapper definition mismatch'
+            USING HINT =
+                'Keep the wrapper body and security-property allowlists in '
+                '01_setup_role.sql and 02_wrapper.sql synchronized.';
+    END IF;
+END
+$$;
+
 COMMIT;
 
 \echo 'bm25_request_compaction() ready.'

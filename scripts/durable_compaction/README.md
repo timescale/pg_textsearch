@@ -83,7 +83,12 @@ operator-managed membership. Before granting owner or `df` privileges, it
 also rejects objects already owned by the compactor in any database. The
 exact current-database
 `public.bm25_request_compaction(pg_catalog.regclass)` wrapper is the only
-allowed owner dependency, so clean operator-script reruns remain supported.
+allowed owner dependency, and only when its PL/pgSQL body hash, definer
+status, fixed `search_path`, volatility/parallel/leakproof properties, and
+PUBLIC ACL match the managed definition. Named writer `EXECUTE` grants remain
+allowed, so clean operator-script reruns preserve approved writers. A wrapper
+body change requires updating the paired maintained hash in
+`01_setup_role.sql` and `02_wrapper.sql`.
 
 The wrapper authorizes `session_user` by `INSERT` on the indexed table or a
 partition ancestor. The operator setup grants a writer only wrapper `EXECUTE`;

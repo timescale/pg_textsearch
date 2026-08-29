@@ -2061,6 +2061,56 @@ tp_compact_step(Relation index)
 	return true;
 }
 
+bool
+tp_force_merge_preflight(Relation index)
+{
+	TpIndexMetaPage metap;
+	uint16			top_count;
+	bool			has_lower_segments = false;
+	bool			has_memtable;
+
+	metap	  = tp_get_metapage(index);
+	top_count = metap->level_counts[TP_MAX_LEVELS - 1];
+	for (uint32 level = 0; level < TP_MAX_LEVELS - 1; level++)
+	{
+		if (metap->level_counts[level] > 0)
+			has_lower_segments = true;
+	}
+	has_memtable = BlockNumberIsValid(metap->memtable_head_blkno);
+	pfree(metap);
+
+	if (top_count > 1)
+		ereport(ERROR,
+				(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
+				 errmsg("cannot force merge \"%s\": "
+						"level %u contains multiple segments",
+						RelationGetRelationName(index),
+						TP_MAX_LEVELS - 1)));
+
+	if (top_count == 1)
+	{
+		if (has_lower_segments)
+			ereport(ERROR,
+					(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
+					 errmsg("cannot force merge \"%s\": "
+							"level %u is occupied while lower levels remain",
+							RelationGetRelationName(index),
+							TP_MAX_LEVELS - 1)));
+		if (has_memtable)
+			ereport(ERROR,
+					(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
+					 errmsg("cannot force merge \"%s\": "
+							"level %u is occupied while the memtable "
+							"remains nonempty",
+							RelationGetRelationName(index),
+							TP_MAX_LEVELS - 1)));
+
+		return false;
+	}
+
+	return true;
+}
+
 /*
  * Force-merge all segments into a single segment, à la Lucene's
  * forceMerge(1).  Merges ALL segments at each level in a single

@@ -644,13 +644,22 @@ tp_force_merge(PG_FUNCTION_ARGS)
 
 		tp_acquire_index_lock(index_state, LW_EXCLUSIVE);
 		/*
-		 * Spill the memtable first so force-merge produces a
-		 * truly single-segment layout.  tp_do_spill is a no-op
-		 * when the chain is empty.
+		 * Reject terminal layouts before spilling: L7 cannot be merged
+		 * further, so publishing a spill or lower-level promotion could
+		 * only move the index farther from forceMerge(1). One lone L7 is
+		 * already complete and must remain physically untouched.
 		 */
-		(void)tp_do_spill(index_state, index_rel, NULL);
-		tp_force_merge_all(index_rel);
-		tp_truncate_dead_pages(index_rel);
+		if (tp_force_merge_preflight(index_rel))
+		{
+			/*
+			 * With L7 empty, spill the memtable so force-merge produces a
+			 * truly single-segment layout. tp_do_spill is a no-op when the
+			 * chain is empty.
+			 */
+			(void)tp_do_spill(index_state, index_rel, NULL);
+			tp_force_merge_all(index_rel);
+			tp_truncate_dead_pages(index_rel);
+		}
 		tp_release_index_lock(index_state);
 	}
 

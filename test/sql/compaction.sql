@@ -398,6 +398,157 @@ RESET pg_textsearch.debug_segment_count_limit;
 RESET pg_textsearch.compaction_mode;
 DROP TABLE segment_count_terminal CASCADE;
 
+-- Force merge rejects terminal layouts before spilling or merging.
+SET pg_textsearch.segments_per_level = 2;
+SET pg_textsearch.compaction_mode = 'off';
+
+CREATE TABLE force_l7_single (id serial PRIMARY KEY, body text);
+CREATE INDEX force_l7_single_idx ON force_l7_single
+    USING bm25(body) WITH (text_config = 'english');
+CREATE TABLE force_l7_multiple (id serial PRIMARY KEY, body text);
+CREATE INDEX force_l7_multiple_idx ON force_l7_multiple
+    USING bm25(body) WITH (text_config = 'english');
+CREATE TABLE force_l7_mixed (id serial PRIMARY KEY, body text);
+CREATE INDEX force_l7_mixed_idx ON force_l7_mixed
+    USING bm25(body) WITH (text_config = 'english');
+CREATE TABLE force_l7_memtable (id serial PRIMARY KEY, body text);
+CREATE INDEX force_l7_memtable_idx ON force_l7_memtable
+    USING bm25(body) WITH (text_config = 'english');
+
+DO $$
+DECLARE
+    n integer;
+BEGIN
+    FOR n IN 1..128 LOOP
+        INSERT INTO force_l7_single (body)
+        VALUES (format('single terminal %s filler', n));
+        PERFORM bm25_spill_index('force_l7_single_idx');
+        INSERT INTO force_l7_multiple (body)
+        VALUES (format('multiple terminal %s filler', n));
+        PERFORM bm25_spill_index('force_l7_multiple_idx');
+        INSERT INTO force_l7_mixed (body)
+        VALUES (format('mixed terminal %s filler', n));
+        PERFORM bm25_spill_index('force_l7_mixed_idx');
+        INSERT INTO force_l7_memtable (body)
+        VALUES (format('memtable terminal %s filler', n));
+        PERFORM bm25_spill_index('force_l7_memtable_idx');
+    END LOOP;
+
+    FOR n IN 1..127 LOOP
+        PERFORM bm25_compact_step('force_l7_single_idx'::regclass);
+        PERFORM bm25_compact_step('force_l7_multiple_idx'::regclass);
+        PERFORM bm25_compact_step('force_l7_mixed_idx'::regclass);
+        PERFORM bm25_compact_step('force_l7_memtable_idx'::regclass);
+    END LOOP;
+
+    FOR n IN 129..256 LOOP
+        INSERT INTO force_l7_multiple (body)
+        VALUES (format('multiple terminal %s filler', n));
+        PERFORM bm25_spill_index('force_l7_multiple_idx');
+    END LOOP;
+    FOR n IN 128..254 LOOP
+        PERFORM bm25_compact_step('force_l7_multiple_idx'::regclass);
+    END LOOP;
+
+    INSERT INTO force_l7_mixed (body) VALUES ('mixed lower filler');
+    PERFORM bm25_spill_index('force_l7_mixed_idx');
+    INSERT INTO force_l7_memtable (body) VALUES ('memtable pending filler');
+END
+$$;
+
+SET pg_textsearch.debug_segment_count_limit = 2;
+SELECT bm25_level_counts('force_l7_single_idx'::regclass) =
+           ARRAY[0, 0, 0, 0, 0, 0, 0, 1]
+       AND bm25_level_counts('force_l7_multiple_idx'::regclass) =
+           ARRAY[0, 0, 0, 0, 0, 0, 0, 2]
+       AND bm25_level_counts('force_l7_mixed_idx'::regclass) =
+           ARRAY[1, 0, 0, 0, 0, 0, 0, 1]
+       AND bm25_level_counts('force_l7_memtable_idx'::regclass) =
+           ARRAY[0, 0, 0, 0, 0, 0, 0, 1]
+       AS force_l7_preflight_layouts_ready;
+
+CREATE TEMP TABLE force_l7_before AS
+SELECT index_name,
+       bm25_level_counts(index_name::regclass) AS counts,
+       bm25_pending_free_pages(index_name) AS pending_free_pages,
+       pg_relation_size(index_name::regclass) AS relation_size
+FROM (VALUES
+    ('force_l7_single_idx'),
+    ('force_l7_multiple_idx'),
+    ('force_l7_mixed_idx'),
+    ('force_l7_memtable_idx')
+) indexes(index_name);
+
+CREATE FUNCTION pg_temp.force_merge_rejected(
+    index_name pg_catalog.text,
+    expected_message pg_catalog.text)
+RETURNS pg_catalog.bool
+LANGUAGE plpgsql
+SET search_path = pg_catalog, pg_temp
+AS $$
+BEGIN
+    PERFORM public.bm25_force_merge(index_name);
+    RETURN false;
+EXCEPTION
+    WHEN program_limit_exceeded THEN
+        RETURN SQLERRM = expected_message;
+END
+$$;
+
+SELECT bm25_force_merge('force_l7_single_idx');
+SELECT pg_temp.force_merge_rejected(
+           'public.force_l7_multiple_idx',
+           'cannot force merge "force_l7_multiple_idx": '
+           'level 7 contains multiple segments')
+       AS force_l7_multiple_rejected;
+SELECT pg_temp.force_merge_rejected(
+           'public.force_l7_mixed_idx',
+           'cannot force merge "force_l7_mixed_idx": '
+           'level 7 is occupied while lower levels remain')
+       AS force_l7_mixed_rejected;
+SELECT pg_temp.force_merge_rejected(
+           'public.force_l7_memtable_idx',
+           'cannot force merge "force_l7_memtable_idx": '
+           'level 7 is occupied while the memtable remains nonempty')
+       AS force_l7_memtable_rejected;
+
+SELECT index_name,
+       bm25_level_counts(index_name::regclass) = before.counts
+       AND bm25_pending_free_pages(index_name) =
+               before.pending_free_pages
+       AND pg_relation_size(index_name::regclass) =
+               before.relation_size
+       AS force_l7_physical_state_unchanged
+FROM force_l7_before before
+ORDER BY index_name;
+
+SELECT count(*) = 128 AS force_l7_single_preserves_documents
+FROM (
+    SELECT 1 FROM force_l7_single
+    ORDER BY body <@> to_bm25query('filler', 'force_l7_single_idx')
+) ranked;
+SELECT count(*) = 256 AS force_l7_multiple_preserves_documents
+FROM (
+    SELECT 1 FROM force_l7_multiple
+    ORDER BY body <@> to_bm25query('filler', 'force_l7_multiple_idx')
+) ranked;
+SELECT count(*) = 129 AS force_l7_mixed_preserves_documents
+FROM (
+    SELECT 1 FROM force_l7_mixed
+    ORDER BY body <@> to_bm25query('filler', 'force_l7_mixed_idx')
+) ranked;
+SELECT count(*) = 129 AS force_l7_memtable_preserves_documents
+FROM (
+    SELECT 1 FROM force_l7_memtable
+    ORDER BY body <@> to_bm25query('filler', 'force_l7_memtable_idx')
+) ranked;
+
+RESET pg_textsearch.debug_segment_count_limit;
+DROP TABLE force_l7_single CASCADE;
+DROP TABLE force_l7_multiple CASCADE;
+DROP TABLE force_l7_mixed CASCADE;
+DROP TABLE force_l7_memtable CASCADE;
+
 -- bm25_compact reduces the occupied lower level and promotes upward.
 SET pg_textsearch.segments_per_level = 64;
 CREATE TABLE compaction_manual (id serial PRIMARY KEY, body text);

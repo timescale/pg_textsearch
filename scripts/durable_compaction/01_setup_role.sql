@@ -310,6 +310,10 @@ $$;
 -- privileges granted below. pg_shdepend is cluster-wide, so this also rejects
 -- owner dependencies in other databases. A clean rerun may retain only the
 -- exact request wrapper installed by 02_wrapper.sql in this database.
+--
+-- TP_MANAGED_WRAPPER_PROSRC_MD5: when the wrapper body changes, update this
+-- hash and the matching post-install assertion in 02_wrapper.sql together.
+-- The durable integration test runs 02 then 01 so one-sided drift fails.
 DO $$
 DECLARE
     compactor_oid pg_catalog.oid;
@@ -353,6 +357,9 @@ BEGIN
                        JOIN pg_catalog.pg_namespace namespace
                          ON namespace.oid OPERATOR(pg_catalog.=)
                                 procedure.pronamespace
+                       JOIN pg_catalog.pg_language language
+                         ON language.oid OPERATOR(pg_catalog.=)
+                                procedure.prolang
                   WHERE procedure.oid OPERATOR(pg_catalog.=) wrapper_oid
                     AND namespace.nspname OPERATOR(pg_catalog.=) 'public'
                     AND procedure.proname OPERATOR(pg_catalog.=)
@@ -360,12 +367,42 @@ BEGIN
                     AND procedure.proowner OPERATOR(pg_catalog.=)
                             compactor_oid
                     AND procedure.prokind OPERATOR(pg_catalog.=) 'f'
-                    AND procedure.prorettype OPERATOR(pg_catalog.=)
-                            'pg_catalog.text'::pg_catalog.regtype
                     AND procedure.pronargs OPERATOR(pg_catalog.=) 1
                     AND procedure.proargtypes[0]
                             OPERATOR(pg_catalog.=)
-                            'pg_catalog.regclass'::pg_catalog.regtype)
+                            'pg_catalog.regclass'::pg_catalog.regtype
+                    AND procedure.provariadic OPERATOR(pg_catalog.=) 0
+                    AND procedure.prorettype OPERATOR(pg_catalog.=)
+                            'pg_catalog.text'::pg_catalog.regtype
+                    AND NOT procedure.proretset
+                    AND procedure.pronargdefaults OPERATOR(pg_catalog.=) 0
+                    AND procedure.proallargtypes IS NULL
+                    AND procedure.proargmodes IS NULL
+                    AND procedure.proargnames OPERATOR(pg_catalog.=)
+                            ARRAY['idx']::pg_catalog.text[]
+                    AND language.lanname OPERATOR(pg_catalog.=) 'plpgsql'
+                    AND procedure.prosecdef
+                    AND NOT procedure.proleakproof
+                    AND NOT procedure.proisstrict
+                    AND procedure.provolatile OPERATOR(pg_catalog.=) 'v'
+                    AND procedure.proparallel OPERATOR(pg_catalog.=) 'u'
+                    AND procedure.prosupport OPERATOR(pg_catalog.=) 0
+                    AND procedure.proconfig OPERATOR(pg_catalog.=)
+                            ARRAY['search_path=pg_catalog, pg_temp']
+                                ::pg_catalog.text[]
+                    AND pg_catalog.md5(procedure.prosrc)
+                            OPERATOR(pg_catalog.=)
+                            'c8304e8b8d9218c92625ccd8752864ce'
+                    AND NOT EXISTS (
+                        SELECT 1
+                        FROM pg_catalog.aclexplode(
+                            coalesce(
+                                procedure.proacl,
+                                pg_catalog.acldefault(
+                                    'f', procedure.proowner))) acl
+                        WHERE acl.grantee OPERATOR(pg_catalog.=) 0
+                          AND acl.privilege_type
+                                  OPERATOR(pg_catalog.=) 'EXECUTE'))
           )
     )
     THEN

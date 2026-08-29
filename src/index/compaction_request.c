@@ -30,6 +30,12 @@ char *tp_compaction_request_function = "";
 
 static List *tp_pending_compactions = NIL;
 
+typedef struct TpResolvedRequestFunction
+{
+	NameData namespace_name;
+	NameData function_name;
+} TpResolvedRequestFunction;
+
 bool
 tp_check_compaction_request_function(
 		char		   **newval,
@@ -99,13 +105,14 @@ tp_compaction_reset_requests(void)
 	tp_pending_compactions = NIL;
 }
 
-static Oid
+static TpResolvedRequestFunction *
 tp_lookup_request_function(void)
 {
-	MemoryContext oldcxt		= CurrentMemoryContext;
-	ResourceOwner oldowner		= CurrentResourceOwner;
-	Oid			  funcoid		= InvalidOid;
-	bool		  lookup_failed = false;
+	MemoryContext			   oldcxt		 = CurrentMemoryContext;
+	ResourceOwner			   oldowner		 = CurrentResourceOwner;
+	TpResolvedRequestFunction *resolved		 = NULL;
+	Oid						   funcoid		 = InvalidOid;
+	bool					   lookup_failed = false;
 
 	if (tp_compaction_request_function == NULL ||
 		tp_compaction_request_function[0] == '\0')
@@ -114,25 +121,44 @@ tp_lookup_request_function(void)
 				(errmsg("bm25: pg_textsearch.compaction_request_function "
 						"is unset or unresolvable; skipping background "
 						"compaction")));
-		return InvalidOid;
+		return NULL;
 	}
 
 	/*
-	 * Name resolution can ERROR on catalog permissions.  Use the same
-	 * double-subtransaction shield as callback execution because this runs
-	 * from PRE_COMMIT/PRE_PREPARE too.
+	 * Name and catalog resolution can ERROR on permissions or concurrent
+	 * DDL.  Resolve and copy the complete qualified identity inside the
+	 * same double-subtransaction shield as callback execution because this
+	 * runs from PRE_COMMIT/PRE_PREPARE too.
 	 */
 	BeginInternalSubTransaction(NULL);
 	BeginInternalSubTransaction(NULL);
 	PG_TRY();
 	{
-		List *names;
-		Oid	  argtypes[1] = {REGCLASSOID};
+		MemoryContext lookupcxt = CurrentMemoryContext;
+		List		 *names;
+		Oid			  argtypes[1] = {REGCLASSOID};
+		char		 *namespace_name;
+		char		 *function_name;
 
 		names = stringToQualifiedNameList(
 				tp_compaction_request_function, NULL);
 		funcoid = LookupFuncName(names, 1, argtypes, true);
+		if (OidIsValid(funcoid))
+		{
+			namespace_name = get_namespace_name(get_func_namespace(funcoid));
+			function_name  = get_func_name(funcoid);
+			if (namespace_name == NULL || function_name == NULL)
+				ereport(ERROR,
+						(errcode(ERRCODE_UNDEFINED_FUNCTION),
+						 errmsg("cache lookup failed for function %u",
+								funcoid)));
 
+			MemoryContextSwitchTo(oldcxt);
+			resolved = palloc(sizeof(*resolved));
+			namestrcpy(&resolved->namespace_name, namespace_name);
+			namestrcpy(&resolved->function_name, function_name);
+			MemoryContextSwitchTo(lookupcxt);
+		}
 		RollbackAndReleaseCurrentSubTransaction();
 		MemoryContextSwitchTo(oldcxt);
 	}
@@ -146,8 +172,12 @@ tp_lookup_request_function(void)
 
 		RollbackAndReleaseCurrentSubTransaction();
 		MemoryContextSwitchTo(oldcxt);
-		funcoid		  = InvalidOid;
 		lookup_failed = true;
+		if (resolved != NULL)
+		{
+			pfree(resolved);
+			resolved = NULL;
+		}
 
 		if (edata->sqlerrcode == ERRCODE_QUERY_CANCELED ||
 			edata->sqlerrcode == ERRCODE_ADMIN_SHUTDOWN ||
@@ -171,27 +201,22 @@ tp_lookup_request_function(void)
 	MemoryContextSwitchTo(oldcxt);
 	CurrentResourceOwner = oldowner;
 
-	if (!OidIsValid(funcoid) && !lookup_failed)
+	if (resolved == NULL && !lookup_failed)
 		ereport(WARNING,
 				(errmsg("bm25: pg_textsearch.compaction_request_function "
 						"is unset or unresolvable; skipping background "
 						"compaction")));
 
-	return funcoid;
+	return resolved;
 }
 
 static void
-tp_run_request(Oid funcoid, Oid indexoid)
+tp_run_request(const TpResolvedRequestFunction *function, Oid indexoid)
 {
 	MemoryContext  oldcxt	= CurrentMemoryContext;
 	ResourceOwner  oldowner = CurrentResourceOwner;
 	StringInfoData sql;
-	char		  *nspname;
-	char		  *funcname;
 	const char	  *idxname;
-
-	nspname	 = get_namespace_name(get_func_namespace(funcoid));
-	funcname = get_func_name(funcoid);
 
 	/*
 	 * Resolve the index name up front, while we are still in a clean
@@ -211,7 +236,9 @@ tp_run_request(Oid funcoid, Oid indexoid)
 	appendStringInfo(
 			&sql,
 			"SELECT %s(%u::pg_catalog.oid::pg_catalog.regclass)",
-			quote_qualified_identifier(nspname, funcname),
+			quote_qualified_identifier(
+					NameStr(function->namespace_name),
+					NameStr(function->function_name)),
 			indexoid);
 
 	/*
@@ -303,9 +330,9 @@ tp_run_request(Oid funcoid, Oid indexoid)
 void
 tp_compaction_flush_requests(void)
 {
-	Oid		  funcoid;
-	ListCell *lc;
-	List	 *pending;
+	TpResolvedRequestFunction *function = NULL;
+	ListCell				  *lc;
+	List					  *pending;
 
 	if (tp_pending_compactions == NIL)
 		return;
@@ -323,13 +350,15 @@ tp_compaction_flush_requests(void)
 
 	PG_TRY();
 	{
-		funcoid = tp_lookup_request_function();
-		if (OidIsValid(funcoid))
+		function = tp_lookup_request_function();
+		if (function != NULL)
 			foreach (lc, pending)
-				tp_run_request(funcoid, lfirst_oid(lc));
+				tp_run_request(function, lfirst_oid(lc));
 	}
 	PG_FINALLY();
 	{
+		if (function != NULL)
+			pfree(function);
 		list_free(pending);
 	}
 	PG_END_TRY();

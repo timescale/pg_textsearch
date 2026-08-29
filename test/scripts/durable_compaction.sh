@@ -442,6 +442,112 @@ live=${backstops_before}->${backstops_after}, output='${output}')"
     log "PASS: every operator script preflights pg_durable before side effects"
 }
 
+test_callback_drop_after_lookup() {
+    log "=== Test: callback dropped after protected lookup ==="
+    local main_output="${DATA_DIR}/callback_drop_main.out"
+    local drop_output="${DATA_DIR}/callback_drop_dropper.out"
+    local main_pid drop_pid main_status=0 drop_status=0 ready=f
+
+    sql_super <<'SQL'
+CREATE TABLE callback_drop_docs_a (id integer PRIMARY KEY, body text);
+CREATE INDEX callback_drop_docs_a_idx ON callback_drop_docs_a
+    USING bm25(body) WITH (text_config = 'english');
+CREATE TABLE callback_drop_docs_b (id integer PRIMARY KEY, body text);
+CREATE INDEX callback_drop_docs_b_idx ON callback_drop_docs_b
+    USING bm25(body) WITH (text_config = 'english');
+CREATE TABLE callback_drop_ready (
+    ready boolean NOT NULL,
+    dropped boolean NOT NULL DEFAULT false
+);
+CREATE FUNCTION public.callback_drop_after_lookup(regclass)
+RETURNS void
+LANGUAGE plpgsql
+AS $fn$
+DECLARE
+    drop_visible boolean := false;
+    attempt integer;
+BEGIN
+    IF pg_catalog.pg_advisory_unlock(471, 7) THEN
+        FOR attempt IN 1..100 LOOP
+            SELECT dropped INTO drop_visible
+            FROM public.callback_drop_ready;
+            EXIT WHEN drop_visible;
+            PERFORM pg_catalog.pg_sleep(0.05);
+        END LOOP;
+        IF NOT drop_visible THEN
+            RAISE EXCEPTION 'callback drop did not become visible';
+        END IF;
+    END IF;
+END
+$fn$;
+SQL
+
+    (
+        sql_super <<'SQL'
+SELECT pg_catalog.pg_advisory_lock(471, 7);
+INSERT INTO callback_drop_ready (ready) VALUES (true);
+SELECT pg_catalog.pg_sleep(1);
+SET pg_textsearch.compaction_mode = 'background';
+SET pg_textsearch.compaction_request_function =
+    'public.callback_drop_after_lookup';
+SET pg_textsearch.segments_per_level = 2;
+BEGIN;
+INSERT INTO callback_drop_docs_a
+SELECT i, 'callback drop a ' || i FROM generate_series(1, 20) i;
+SELECT bm25_spill_index('callback_drop_docs_a_idx');
+INSERT INTO callback_drop_docs_a
+SELECT i, 'callback drop a ' || i FROM generate_series(21, 40) i;
+SELECT bm25_spill_index('callback_drop_docs_a_idx');
+INSERT INTO callback_drop_docs_b
+SELECT i, 'callback drop b ' || i FROM generate_series(1, 20) i;
+SELECT bm25_spill_index('callback_drop_docs_b_idx');
+INSERT INTO callback_drop_docs_b
+SELECT i, 'callback drop b ' || i FROM generate_series(21, 40) i;
+SELECT bm25_spill_index('callback_drop_docs_b_idx');
+COMMIT;
+SQL
+    ) >"${main_output}" 2>&1 &
+    main_pid=$!
+
+    for _ in $(seq 1 100); do
+        ready=$(sql_super -c "SELECT EXISTS (
+            SELECT 1 FROM callback_drop_ready WHERE ready);")
+        [ "$ready" = "t" ] && break
+        sleep 0.1
+    done
+    [ "$ready" = "t" ] \
+        || error "callback-drop writer did not reach its ready point"
+
+    (
+        sql_super -c "SELECT pg_catalog.pg_advisory_lock(471, 7);
+            DROP FUNCTION public.callback_drop_after_lookup(regclass);
+            UPDATE callback_drop_ready SET dropped = true;"
+    ) >"${drop_output}" 2>&1 &
+    drop_pid=$!
+
+    wait "$main_pid" || main_status=$?
+    wait "$drop_pid" || drop_status=$?
+    if [ "$main_status" -ne 0 ] || [ "$drop_status" -ne 0 ]; then
+        error "callback drop race failed (writer=${main_status}, \
+dropper=${drop_status}, writer_output='$(<"${main_output}")', \
+dropper_output='$(<"${drop_output}")')"
+    fi
+    if ! grep -Fq \
+        'function public.callback_drop_after_lookup(regclass) does not exist' \
+        "${main_output}"; then
+        error "callback disappearance was not reported from shielded SPI \
+execution (output='$(<"${main_output}")')"
+    fi
+    assert_eq "callback disappearance preserves both writer transactions" \
+        "80" "$(sql_super -c "SELECT
+            (SELECT count(*) FROM callback_drop_docs_a)
+            + (SELECT count(*) FROM callback_drop_docs_b);")"
+
+    sql_super -c "DROP TABLE callback_drop_docs_a, callback_drop_docs_b,
+        callback_drop_ready;"
+    log "PASS: a post-lookup callback drop warns inside shielded SPI"
+}
+
 setup_roles_and_glue() {
     log "Creating app_owner / app_writer and wiring the glue scripts..."
 
@@ -565,6 +671,41 @@ SQL
                 'public.compactor_owner_trap()'::pg_catalog.regprocedure;")"
     log "PASS: setup rejects unexpected compactor-owned objects before grants"
     sql_super -c "DROP FUNCTION public.compactor_owner_trap();"
+
+    sql_super <<'SQL'
+CREATE FUNCTION public.bm25_request_compaction(pg_catalog.regclass)
+RETURNS pg_catalog.text
+LANGUAGE plpgsql
+SECURITY DEFINER
+AS $fn$
+BEGIN
+    RETURN 'hostile-wrapper';
+END
+$fn$;
+ALTER FUNCTION public.bm25_request_compaction(pg_catalog.regclass)
+    OWNER TO textsearch_compactor;
+SQL
+    if sql_super -f "${GLUE_DIR}/01_setup_role.sql" \
+        -v index_owner=app_owner >/dev/null 2>&1; then
+        error "setup accepted a hostile exact-identity request wrapper"
+    fi
+    assert_compactor_ungranted \
+        "hostile exact-wrapper rejection happens before owner/df grants"
+    assert_eq "failed setup preserves the hostile PUBLIC wrapper" "t" \
+        "$(sql_super -c "SELECT
+            proowner = 'textsearch_compactor'::pg_catalog.regrole
+            AND prosecdef
+            AND has_function_privilege(
+                'public',
+                'public.bm25_request_compaction(regclass)',
+                'EXECUTE')
+            FROM pg_catalog.pg_proc
+            WHERE oid =
+                'public.bm25_request_compaction(regclass)'
+                    ::pg_catalog.regprocedure;")"
+    log "PASS: setup rejects a hostile exact-identity request wrapper"
+    sql_super -c "DROP FUNCTION
+        public.bm25_request_compaction(pg_catalog.regclass);"
 
     sql_super -c "GRANT CREATE ON SCHEMA public TO PUBLIC;"
     if sql_super -f "${GLUE_DIR}/01_setup_role.sql" \
@@ -744,11 +885,49 @@ compactor_superuser_bridge;"
     sql_super -f "${GLUE_DIR}/01_setup_role.sql" \
         -v index_owner=app_owner >/dev/null
     log "PASS: role setup rerun accepts the exact managed wrapper"
+    assert_eq "role rerun preserves the approved writer grant" "t" \
+        "$(sql_super -c "SELECT has_function_privilege(
+            'app_writer',
+            'public.bm25_request_compaction(regclass)',
+            'EXECUTE');")"
     assert_eq "wrapper signature uses pg_catalog.regclass" "regclass" \
         "$(sql_super -c "SELECT pg_catalog.format_type(proargtypes[0], NULL)
             FROM pg_catalog.pg_proc
             WHERE oid =
                 'public.bm25_request_compaction(regclass)'::regprocedure;")"
+
+    sql_super -c "CREATE ROLE wrapper_drift_owner LOGIN;"
+    sql_super <<'SQL'
+CREATE OR REPLACE FUNCTION
+    public.bm25_request_compaction(idx pg_catalog.regclass)
+RETURNS pg_catalog.text
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = pg_catalog, pg_temp
+AS $fn$
+BEGIN
+    RETURN 'changed-managed-body';
+END
+$fn$;
+SQL
+    if sql_super -f "${GLUE_DIR}/01_setup_role.sql" \
+        -v index_owner=wrapper_drift_owner >/dev/null 2>&1; then
+        error "setup accepted drift in the managed wrapper body/hash"
+    fi
+    assert_eq "body-drift rejection happens before the new owner grant" \
+        "f" "$(sql_super -c "SELECT pg_has_role(
+            'textsearch_compactor', 'wrapper_drift_owner', 'MEMBER');")"
+    assert_eq "body-drift rejection preserves approved writer ACLs" "t" \
+        "$(sql_super -c "SELECT has_function_privilege(
+            'app_writer',
+            'public.bm25_request_compaction(regclass)',
+            'EXECUTE');")"
+    log "PASS: clean rerun rejects managed wrapper body/hash drift"
+    sql_super -f "${GLUE_DIR}/02_wrapper.sql" -v writer_role=app_writer \
+        >/dev/null
+    sql_super -f "${GLUE_DIR}/01_setup_role.sql" \
+        -v index_owner=app_owner >/dev/null
+    sql_super -c "DROP ROLE wrapper_drift_owner;"
 
     sql_super -c "CREATE ROLE old_writer LOGIN;"
     sql_super -c "GRANT EXECUTE ON FUNCTION \
@@ -2101,6 +2280,7 @@ ${replacement_id}"
 # ---------------------------------------------------------------------
 
 setup_test_cluster
+test_callback_drop_after_lookup
 test_pg_durable_preflight
 setup_roles_and_glue
 wait_for_durable_worker
