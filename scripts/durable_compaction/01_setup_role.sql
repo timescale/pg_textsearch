@@ -19,9 +19,9 @@ BEGIN;
 
 SET LOCAL search_path = pg_catalog, pg_temp;
 
--- Keep the unreleased loop-policy dependency in this one preflight block.
--- Replace the capability-only error with a version floor once a release
--- contains df.loop(text, text, text).
+-- Keep the unreleased failure-policy dependency in this one preflight block.
+-- Replace the capability-only error with a version floor once the release
+-- containing microsoft/pg_durable#354 is available.
 DO $$
 DECLARE
     durable_oid pg_catalog.oid;
@@ -33,10 +33,10 @@ BEGIN
 
     IF durable_oid IS NULL THEN
         RAISE EXCEPTION
-            'pg_durable with df.loop(..., on_error) is required'
+            'pg_durable with the df.start() failure policy is required'
             USING HINT =
-                'Install the released pg_durable loop-policy build, then '
-                'rerun this script.';
+                'Install the release containing microsoft/pg_durable#354, '
+                'then rerun this script.';
     END IF;
 
     IF NOT EXISTS (
@@ -70,18 +70,28 @@ BEGIN
               AND dependency.deptype OPERATOR(pg_catalog.=) 'e'
         WHERE procedure.oid OPERATOR(pg_catalog.=)
                   pg_catalog.to_regprocedure(
-                      'df.loop(pg_catalog.text,pg_catalog.text,'
-                      'pg_catalog.text)')
+                      'df.start(pg_catalog.text,pg_catalog.text,'
+                      'pg_catalog.text,pg_catalog.text,pg_catalog.int4,'
+                      'pg_catalog.interval,pg_catalog.text)')
           AND procedure.prorettype OPERATOR(pg_catalog.=)
                   'pg_catalog.text'::pg_catalog.regtype
-          AND procedure.proargnames[3] OPERATOR(pg_catalog.=) 'on_error')
+          AND procedure.pronargdefaults OPERATOR(pg_catalog.=) 6
+          AND procedure.proargnames OPERATOR(pg_catalog.=)
+                  ARRAY[
+                      'fut',
+                      'label',
+                      'database',
+                      'transaction_mode',
+                      'max_attempts',
+                      'max_backoff',
+                      'on_failure']::pg_catalog.text[])
     THEN
         RAISE EXCEPTION
             'pg_durable API is incomplete: df.grant_usage() and '
-            'df.loop(text, text, text) with on_error are required'
+            'df.start() with the node failure policy are required'
             USING HINT =
-                'Install the released pg_durable loop-policy build, then '
-                'rerun this script.';
+                'Install the release containing microsoft/pg_durable#354, '
+                'then rerun this script.';
     END IF;
 END
 $$;
@@ -308,7 +318,7 @@ BEGIN
                                 ::pg_catalog.text[]
                     AND pg_catalog.md5(procedure.prosrc)
                             OPERATOR(pg_catalog.=)
-                            '9546a8ef400bdc5eeb9dbed13aad6bdc'
+                            '39b927569e6b4a2d24e1999627993a6d'
                     AND NOT EXISTS (
                         SELECT 1
                         FROM pg_catalog.aclexplode(

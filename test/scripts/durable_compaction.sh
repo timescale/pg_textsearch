@@ -1,8 +1,8 @@
 #!/bin/bash
 #
 # Focused structural and live test for the per-index pg_durable adapter.
-# The live portion requires pg_durable with the three-argument df.loop()
-# API and is intentionally separate from test-all.
+# The live portion requires pg_durable's df.start() failure policy and is
+# intentionally separate from test-all.
 
 set -euo pipefail
 
@@ -34,6 +34,15 @@ assert_contains() {
 
     grep -Fq -- "${text}" "${file}" \
         || fail "${file} does not contain: ${text}"
+}
+
+assert_not_contains() {
+    local file="$1"
+    local text="$2"
+
+    if grep -Fq -- "${text}" "${file}"; then
+        fail "${file} unexpectedly contains: ${text}"
+    fi
 }
 
 assert_sql_true() {
@@ -97,7 +106,11 @@ static_checks() {
     assert_contains "${wrapper}" "SECURITY DEFINER"
     assert_contains "${wrapper}" \
         "SET search_path = pg_catalog, pg_temp"
-    assert_contains "${wrapper}" "on_error => 'continue'"
+    assert_contains "${wrapper}" "df.loop(body, cond)"
+    assert_not_contains "${wrapper}" \
+        "df.loop(body, cond, on_error => 'continue')"
+    assert_contains "${wrapper}" "max_attempts     => 5"
+    assert_contains "${wrapper}" "on_failure      => 'continue'"
     assert_contains "${wrapper}" "transaction_mode => 'new'"
     assert_contains "${wrapper}" "pg_textsearch_compaction.canary_instance"
     assert_contains "${wrapper}" \
@@ -171,13 +184,14 @@ psql_super -c "ALTER DEFAULT PRIVILEGES FOR ROLE postgres
     GRANT EXECUTE ON FUNCTIONS TO default_privilege_writer;"
 psql_super -c "CREATE EXTENSION pg_textsearch WITH SCHEMA ${EXT_SCHEMA};"
 
-loop_policy_available=$(psql_super -c "SELECT pg_catalog.to_regprocedure(
-    'df.loop(pg_catalog.text,pg_catalog.text,pg_catalog.text)')
+failure_policy_available=$(psql_super -c "SELECT pg_catalog.to_regprocedure(
+    'df.start(pg_catalog.text,pg_catalog.text,pg_catalog.text,'
+    'pg_catalog.text,pg_catalog.int4,pg_catalog.interval,pg_catalog.text)')
     IS NOT NULL;")
-if [ "${loop_policy_available}" != "t" ]; then
+if [ "${failure_policy_available}" != "t" ]; then
     if psql_super -f "${GLUE_DIR}/01_setup_role.sql" \
         -v index_owner=missing_owner >/dev/null 2>&1; then
-        fail "role setup accepted pg_durable without loop on_error"
+        fail "role setup accepted pg_durable without start failure policy"
     fi
     assert_sql_true "failed role preflight created no compactor role" \
         "SELECT NOT EXISTS (
@@ -194,13 +208,13 @@ SQL
         'public.bm25_request_compaction(regclass)'::regprocedure::oid;")
     if psql_super -f "${GLUE_DIR}/02_wrapper.sql" \
         -v writer_role=missing_writer >/dev/null 2>&1; then
-        fail "wrapper setup accepted pg_durable without loop on_error"
+        fail "wrapper setup accepted pg_durable without start failure policy"
     fi
     [ "${preflight_oid}" = "$(psql_super -c "SELECT
         'public.bm25_request_compaction(regclass)'::regprocedure::oid;")" ] \
         || fail "failed wrapper preflight replaced the existing wrapper"
     printf '%s\n' \
-        "Live positive checks skipped: df.loop(..., on_error) unavailable."
+        "Live positive checks skipped: df.start() failure policy unavailable."
     exit 0
 fi
 

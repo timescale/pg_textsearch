@@ -5,18 +5,27 @@ callback to [pg_durable](https://github.com/microsoft/pg_durable). The
 extension does not create cluster roles, change authentication, or depend on
 pg_durable at build or install time.
 
-This adapter requires a released pg_durable build that provides:
+> **Merge blocker:** do not merge this adapter until
+> [microsoft/pg_durable#354](https://github.com/microsoft/pg_durable/pull/354)
+> lands in a release. That change currently targets pg_durable 0.2.7.
+
+The required pg_durable build provides:
 
 ```sql
-df.loop(body text, condition text, on_error text)
-df.start(..., transaction_mode => 'new')
+df.loop(body text, condition text)
+df.start(
+    ...,
+    transaction_mode => 'new',
+    max_attempts => 5,
+    max_backoff => '16 seconds',
+    on_failure => 'continue')
 ```
 
-No released pg_durable version contains the three-argument `df.loop` at the
-time this draft was created. Both scripts check the exact extension-owned
-catalog signature before any managed side effect. Once upstream publishes
-the capability, update the localized preflight comments and add the released
-minimum version without changing the wrapper body.
+Released pg_durable v0.2.6 and current upstream `main` do not contain the
+failure policy. Both scripts check the exact seven-argument,
+extension-owned `df.start` catalog signature before any managed side effect.
+Once #354 is released, replace the localized capability-only message with the
+released minimum version.
 
 ## Prerequisites
 
@@ -111,21 +120,28 @@ The wrapper submits:
 
 ```sql
 df.start(
-    df.loop(body, condition, on_error => 'continue'),
+    df.loop(body, condition),
     label => 'bm25-compact-' || index_oid,
-    transaction_mode => 'new')
+    transaction_mode => 'new',
+    max_attempts => 5,
+    max_backoff => '16 seconds',
+    on_failure => 'continue')
 ```
 
 `transaction_mode => 'new'` persists the request in an independent
 transaction, which is required because pg_textsearch invokes callbacks from a
 late transaction callback and discards their local transactional effects.
-`on_error => 'continue'` lets a concurrent compactor, transient lock error,
-or other failed step return to the physical-state condition instead of
-stranding the loop immediately. Every iteration revalidates physical
-identity and compaction debt.
+The #354 instance policy retries a failed node up to five times with capped
+exponential backoff. Once those attempts are exhausted,
+`on_failure => 'continue'` abandons that iteration and starts the next one.
+Every iteration revalidates physical identity and compaction debt.
 
 This slice provides per-index submission only. It does not install a
 recurring schedule or fleet-wide sweep.
+
+The recurring registration planned for the next PR must use the same #354
+`df.start(..., on_failure => 'continue')` policy. It must not add policy
+arguments to `df.loop`.
 
 ## Test
 

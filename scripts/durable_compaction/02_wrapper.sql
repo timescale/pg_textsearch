@@ -15,9 +15,9 @@ BEGIN;
 
 SET LOCAL search_path = pg_catalog, pg_temp;
 
--- Keep the unreleased loop-policy dependency in this one preflight block.
--- Replace the capability-only error with a version floor once a release
--- contains df.loop(text, text, text).
+-- Keep the unreleased failure-policy dependency in this one preflight block.
+-- Replace the capability-only error with a version floor once the release
+-- containing microsoft/pg_durable#354 is available.
 DO $$
 DECLARE
     durable_oid pg_catalog.oid;
@@ -29,10 +29,10 @@ BEGIN
 
     IF durable_oid IS NULL THEN
         RAISE EXCEPTION
-            'pg_durable with df.loop(..., on_error) is required'
+            'pg_durable with the df.start() failure policy is required'
             USING HINT =
-                'Install the released pg_durable loop-policy build, then '
-                'rerun this script.';
+                'Install the release containing microsoft/pg_durable#354, '
+                'then rerun this script.';
     END IF;
 
     IF NOT EXISTS (
@@ -49,12 +49,20 @@ BEGIN
         WHERE procedure.oid OPERATOR(pg_catalog.=)
                   pg_catalog.to_regprocedure(
                       'df.start(pg_catalog.text,pg_catalog.text,'
-                      'pg_catalog.text,pg_catalog.text)')
+                      'pg_catalog.text,pg_catalog.text,pg_catalog.int4,'
+                      'pg_catalog.interval,pg_catalog.text)')
           AND procedure.prorettype OPERATOR(pg_catalog.=)
                   'pg_catalog.text'::pg_catalog.regtype
-          AND procedure.pronargdefaults OPERATOR(pg_catalog.=) 3
+          AND procedure.pronargdefaults OPERATOR(pg_catalog.=) 6
           AND procedure.proargnames OPERATOR(pg_catalog.=)
-                  ARRAY['fut', 'label', 'database', 'transaction_mode'])
+                  ARRAY[
+                      'fut',
+                      'label',
+                      'database',
+                      'transaction_mode',
+                      'max_attempts',
+                      'max_backoff',
+                      'on_failure']::pg_catalog.text[])
        OR NOT EXISTS (
         SELECT 1
         FROM pg_catalog.pg_proc procedure
@@ -68,11 +76,10 @@ BEGIN
               AND dependency.deptype OPERATOR(pg_catalog.=) 'e'
         WHERE procedure.oid OPERATOR(pg_catalog.=)
                   pg_catalog.to_regprocedure(
-                      'df.loop(pg_catalog.text,pg_catalog.text,'
-                      'pg_catalog.text)')
+                      'df.loop(pg_catalog.text,pg_catalog.text)')
           AND procedure.prorettype OPERATOR(pg_catalog.=)
                   'pg_catalog.text'::pg_catalog.regtype
-          AND procedure.proargnames[3] OPERATOR(pg_catalog.=) 'on_error')
+          AND procedure.pronargdefaults OPERATOR(pg_catalog.=) 1)
        OR pg_catalog.to_regclass('df.instances') IS NULL
        OR pg_catalog.to_regclass('df.nodes') IS NULL
        OR (
@@ -114,10 +121,10 @@ BEGIN
     THEN
         RAISE EXCEPTION
             'pg_durable API is incomplete: df.start(), '
-            'df.loop(..., on_error), df.instances, and df.nodes are required'
+            'df.loop(), df.instances, and df.nodes are required'
             USING HINT =
-                'Install the released pg_durable loop-policy build, then '
-                'rerun this script.';
+                'Install the release containing microsoft/pg_durable#354, '
+                'then rerun this script.';
     END IF;
 END
 $$;
@@ -249,7 +256,7 @@ BEGIN
                          ::pg_catalog.text[]
              AND pg_catalog.md5(procedure.prosrc)
                      OPERATOR(pg_catalog.=)
-                     '9546a8ef400bdc5eeb9dbed13aad6bdc'
+                     '39b927569e6b4a2d24e1999627993a6d'
              AND NOT EXISTS (
                  SELECT 1
                  FROM pg_catalog.aclexplode(
@@ -290,7 +297,9 @@ SELECT pg_catalog.set_config(
     df.start(
         'SELECT 1 AS pg_textsearch_canary',
         label => 'bm25-compaction-canary',
-        transaction_mode => 'new'),
+        transaction_mode => 'new',
+        max_attempts     => 1,
+        on_failure      => 'fail'),
     false);
 
 RESET ROLE;
@@ -441,9 +450,12 @@ BEGIN
         ext_schema, idx_oid, database_oid, tablespace_oid, relfilenumber);
 
     RETURN df.start(
-        df.loop(body, cond, on_error => 'continue'),
+        df.loop(body, cond),
         label            => 'bm25-compact-' || idx_oid,
-        transaction_mode => 'new');
+        transaction_mode => 'new',
+        max_attempts     => 5,
+        max_backoff      => '16 seconds'::pg_catalog.interval,
+        on_failure      => 'continue');
 END;
 $fn$;
 
@@ -527,7 +539,7 @@ BEGIN
                       ::pg_catalog.text[]
           AND pg_catalog.md5(procedure.prosrc)
                   OPERATOR(pg_catalog.=)
-                  '9546a8ef400bdc5eeb9dbed13aad6bdc'
+                  '39b927569e6b4a2d24e1999627993a6d'
           AND NOT EXISTS (
               SELECT 1
               FROM pg_catalog.aclexplode(

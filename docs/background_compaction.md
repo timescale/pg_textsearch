@@ -247,18 +247,20 @@ The adapter's loop is equivalent to:
 df.start(
     df.loop(
         '<schema>.bm25_compact_step_if_current(...)',
-        '<schema>.bm25_needs_compaction_if_current(...)',
-        on_error => 'continue'),
+        '<schema>.bm25_needs_compaction_if_current(...)'),
     label => 'bm25-compact-<index-oid>',
-    transaction_mode => 'new')
+    transaction_mode => 'new',
+    max_attempts => 5,
+    max_backoff => '16 seconds',
+    on_failure => 'continue')
 ```
 
 Each body and condition execution runs in its own worker transaction, so the
 per-index `LW_EXCLUSIVE` lock is released between merge batches.
 `transaction_mode => 'new'` also persists submission independently of the
-writer transaction. The loop's `on_error => 'continue'` policy returns
-ordinary step failures to the physical-state condition rather than
-immediately stranding the request.
+writer transaction. The instance policy from microsoft/pg_durable#354 retries
+failed nodes, then `on_failure => 'continue'` returns an exhausted failure to
+the next physical-state loop iteration rather than stranding the request.
 
 The wrapper is `SECURITY DEFINER`, owned by the passwordless
 `textsearch_compactor` login role, and fixes `search_path` to
@@ -274,12 +276,17 @@ properties, and ACL grant options before granting or replacing anything. A
 committed `SELECT 1` canary additionally proves the worker can connect and
 execute as the compactor.
 
-The adapter currently requires the unreleased three-argument
-`df.loop(text, text, text)` capability. Its exact catalog check is localized
-at the start of each operator script so the first released version can be
-recorded without changing adapter behavior. See
+**Merge is blocked on a pg_durable release containing
+[microsoft/pg_durable#354](https://github.com/microsoft/pg_durable/pull/354).**
+That draft targets 0.2.7; released v0.2.6 and current `main` do not provide
+failure-resilient recurrence. The adapter keeps the existing two-argument
+`df.loop` and applies `max_attempts`, `max_backoff`, and `on_failure` through
+the exact seven-argument `df.start` signature introduced by #354. Its catalog
+check is localized at the start of each operator script so the released
+version floor can be recorded without changing adapter behavior. See
 `scripts/durable_compaction/README.md` for installation, authentication, and
 validation instructions.
 
 This slice intentionally has no recurring schedule, cross-index sweep, or
-extension packaging.
+extension packaging. The later recurring-registration PR must apply #354's
+failure policy through `df.start`, not through a new `df.loop` signature.
