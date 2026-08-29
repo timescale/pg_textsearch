@@ -173,7 +173,7 @@ because their purpose is recovery backstop operation.
   compaction.
 - Terminal L7 capacity fails closed.
 - Fresh-install and upgrade definitions are behaviorally identical.
-- Unauthorized roles cannot invoke private physical-target helpers.
+- Non-owners cannot compact an index through the public APIs.
 
 ### PR 3: Scheduler-Neutral Transaction Dispatch
 
@@ -300,8 +300,8 @@ requirement for this global rescue backstop.
 
 #### Acceptance gate
 
-- A failed recurring tick has a recorded failed instance and a later tick
-  still executes successfully.
+- A failed recurring tick has an observable failed node execution and a later
+  tick still executes successfully in the live recurring instance.
 - One bad index does not prevent other eligible indexes from compacting.
 - Concurrent setup cannot create multiple canonical schedules.
 - Setup fails with actionable schedule IDs if preexisting duplicates exist.
@@ -312,10 +312,11 @@ requirement for this global rescue backstop.
 
 pg_textsearch requires one opt-in behavior for recurring schedules:
 
-1. A scheduled tick creates an execution instance as it does today.
-2. If that instance fails, its failure and error remain observable.
-3. The recurring schedule remains eligible to create its next tick.
-4. A later successful tick is recorded independently.
+1. A scheduled tick begins a loop iteration in the live durable instance.
+2. If that iteration's body fails, its failed node execution and error remain
+   observable.
+3. The durable instance remains live and eligible to begin its next tick.
+4. A later successful iteration executes independently.
 
 Existing fail-stop behavior may remain the default for compatibility. The
 capability must be public and versioned so pg_textsearch can reject an older
