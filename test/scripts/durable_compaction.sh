@@ -45,6 +45,48 @@ assert_not_contains() {
     fi
 }
 
+md5_stream() {
+    if command -v md5sum >/dev/null 2>&1; then
+        md5sum | awk '{print $1}'
+    elif command -v md5 >/dev/null 2>&1; then
+        md5 -q
+    elif command -v openssl >/dev/null 2>&1; then
+        openssl dgst -md5 | awk '{print $NF}'
+    else
+        fail "an MD5 implementation is required for wrapper verification"
+    fi
+}
+
+assert_managed_wrapper_hash() {
+    local role_setup="$1"
+    local wrapper="$2"
+    local actual_hash
+    local embedded_hashes
+    local embedded_count
+    local embedded_unique
+
+    actual_hash=$(
+        {
+            printf '\n'
+            awk '/^AS \$fn\$$/ { body = 1; next }
+                 /^\$fn\$;$/ { exit }
+                 body { print }' "${wrapper}"
+        } | md5_stream
+    )
+    embedded_hashes=$(
+        grep -Eho "'[[:xdigit:]]{32}'" "${role_setup}" "${wrapper}" \
+            | tr -d "'"
+    )
+    embedded_count=$(printf '%s\n' "${embedded_hashes}" | grep -c .)
+    embedded_unique=$(printf '%s\n' "${embedded_hashes}" | sort -u)
+
+    [ "${embedded_count}" -eq 3 ] \
+        || fail "managed wrapper hash must have exactly three copies"
+    [ "${embedded_unique}" = "${actual_hash}" ] \
+        || fail "managed wrapper hash mismatch: body=${actual_hash}, \
+embedded=${embedded_unique}"
+}
+
 assert_sql_true() {
     local description="$1"
     local query="$2"
@@ -75,6 +117,29 @@ wait_for_instance() {
     fail "durable instance ${instance_id} did not finish"
 }
 
+wait_for_durable_worker() {
+    local attempt
+    local instance_id
+    local state
+
+    for attempt in $(seq 1 60); do
+        instance_id=$(psql_as textsearch_compactor -c "SELECT df.start(
+            'SELECT 1',
+            label => 'adapter-worker-probe-${attempt}',
+            max_attempts => 1,
+            on_failure => 'fail');" 2>/dev/null || true)
+        if [ -n "${instance_id}" ]; then
+            state=$(wait_for_instance "${instance_id}")
+            if [ "${state}" = "completed" ]; then
+                return
+            fi
+        fi
+        sleep 1
+    done
+
+    fail "pg_durable worker did not become ready"
+}
+
 static_checks() {
     local fresh_sql="${ROOT_DIR}/sql/pg_textsearch--1.5.0-dev.sql"
     local upgrade_sql="${ROOT_DIR}/sql/pg_textsearch--1.4.0--1.5.0-dev.sql"
@@ -89,6 +154,9 @@ static_checks() {
     assert_contains "${compaction_api}" "tp_compact_index_step_if_current"
     assert_contains "${compaction_api}" "tp_needs_compaction_if_current"
     assert_contains "${compaction_api}" "!index_rel->rd_index->indisvalid"
+    # The return means a pass ran, not that more work remains.
+    assert_not_contains "${compaction_api}" "more_work"
+    assert_contains "${compaction_api}" "pass_ran"
 
     for sql in "${fresh_sql}" "${upgrade_sql}"; do
         assert_contains "${sql}" \
@@ -101,6 +169,10 @@ static_checks() {
 
     assert_contains "${GLUE_DIR}/01_setup_role.sql" \
         "pg_catalog.pg_shdepend"
+    assert_contains "${GLUE_DIR}/01_setup_role.sql" \
+        "TP_MANAGED_WRAPPER_PRECHECK"
+    assert_contains "${GLUE_DIR}/01_setup_role.sql" \
+        "df.loop(pg_catalog.text,pg_catalog.text)"
     assert_contains "${GLUE_DIR}/01_setup_role.sql" \
         "WITH INHERIT TRUE, SET FALSE"
     assert_contains "${wrapper}" "SECURITY DEFINER"
@@ -117,6 +189,8 @@ static_checks() {
         "IF NOT FOUND OR relfilenumber IS NULL THEN"
     assert_contains "${GLUE_DIR}/README.md" \
         "public.bm25_request_compaction(regclass)"
+    assert_managed_wrapper_hash \
+        "${GLUE_DIR}/01_setup_role.sql" "${wrapper}"
 
     printf 'Static pg_durable adapter checks passed.\n'
 }
@@ -218,11 +292,55 @@ SQL
     exit 0
 fi
 
+psql_super -c "CREATE ROLE partial_capability_owner LOGIN;"
+psql_super -c "ALTER FUNCTION
+    df.loop(pg_catalog.text, pg_catalog.text)
+    RENAME TO loop_missing;"
+if psql_super -f "${GLUE_DIR}/01_setup_role.sql" \
+    -v index_owner=partial_capability_owner >/dev/null 2>&1; then
+    fail "role setup accepted pg_durable without df.loop(text, text)"
+fi
+psql_super -c "ALTER FUNCTION
+    df.loop_missing(pg_catalog.text, pg_catalog.text)
+    RENAME TO loop;"
+assert_sql_true "partial capability rejection precedes role changes" \
+    "SELECT NOT EXISTS (
+        SELECT 1 FROM pg_catalog.pg_roles
+        WHERE rolname = 'textsearch_compactor');"
+psql_super -c "DROP ROLE partial_capability_owner;"
+
 psql_super -c "CREATE ROLE app_owner LOGIN;"
 psql_super -c "CREATE ROLE app_writer LOGIN;"
+psql_super -c "CREATE ROLE foreign_wrapper_owner LOGIN;"
 psql_super -c "ALTER DEFAULT PRIVILEGES FOR ROLE postgres
     IN SCHEMA public
     GRANT EXECUTE ON FUNCTIONS TO default_privilege_writer;"
+
+psql_super <<'SQL'
+CREATE FUNCTION public.bm25_request_compaction(pg_catalog.regclass)
+RETURNS pg_catalog.text
+LANGUAGE sql
+SECURITY DEFINER
+RETURN 'foreign-hostile-wrapper'::pg_catalog.text;
+ALTER FUNCTION public.bm25_request_compaction(pg_catalog.regclass)
+    OWNER TO foreign_wrapper_owner;
+SQL
+if psql_super -f "${GLUE_DIR}/01_setup_role.sql" \
+    -v index_owner=app_owner >/dev/null 2>&1; then
+    fail "role setup accepted a foreign-owned hostile wrapper"
+fi
+assert_sql_true "foreign wrapper rejection precedes role side effects" \
+    "SELECT NOT EXISTS (
+        SELECT 1 FROM pg_catalog.pg_roles
+        WHERE rolname = 'textsearch_compactor')
+     AND (
+        SELECT procedure.proowner = 'foreign_wrapper_owner'::regrole
+        FROM pg_catalog.pg_proc procedure
+        WHERE procedure.oid =
+            'public.bm25_request_compaction(regclass)'::regprocedure);"
+psql_super -c "DROP FUNCTION
+    public.bm25_request_compaction(pg_catalog.regclass);"
+
 psql_super -f "${GLUE_DIR}/01_setup_role.sql" \
     -v index_owner=app_owner >/dev/null
 
@@ -258,10 +376,33 @@ fi
 psql_super -c "DROP FUNCTION
     public.bm25_request_compaction(pg_catalog.regclass);"
 
+wait_for_durable_worker
+
 psql_super -f "${GLUE_DIR}/02_wrapper.sql" \
     -v writer_role=app_writer >/dev/null
 psql_super -f "${GLUE_DIR}/01_setup_role.sql" \
     -v index_owner=app_owner >/dev/null
+
+psql_super -c "CREATE ROLE owner_drift_target LOGIN;"
+psql_super -c "ALTER FUNCTION
+    public.bm25_request_compaction(pg_catalog.regclass)
+    OWNER TO foreign_wrapper_owner;"
+if psql_super -f "${GLUE_DIR}/01_setup_role.sql" \
+    -v index_owner=owner_drift_target >/dev/null 2>&1; then
+    fail "role setup accepted managed wrapper owner drift"
+fi
+assert_sql_true "owner drift rejection precedes new owner membership" \
+    "SELECT NOT pg_catalog.pg_has_role(
+        'textsearch_compactor', 'owner_drift_target', 'MEMBER')
+     AND (
+        SELECT procedure.proowner = 'foreign_wrapper_owner'::regrole
+        FROM pg_catalog.pg_proc procedure
+        WHERE procedure.oid =
+            'public.bm25_request_compaction(regclass)'::regprocedure);"
+psql_super -c "ALTER FUNCTION
+    public.bm25_request_compaction(pg_catalog.regclass)
+    OWNER TO textsearch_compactor;"
+psql_super -c "DROP ROLE owner_drift_target;"
 
 psql_super -c "CREATE ROLE delegable_writer LOGIN;"
 psql_super -c "GRANT EXECUTE ON FUNCTION

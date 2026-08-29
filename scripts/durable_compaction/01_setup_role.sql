@@ -70,6 +70,23 @@ BEGIN
               AND dependency.deptype OPERATOR(pg_catalog.=) 'e'
         WHERE procedure.oid OPERATOR(pg_catalog.=)
                   pg_catalog.to_regprocedure(
+                      'df.loop(pg_catalog.text,pg_catalog.text)')
+          AND procedure.prorettype OPERATOR(pg_catalog.=)
+                  'pg_catalog.text'::pg_catalog.regtype
+          AND procedure.pronargdefaults OPERATOR(pg_catalog.=) 1)
+       OR NOT EXISTS (
+        SELECT 1
+        FROM pg_catalog.pg_proc procedure
+             JOIN pg_catalog.pg_depend dependency
+               ON dependency.classid OPERATOR(pg_catalog.=)
+                      'pg_catalog.pg_proc'::pg_catalog.regclass
+              AND dependency.objid OPERATOR(pg_catalog.=) procedure.oid
+              AND dependency.refclassid OPERATOR(pg_catalog.=)
+                      'pg_catalog.pg_extension'::pg_catalog.regclass
+              AND dependency.refobjid OPERATOR(pg_catalog.=) durable_oid
+              AND dependency.deptype OPERATOR(pg_catalog.=) 'e'
+        WHERE procedure.oid OPERATOR(pg_catalog.=)
+                  pg_catalog.to_regprocedure(
                       'df.start(pg_catalog.text,pg_catalog.text,'
                       'pg_catalog.text,pg_catalog.text,pg_catalog.int4,'
                       'pg_catalog.interval,pg_catalog.text)')
@@ -87,8 +104,8 @@ BEGIN
                       'on_failure']::pg_catalog.text[])
     THEN
         RAISE EXCEPTION
-            'pg_durable API is incomplete: df.grant_usage() and '
-            'df.start() with the node failure policy are required'
+            'pg_durable API is incomplete: df.grant_usage(), df.loop(), '
+            'and df.start() with the node failure policy are required'
             USING HINT =
                 'Install the release containing microsoft/pg_durable#354, '
                 'then rerun this script.';
@@ -159,6 +176,123 @@ BEGIN
 END
 $$;
 \endif
+
+-- TP_MANAGED_WRAPPER_PRECHECK
+-- Validate the managed-name wrapper independently of its current owner.
+-- The same block then uses cluster-wide pg_shdepend to reject every other
+-- object already owned by the compactor.
+DO $$
+DECLARE
+    compactor_oid pg_catalog.oid;
+    database_oid  pg_catalog.oid;
+    wrapper_oid   pg_catalog.oid;
+BEGIN
+    SELECT oid
+    INTO compactor_oid
+    FROM pg_catalog.pg_roles
+    WHERE rolname OPERATOR(pg_catalog.=) 'textsearch_compactor';
+
+    wrapper_oid := pg_catalog.to_regprocedure(
+        'public.bm25_request_compaction(pg_catalog.regclass)');
+
+    IF wrapper_oid IS NOT NULL
+       AND (
+           compactor_oid IS NULL
+           OR NOT EXISTS (
+           SELECT 1
+           FROM pg_catalog.pg_proc procedure
+                JOIN pg_catalog.pg_namespace namespace
+                  ON namespace.oid OPERATOR(pg_catalog.=)
+                         procedure.pronamespace
+                JOIN pg_catalog.pg_language language
+                  ON language.oid OPERATOR(pg_catalog.=) procedure.prolang
+           WHERE procedure.oid OPERATOR(pg_catalog.=) wrapper_oid
+             AND namespace.nspname OPERATOR(pg_catalog.=) 'public'
+             AND procedure.proname OPERATOR(pg_catalog.=)
+                     'bm25_request_compaction'
+             AND procedure.proowner OPERATOR(pg_catalog.=) compactor_oid
+             AND procedure.prokind OPERATOR(pg_catalog.=) 'f'
+             AND procedure.pronargs OPERATOR(pg_catalog.=) 1
+             AND procedure.proargtypes[0] OPERATOR(pg_catalog.=)
+                     'pg_catalog.regclass'::pg_catalog.regtype
+             AND procedure.provariadic OPERATOR(pg_catalog.=) 0
+             AND procedure.prorettype OPERATOR(pg_catalog.=)
+                     'pg_catalog.text'::pg_catalog.regtype
+             AND NOT procedure.proretset
+             AND procedure.pronargdefaults OPERATOR(pg_catalog.=) 0
+             AND procedure.proallargtypes IS NULL
+             AND procedure.proargmodes IS NULL
+             AND procedure.proargnames OPERATOR(pg_catalog.=)
+                     ARRAY['idx']::pg_catalog.text[]
+             AND language.lanname OPERATOR(pg_catalog.=) 'plpgsql'
+             AND procedure.prosecdef
+             AND NOT procedure.proleakproof
+             AND NOT procedure.proisstrict
+             AND procedure.provolatile OPERATOR(pg_catalog.=) 'v'
+             AND procedure.proparallel OPERATOR(pg_catalog.=) 'u'
+             AND procedure.prosupport OPERATOR(pg_catalog.=) 0
+             AND procedure.proconfig OPERATOR(pg_catalog.=)
+                     ARRAY['search_path=pg_catalog, pg_temp']
+                         ::pg_catalog.text[]
+             AND pg_catalog.md5(procedure.prosrc)
+                     OPERATOR(pg_catalog.=)
+                     '39b927569e6b4a2d24e1999627993a6d'
+             AND NOT EXISTS (
+                 SELECT 1
+                 FROM pg_catalog.aclexplode(
+                     coalesce(
+                         procedure.proacl,
+                         pg_catalog.acldefault(
+                             'f', procedure.proowner))) acl
+                 WHERE (
+                     acl.grantee OPERATOR(pg_catalog.=) 0
+                     AND acl.privilege_type
+                             OPERATOR(pg_catalog.=) 'EXECUTE')
+                    OR (
+                     acl.grantee OPERATOR(pg_catalog.<>)
+                             procedure.proowner
+                     AND acl.is_grantable))))
+    THEN
+        RAISE EXCEPTION
+            'existing bm25_request_compaction wrapper is not the managed '
+            'definition'
+            USING HINT =
+                'Inspect and remove the hostile, drifted, or foreign-owned '
+                'wrapper manually.';
+    END IF;
+
+    IF compactor_oid IS NULL THEN
+        RETURN;
+    END IF;
+
+    SELECT oid
+    INTO database_oid
+    FROM pg_catalog.pg_database
+    WHERE datname OPERATOR(pg_catalog.=) pg_catalog.current_database();
+
+    IF EXISTS (
+        SELECT 1
+        FROM pg_catalog.pg_shdepend dependency
+        WHERE dependency.refclassid OPERATOR(pg_catalog.=)
+                  'pg_catalog.pg_authid'::pg_catalog.regclass
+          AND dependency.refobjid OPERATOR(pg_catalog.=) compactor_oid
+          AND dependency.deptype OPERATOR(pg_catalog.=) 'o'
+          AND NOT (
+              wrapper_oid IS NOT NULL
+              AND dependency.dbid OPERATOR(pg_catalog.=) database_oid
+              AND dependency.classid OPERATOR(pg_catalog.=)
+                      'pg_catalog.pg_proc'::pg_catalog.regclass
+              AND dependency.objid OPERATOR(pg_catalog.=) wrapper_oid
+              AND dependency.objsubid OPERATOR(pg_catalog.=) 0))
+    THEN
+        RAISE EXCEPTION
+            'existing textsearch_compactor role owns unexpected objects'
+            USING HINT =
+                'Drop or reassign every object except the exact managed '
+                'public.bm25_request_compaction(regclass) wrapper.';
+    END IF;
+END
+$$;
 
 -- Validate every security-relevant property before changing memberships or
 -- granting access. Existing hostile state is never normalized implicitly.
@@ -234,113 +368,6 @@ BEGIN
     THEN
         RAISE EXCEPTION
             'existing textsearch_compactor role has unexpected memberships';
-    END IF;
-END
-$$;
-
--- pg_shdepend is cluster-wide. The exact managed wrapper in this database is
--- the only object the role may own on a clean rerun.
-DO $$
-DECLARE
-    compactor_oid pg_catalog.oid;
-    database_oid  pg_catalog.oid;
-    wrapper_oid   pg_catalog.oid;
-BEGIN
-    SELECT oid
-    INTO compactor_oid
-    FROM pg_catalog.pg_roles
-    WHERE rolname OPERATOR(pg_catalog.=) 'textsearch_compactor';
-
-    IF compactor_oid IS NULL THEN
-        RETURN;
-    END IF;
-
-    SELECT oid
-    INTO database_oid
-    FROM pg_catalog.pg_database
-    WHERE datname OPERATOR(pg_catalog.=) pg_catalog.current_database();
-
-    wrapper_oid := pg_catalog.to_regprocedure(
-        'public.bm25_request_compaction(pg_catalog.regclass)');
-
-    IF EXISTS (
-        SELECT 1
-        FROM pg_catalog.pg_shdepend dependency
-        WHERE dependency.refclassid OPERATOR(pg_catalog.=)
-                  'pg_catalog.pg_authid'::pg_catalog.regclass
-          AND dependency.refobjid OPERATOR(pg_catalog.=) compactor_oid
-          AND dependency.deptype OPERATOR(pg_catalog.=) 'o'
-          AND NOT (
-              wrapper_oid IS NOT NULL
-              AND dependency.dbid OPERATOR(pg_catalog.=) database_oid
-              AND dependency.classid OPERATOR(pg_catalog.=)
-                      'pg_catalog.pg_proc'::pg_catalog.regclass
-              AND dependency.objid OPERATOR(pg_catalog.=) wrapper_oid
-              AND dependency.objsubid OPERATOR(pg_catalog.=) 0
-              AND EXISTS (
-                  SELECT 1
-                  FROM pg_catalog.pg_proc procedure
-                       JOIN pg_catalog.pg_namespace namespace
-                         ON namespace.oid OPERATOR(pg_catalog.=)
-                                procedure.pronamespace
-                       JOIN pg_catalog.pg_language language
-                         ON language.oid OPERATOR(pg_catalog.=)
-                                procedure.prolang
-                  WHERE procedure.oid OPERATOR(pg_catalog.=) wrapper_oid
-                    AND namespace.nspname OPERATOR(pg_catalog.=) 'public'
-                    AND procedure.proname OPERATOR(pg_catalog.=)
-                            'bm25_request_compaction'
-                    AND procedure.proowner OPERATOR(pg_catalog.=)
-                            compactor_oid
-                    AND procedure.prokind OPERATOR(pg_catalog.=) 'f'
-                    AND procedure.pronargs OPERATOR(pg_catalog.=) 1
-                    AND procedure.proargtypes[0]
-                            OPERATOR(pg_catalog.=)
-                            'pg_catalog.regclass'::pg_catalog.regtype
-                    AND procedure.provariadic OPERATOR(pg_catalog.=) 0
-                    AND procedure.prorettype OPERATOR(pg_catalog.=)
-                            'pg_catalog.text'::pg_catalog.regtype
-                    AND NOT procedure.proretset
-                    AND procedure.pronargdefaults OPERATOR(pg_catalog.=) 0
-                    AND procedure.proallargtypes IS NULL
-                    AND procedure.proargmodes IS NULL
-                    AND procedure.proargnames OPERATOR(pg_catalog.=)
-                            ARRAY['idx']::pg_catalog.text[]
-                    AND language.lanname OPERATOR(pg_catalog.=) 'plpgsql'
-                    AND procedure.prosecdef
-                    AND NOT procedure.proleakproof
-                    AND NOT procedure.proisstrict
-                    AND procedure.provolatile OPERATOR(pg_catalog.=) 'v'
-                    AND procedure.proparallel OPERATOR(pg_catalog.=) 'u'
-                    AND procedure.prosupport OPERATOR(pg_catalog.=) 0
-                    AND procedure.proconfig OPERATOR(pg_catalog.=)
-                            ARRAY['search_path=pg_catalog, pg_temp']
-                                ::pg_catalog.text[]
-                    AND pg_catalog.md5(procedure.prosrc)
-                            OPERATOR(pg_catalog.=)
-                            '39b927569e6b4a2d24e1999627993a6d'
-                    AND NOT EXISTS (
-                        SELECT 1
-                        FROM pg_catalog.aclexplode(
-                            coalesce(
-                                procedure.proacl,
-                                pg_catalog.acldefault(
-                                    'f', procedure.proowner))) acl
-                        WHERE (
-                            acl.grantee OPERATOR(pg_catalog.=) 0
-                            AND acl.privilege_type
-                                    OPERATOR(pg_catalog.=) 'EXECUTE')
-                           OR (
-                            acl.grantee OPERATOR(pg_catalog.<>)
-                                    procedure.proowner
-                            AND acl.is_grantable)))
-          ))
-    THEN
-        RAISE EXCEPTION
-            'existing textsearch_compactor role owns unexpected objects'
-            USING HINT =
-                'Drop or reassign every object except the exact managed '
-                'public.bm25_request_compaction(regclass) wrapper.';
     END IF;
 END
 $$;
