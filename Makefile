@@ -92,7 +92,8 @@ REGRESS = abort aerodocs basic binary_io bmw bmw_skip_advance bulk_load cache_ap
 REGRESS_OPTS = --inputdir=test --outputdir=test
 
 PG_CONFIG ?= pg_config
-PGXS := $(shell $(PG_CONFIG) --pgxs)
+PG_CONFIG_PATH := $(realpath $(shell command -v $(PG_CONFIG) 2>/dev/null))
+PGXS := $(shell $(PG_CONFIG_PATH) --pgxs)
 include $(PGXS)
 
 # SQL regression tests
@@ -158,6 +159,25 @@ test-segment:
 test-stress:
 	@echo "Running stress tests..."
 	@cd test/scripts && ./stress.sh
+
+# Background compaction via pg_durable. This is separate from test-all
+# because the normal CI image does not install pg_durable.
+test-durable:
+	@echo "Running pg_durable background compaction tests..."
+	@expected="$$($(PG_CONFIG_PATH) --bindir)|$$($(PG_CONFIG_PATH) --pkglibdir)"; \
+		actual="$$(cd test/scripts && \
+			PATH="$$PWD/fixtures:$$PATH" \
+			PG_CONFIG="$(PG_CONFIG_PATH)" \
+			DURABLE_PG_CONFIG_PROBE=1 ./durable_compaction.sh)"; \
+		test "$$actual" = "$$expected" || { \
+			echo "PG_CONFIG propagation failed: expected '$$expected', got '$$actual'"; \
+			exit 1; \
+		}
+	@cd test/scripts && \
+		PG_CONFIG="$(PG_CONFIG_PATH)" ./durable_compaction.sh
+
+test-durable-static:
+	@cd test/scripts && DURABLE_STATIC_ONLY=1 ./durable_compaction.sh
 
 test-cic:
 	@echo "Running CREATE INDEX CONCURRENTLY tests..."
@@ -367,6 +387,8 @@ help:
 	@echo "  make test-recovery    - Run crash recovery tests"
 	@echo "  make test-segment     - Run multi-backend segment tests"
 	@echo "  make test-stress      - Run long-running stress tests"
+	@echo "  make test-durable     - Run pg_durable compaction tests"
+	@echo "  make test-durable-static - Check the pg_durable adapter shape"
 	@echo "  make test-cic         - Run CREATE INDEX CONCURRENTLY tests"
 	@echo "  make test-chinese     - Run Chinese tokenization test (needs zhparser)"
 	@echo "  make test-reindex     - Run multi-backend reindex regression tests (issue #390)"
@@ -393,4 +415,4 @@ help:
 	@echo "  make test-all"
 	@echo "  make format"
 
-.PHONY: test test-compaction-ownercheck test-compaction-request-source clean-test-dirs installcheck test-concurrency test-recovery test-segment test-stress test-cic test-chinese test-replication test-replication-extended test-logical-replication test-multi-index test-reindex test-shell test-all expected lint-format format format-check format-diff format-single coverage coverage-build coverage-clean coverage-report help
+.PHONY: test test-compaction-ownercheck test-compaction-request-source clean-test-dirs installcheck test-concurrency test-recovery test-segment test-stress test-durable test-durable-static test-cic test-chinese test-replication test-replication-extended test-logical-replication test-multi-index test-reindex test-shell test-all expected lint-format format format-check format-diff format-single coverage coverage-build coverage-clean coverage-report help

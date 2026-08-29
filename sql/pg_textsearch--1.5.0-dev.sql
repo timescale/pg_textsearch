@@ -281,6 +281,77 @@ LANGUAGE C VOLATILE STRICT;
 COMMENT ON FUNCTION @extschema@.bm25_compact_step(regclass) IS
     'Run at most one compaction pass and report whether one ran, letting a caller spread a cascade over several transactions. A published pass is not undone by ROLLBACK.';
 
+CREATE FUNCTION @extschema@.bm25_compact_step_if_current(
+    index_oid oid,
+    database_oid oid,
+    tablespace_oid oid,
+    relfilenumber oid)
+RETURNS boolean
+AS 'MODULE_PATHNAME', 'tp_compact_index_step_if_current'
+LANGUAGE C VOLATILE STRICT;
+
+CREATE FUNCTION @extschema@.bm25_needs_compaction_if_current(
+    index_oid oid,
+    database_oid oid,
+    tablespace_oid oid,
+    relfilenumber oid)
+RETURNS boolean
+AS 'MODULE_PATHNAME', 'tp_needs_compaction_if_current'
+LANGUAGE C STABLE STRICT;
+
+REVOKE ALL ON FUNCTION
+    @extschema@.bm25_compact_step_if_current(oid, oid, oid, oid),
+    @extschema@.bm25_needs_compaction_if_current(oid, oid, oid, oid)
+FROM PUBLIC;
+
+-- Named default privileges are copied onto new functions and survive a
+-- PUBLIC-only revoke. Keep these worker helpers owner-only until the
+-- operator explicitly grants the dedicated compactor role.
+DO $$
+DECLARE
+    helper record;
+BEGIN
+    FOR helper IN
+        SELECT namespace.nspname,
+               procedure.proname,
+               grantee.rolname AS grantee_name
+        FROM pg_catalog.pg_extension extension
+             JOIN pg_catalog.pg_depend dependency
+               ON dependency.refclassid =
+                      'pg_catalog.pg_extension'::pg_catalog.regclass
+              AND dependency.refobjid = extension.oid
+              AND dependency.classid =
+                      'pg_catalog.pg_proc'::pg_catalog.regclass
+              AND dependency.deptype = 'e'
+             JOIN pg_catalog.pg_proc procedure
+               ON procedure.oid = dependency.objid
+             JOIN pg_catalog.pg_namespace namespace
+               ON namespace.oid = procedure.pronamespace
+             CROSS JOIN LATERAL pg_catalog.aclexplode(
+                 coalesce(
+                     procedure.proacl,
+                     pg_catalog.acldefault(
+                         'f', procedure.proowner))) acl
+             JOIN pg_catalog.pg_roles grantee
+               ON grantee.oid = acl.grantee
+        WHERE extension.extname = 'pg_textsearch'
+          AND procedure.proname IN (
+                  'bm25_compact_step_if_current',
+                  'bm25_needs_compaction_if_current')
+          AND procedure.pronargs = 4
+          AND acl.grantee <> procedure.proowner
+    LOOP
+        EXECUTE pg_catalog.format(
+            'REVOKE ALL ON FUNCTION %I.%I('
+            'pg_catalog.oid, pg_catalog.oid, pg_catalog.oid, pg_catalog.oid'
+            ') FROM %I CASCADE',
+            helper.nspname,
+            helper.proname,
+            helper.grantee_name);
+    END LOOP;
+END
+$$;
+
 -- VOLATILE because it reads live metapage state, and PARALLEL
 -- RESTRICTED to match bm25_level_counts.  Every level counts: the top
 -- level compacts into itself, so its debt is reducible like any

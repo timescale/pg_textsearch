@@ -213,3 +213,73 @@ rollback. Ordinary lookup or callback errors produce a warning and do not
 abort the writer. Cancellation and shutdown errors are rethrown, so a callback
 that cancels the backend fails the commit it was invoked from.
 This interface is scheduler-neutral and has no pg_durable dependency.
+
+## pg_durable per-index adapter
+
+The optional adapter in `scripts/durable_compaction/` converts one physical
+BM25 index request into a durable stepped loop. It remains operator-managed:
+`CREATE EXTENSION pg_textsearch` does not install pg_durable, create a cluster
+role, change authentication, or expose the request wrapper.
+
+The wrapper records four identifiers:
+
+- the index relation OID;
+- the current database OID;
+- the effective tablespace OID; and
+- the relation's relfilenumber.
+
+The worker passes those values to the private
+`bm25_compact_step_if_current(oid, oid, oid, oid)` and
+`bm25_needs_compaction_if_current(oid, oid, oid, oid)` entry points. They open
+and lock the relation, validate the complete physical identity, reject local
+or foreign temporary relations, confirm the BM25 access method, and enforce
+index ownership. A stale target returns `false`; a live target error remains
+an error.
+
+Both helpers are extension members so schema relocation remains safe, but
+their install and upgrade SQL revokes every non-owner ACL copied from named
+default privileges. `PUBLIC` has no access. `01_setup_role.sql` grants them
+only to the dedicated compactor after validating the role.
+
+The adapter's loop is equivalent to:
+
+```sql
+df.start(
+    df.loop(
+        '<schema>.bm25_compact_step_if_current(...)',
+        '<schema>.bm25_needs_compaction_if_current(...)',
+        on_error => 'continue'),
+    label => 'bm25-compact-<index-oid>',
+    transaction_mode => 'new')
+```
+
+Each body and condition execution runs in its own worker transaction, so the
+per-index `LW_EXCLUSIVE` lock is released between merge batches.
+`transaction_mode => 'new'` also persists submission independently of the
+writer transaction. The loop's `on_error => 'continue'` policy returns
+ordinary step failures to the physical-state condition rather than
+immediately stranding the request.
+
+The wrapper is `SECURITY DEFINER`, owned by the passwordless
+`textsearch_compactor` login role, and fixes `search_path` to
+`pg_catalog, pg_temp`. It accepts only a BM25 index, rejects temporary
+indexes, and authorizes the caller's login identity by `INSERT` privilege on
+the indexed table or a partition ancestor. Its generated SQL contains only
+the extension schema, fixed helper names, and numeric OIDs.
+
+Role and wrapper reuse fail closed. The setup scripts authenticate the exact
+role attributes, membership direction and options, unsafe role settings,
+cluster-wide ownership dependencies, wrapper body hash and security
+properties, and ACL grant options before granting or replacing anything. A
+committed `SELECT 1` canary additionally proves the worker can connect and
+execute as the compactor.
+
+The adapter currently requires the unreleased three-argument
+`df.loop(text, text, text)` capability. Its exact catalog check is localized
+at the start of each operator script so the first released version can be
+recorded without changing adapter behavior. See
+`scripts/durable_compaction/README.md` for installation, authentication, and
+validation instructions.
+
+This slice intentionally has no recurring schedule, cross-index sweep, or
+extension packaging.
