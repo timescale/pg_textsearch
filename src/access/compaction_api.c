@@ -107,6 +107,8 @@ tp_open_current_bm25_index(
 	if (RelationUsesLocalBuffers(index_rel) ||
 		RELATION_IS_OTHER_TEMP(index_rel) || index_rel->rd_indam == NULL ||
 		index_rel->rd_indam->ambuild != tp_build ||
+		index_rel->rd_index == NULL || !index_rel->rd_index->indisvalid ||
+		!index_rel->rd_index->indisready || !index_rel->rd_index->indislive ||
 		index_rel->rd_locator.spcOid != tablespaceoid ||
 		index_rel->rd_locator.dbOid != databaseoid ||
 		index_rel->rd_locator.relNumber != relfilenumber)

@@ -79,6 +79,7 @@ static_checks() {
     assert_contains "${compaction_api}" "tp_open_current_bm25_index"
     assert_contains "${compaction_api}" "tp_compact_index_step_if_current"
     assert_contains "${compaction_api}" "tp_needs_compaction_if_current"
+    assert_contains "${compaction_api}" "!index_rel->rd_index->indisvalid"
 
     for sql in "${fresh_sql}" "${upgrade_sql}"; do
         assert_contains "${sql}" \
@@ -99,6 +100,8 @@ static_checks() {
     assert_contains "${wrapper}" "on_error => 'continue'"
     assert_contains "${wrapper}" "transaction_mode => 'new'"
     assert_contains "${wrapper}" "pg_textsearch_compaction.canary_instance"
+    assert_contains "${wrapper}" \
+        "IF NOT FOUND OR relfilenumber IS NULL THEN"
     assert_contains "${GLUE_DIR}/README.md" \
         "public.bm25_request_compaction(regclass)"
 
@@ -162,15 +165,50 @@ PGHOST="${SOCKET_DIR}" "${PGBINDIR}/pg_ctl" start -D "${DATA_DIR}" \
 psql_super -c "CREATE EXTENSION pg_durable;"
 psql_super -c "CREATE SCHEMA ${EXT_SCHEMA};"
 psql_super -c "GRANT USAGE ON SCHEMA ${EXT_SCHEMA} TO PUBLIC;"
+psql_super -c "CREATE ROLE default_privilege_writer LOGIN;"
+psql_super -c "ALTER DEFAULT PRIVILEGES FOR ROLE postgres
+    IN SCHEMA ${EXT_SCHEMA}
+    GRANT EXECUTE ON FUNCTIONS TO default_privilege_writer;"
 psql_super -c "CREATE EXTENSION pg_textsearch WITH SCHEMA ${EXT_SCHEMA};"
 
-assert_sql_true "released pg_durable loop policy is available" \
-    "SELECT pg_catalog.to_regprocedure(
-        'df.loop(pg_catalog.text,pg_catalog.text,pg_catalog.text)')
-        IS NOT NULL;"
+loop_policy_available=$(psql_super -c "SELECT pg_catalog.to_regprocedure(
+    'df.loop(pg_catalog.text,pg_catalog.text,pg_catalog.text)')
+    IS NOT NULL;")
+if [ "${loop_policy_available}" != "t" ]; then
+    if psql_super -f "${GLUE_DIR}/01_setup_role.sql" \
+        -v index_owner=missing_owner >/dev/null 2>&1; then
+        fail "role setup accepted pg_durable without loop on_error"
+    fi
+    assert_sql_true "failed role preflight created no compactor role" \
+        "SELECT NOT EXISTS (
+            SELECT 1 FROM pg_catalog.pg_roles
+            WHERE rolname = 'textsearch_compactor');"
+
+    psql_super <<'SQL'
+CREATE FUNCTION public.bm25_request_compaction(pg_catalog.regclass)
+RETURNS pg_catalog.text
+LANGUAGE sql
+RETURN 'preflight-sentinel'::pg_catalog.text;
+SQL
+    preflight_oid=$(psql_super -c "SELECT
+        'public.bm25_request_compaction(regclass)'::regprocedure::oid;")
+    if psql_super -f "${GLUE_DIR}/02_wrapper.sql" \
+        -v writer_role=missing_writer >/dev/null 2>&1; then
+        fail "wrapper setup accepted pg_durable without loop on_error"
+    fi
+    [ "${preflight_oid}" = "$(psql_super -c "SELECT
+        'public.bm25_request_compaction(regclass)'::regprocedure::oid;")" ] \
+        || fail "failed wrapper preflight replaced the existing wrapper"
+    printf '%s\n' \
+        "Live positive checks skipped: df.loop(..., on_error) unavailable."
+    exit 0
+fi
 
 psql_super -c "CREATE ROLE app_owner LOGIN;"
 psql_super -c "CREATE ROLE app_writer LOGIN;"
+psql_super -c "ALTER DEFAULT PRIVILEGES FOR ROLE postgres
+    IN SCHEMA public
+    GRANT EXECUTE ON FUNCTIONS TO default_privilege_writer;"
 psql_super -f "${GLUE_DIR}/01_setup_role.sql" \
     -v index_owner=app_owner >/dev/null
 
@@ -279,6 +317,20 @@ assert_sql_true "private helpers are available only to the compactor" \
         AND pg_catalog.has_function_privilege(
             'textsearch_compactor',
             '${EXT_SCHEMA}.bm25_needs_compaction_if_current(oid,oid,oid,oid)',
+            'EXECUTE');"
+assert_sql_true "named default helper grants were removed" \
+    "SELECT
+        NOT pg_catalog.has_function_privilege(
+            'default_privilege_writer',
+            '${EXT_SCHEMA}.bm25_compact_step_if_current(oid,oid,oid,oid)',
+            'EXECUTE')
+        AND NOT pg_catalog.has_function_privilege(
+            'default_privilege_writer',
+            '${EXT_SCHEMA}.bm25_needs_compaction_if_current(oid,oid,oid,oid)',
+            'EXECUTE')
+        AND NOT pg_catalog.has_function_privilege(
+            'default_privilege_writer',
+            'public.bm25_request_compaction(regclass)',
             'EXECUTE');"
 
 psql_super <<SQL

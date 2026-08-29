@@ -308,7 +308,7 @@ BEGIN
                                 ::pg_catalog.text[]
                     AND pg_catalog.md5(procedure.prosrc)
                             OPERATOR(pg_catalog.=)
-                            'c2980482b2b93b9e53511146f1fa8b47'
+                            '9546a8ef400bdc5eeb9dbed13aad6bdc'
                     AND NOT EXISTS (
                         SELECT 1
                         FROM pg_catalog.aclexplode(

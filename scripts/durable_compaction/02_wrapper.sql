@@ -249,7 +249,7 @@ BEGIN
                          ::pg_catalog.text[]
              AND pg_catalog.md5(procedure.prosrc)
                      OPERATOR(pg_catalog.=)
-                     'c2980482b2b93b9e53511146f1fa8b47'
+                     '9546a8ef400bdc5eeb9dbed13aad6bdc'
              AND NOT EXISTS (
                  SELECT 1
                  FROM pg_catalog.aclexplode(
@@ -365,46 +365,54 @@ DECLARE
     database_oid   pg_catalog.text;
     tablespace_oid pg_catalog.text;
     relfilenumber  pg_catalog.text;
+    persistence    pg_catalog.text;
+    authorized     pg_catalog.bool;
     body           pg_catalog.text;
     cond           pg_catalog.text;
 BEGIN
-    IF NOT EXISTS (
-        SELECT 1
-        FROM pg_catalog.pg_class relation
-             JOIN pg_catalog.pg_am access_method
-               ON access_method.oid = relation.relam
-        WHERE relation.oid = idx
-          AND relation.relkind = 'i'
-          AND access_method.amname = 'bm25')
-    THEN
-        RAISE EXCEPTION '"%" is not a bm25 index', idx::pg_catalog.text;
+    SELECT idx::pg_catalog.oid::pg_catalog.text,
+           database.oid::pg_catalog.text,
+           coalesce(
+               nullif(relation.reltablespace, 0),
+               database.dattablespace)::pg_catalog.text,
+           pg_catalog.pg_relation_filenode(idx)::pg_catalog.text,
+           relation.relpersistence::pg_catalog.text,
+           pg_catalog.has_table_privilege(
+               session_user, index_catalog.indrelid, 'INSERT')
+           OR EXISTS (
+               SELECT 1
+               FROM pg_catalog.pg_partition_ancestors(
+                        index_catalog.indrelid) ancestor(relid)
+               WHERE pg_catalog.has_table_privilege(
+                         session_user, ancestor.relid, 'INSERT'))
+    INTO idx_oid, database_oid, tablespace_oid, relfilenumber,
+         persistence, authorized
+    FROM pg_catalog.pg_class relation
+         JOIN pg_catalog.pg_am access_method
+           ON access_method.oid = relation.relam
+         JOIN pg_catalog.pg_index index_catalog
+           ON index_catalog.indexrelid = relation.oid
+         JOIN pg_catalog.pg_database database
+           ON database.datname = pg_catalog.current_database()
+    WHERE relation.oid = idx
+      AND relation.relkind = 'i'
+      AND access_method.amname = 'bm25'
+      AND index_catalog.indisvalid
+      AND index_catalog.indisready
+      AND index_catalog.indislive;
+
+    IF NOT FOUND OR relfilenumber IS NULL THEN
+        RAISE EXCEPTION
+            '"%" is not a current bm25 index', idx::pg_catalog.text;
     END IF;
 
-    IF EXISTS (
-        SELECT 1
-        FROM pg_catalog.pg_class relation
-        WHERE relation.oid = idx
-          AND relation.relpersistence = 't')
-    THEN
+    IF persistence = 't' THEN
         RAISE EXCEPTION
             'temporary bm25 indexes cannot use background compaction'
             USING ERRCODE = 'feature_not_supported';
     END IF;
 
-    IF NOT EXISTS (
-        SELECT 1
-        FROM pg_catalog.pg_index index_catalog
-        WHERE index_catalog.indexrelid = idx
-          AND (
-              pg_catalog.has_table_privilege(
-                  session_user, index_catalog.indrelid, 'INSERT')
-              OR EXISTS (
-                  SELECT 1
-                  FROM pg_catalog.pg_partition_ancestors(
-                           index_catalog.indrelid) ancestor(relid)
-                  WHERE pg_catalog.has_table_privilege(
-                            session_user, ancestor.relid, 'INSERT'))))
-    THEN
+    IF NOT authorized THEN
         RAISE EXCEPTION
             'permission denied to request compaction for %', idx
             USING ERRCODE = 'insufficient_privilege';
@@ -420,18 +428,6 @@ BEGIN
     IF ext_schema IS NULL THEN
         RAISE EXCEPTION 'extension pg_textsearch is not installed here';
     END IF;
-
-    SELECT idx::pg_catalog.oid::pg_catalog.text,
-           database.oid::pg_catalog.text,
-           coalesce(
-               nullif(relation.reltablespace, 0),
-               database.dattablespace)::pg_catalog.text,
-           pg_catalog.pg_relation_filenode(idx)::pg_catalog.text
-    INTO idx_oid, database_oid, tablespace_oid, relfilenumber
-    FROM pg_catalog.pg_class relation
-         JOIN pg_catalog.pg_database database
-           ON database.datname = pg_catalog.current_database()
-    WHERE relation.oid = idx;
 
     body := pg_catalog.format(
         'SELECT %I.bm25_compact_step_if_current('
@@ -528,7 +524,7 @@ BEGIN
                       ::pg_catalog.text[]
           AND pg_catalog.md5(procedure.prosrc)
                   OPERATOR(pg_catalog.=)
-                  'c2980482b2b93b9e53511146f1fa8b47'
+                  '9546a8ef400bdc5eeb9dbed13aad6bdc'
           AND NOT EXISTS (
               SELECT 1
               FROM pg_catalog.aclexplode(
