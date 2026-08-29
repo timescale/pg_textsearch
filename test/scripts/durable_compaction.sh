@@ -715,6 +715,60 @@ SQL
     log "PASS: setup rejects PUBLIC CREATE on wrapper schema"
     sql_super -c "REVOKE CREATE ON SCHEMA public FROM PUBLIC;"
 
+    sql_super -f "${GLUE_DIR}/02_wrapper.sql" \
+        -v writer_role=app_writer >/dev/null
+    sql_super -c "CREATE ROLE delegable_writer LOGIN;"
+    sql_super -c "GRANT EXECUTE ON FUNCTION \
+public.bm25_request_compaction(regclass) TO delegable_writer \
+WITH GRANT OPTION;"
+    local delegable_output delegable_setup_succeeded=f
+    local delegable_wrapper_oid_before delegable_wrapper_oid_after
+    delegable_wrapper_oid_before=$(sql_super -c "SELECT \
+'public.bm25_request_compaction(regclass)'::regprocedure::oid;")
+    if delegable_output=$(sql_super -f "${GLUE_DIR}/01_setup_role.sql" \
+        -v index_owner=app_owner 2>&1); then
+        delegable_setup_succeeded=t
+    fi
+    delegable_wrapper_oid_after=$(sql_super -c "SELECT \
+'public.bm25_request_compaction(regclass)'::regprocedure::oid;")
+    if [ "$delegable_setup_succeeded" = "t" ] \
+        || [[ "$delegable_output" != \
+*"existing textsearch_compactor role owns unexpected objects"* ]]; then
+        error "setup did not reject a named wrapper EXECUTE WITH GRANT \
+OPTION (succeeded=${delegable_setup_succeeded}, \
+output='${delegable_output}')"
+    fi
+    assert_compactor_ungranted \
+        "grant-option rejection happens before owner/df grants"
+    assert_eq "failed setup preserves the exact managed wrapper object" \
+        "$delegable_wrapper_oid_before" "$delegable_wrapper_oid_after"
+    assert_eq "failed setup preserves approved and grantable wrapper ACLs" \
+        "t" "$(sql_super -c "SELECT
+            pg_catalog.md5(procedure.prosrc) =
+                'c8304e8b8d9218c92625ccd8752864ce'
+            AND EXISTS (
+                SELECT 1
+                FROM pg_catalog.aclexplode(procedure.proacl) acl
+                WHERE acl.grantee =
+                        'app_writer'::pg_catalog.regrole
+                  AND acl.privilege_type = 'EXECUTE'
+                  AND NOT acl.is_grantable)
+            AND EXISTS (
+                SELECT 1
+                FROM pg_catalog.aclexplode(procedure.proacl) acl
+                WHERE acl.grantee =
+                        'delegable_writer'::pg_catalog.regrole
+                  AND acl.privilege_type = 'EXECUTE'
+                  AND acl.is_grantable)
+            FROM pg_catalog.pg_proc procedure
+            WHERE procedure.oid =
+                'public.bm25_request_compaction(regclass)'
+                    ::pg_catalog.regprocedure;")"
+    log "PASS: setup rejects delegable wrapper execution before grants"
+    sql_super -c "REVOKE ALL ON FUNCTION \
+public.bm25_request_compaction(regclass) FROM delegable_writer;"
+    sql_super -c "DROP ROLE delegable_writer;"
+
     PGOPTIONS="-c search_path=hostile_path,pg_catalog,public,${EXT_SCHEMA},df" \
         sql_super -f "${GLUE_DIR}/01_setup_role.sql" \
         -v index_owner=app_owner >/dev/null

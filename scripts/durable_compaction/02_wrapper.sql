@@ -357,8 +357,13 @@ BEGIN
                   coalesce(
                       procedure.proacl,
                       pg_catalog.acldefault('f', procedure.proowner))) acl
-              WHERE acl.grantee OPERATOR(pg_catalog.=) 0
-                AND acl.privilege_type OPERATOR(pg_catalog.=) 'EXECUTE'))
+              WHERE (
+                  acl.grantee OPERATOR(pg_catalog.=) 0
+                  AND acl.privilege_type OPERATOR(pg_catalog.=) 'EXECUTE')
+                 OR (
+                  acl.grantee OPERATOR(pg_catalog.<>)
+                          procedure.proowner
+                  AND acl.is_grantable)))
     THEN
         RAISE EXCEPTION
             'managed bm25_request_compaction wrapper definition mismatch'
