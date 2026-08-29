@@ -506,10 +506,13 @@ BEGIN
           AND procedure.pronargs OPERATOR(pg_catalog.=) 1
           AND procedure.proargtypes[0] OPERATOR(pg_catalog.=)
                   'pg_catalog.regclass'::pg_catalog.regtype
+          AND procedure.provariadic OPERATOR(pg_catalog.=) 0
           AND procedure.prorettype OPERATOR(pg_catalog.=)
                   'pg_catalog.text'::pg_catalog.regtype
           AND NOT procedure.proretset
           AND procedure.pronargdefaults OPERATOR(pg_catalog.=) 0
+          AND procedure.proallargtypes IS NULL
+          AND procedure.proargmodes IS NULL
           AND procedure.proargnames OPERATOR(pg_catalog.=)
                   ARRAY['idx']::pg_catalog.text[]
           AND language.lanname OPERATOR(pg_catalog.=) 'plpgsql'
