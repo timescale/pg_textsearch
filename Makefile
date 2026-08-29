@@ -93,9 +93,12 @@ PGXS := $(shell $(PG_CONFIG) --pgxs)
 include $(PGXS)
 
 # SQL regression tests
-test:
+test: test-force-merge-invariant
 	@echo "Running SQL regression tests..."
 	@$(pg_regress_installcheck) $(REGRESS_OPTS) $(REGRESS)
+
+test-force-merge-invariant:
+	@./test/scripts/force_merge_invariant_source.sh
 
 # Custom local test target with dedicated PostgreSQL instance
 test-local: install
@@ -342,7 +345,8 @@ help:
 	@echo "  make clean        - Clean build artifacts and test directories"
 	@echo ""
 	@echo "Testing targets:"
-	@echo "  make test         - Run SQL regression tests only"
+	@echo "  make test         - Run source guard and SQL regression tests"
+	@echo "  make test-force-merge-invariant - Check production force-merge guards"
 	@echo "  make installcheck - Run SQL regression tests"
 	@echo "  make test-local   - Run tests with dedicated PostgreSQL instance"
 	@echo "  make test-all     - Run all tests (SQL regression + shell scripts)"
@@ -377,4 +381,4 @@ help:
 	@echo "  make test-all"
 	@echo "  make format"
 
-.PHONY: test clean-test-dirs installcheck test-concurrency test-recovery test-segment test-stress test-cic test-chinese test-replication test-replication-extended test-logical-replication test-multi-index test-reindex test-shell test-all expected lint-format format format-check format-diff format-single coverage coverage-build coverage-clean coverage-report help
+.PHONY: test test-force-merge-invariant clean-test-dirs installcheck test-concurrency test-recovery test-segment test-stress test-cic test-chinese test-replication test-replication-extended test-logical-replication test-multi-index test-reindex test-shell test-all expected lint-format format format-check format-diff format-single coverage coverage-build coverage-clean coverage-report help

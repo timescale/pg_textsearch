@@ -71,6 +71,9 @@ extern void write_merged_segment_to_sink(
 extern BlockNumber
 tp_merge_level_segments(Relation index, uint32 level, uint32 max_merge);
 
+/* Return whether any compactable level has reached its threshold. */
+extern bool tp_compaction_needed(Relation index);
+
 /*
  * Check if a level needs compaction and trigger merge if so.
  *
@@ -85,7 +88,23 @@ tp_merge_level_segments(Relation index, uint32 level, uint32 max_merge);
 extern void tp_maybe_compact_level(Relation index, uint32 level);
 
 /*
- * Compact all segments across all levels into one segment per level.
+ * Perform at most one merge batch, splitting cascades across
+ * transactions so the per-index exclusive lock can be released
+ * between levels.
+ */
+extern bool tp_compact_step(Relation index);
+
+/*
+ * Reject force-merge layouts that cannot reach one segment without
+ * consolidating L7. Include a prospective L0 segment when the prepared
+ * memtable spill contains terms. Returns false when one lone L7 is already
+ * complete.
+ */
+extern bool
+tp_force_merge_preflight(Relation index, bool spill_creates_segment);
+
+/*
+ * Compact all segments across all levels into one segment.
  *
  * Unlike tp_maybe_compact_level, this ignores the segments_per_level
  * threshold and merges ALL segments at each level in one batch.

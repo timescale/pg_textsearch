@@ -753,6 +753,8 @@ tp_spill_finalize(
 		Page			 seg_page;
 		TpSegmentHeader *seg_header;
 
+		tp_check_level_count_increment(metap, 0);
+
 		seg_buf = ReadBuffer(rel, new_segment_root);
 		LockBuffer(seg_buf, BUFFER_LOCK_EXCLUSIVE);
 		seg_page = GenericXLogRegisterBuffer(state, seg_buf, 0);

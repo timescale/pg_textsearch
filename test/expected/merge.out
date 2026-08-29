@@ -220,6 +220,130 @@ ORDER BY content <@> to_bm25query('database', 'merge_test_idx'), id;
  10 | database transaction log |        -0.6931
 (5 rows)
 
+--------------------------------------------------------------------------------
+-- Phase 5: Persisted segment counts fail closed at capacity
+--------------------------------------------------------------------------------
+SET pg_textsearch.segments_per_level = 3;
+SET pg_textsearch.debug_segment_count_limit = 2;
+CREATE TABLE merge_capacity (id serial PRIMARY KEY, content text);
+CREATE INDEX merge_capacity_idx ON merge_capacity USING bm25(content)
+  WITH (text_config='english');
+NOTICE:  BM25 index build started for relation merge_capacity_idx
+NOTICE:  Using text search configuration: english
+NOTICE:  Using index options: k1=1.20, b=0.75
+NOTICE:  BM25 index build completed: 0 documents, avg_length=0.00
+DO $$
+DECLARE
+    n integer;
+BEGIN
+    FOR n IN 1..2 LOOP
+        INSERT INTO merge_capacity (content)
+        VALUES (format('capacity document %s filler', n));
+        PERFORM bm25_spill_index('merge_capacity_idx');
+    END LOOP;
+END
+$$;
+INSERT INTO merge_capacity (content)
+VALUES ('capacity pending document filler');
+SELECT bm25_spill_index('merge_capacity_idx');
+ERROR:  bm25 segment count limit reached at level 0
+DO $$
+DECLARE
+    summary text := bm25_summarize_index('merge_capacity_idx');
+BEGIN
+    IF regexp_count(summary, 'L[0-7] Segment [0-9]+:') <> 2
+       OR summary !~ 'L0 Segment 2:'
+       OR summary !~ E'Memtable:\n  terms: 0\n  documents: 1' THEN
+        RAISE EXCEPTION 'segment capacity failure mutated the index: %',
+                        summary;
+    END IF;
+
+    IF (SELECT count(*) FROM (
+            SELECT 1
+            FROM merge_capacity
+            ORDER BY content <@>
+                     to_bm25query('capacity', 'merge_capacity_idx')
+        ) ranked) <> 3 THEN
+        RAISE EXCEPTION 'segment capacity failure lost documents';
+    END IF;
+END
+$$;
+RESET pg_textsearch.debug_segment_count_limit;
+DROP TABLE merge_capacity CASCADE;
+--------------------------------------------------------------------------------
+-- Phase 6: Drain full destination levels before promoting the source
+--------------------------------------------------------------------------------
+SET pg_textsearch.segments_per_level = 3;
+CREATE TABLE merge_nested_full (id serial PRIMARY KEY, content text);
+CREATE INDEX merge_nested_full_idx ON merge_nested_full USING bm25(content)
+  WITH (text_config='english');
+NOTICE:  BM25 index build started for relation merge_nested_full_idx
+NOTICE:  Using text search configuration: english
+NOTICE:  Using index options: k1=1.20, b=0.75
+NOTICE:  BM25 index build completed: 0 documents, avg_length=0.00
+DO $$
+DECLARE
+    n integer;
+BEGIN
+    FOR n IN 1..24 LOOP
+        INSERT INTO merge_nested_full (content)
+        VALUES (format('nested full document %s filler', n));
+        PERFORM bm25_spill_index('merge_nested_full_idx');
+    END LOOP;
+END
+$$;
+DO $$
+DECLARE
+    summary text := bm25_summarize_index('merge_nested_full_idx');
+BEGIN
+    IF regexp_count(summary, 'L[0-7] Segment [0-9]+:') <> 4
+       OR summary !~ 'L1 Segment 2:'
+       OR summary !~ 'L2 Segment 2:'
+       OR summary ~ 'L0 Segment 1:' THEN
+        RAISE EXCEPTION 'nested capacity layout was not constructed: %',
+                        summary;
+    END IF;
+END
+$$;
+SET pg_textsearch.debug_segment_count_limit = 2;
+SET pg_textsearch.segments_per_level = 2;
+DO $$
+DECLARE
+    n integer;
+BEGIN
+    FOR n IN 25..26 LOOP
+        INSERT INTO merge_nested_full (content)
+        VALUES (format('nested full document %s filler', n));
+        PERFORM bm25_spill_index('merge_nested_full_idx');
+    END LOOP;
+END
+$$;
+DO $$
+DECLARE
+    summary text := bm25_summarize_index('merge_nested_full_idx');
+BEGIN
+    IF regexp_count(summary, 'L[0-7] Segment [0-9]+:') <> 3
+       OR summary !~ 'L1 Segment 1:'
+       OR summary !~ 'L2 Segment 1:'
+       OR summary !~ 'L3 Segment 1:'
+       OR summary ~ 'L0 Segment 1:' THEN
+        RAISE EXCEPTION 'nested capacity blockers were not drained: %',
+                        summary;
+    END IF;
+
+    IF (SELECT count(*) FROM (
+            SELECT 1
+            FROM merge_nested_full
+            ORDER BY content <@>
+                     to_bm25query('nested', 'merge_nested_full_idx')
+        ) ranked) <> 26 THEN
+        RAISE EXCEPTION 'nested capacity compaction lost documents';
+    END IF;
+END
+$$;
+RESET pg_textsearch.debug_segment_count_limit;
+RESET pg_textsearch.segments_per_level;
+DROP TABLE merge_nested_full CASCADE;
 -- Cleanup
 DROP TABLE merge_test CASCADE;
 DROP EXTENSION pg_textsearch CASCADE;
