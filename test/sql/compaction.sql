@@ -549,6 +549,232 @@ DROP TABLE force_l7_multiple CASCADE;
 DROP TABLE force_l7_mixed CASCADE;
 DROP TABLE force_l7_memtable CASCADE;
 
+-- Force merge either reaches one segment or rejects before any mutation.
+CREATE FUNCTION pg_temp.try_force_merge(index_name pg_catalog.text)
+RETURNS pg_catalog.bool
+LANGUAGE plpgsql
+SET search_path = pg_catalog, pg_temp
+AS $$
+BEGIN
+    PERFORM public.bm25_force_merge(index_name);
+    RETURN true;
+EXCEPTION
+    WHEN program_limit_exceeded THEN
+        RETURN false;
+END
+$$;
+
+-- A force-merge spill must not run ordinary threshold compaction first.
+SET pg_textsearch.compaction_mode = 'off';
+CREATE TABLE force_spill_cascade (id serial PRIMARY KEY, body text);
+CREATE INDEX force_spill_cascade_idx ON force_spill_cascade
+    USING bm25(body) WITH (text_config = 'english');
+
+DO $$
+DECLARE
+    n integer;
+BEGIN
+    FOR n IN 1..128 LOOP
+        INSERT INTO force_spill_cascade (body)
+        VALUES (format('spill cascade document %s filler', n));
+        PERFORM bm25_spill_index('force_spill_cascade_idx');
+    END LOOP;
+    INSERT INTO force_spill_cascade (body)
+    VALUES ('spill cascade pending memtable document filler');
+END
+$$;
+
+SELECT bm25_level_counts('force_spill_cascade_idx'::regclass) =
+           ARRAY[128, 0, 0, 0, 0, 0, 0, 0]
+       AND EXISTS (
+           SELECT 1 FROM bm25_memtable_chain('force_spill_cascade_idx')
+       ) AS force_spill_cascade_layout_ready;
+
+CREATE TEMP TABLE force_spill_cascade_before AS
+SELECT bm25_level_counts('force_spill_cascade_idx'::regclass) AS counts,
+       (
+           SELECT pg_catalog.array_agg(
+                      pg_catalog.format(
+                          '%s:%s:%s:%s:%s',
+                          blkno, n_records, free_offset, next_block, flags)
+                      ORDER BY position)
+           FROM bm25_memtable_chain('force_spill_cascade_idx')
+                WITH ORDINALITY AS chain(
+                    blkno, n_records, free_offset, next_block, flags, position)
+       ) AS memtable_state,
+       bm25_pending_free_pages('force_spill_cascade_idx')
+           AS pending_free_pages,
+       pg_relation_size('force_spill_cascade_idx'::regclass)
+           AS relation_size,
+       (
+           SELECT pg_catalog.array_agg(body ORDER BY id)
+           FROM (
+               SELECT id, body
+               FROM force_spill_cascade
+               ORDER BY body <@> to_bm25query(
+                   'filler', 'force_spill_cascade_idx')
+           ) ranked
+       ) AS documents;
+
+SET pg_textsearch.compaction_mode = 'inline';
+CREATE TEMP TABLE force_spill_cascade_result AS
+SELECT pg_temp.try_force_merge('public.force_spill_cascade_idx')
+           AS succeeded;
+CREATE TEMP TABLE force_spill_cascade_after AS
+SELECT bm25_level_counts('force_spill_cascade_idx'::regclass) AS counts,
+       (
+           SELECT pg_catalog.array_agg(
+                      pg_catalog.format(
+                          '%s:%s:%s:%s:%s',
+                          blkno, n_records, free_offset, next_block, flags)
+                      ORDER BY position)
+           FROM bm25_memtable_chain('force_spill_cascade_idx')
+                WITH ORDINALITY AS chain(
+                    blkno, n_records, free_offset, next_block, flags, position)
+       ) AS memtable_state,
+       bm25_pending_free_pages('force_spill_cascade_idx')
+           AS pending_free_pages,
+       pg_relation_size('force_spill_cascade_idx'::regclass)
+           AS relation_size,
+       (
+           SELECT pg_catalog.array_agg(body ORDER BY id)
+           FROM (
+               SELECT id, body
+               FROM force_spill_cascade
+               ORDER BY body <@> to_bm25query(
+                   'filler', 'force_spill_cascade_idx')
+           ) ranked
+       ) AS documents;
+
+SELECT result.succeeded
+       AND (
+           SELECT pg_catalog.sum(segment_count)
+           FROM pg_catalog.unnest(after.counts)
+                AS counts(segment_count)
+       ) = 1
+       AND after.memtable_state IS NULL
+       AND after.documents = before.documents
+       AS force_spill_cascade_exact_outcome
+FROM force_spill_cascade_before before,
+     force_spill_cascade_after after,
+     force_spill_cascade_result result;
+
+RESET pg_textsearch.compaction_mode;
+DROP TABLE force_spill_cascade CASCADE;
+
+-- Nested full compactable levels cannot carry into L7 twice.
+SET pg_textsearch.compaction_mode = 'off';
+SET pg_textsearch.segments_per_level = 2;
+CREATE TABLE force_nested_full (id serial PRIMARY KEY, body text);
+CREATE INDEX force_nested_full_idx ON force_nested_full
+    USING bm25(body) WITH (text_config = 'english');
+
+DO $$
+DECLARE
+    target_level integer;
+    segment_count integer;
+    n integer;
+BEGIN
+    FOR target_level IN REVERSE 6..0 LOOP
+        segment_count := 1 << (target_level + 1);
+        FOR n IN 1..segment_count LOOP
+            INSERT INTO force_nested_full (body)
+            VALUES (format(
+                'nested level %s segment %s filler',
+                target_level, n));
+            PERFORM bm25_spill_index('force_nested_full_idx');
+        END LOOP;
+        IF segment_count > 2 THEN
+            FOR n IN 1..segment_count - 2 LOOP
+                IF NOT bm25_compact_step('force_nested_full_idx'::regclass)
+                THEN
+                    RAISE EXCEPTION
+                        'nested setup stopped at level %, step %',
+                        target_level, n;
+                END IF;
+            END LOOP;
+        END IF;
+    END LOOP;
+END
+$$;
+
+SET pg_textsearch.debug_segment_count_limit = 2;
+SELECT bm25_level_counts('force_nested_full_idx'::regclass) =
+           ARRAY[2, 2, 2, 2, 2, 2, 2, 0]
+       AND NOT EXISTS (
+           SELECT 1 FROM bm25_memtable_chain('force_nested_full_idx')
+       ) AS force_nested_full_layout_ready;
+
+CREATE TEMP TABLE force_nested_full_before AS
+SELECT bm25_level_counts('force_nested_full_idx'::regclass) AS counts,
+       (
+           SELECT pg_catalog.array_agg(
+                      pg_catalog.format(
+                          '%s:%s:%s:%s:%s',
+                          blkno, n_records, free_offset, next_block, flags)
+                      ORDER BY position)
+           FROM bm25_memtable_chain('force_nested_full_idx')
+                WITH ORDINALITY AS chain(
+                    blkno, n_records, free_offset, next_block, flags, position)
+       ) AS memtable_state,
+       bm25_pending_free_pages('force_nested_full_idx')
+           AS pending_free_pages,
+       pg_relation_size('force_nested_full_idx'::regclass)
+           AS relation_size,
+       (
+           SELECT pg_catalog.array_agg(body ORDER BY id)
+           FROM (
+               SELECT id, body
+               FROM force_nested_full
+               ORDER BY body <@> to_bm25query(
+                   'filler', 'force_nested_full_idx')
+           ) ranked
+       ) AS documents;
+
+CREATE TEMP TABLE force_nested_full_result AS
+SELECT pg_temp.try_force_merge('public.force_nested_full_idx')
+           AS succeeded;
+CREATE TEMP TABLE force_nested_full_after AS
+SELECT bm25_level_counts('force_nested_full_idx'::regclass) AS counts,
+       (
+           SELECT pg_catalog.array_agg(
+                      pg_catalog.format(
+                          '%s:%s:%s:%s:%s',
+                          blkno, n_records, free_offset, next_block, flags)
+                      ORDER BY position)
+           FROM bm25_memtable_chain('force_nested_full_idx')
+                WITH ORDINALITY AS chain(
+                    blkno, n_records, free_offset, next_block, flags, position)
+       ) AS memtable_state,
+       bm25_pending_free_pages('force_nested_full_idx')
+           AS pending_free_pages,
+       pg_relation_size('force_nested_full_idx'::regclass)
+           AS relation_size,
+       (
+           SELECT pg_catalog.array_agg(body ORDER BY id)
+           FROM (
+               SELECT id, body
+               FROM force_nested_full
+               ORDER BY body <@> to_bm25query(
+                   'filler', 'force_nested_full_idx')
+           ) ranked
+       ) AS documents;
+
+SELECT NOT result.succeeded
+       AND after.counts = before.counts
+       AND after.memtable_state IS NOT DISTINCT FROM before.memtable_state
+       AND after.pending_free_pages = before.pending_free_pages
+       AND after.relation_size = before.relation_size
+       AND after.documents = before.documents
+       AS force_nested_full_exact_outcome
+FROM force_nested_full_before before,
+     force_nested_full_after after,
+     force_nested_full_result result;
+
+RESET pg_textsearch.debug_segment_count_limit;
+RESET pg_textsearch.compaction_mode;
+DROP TABLE force_nested_full CASCADE;
+
 -- bm25_compact reduces the occupied lower level and promotes upward.
 SET pg_textsearch.segments_per_level = 64;
 CREATE TABLE compaction_manual (id serial PRIMARY KEY, body text);

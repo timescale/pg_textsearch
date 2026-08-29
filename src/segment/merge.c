@@ -2061,16 +2061,82 @@ tp_compact_step(Relation index)
 	return true;
 }
 
+typedef enum TpForceMergeAction
+{
+	TP_FORCE_MERGE_COMPLETE,
+	TP_FORCE_MERGE_LEVEL,
+	TP_FORCE_MERGE_IMPOSSIBLE
+} TpForceMergeAction;
+
+static uint32
+tp_force_merge_segment_count(const uint16 level_counts[TP_MAX_LEVELS])
+{
+	uint32 total = 0;
+
+	for (uint32 level = 0; level < TP_MAX_LEVELS; level++)
+		total += level_counts[level];
+
+	return total;
+}
+
+/*
+ * Select the next physical merge in the force-merge sequence. If a
+ * destination is full, walk upward to the first blocking level that can
+ * promote. Both preflight and execution use this planner so their capacity
+ * and carry semantics cannot diverge.
+ */
+static TpForceMergeAction
+tp_force_merge_next_action(
+		const uint16 level_counts[TP_MAX_LEVELS], uint32 *merge_level)
+{
+	uint32 level;
+
+	if (tp_force_merge_segment_count(level_counts) <= 1)
+		return TP_FORCE_MERGE_COMPLETE;
+
+	for (level = 0; level < TP_MAX_LEVELS - 1; level++)
+	{
+		if (level_counts[level] == 0)
+			continue;
+
+		while (level < TP_MAX_LEVELS - 2 &&
+			   level_counts[level + 1] >= tp_debug_segment_count_limit)
+			level++;
+
+		if (level_counts[level + 1] >= tp_debug_segment_count_limit)
+			return TP_FORCE_MERGE_IMPOSSIBLE;
+
+		*merge_level = level;
+		return TP_FORCE_MERGE_LEVEL;
+	}
+
+	return TP_FORCE_MERGE_IMPOSSIBLE;
+}
+
+static void
+tp_force_merge_apply_count_transition(
+		uint16 level_counts[TP_MAX_LEVELS], uint32 merge_level)
+{
+	Assert(merge_level < TP_MAX_LEVELS - 1);
+	Assert(level_counts[merge_level] > 0);
+	Assert(level_counts[merge_level + 1] < tp_debug_segment_count_limit);
+
+	level_counts[merge_level] = 0;
+	level_counts[merge_level + 1]++;
+}
+
 bool
-tp_force_merge_preflight(Relation index)
+tp_force_merge_preflight(Relation index, bool spill_creates_segment)
 {
 	TpIndexMetaPage metap;
+	uint16			level_counts[TP_MAX_LEVELS];
 	uint16			top_count;
 	bool			has_lower_segments = false;
 	bool			has_memtable;
 
 	metap	  = tp_get_metapage(index);
 	top_count = metap->level_counts[TP_MAX_LEVELS - 1];
+	memcpy(level_counts, metap->level_counts, sizeof(level_counts));
 	for (uint32 level = 0; level < TP_MAX_LEVELS - 1; level++)
 	{
 		if (metap->level_counts[level] > 0)
@@ -2108,6 +2174,38 @@ tp_force_merge_preflight(Relation index)
 		return false;
 	}
 
+	if (spill_creates_segment)
+	{
+		if (level_counts[0] >= tp_debug_segment_count_limit)
+			ereport(ERROR,
+					(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
+					 errmsg("cannot force merge \"%s\": "
+							"spilling the memtable would exceed the "
+							"level 0 segment limit",
+							RelationGetRelationName(index))));
+		level_counts[0]++;
+	}
+
+	while (true)
+	{
+		TpForceMergeAction action;
+		uint32			   merge_level = 0;
+
+		action = tp_force_merge_next_action(level_counts, &merge_level);
+		if (action == TP_FORCE_MERGE_COMPLETE)
+			break;
+		if (action == TP_FORCE_MERGE_IMPOSSIBLE)
+			ereport(ERROR,
+					(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
+					 errmsg("cannot force merge \"%s\": "
+							"the merge sequence would leave multiple "
+							"segments at level %u",
+							RelationGetRelationName(index),
+							TP_MAX_LEVELS - 1)));
+
+		tp_force_merge_apply_count_transition(level_counts, merge_level);
+	}
+
 	return true;
 }
 
@@ -2116,65 +2214,44 @@ tp_force_merge_preflight(Relation index)
  * forceMerge(1).  Merges ALL segments at each level in a single
  * batch, ignoring the segments_per_level threshold.
  */
-static BlockNumber
-tp_force_merge_level(Relation index, uint32 level)
-{
-	TpIndexMetaPage metap;
-	uint16			destination_count;
-	uint16			source_count;
-
-	Assert(level < TP_MAX_LEVELS - 1);
-
-	metap			  = tp_get_metapage(index);
-	source_count	  = metap->level_counts[level];
-	destination_count = metap->level_counts[level + 1];
-	pfree(metap);
-
-	if (source_count == 0)
-		return InvalidBlockNumber;
-
-	/*
-	 * A full compactable destination is recoverable: drain it upward, then
-	 * retry the original level.  The top level has no destination and must
-	 * continue to fail through the merge capacity guard.
-	 */
-	if (destination_count >= tp_debug_segment_count_limit &&
-		level < TP_MAX_LEVELS - 2)
-	{
-		if (tp_force_merge_level(index, level + 1) == InvalidBlockNumber)
-			return InvalidBlockNumber;
-	}
-
-	return tp_merge_level_segments(index, level, UINT32_MAX);
-}
-
 void
 tp_force_merge_all(Relation index)
 {
-	for (uint32 level = 0; level < TP_MAX_LEVELS - 1; level++)
+	while (true)
 	{
-		TpIndexMetaPage metap;
-		uint16			count;
-		bool			has_higher_segment = false;
+		TpIndexMetaPage	   metap;
+		uint16			   level_counts[TP_MAX_LEVELS];
+		TpForceMergeAction action;
+		uint32			   merge_level = 0;
+		BlockNumber		   merged_segment;
 
 		metap = tp_get_metapage(index);
-		count = metap->level_counts[level];
-		for (uint32 higher = level + 1; higher < TP_MAX_LEVELS; higher++)
-		{
-			if (metap->level_counts[higher] > 0)
-			{
-				has_higher_segment = true;
-				break;
-			}
-		}
+		memcpy(level_counts, metap->level_counts, sizeof(level_counts));
 		pfree(metap);
 
-		if (count == 0)
-			continue;
-		if (count == 1 && !has_higher_segment)
-			return;
+		action = tp_force_merge_next_action(level_counts, &merge_level);
+		if (action == TP_FORCE_MERGE_COMPLETE)
+			break;
 
-		if (tp_force_merge_level(index, level) == InvalidBlockNumber)
-			return;
+		Assert(action == TP_FORCE_MERGE_LEVEL);
+		if (action != TP_FORCE_MERGE_LEVEL)
+			break;
+
+		merged_segment =
+				tp_merge_level_segments(index, merge_level, UINT32_MAX);
+		Assert(BlockNumberIsValid(merged_segment));
+		if (!BlockNumberIsValid(merged_segment))
+			break;
+	}
+
+	{
+		TpIndexMetaPage metap;
+		uint16			level_counts[TP_MAX_LEVELS];
+
+		metap = tp_get_metapage(index);
+		memcpy(level_counts, metap->level_counts, sizeof(level_counts));
+		pfree(metap);
+
+		Assert(tp_force_merge_segment_count(level_counts) <= 1);
 	}
 }

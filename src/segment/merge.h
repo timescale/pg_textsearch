@@ -96,9 +96,12 @@ extern bool tp_compact_step(Relation index);
 
 /*
  * Reject force-merge layouts that cannot reach one segment without
- * consolidating L7. Returns false when one lone L7 is already complete.
+ * consolidating L7. Include a prospective L0 segment when the prepared
+ * memtable spill contains terms. Returns false when one lone L7 is already
+ * complete.
  */
-extern bool tp_force_merge_preflight(Relation index);
+extern bool
+tp_force_merge_preflight(Relation index, bool spill_creates_segment);
 
 /*
  * Compact all segments across all levels into one segment.
