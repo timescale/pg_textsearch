@@ -30,7 +30,8 @@ The POC remains useful as:
 - Make each pull request independently useful, testable, and understandable.
 - Merge extension-native foundations before pg_durable integration is ready.
 - Keep storage correctness separate from scheduling and operator concerns.
-- Define the one pg_durable capability required by the production backstop.
+- Consume the audited pg_durable node-failure policy required by the
+  production backstop without changing `df.loop`.
 - Preserve the final hardened behavior without replaying superseded POC
   designs through a long cherry-pick chain.
 
@@ -45,7 +46,9 @@ This series does not include:
 - segment splitting or a wider segment format beyond arithmetic and capacity
   checks needed for compaction correctness;
 - productionizing the POC demo or benchmark; or
-- retries within a single pg_durable execution.
+- changes to the existing two-argument `df.loop` contract; and
+- any pg_durable API design beyond the seven-argument `df.start` node-failure
+  policy in microsoft/pg_durable#354.
 
 The broader segment format work remains tracked by issues #456 and #473.
 
@@ -87,9 +90,11 @@ PR 1: engine correctness
         -> PR 5: recovery backstop and operations
 ```
 
-The required pg_durable change proceeds in parallel with PRs 1-3. PRs 4 and
-5 do not merge until the capability is present in a released pg_durable
-version that the setup scripts can preflight.
+The required pg_durable change is microsoft/pg_durable#354 and proceeds in
+parallel with PRs 1-3. Released v0.2.6 and current `main` do not contain the
+capability; the audited #354 head does. PRs 4 and 5 do not merge until a
+released pg_durable version contains that API, the setup scripts can preflight
+it, and the live integration tests pass against the release.
 
 ### PR 1: Compaction Engine Correctness
 
@@ -231,13 +236,16 @@ compaction tasks while enforcing a narrow, auditable privilege model.
 
 #### Scope
 
-- Preflight the supported pg_durable release and required public capability.
+- Preflight the supported pg_durable release, the seven-argument `df.start`
+  signature, and the unchanged two-argument `df.loop` signature.
 - Validate or create the dedicated passwordless `textsearch_compactor` login
   role without silently repairing hostile existing state.
 - Validate inherited index-owner memberships and reject unsafe role
   attributes, settings, ownership, or grant delegation.
 - Install and authenticate the exact managed SECURITY DEFINER wrapper.
-- Submit one physical-target task using `transaction_mode => 'new'`.
+- Submit one physical-target task using `transaction_mode => 'new'`,
+  `max_attempts => 5`, `max_backoff => '16 seconds'`, and
+  `on_failure => 'continue'`.
 - Run a committed `SELECT 1` execution canary as the compactor role before
   enabling integration.
 - Test hostile search paths, wrapper replacement, direct invocation ACLs,
@@ -263,6 +271,8 @@ cluster-wide compactor role.
 - A committed canary and a real compaction task execute as the expected role.
 - The wrapper targets the intended physical index identity and rejects
   temporary or invalid durable targets.
+- A transient activity failure is retried under the exact adapter policy, and
+  exhausted attempts do not terminate the enclosing stepped loop.
 - Tests run against the released pg_durable capability rather than private
   catalog assumptions.
 
@@ -278,11 +288,14 @@ to run the integration.
 
 - Add `bm25_indexes_needing_compaction()`.
 - Add `bm25_compact_pending()` with failure isolation between indexes.
-- Register one canonical database-wide recurring backstop.
+- Register one versioned canonical database-wide recurring backstop so its
+  #354 failure policy is not confused with a legacy fail-stop instance.
 - Serialize registration, reject duplicate canonical schedules, and verify
   the exact live schedule after commit.
-- Use pg_durable's failure-resilient recurrence so one failed execution is
-  recorded without terminating later ticks.
+- Keep `df.loop(body, condition)` unchanged and set recurrence resilience on
+  the enclosing `df.start` with `max_attempts => 1` and
+  `on_failure => 'continue'`, so one failed tick is recorded without
+  terminating later ticks.
 - Add monitoring queries, package contents, release assertions, and final
   operator documentation.
 
@@ -304,27 +317,81 @@ requirement for this global rescue backstop.
   tick still executes successfully in the live recurring instance.
 - One bad index does not prevent other eligible indexes from compacting.
 - Concurrent setup cannot create multiple canonical schedules.
-- Setup fails with actionable schedule IDs if preexisting duplicates exist.
+- Setup fails with actionable schedule IDs if preexisting duplicates or a
+  live legacy fail-stop backstop exist.
 - Installed source, binary, and Debian packages contain valid documentation
   and operator-script paths.
 
 ## pg_durable Upstream Contract
 
-pg_textsearch requires one opt-in behavior for recurring schedules:
+pg_textsearch consumes the public node-failure policy implemented at the
+audited head of microsoft/pg_durable#354. The graph builder remains:
 
-1. A scheduled tick begins a loop iteration in the live durable instance.
-2. If that iteration's body fails, its failed node execution and error remain
-   observable.
-3. The durable instance remains live and eligible to begin its next tick.
-4. A later successful iteration executes independently.
+```sql
+df.loop(body text, condition text DEFAULT NULL)
+```
 
-Existing fail-stop behavior may remain the default for compatibility. The
-capability must be public and versioned so pg_textsearch can reject an older
-installation before making operator-side changes.
+The policy is configured on the seven-argument start function:
+
+```sql
+df.start(
+    fut text,
+    label text DEFAULT NULL,
+    database text DEFAULT NULL,
+    transaction_mode text DEFAULT 'caller',
+    max_attempts integer DEFAULT 1,
+    max_backoff interval DEFAULT '16 seconds',
+    on_failure text DEFAULT 'fail')
+```
+
+`max_attempts` includes the first attempt. Eligible failed activity nodes are
+retried with exponential backoff capped by `max_backoff`. Once attempts are
+spent, `on_failure => 'continue'` abandons the remainder of the current
+enclosing loop iteration and permits the next iteration to begin. Without an
+enclosing loop, the instance still fails.
+
+The immediate per-index adapter opts into bounded retries:
+
+```sql
+df.start(
+    df.loop(body, condition),
+    label => ...,
+    transaction_mode => 'new',
+    max_attempts => 5,
+    max_backoff => '16 seconds',
+    on_failure => 'continue')
+```
+
+The periodic backstop deliberately does not retry within a tick:
+
+```sql
+df.start(
+    df.loop(scheduled_body, condition => NULL),
+    label => ...,
+    max_attempts => 1,
+    on_failure => 'continue')
+```
+
+A scheduled tick begins a loop iteration in the live durable instance. If its
+activity fails, the failed activity node and its error remain observable while
+the instance stays live and eligible for the next tick. A later successful
+iteration executes independently. Monitoring must therefore inspect failed
+nodes under running instances rather than treating a running instance as
+proof that every tick succeeded.
+
+The compatibility defaults remain one attempt followed by fail-stop behavior.
+Released v0.2.6 and current pg_durable `main` lack the seven-argument API; the
+audited #354 head provides it. The pg_textsearch merge remains blocked until
+the capability ships in a release and passes live adapter and recurrence
+tests.
+
+#354 stores the policy in orchestration input/history, not in the LOOP graph
+or `df.instances`. The backstop therefore uses a new versioned canonical label
+and refuses to overlap a live legacy-labeled instance rather than pretending
+to authenticate the policy from catalog state.
 
 pg_durable does not need to understand indexes, deduplicate pg_textsearch
-work, manage per-index keys, provision roles, or retry a failed operation
-within the same tick.
+work, manage per-index keys, or provision roles.
 
 ## Error and Recovery Semantics
 
@@ -336,8 +403,9 @@ within the same tick.
 - Query cancellation, administrative shutdown, and crash shutdown propagate.
 - Operator setup fails closed on version, identity, ownership, ACL, or
   schedule ambiguity.
-- The backstop isolates failures between indexes and relies on
-  failure-resilient recurrence between ticks.
+- The backstop isolates failures between indexes and uses
+  `df.start(max_attempts => 1, on_failure => 'continue')` to preserve
+  recurrence between ticks.
 - A request discarded by savepoint or object lifecycle behavior is repaired
   by later index activity or the global backstop.
 

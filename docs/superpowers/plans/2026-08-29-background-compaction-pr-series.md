@@ -34,8 +34,13 @@ pull requests.
 - Ordinary PRE_COMMIT callback errors warn without aborting the user
   transaction; query cancellation and shutdown errors propagate.
 - Do not create `textsearch_compactor` from extension installation SQL.
-- Do not merge pg_durable integration until the released dependency supports
-  failure-resilient recurring loops through a public, versioned API.
+- Do not merge pg_durable integration until a release contains the
+  seven-argument `df.start(..., max_attempts, max_backoff, on_failure)` API
+  from microsoft/pg_durable#354 and live tests pass against that release.
+- Keep `df.loop(body, condition)` as the two-argument graph API. Failure
+  resilience belongs to `df.start`; do not change the loop signature.
+- Released pg_durable v0.2.6 and current `main` lack the required capability.
+  The audited #354 head provides it, but is not a releasable dependency.
 - Do not include the POC demo or benchmark in the five-PR merge series.
 - Use PostgreSQL 17.10 locally:
 
@@ -138,8 +143,10 @@ Default behavior is unchanged: `pg_textsearch.compaction_mode` defaults to
 
 - Merge batches still hold the per-index exclusive lock.
 - Physical index state, not task state, is the source of truth.
-- The production backstop depends on pg_durable support for recording a
-  failed loop iteration and continuing with the next scheduled iteration.
+- The production backstop depends on a released pg_durable containing #354's
+  seven-argument `df.start`, configured with `max_attempts => 1` and
+  `on_failure => 'continue'`, so a failed activity remains observable while
+  the next scheduled `df.loop(body, condition)` iteration can run.
 - Cluster role and local authentication provisioning remain external to
   `CREATE EXTENSION`.
 ```
@@ -679,210 +686,111 @@ gh pr create --repo timescale/pg_textsearch \
 
 Expected: one PR whose tests use only local PostgreSQL callbacks.
 
-### Task 5: Add failure-resilient loop iterations to pg_durable
+### Task 5: Land and release the pg_durable node-failure policy
 
-**Files in `/home/azureuser/pg_durable`:**
+**Upstream dependency:** microsoft/pg_durable#354
+
+**Files at the audited #354 head:**
 - Modify: `src/dsl.rs`
 - Modify: `src/lib.rs`
 - Modify: `src/orchestrations/execute_function_graph.rs`
-- Modify: `sql/pg_durable--0.2.6.sql`
-- Create: `sql/pg_durable--0.2.5--0.2.6.sql`
-- Create: `tests/e2e/sql/68_loop_on_error.sql`
+- Modify: `src/types.rs`
+- Create: `sql/pg_durable--0.2.6--0.2.7.sql`
+- Create: `tests/e2e/sql/68_failure_policy.sql`
+- Create: `tests/e2e/sql/69_instance_activity.sql`
 - Modify: `docs/api-reference.md`
+- Create: `docs/spec-failure-policy.md`
 - Modify: `CHANGELOG.md`
 
 **Interfaces:**
-- Consumes: existing `df.loop(body text, condition text DEFAULT NULL)`,
-  `NodeError::Failure`, loop `continue_as_new`, and node-status monitoring
+- Consumes: the existing two-argument
+  `df.loop(body text, condition text DEFAULT NULL)`, activity-node errors,
+  loop `continue_as_new`, and node-status monitoring
 - Produces:
 
 ```sql
-df.loop(
-    body text,
-    condition text DEFAULT NULL,
-    on_error text DEFAULT 'fail'
+df.start(
+    fut text,
+    label text DEFAULT NULL,
+    database text DEFAULT NULL,
+    transaction_mode text DEFAULT 'caller',
+    max_attempts integer DEFAULT 1,
+    max_backoff interval DEFAULT '16 seconds',
+    on_failure text DEFAULT 'fail'
 ) RETURNS text
 ```
 
-`on_error` accepts only `fail` and `continue`.
+`df.loop` remains two-argument. `max_attempts` includes the first attempt;
+`on_failure` accepts only `fail` and `continue`.
 
-- [ ] **Step 1: Create a clean pg_durable worktree**
+- [ ] **Step 1: Preserve the audited dependency boundary**
 
-Run:
+Released pg_durable v0.2.6 and current `main` do not contain this capability.
+The audited microsoft/pg_durable#354 head does. Do not change `df.loop`, do
+not open a duplicate upstream PR, and do not merge pg_textsearch PR 4 or PR 5
+from a pg_durable feature branch.
+
+Record the #354 head reviewed by the integration work:
 
 ```bash
-git -C /home/azureuser/pg_durable fetch origin
-git -C /home/azureuser/pg_durable worktree add \
-  /home/azureuser/.copilot/worktrees/pg_durable-loop-on-error \
-  -b loop-on-error-continue origin/main
+gh pr view 354 --repo microsoft/pg_durable \
+  --json headRefOid,state,isDraft,url
 ```
 
-Do not base this work on the untracked broad retry proposal under
-`docs/superpowers/`; this task intentionally adds no retry policy and no
-`df.start()` arguments.
+Expected before the dependency is released: the PR head is auditable, but
+released v0.2.6 and current `main` still expose only the old `df.start`.
 
-- [ ] **Step 2: Add failing DSL validation tests**
+- [ ] **Step 2: Audit the public SQL and compatibility contract**
 
-Add unit tests for:
+Verify #354 keeps:
 
-```rust
-assert!(loop_v2("SELECT 1", None, "fail").contains("\"on_error\":\"fail\""));
-assert!(loop_v2("SELECT 1", None, "continue")
-    .contains("\"on_error\":\"continue\""));
+```sql
+df.loop(body text, condition text DEFAULT NULL)
 ```
 
-Also assert that an empty or unknown policy raises a PostgreSQL error with:
+and replaces the four-argument `df.start` schema declaration with the
+seven-argument signature above. The trailing defaults preserve the legacy
+behavior: one attempt, then fail the instance. The old wrapper symbols remain
+available for a new shared library running against an un-upgraded schema, and
+the upgrade installs exactly one unambiguous `df.start` overload.
+
+Reject `max_attempts < 1`, non-positive `max_backoff`, and any `on_failure`
+other than `continue` or `fail`.
+
+- [ ] **Step 3: Audit retry, continuation, and observability semantics**
+
+Eligible `df.sql`, `df.http`, and `df.http_multipart` activity failures retry
+with durable exponential delays starting at one second and capped by
+`max_backoff`. Once attempts are exhausted:
 
 ```text
-df.loop on_error must be 'fail' or 'continue'
+on_failure = fail      -> fail the durable instance
+on_failure = continue  -> abandon the rest of the current enclosing loop
+                          iteration and start the next iteration
 ```
 
-- [ ] **Step 3: Add a failing end-to-end recurrence test**
+With no enclosing loop, `continue` has nowhere to unwind and the instance
+fails. Graph/configuration failures still fail immediately. The failed
+activity node and its error remain observable even though the enclosing
+instance stays running and a later loop iteration succeeds. Do not replace
+that failed node with a success-shaped result or treat instance status alone
+as a health signal.
 
-Create a sequence and a state table, then use a loop body whose first
-iteration raises and whose next iteration succeeds:
+- [ ] **Step 4: Require upstream unit, E2E, and upgrade coverage**
 
-```sql
-CREATE SEQUENCE loop_on_error_attempts;
-CREATE TABLE loop_on_error_state (
-    successes integer NOT NULL DEFAULT 0
-);
-INSERT INTO loop_on_error_state DEFAULT VALUES;
+The #354 gate must cover:
 
-CREATE FUNCTION loop_on_error_probe()
-RETURNS void
-LANGUAGE plpgsql
-AS $$
-DECLARE
-    attempt bigint;
-BEGIN
-    attempt := pg_catalog.nextval('loop_on_error_attempts');
-    IF attempt = 1 THEN
-        RAISE EXCEPTION 'first iteration fails';
-    END IF;
-    UPDATE loop_on_error_state SET successes = successes + 1;
-END
-$$;
+```text
+transient failure succeeds within max_attempts
+exhausted retries continue to a later loop iteration
+failed activity remains observable under a running instance
+continue without an enclosing loop still fails
+fail and all compatibility defaults remain fail-stop
+argument validation
+old-schema/new-library and in-flight-instance compatibility
 ```
 
-Start `df.loop('SELECT loop_on_error_probe()', NULL, 'continue')`, wait until
-the first failed node execution is observable, then wait until
-`successes >= 1`, assert the instance remains running, and cancel it. Add a
-second case with `'fail'` and assert the instance becomes failed after the
-first error.
-
-- [ ] **Step 4: Run tests to prove current fail-stop behavior**
-
-Run:
-
-```bash
-cargo fmt -p pg_durable -- --check
-cargo build --features pg17
-./scripts/test-unit.sh
-./scripts/test-e2e-local.sh --verbose 68_loop_on_error
-```
-
-Expected: the new three-argument `df.loop` calls are undefined before the
-implementation.
-
-- [ ] **Step 5: Add the loop-local policy**
-
-Keep the existing two-argument Rust symbol for binary compatibility with an
-un-upgraded schema, and add a new wrapper for the three-argument SQL
-definition:
-
-```rust
-#[pg_extern(name = "loop", schema = "df", sql = false)]
-pub fn loop_fn(
-    body: &str,
-    condition: default!(Option<&str>, "NULL"),
-) -> String {
-    build_loop(body, condition, "fail")
-}
-
-#[pg_extern(name = "loop", schema = "df")]
-pub fn loop_v2(
-    body: &str,
-    condition: default!(Option<&str>, "NULL"),
-    on_error: default!(&str, "'fail'"),
-) -> String {
-    build_loop(body, condition, on_error)
-}
-```
-
-Implement `build_loop()` once. Validate and store `on_error` in the loop
-node's serialized configuration:
-
-```rust
-let policy = match on_error {
-    "fail" => "fail",
-    "continue" => "continue",
-    _ => pgrx::error!("df.loop on_error must be 'fail' or 'continue'"),
-};
-
-Durofut {
-    node_type: "LOOP".to_string(),
-    left_node: Some(body_fut.into_raw()),
-    condition_node,
-    query: Some(serde_json::json!({"on_error": policy}).to_string()),
-    ..Default::default()
-}
-.to_json()
-```
-
-Add a pure parser:
-
-```rust
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum LoopOnError {
-    Fail,
-    Continue,
-}
-
-fn loop_on_error(node: &FunctionNode) -> Result<LoopOnError, String>
-```
-
-It reads `on_error` from the LOOP node's JSON query, defaults a missing field
-to `Fail` for old recorded graphs, and rejects any other value as malformed
-graph configuration. In `run_loop_iteration()`, when the body returns
-`NodeError::Failure(error)`:
-
-```rust
-if loop_on_error(node)? == LoopOnError::Continue {
-    ctx.trace_info(format!(
-        "Loop iteration failed and will be skipped: {error}"
-    ));
-    return Ok(None);
-}
-return Err(error);
-```
-
-Do not suppress malformed graph/configuration errors. The failed activity
-node execution remains observable; only a body failure changes the enclosing
-loop's control flow. Condition failures retain fail-stop behavior.
-
-- [ ] **Step 6: Add upgrade SQL and public documentation**
-
-Replace the old `df.loop(text,text)` SQL definition with the generated
-three-argument definition in both fresh-install and upgrade paths. Because
-defaults make coexisting overloads ambiguous, the upgrade must drop the old
-signature before creating the new one. The new SQL definition references
-`loop_v2_wrapper`; the old `loop_fn_wrapper` symbol remains available so the
-new shared library still works against an un-upgraded pre-0.2.6 schema.
-
-Document:
-
-```sql
-df.loop(body, condition => NULL, on_error => 'continue')
-```
-
-as an opt-in recurrence policy. Keep `'fail'` as the compatibility default.
-Add an upgrade test that starts a two-argument `df.loop()` through an old
-schema with the new shared library before `ALTER EXTENSION UPDATE`.
-
-- [ ] **Step 7: Validate and open the upstream PR**
-
-Run:
+Run from the pg_durable #354 worktree:
 
 ```bash
 cargo fmt -p pg_durable -- --check
@@ -893,24 +801,26 @@ cargo clippy --features pg17
 ./scripts/test-upgrade.sh
 ```
 
-Expected: every command exits 0. Then:
+Expected: every command exits 0, including
+`tests/e2e/sql/68_failure_policy.sql` and
+`tests/e2e/sql/69_instance_activity.sql`.
 
-```bash
-git add src/dsl.rs src/lib.rs \
-  src/orchestrations/execute_function_graph.rs \
-  tests/e2e/sql/68_loop_on_error.sql \
-  sql/pg_durable--0.2.6.sql \
-  sql/pg_durable--0.2.5--0.2.6.sql \
-  docs/api-reference.md CHANGELOG.md
-git commit -m "feat: continue loop after failed iteration"
-git push -u origin loop-on-error-continue
-gh pr create --base main --head loop-on-error-continue \
-  --title "Continue recurring loops after a failed iteration" \
-  --body "Adds an opt-in df.loop(on_error => 'continue') policy. Failed nodes remain observable while the enclosing recurring loop advances to its next iteration. No retry behavior is added."
+- [ ] **Step 5: Gate pg_textsearch on a release and live probes**
+
+After #354 merges, wait for a pg_durable release that contains the exact
+seven-argument signature. Set the minimum version in pg_textsearch only after
+the release is available. The operator preflight must verify both:
+
+```sql
+to_regprocedure(
+    'df.start(text,text,text,text,integer,interval,text)') IS NOT NULL
+to_regprocedure('df.loop(text,text)') IS NOT NULL
 ```
 
-Expected: a narrowly motivated upstream PR whose behavior can be detected
-through the public `df.loop` signature and extension version.
+Run the pg_textsearch adapter and recurrence tests against the installed
+release, not #354's branch. The dependency gate is complete only when a
+failed activity is observable under a still-running loop and a later
+iteration succeeds.
 
 ### Task 6: Extract PR 4 — pg_durable per-index adapter
 
@@ -927,7 +837,8 @@ through the public `df.loop` signature and extension version.
 
 **Interfaces:**
 - Consumes: PR 3 callback contract and released pg_durable
-  `df.loop(..., on_error => 'continue')`
+  `df.start(text, text, text, text, integer, interval, text)` plus unchanged
+  `df.loop(text, text)`
 - Produces:
 
 ```sql
@@ -948,7 +859,11 @@ git -C /home/azureuser/pg_textsearch_3 worktree add \
 ```
 
 Set the minimum pg_durable version in all three operator preflights to the
-first released version containing the three-argument `df.loop`.
+first released version containing #354. Verify
+`df.start(text,text,text,text,integer,interval,text)` and
+`df.loop(text,text)` exist before any operator-side mutation. Do not accept
+v0.2.6, current `main`, or a build identified only by a private catalog
+assumption.
 
 - [ ] **Step 2: Add failing physical-target and live-adapter tests**
 
@@ -962,6 +877,10 @@ exact SECURITY DEFINER wrapper identity
 PUBLIC and grant-option rejection
 committed SELECT 1 canary
 transaction_mode => 'new'
+max_attempts => 5
+max_backoff => '16 seconds'
+on_failure => 'continue'
+transient activity retry and exhausted-attempt continuation
 PREPARE dispatch
 temporary-index fallback
 hostile search_path
@@ -992,7 +911,8 @@ fresh and upgrade SQL.
 - [ ] **Step 4: Extract role setup and wrapper**
 
 Copy the final forms of `01_setup_role.sql` and `02_wrapper.sql` from
-`c1bedf23`, not their introducing commits. Preserve:
+`c1bedf23`, not their introducing commits. Preserve their security checks and
+adapt the submission call to the released #354 API:
 
 ```text
 cluster-wide pg_shdepend ownership checks
@@ -1002,8 +922,28 @@ wrapper body hash and security-property authentication
 fixed search_path and pg_catalog qualification
 non-owner grant-option rejection
 transaction_mode => 'new'
+max_attempts => 5
+max_backoff => '16 seconds'
+on_failure => 'continue'
 committed execution canary
 ```
+
+The wrapper must submit:
+
+```sql
+df.start(
+    df.loop(body, cond),
+    label => 'bm25-compact-' || idx_oid,
+    transaction_mode => 'new',
+    max_attempts => 5,
+    max_backoff => '16 seconds',
+    on_failure => 'continue')
+```
+
+This allows a transient activity to retry in place. If all five attempts are
+spent, the failed activity and error remain observable, the rest of that loop
+iteration is abandoned, and the next stepped-compaction iteration can
+re-evaluate physical index state.
 
 Remove all backstop registration from this PR.
 
@@ -1038,7 +978,7 @@ gh pr create --repo timescale/pg_textsearch \
   --base background-compaction-3-dispatch \
   --head background-compaction-4-pg-durable \
   --title "Add pg_durable compaction adapter" \
-  --body "Extracted from #471. Requires the released pg_durable df.loop(on_error) capability. This PR adds per-index submission only; the recurring backstop is separate."
+  --body "Extracted from #471. Requires the released pg_durable seven-argument df.start failure policy from microsoft/pg_durable#354. This PR adds per-index submission only; the recurring backstop is separate."
 ```
 
 ### Task 7: Extract PR 5 — recovery backstop and operations
@@ -1057,7 +997,8 @@ gh pr create --repo timescale/pg_textsearch \
 
 **Interfaces:**
 - Consumes: PR 4 role/wrapper and pg_durable
-  `df.loop(body, condition, on_error)`
+  `df.start(text, text, text, text, integer, interval, text)` plus unchanged
+  `df.loop(body, condition)`
 - Produces:
 
 ```sql
@@ -1098,14 +1039,16 @@ Add a disposable durable loop whose first body invocation fails and whose
 later invocation succeeds under:
 
 ```sql
-df.loop(
-    body,
-    condition => NULL,
-    on_error => 'continue')
+df.start(
+    df.loop(body, condition => NULL),
+    label => 'bm25-compaction-backstop-policy-probe',
+    max_attempts => 1,
+    on_failure => 'continue')
 ```
 
-Assert the failed node is observable and the instance remains live for the
-later iteration.
+Assert that there is exactly one attempt in the failed tick, the failed
+activity node and error remain observable, the instance remains live, and a
+later iteration succeeds.
 
 - [ ] **Step 3: Add cross-index sweep APIs**
 
@@ -1128,21 +1071,33 @@ caller-visibility/ownership rules from the final POC.
 Copy the final `03_backstop.sql` preflight, canary, advisory lock, canonical
 graph discovery, duplicate rejection, registration, and post-commit
 assertion. Preserve its dynamically schema-qualified `body` variable and
-change the recurring graph to use the released public policy:
+keep the two-argument loop while setting the released public policy on
+`df.start`:
 
 ```sql
-df.loop(
-    df.wait_for_schedule(:'backstop_cron')
-    OPERATOR(pg_catalog.~>) body,
-    condition => NULL,
-    on_error => 'continue')
+df.start(
+    df.loop(
+        df.wait_for_schedule(:'backstop_cron')
+        OPERATOR(pg_catalog.~>) body,
+        condition => NULL),
+    label => 'bm25-compaction-backstop-v2',
+    max_attempts => 1,
+    on_failure => 'continue')
 ```
 
-Make canonical discovery require `on_error = 'continue'` in the LOOP node's
-JSON configuration. If a live same-database, same-submitter legacy backstop
-has the old fail-stop graph, fail with its instance ID and instruct the
-operator to cancel it before rerunning setup; do not silently create an
-overlapping schedule. Add that migration case to `test-durable`.
+`max_attempts => 1` deliberately disables retry within a tick; the backstop
+records that failed activity and advances to the next scheduled tick.
+
+#354 carries the failure policy in orchestration input/history, not in the
+LOOP node JSON or `df.instances`, so canonical discovery cannot authenticate
+the policy by inspecting the graph. Use the new fixed
+`bm25-compaction-backstop-v2` label as the policy-aware canonical identity.
+Reuse only a live v2 instance with the exact expected graph, database, and
+submitter. If any live same-database, same-submitter legacy
+`bm25-compaction-backstop` instance exists, fail with its instance ID and
+instruct the operator to cancel it before registering v2; do not silently
+create overlapping schedules. Add legacy migration, duplicate-v2, and
+idempotent v2 reuse cases to `test-durable`.
 
 Do not add keyed schedule lifecycle or per-index metapage schedule IDs.
 
@@ -1159,7 +1114,8 @@ docs/background_compaction.md
 ```
 
 Keep the final POC's source, binary, and Debian package path assertions.
-Document monitoring of failed nodes under a still-running recurring instance.
+Document monitoring of failed nodes under a still-running recurring instance
+with `df.instance_activity()` and `df.instance_nodes()`.
 
 - [ ] **Step 6: Validate and open PR 5**
 
