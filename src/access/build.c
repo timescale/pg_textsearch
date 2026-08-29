@@ -685,6 +685,7 @@ tp_force_merge(PG_FUNCTION_ARGS)
 		TpLocalIndexState *index_state = tp_get_local_index_state(index_oid);
 		TpPreparedSpill	   spill;
 		bool			   has_memtable;
+		bool			   force_merge_needed;
 
 		if (index_state == NULL)
 			ereport(ERROR,
@@ -701,21 +702,23 @@ tp_force_merge(PG_FUNCTION_ARGS)
 		 * the memtable would add an L0 segment; doc-length-only chains do
 		 * not consume segment capacity.
 		 */
-		if (tp_force_merge_preflight(
-					index_rel, has_memtable && spill.num_terms > 0))
+		force_merge_needed = tp_force_merge_preflight(
+				index_rel, has_memtable && spill.num_terms > 0);
+		/*
+		 * A termless prepared spill still has document-length accounting
+		 * and a chain to finalize even when the existing lone L7 means no
+		 * physical segment merge is needed.
+		 */
+		if (has_memtable)
+			tp_finish_spill(
+					index_state, index_rel, &spill, NULL, TP_SPILL_POST_NONE);
+		if (force_merge_needed)
 		{
 			/*
 			 * Force merge owns compaction from this point onward. Flushing
 			 * through the normal spill path would run inline compaction
 			 * before that validated sequence.
 			 */
-			if (has_memtable)
-				tp_finish_spill(
-						index_state,
-						index_rel,
-						&spill,
-						NULL,
-						TP_SPILL_POST_NONE);
 			tp_force_merge_all(index_rel);
 			tp_truncate_dead_pages(index_rel);
 		}

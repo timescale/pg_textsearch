@@ -410,6 +410,50 @@ BEGIN
     END IF;
 END
 $$;
+-- A termless memtable contributes document accounting but no prospective
+-- segment, so it can be cleared alongside an already-terminal lone L7.
+DO $$
+BEGIN
+    IF bm25_test_chain_source(
+            'force_l7_single_idx', 'one_doc_no_terms') <> 'OK' THEN
+        RAISE EXCEPTION 'could not construct termless L7 memtable';
+    END IF;
+END
+$$;
+DO $$
+DECLARE
+    summary text := bm25_summarize_index('force_l7_single_idx');
+BEGIN
+    IF regexp_count(summary, 'L[0-7] Segment [0-9]+:') <> 1
+       OR summary !~ 'L7 Segment 1:'
+       OR summary !~ E'Memtable:\n  terms: 0\n  documents: 1' THEN
+        RAISE EXCEPTION 'termless L7 layout was not constructed: %', summary;
+    END IF;
+
+    PERFORM bm25_force_merge('force_l7_single_idx');
+    summary := bm25_summarize_index('force_l7_single_idx');
+
+    IF regexp_count(summary, 'L[0-7] Segment [0-9]+:') <> 1
+       OR summary !~ 'L7 Segment 1:'
+       OR summary !~ E'Memtable:\n  terms: 0\n  documents: 0' THEN
+        RAISE EXCEPTION 'termless L7 force merge changed segment layout: %',
+                        summary;
+    END IF;
+
+    IF bm25_dump_index('force_l7_single_idx')::text
+       !~ E'total_docs: 129\n  total_len: 519\n' THEN
+        RAISE EXCEPTION 'termless L7 force merge lost document accounting';
+    END IF;
+
+    IF (SELECT count(*) FROM (
+            SELECT 1 FROM force_l7_single
+            ORDER BY content <@>
+                     to_bm25query('filler', 'force_l7_single_idx')
+        ) ranked) <> 128 THEN
+        RAISE EXCEPTION 'termless L7 force merge changed query results';
+    END IF;
+END
+$$;
 DROP TABLE force_l7_single CASCADE;
 DROP TABLE force_l7_multiple CASCADE;
 DROP TABLE force_l7_mixed CASCADE;

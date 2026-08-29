@@ -2132,7 +2132,6 @@ tp_force_merge_preflight(Relation index, bool spill_creates_segment)
 	uint16			level_counts[TP_MAX_LEVELS];
 	uint16			top_count;
 	bool			has_lower_segments = false;
-	bool			has_memtable;
 
 	metap	  = tp_get_metapage(index);
 	top_count = metap->level_counts[TP_MAX_LEVELS - 1];
@@ -2142,7 +2141,6 @@ tp_force_merge_preflight(Relation index, bool spill_creates_segment)
 		if (metap->level_counts[level] > 0)
 			has_lower_segments = true;
 	}
-	has_memtable = BlockNumberIsValid(metap->memtable_head_blkno);
 	pfree(metap);
 
 	if (top_count > 1)
@@ -2162,12 +2160,12 @@ tp_force_merge_preflight(Relation index, bool spill_creates_segment)
 							"level %u is occupied while lower levels remain",
 							RelationGetRelationName(index),
 							TP_MAX_LEVELS - 1)));
-		if (has_memtable)
+		if (spill_creates_segment)
 			ereport(ERROR,
 					(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
 					 errmsg("cannot force merge \"%s\": "
-							"level %u is occupied while the memtable "
-							"remains nonempty",
+							"level %u is occupied while spilling the "
+							"memtable would create another segment",
 							RelationGetRelationName(index),
 							TP_MAX_LEVELS - 1)));
 
