@@ -312,6 +312,14 @@ VACUUM vb_alldead;
 
 -- Both segments should be dropped — merge is a no-op
 SELECT bm25_force_merge('vb_alldead_idx');
+DO $$
+BEGIN
+    IF bm25_level_counts('vb_alldead_idx'::regclass) <>
+           ARRAY[0, 0, 0, 0, 0, 0, 0, 0] THEN
+        RAISE EXCEPTION 'all-dead force merge did not leave zero segments';
+    END IF;
+END
+$$;
 
 SELECT count(*) FROM (
     SELECT id FROM vb_alldead

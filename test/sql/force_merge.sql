@@ -27,6 +27,17 @@ CREATE TABLE force_merge_test (
 CREATE INDEX force_merge_idx ON force_merge_test USING bm25(content)
   WITH (text_config='english', k1=1.2, b=0.75);
 
+-- Empty indexes are already a valid zero-segment force-merge result.
+DO $$
+BEGIN
+    PERFORM bm25_force_merge('force_merge_idx');
+    IF bm25_level_counts('force_merge_idx'::regclass) <>
+           ARRAY[0, 0, 0, 0, 0, 0, 0, 0] THEN
+        RAISE EXCEPTION 'empty force merge did not keep zero segments';
+    END IF;
+END
+$$;
+
 --------------------------------------------------------------------------------
 -- Build up segments across multiple levels
 --------------------------------------------------------------------------------

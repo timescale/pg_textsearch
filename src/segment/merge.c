@@ -2233,25 +2233,60 @@ tp_force_merge_all(Relation index)
 		if (action == TP_FORCE_MERGE_COMPLETE)
 			break;
 
-		Assert(action == TP_FORCE_MERGE_LEVEL);
 		if (action != TP_FORCE_MERGE_LEVEL)
-			break;
+			ereport(ERROR,
+					(errcode(ERRCODE_INTERNAL_ERROR),
+					 errmsg("internal force-merge invariant failure for "
+							"index \"%s\": planner returned no executable "
+							"merge with %u segments remaining",
+							RelationGetRelationName(index),
+							tp_force_merge_segment_count(level_counts))));
+		Assert(action == TP_FORCE_MERGE_LEVEL);
 
 		merged_segment =
 				tp_merge_level_segments(index, merge_level, UINT32_MAX);
-		Assert(BlockNumberIsValid(merged_segment));
 		if (!BlockNumberIsValid(merged_segment))
+		{
+			uint32 remaining_segment_count;
+
+			metap = tp_get_metapage(index);
+			memcpy(level_counts, metap->level_counts, sizeof(level_counts));
+			pfree(metap);
+
+			remaining_segment_count = tp_force_merge_segment_count(
+					level_counts);
+			if (remaining_segment_count > 1)
+				ereport(ERROR,
+						(errcode(ERRCODE_INTERNAL_ERROR),
+						 errmsg("internal force-merge invariant failure for "
+								"index \"%s\": planned merge of level %u "
+								"failed with %u segments remaining",
+								RelationGetRelationName(index),
+								merge_level,
+								remaining_segment_count)));
+			Assert(remaining_segment_count <= 1);
 			break;
+		}
 	}
 
 	{
 		TpIndexMetaPage metap;
 		uint16			level_counts[TP_MAX_LEVELS];
+		uint32			final_segment_count;
 
 		metap = tp_get_metapage(index);
 		memcpy(level_counts, metap->level_counts, sizeof(level_counts));
 		pfree(metap);
 
-		Assert(tp_force_merge_segment_count(level_counts) <= 1);
+		final_segment_count = tp_force_merge_segment_count(level_counts);
+		if (final_segment_count > 1)
+			ereport(ERROR,
+					(errcode(ERRCODE_INTERNAL_ERROR),
+					 errmsg("internal force-merge invariant failure for "
+							"index \"%s\": %u segments remain after "
+							"execution",
+							RelationGetRelationName(index),
+							final_segment_count)));
+		Assert(final_segment_count <= 1);
 	}
 }
