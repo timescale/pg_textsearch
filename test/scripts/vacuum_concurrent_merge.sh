@@ -147,7 +147,7 @@ merger() {
             if [[ "$output" == \
 *"level 7 is occupied while lower levels remain"* ]] \
                 || [[ "$output" == \
-*"level 7 is occupied while the memtable remains nonempty"* ]]; then
+*"level 7 is occupied while spilling the memtable would create another segment"* ]]; then
                 continue
             fi
             return 30
