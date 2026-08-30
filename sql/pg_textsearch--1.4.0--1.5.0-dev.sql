@@ -77,29 +77,30 @@ BEGIN
                grantee.rolname AS grantee_name
         FROM pg_catalog.pg_extension extension
              JOIN pg_catalog.pg_depend dependency
-               ON dependency.refclassid =
+               ON dependency.refclassid OPERATOR(pg_catalog.=)
                       'pg_catalog.pg_extension'::pg_catalog.regclass
-              AND dependency.refobjid = extension.oid
-              AND dependency.classid =
+              AND dependency.refobjid OPERATOR(pg_catalog.=) extension.oid
+              AND dependency.classid OPERATOR(pg_catalog.=)
                       'pg_catalog.pg_proc'::pg_catalog.regclass
-              AND dependency.deptype = 'e'
+              AND dependency.deptype OPERATOR(pg_catalog.=) 'e'
              JOIN pg_catalog.pg_proc procedure
-               ON procedure.oid = dependency.objid
+               ON procedure.oid OPERATOR(pg_catalog.=) dependency.objid
              JOIN pg_catalog.pg_namespace namespace
-               ON namespace.oid = procedure.pronamespace
+               ON namespace.oid OPERATOR(pg_catalog.=)
+                      procedure.pronamespace
              CROSS JOIN LATERAL pg_catalog.aclexplode(
                  coalesce(
                      procedure.proacl,
                      pg_catalog.acldefault(
                          'f', procedure.proowner))) acl
              JOIN pg_catalog.pg_roles grantee
-               ON grantee.oid = acl.grantee
-        WHERE extension.extname = 'pg_textsearch'
-          AND procedure.proname IN (
+               ON grantee.oid OPERATOR(pg_catalog.=) acl.grantee
+        WHERE extension.extname OPERATOR(pg_catalog.=) 'pg_textsearch'
+          AND procedure.proname OPERATOR(pg_catalog.=) ANY (ARRAY[
                   'bm25_compact_step_if_current',
-                  'bm25_needs_compaction_if_current')
-          AND procedure.pronargs = 4
-          AND acl.grantee <> procedure.proowner
+                  'bm25_needs_compaction_if_current'])
+          AND procedure.pronargs OPERATOR(pg_catalog.=) 4
+          AND acl.grantee OPERATOR(pg_catalog.<>) procedure.proowner
     LOOP
         EXECUTE pg_catalog.format(
             'REVOKE ALL ON FUNCTION %I.%I('
