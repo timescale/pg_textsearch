@@ -139,9 +139,9 @@ DROP TABLE force_merge_test CASCADE;
 --------------------------------------------------------------------------------
 -- A force-merge spill must not run ordinary threshold compaction first.
 --
--- The POC fixture used 128 L0 segments with compaction disabled. PR 1 has no
--- scheduler mode, so this is the smallest equivalent carry: two L0 segments
--- built at threshold 3, then a pending memtable and threshold 2.
+-- Build two L0 segments below the initial threshold, then lower the threshold
+-- while a memtable remains pending. Force merge must spill the memtable
+-- without running threshold compaction before its own merge plan.
 --------------------------------------------------------------------------------
 
 SET pg_textsearch.segments_per_level = 3;
