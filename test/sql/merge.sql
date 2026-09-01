@@ -273,6 +273,54 @@ RESET pg_textsearch.debug_segment_count_limit;
 RESET pg_textsearch.segments_per_level;
 DROP TABLE merge_nested_full CASCADE;
 
+--------------------------------------------------------------------------------
+-- Phase 7: Bound ordinary compaction outputs
+--------------------------------------------------------------------------------
+
+SET pg_textsearch.segments_per_level = 4;
+SET pg_textsearch.max_segment_size = '1MB';
+
+CREATE TABLE merge_bounded (id bigint PRIMARY KEY, content text);
+CREATE INDEX merge_bounded_idx ON merge_bounded USING bm25(content)
+  WITH (text_config='simple');
+
+DO $$
+DECLARE
+    batch integer;
+BEGIN
+    FOR batch IN 0..3 LOOP
+        INSERT INTO merge_bounded
+        SELECT batch * 2000 + gs,
+               'common ' || repeat(md5((batch * 2000 + gs)::text), 4)
+        FROM generate_series(1, 2000) gs;
+        PERFORM bm25_spill_index('merge_bounded_idx');
+    END LOOP;
+END
+$$;
+
+DO $$
+DECLARE
+    summary text := bm25_summarize_index('merge_bounded_idx');
+BEGIN
+    IF regexp_count(summary, 'L1 Segment [0-9]+:') <> 2
+       OR summary ~ 'L0 Segment' THEN
+        RAISE EXCEPTION 'ordinary bounded compaction layout is wrong: %',
+                        summary;
+    END IF;
+END
+$$;
+
+SELECT count(*) = 8000 AS bounded_merge_docs_preserved
+FROM (
+    SELECT 1 FROM merge_bounded
+    ORDER BY content <@> to_bm25query('common', 'merge_bounded_idx')
+    LIMIT 8000
+) ranked;
+
+RESET pg_textsearch.max_segment_size;
+RESET pg_textsearch.segments_per_level;
+DROP TABLE merge_bounded CASCADE;
+
 -- Cleanup
 DROP TABLE merge_test CASCADE;
 DROP EXTENSION pg_textsearch CASCADE;

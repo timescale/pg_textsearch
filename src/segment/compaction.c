@@ -8,8 +8,10 @@
 #include <access/transam.h>
 #include <common/int.h>
 #include <storage/bufmgr.h>
+#include <storage/indexfsm.h>
 #include <storage/lwlock.h>
 
+#include "access/am.h"
 #include "constants.h"
 #include "index/metapage.h"
 #include "index/state.h"
@@ -52,8 +54,10 @@ typedef struct TpCompactionPlan
 {
 	TpCompactionSource *sources;
 	uint32				num_sources;
+	uint32				source_capacity;
 	TpCompactionBatch  *batches;
 	uint32				num_batches;
+	uint32				output_capacity;
 	BlockNumber			retained_heads[TP_MAX_LEVELS];
 	uint16				retained_counts[TP_MAX_LEVELS];
 } TpCompactionPlan;
@@ -232,6 +236,60 @@ tp_collect_source_estimate(TpCompactionSource *source, TpSegmentReader *reader)
 		source->estimate.bytes = PG_UINT64_MAX;
 }
 
+static BlockNumber
+tp_collect_source(
+		Relation		  index,
+		TpCompactionPlan *plan,
+		BlockNumber		  root,
+		uint32			  level,
+		uint32			  chain_position)
+{
+	TpCompactionSource *source;
+	TpSegmentReader	   *reader;
+	BlockNumber			next;
+
+	if (!BlockNumberIsValid(root))
+		ereport(ERROR,
+				(errcode(ERRCODE_DATA_CORRUPTED),
+				 errmsg("segment chain for level %u ended before its "
+						"recorded count",
+						level)));
+	if (plan->num_sources >= plan->source_capacity)
+		ereport(ERROR,
+				(errcode(ERRCODE_INTERNAL_ERROR),
+				 errmsg("compaction source plan exceeded its capacity")));
+
+	source				   = &plan->sources[plan->num_sources++];
+	source->root		   = root;
+	source->source_level   = level;
+	source->chain_position = chain_position;
+
+	reader = tp_segment_open(index, root);
+	if (reader == NULL)
+		ereport(ERROR,
+				(errcode(ERRCODE_DATA_CORRUPTED),
+				 errmsg("could not open segment at block %u", root)));
+
+	if (reader->header->level != level)
+	{
+		uint32 recorded_level = reader->header->level;
+
+		tp_segment_close(reader);
+		ereport(ERROR,
+				(errcode(ERRCODE_DATA_CORRUPTED),
+				 errmsg("segment at block %u records level %u but is "
+						"linked from level %u",
+						root,
+						recorded_level,
+						level)));
+	}
+
+	tp_collect_source_estimate(source, reader);
+	next = reader->header->next_segment;
+	tp_segment_close(reader);
+	return next;
+}
+
 static bool
 tp_estimate_add(
 		const TpSegmentEstimate *left,
@@ -308,7 +366,6 @@ tp_collect_force_sources(
 		Relation index, const TpIndexMetaPage snapshot, TpCompactionPlan *plan)
 {
 	uint32 total_sources = 0;
-	uint32 source_index	 = 0;
 
 	memset(plan, 0, sizeof(*plan));
 	for (uint32 level = 0; level < TP_MAX_LEVELS; level++)
@@ -327,6 +384,7 @@ tp_collect_force_sources(
 	if (total_sources == 0)
 		return;
 
+	plan->source_capacity = total_sources;
 	plan->sources = palloc0(sizeof(TpCompactionSource) * total_sources);
 
 	for (uint32 level = 0; level < TP_MAX_LEVELS; level++)
@@ -335,47 +393,7 @@ tp_collect_force_sources(
 
 		for (uint32 position = 0; position < snapshot->level_counts[level];
 			 position++)
-		{
-			TpCompactionSource *source;
-			TpSegmentReader	   *reader;
-
-			if (!BlockNumberIsValid(current))
-				ereport(ERROR,
-						(errcode(ERRCODE_DATA_CORRUPTED),
-						 errmsg("segment chain for level %u ended before its "
-								"recorded count",
-								level)));
-
-			source				   = &plan->sources[source_index++];
-			source->root		   = current;
-			source->source_level   = level;
-			source->chain_position = position;
-
-			reader = tp_segment_open(index, current);
-			if (reader == NULL)
-				ereport(ERROR,
-						(errcode(ERRCODE_DATA_CORRUPTED),
-						 errmsg("could not open segment at block %u",
-								current)));
-
-			if (reader->header->level != level)
-			{
-				uint32 recorded_level = reader->header->level;
-
-				tp_segment_close(reader);
-				ereport(ERROR,
-						(errcode(ERRCODE_DATA_CORRUPTED),
-						 errmsg("segment at block %u records level %u but is "
-								"linked from level %u",
-								current,
-								recorded_level,
-								level)));
-			}
-
-			tp_collect_source_estimate(source, reader);
-			current = reader->header->next_segment;
-			tp_segment_close(reader);
-		}
+			current = tp_collect_source(index, plan, current, level, position);
 
 		if (BlockNumberIsValid(current))
 			ereport(ERROR,
@@ -385,7 +403,7 @@ tp_collect_force_sources(
 							level)));
 	}
 
-	Assert(source_index == total_sources);
+	Assert(plan->num_sources == total_sources);
 	plan->num_sources = total_sources;
 }
 
@@ -406,21 +424,32 @@ tp_size_class(uint64 bytes)
 }
 
 static void
-tp_build_force_batches(TpCompactionPlan *plan)
+tp_append_bounded_batches(
+		TpCompactionPlan *plan, uint32 first_source, uint32 source_count)
 {
-	uint64	budget		 = tp_max_segment_size_bytes();
-	uint32	source_index = 0;
-	uint32 *order;
-	uint16	assigned_counts[TP_MAX_LEVELS];
+	uint64 budget = tp_max_segment_size_bytes();
+	uint32 source_index;
+	uint32 source_end;
 
-	if (plan->num_sources == 0)
+	if (source_count == 0)
 		return;
+	if (first_source > plan->num_sources ||
+		source_count > plan->num_sources - first_source)
+		ereport(ERROR,
+				(errcode(ERRCODE_INTERNAL_ERROR),
+				 errmsg("invalid compaction source range")));
 
-	plan->batches = palloc0(sizeof(TpCompactionBatch) * plan->num_sources);
-
-	while (source_index < plan->num_sources)
+	source_index = first_source;
+	source_end	 = first_source + source_count;
+	while (source_index < source_end)
 	{
-		TpCompactionBatch *batch = &plan->batches[plan->num_batches++];
+		TpCompactionBatch *batch;
+
+		if (plan->num_batches >= plan->source_capacity)
+			ereport(ERROR,
+					(errcode(ERRCODE_INTERNAL_ERROR),
+					 errmsg("compaction batch plan exceeded its capacity")));
+		batch = &plan->batches[plan->num_batches++];
 
 		batch->first_source = source_index;
 		batch->source_count = 1;
@@ -428,7 +457,7 @@ tp_build_force_batches(TpCompactionPlan *plan)
 		batch->indivisible	= batch->estimate.bytes > budget;
 		source_index++;
 
-		while (!batch->indivisible && source_index < plan->num_sources)
+		while (!batch->indivisible && source_index < source_end)
 		{
 			TpSegmentEstimate combined;
 
@@ -444,6 +473,20 @@ tp_build_force_batches(TpCompactionPlan *plan)
 			source_index++;
 		}
 	}
+}
+
+static void
+tp_build_force_batches(TpCompactionPlan *plan)
+{
+	uint32 *order;
+	uint16	assigned_counts[TP_MAX_LEVELS];
+
+	if (plan->num_sources == 0)
+		return;
+
+	plan->output_capacity = PG_UINT16_MAX;
+	plan->batches = palloc0(sizeof(TpCompactionBatch) * plan->num_sources);
+	tp_append_bounded_batches(plan, 0, plan->num_sources);
 
 	memcpy(assigned_counts, plan->retained_counts, sizeof(assigned_counts));
 	order = palloc(sizeof(uint32) * plan->num_batches);
@@ -515,13 +558,16 @@ tp_plan_chains_match(Relation index, TpCompactionPlan *plan)
 	for (uint32 level = 0; level < TP_MAX_LEVELS; level++)
 	{
 		BlockNumber current = InvalidBlockNumber;
+		bool		has_selected_sources;
 
 		while (source_index < plan->num_sources &&
 			   plan->sources[source_index].source_level < level)
 			source_index++;
 
-		if (source_index < plan->num_sources &&
-			plan->sources[source_index].source_level == level)
+		has_selected_sources = source_index < plan->num_sources &&
+							   plan->sources[source_index].source_level ==
+									   level;
+		if (has_selected_sources)
 			current = plan->sources[source_index].root;
 
 		while (source_index < plan->num_sources &&
@@ -540,7 +586,7 @@ tp_plan_chains_match(Relation index, TpCompactionPlan *plan)
 			source_index++;
 		}
 
-		if (BlockNumberIsValid(current))
+		if (has_selected_sources && current != plan->retained_heads[level])
 			return false;
 	}
 
@@ -574,7 +620,7 @@ tp_plan_is_noop(
 }
 
 static void
-tp_publish_force_plan(
+tp_publish_plan(
 		Relation			  index,
 		const TpIndexMetaPage snapshot,
 		const BlockNumber	  output_heads[TP_MAX_LEVELS],
@@ -598,7 +644,7 @@ tp_publish_force_plan(
 		UnlockReleaseBuffer(metabuf);
 		ereport(ERROR,
 				(errcode(ERRCODE_INTERNAL_ERROR),
-				 errmsg("metapage changed during force compaction of "
+				 errmsg("metapage changed during compaction of "
 						"index \"%s\"",
 						RelationGetRelationName(index))));
 	}
@@ -622,7 +668,7 @@ tp_publish_force_plan(
 }
 
 static void
-tp_execute_force_plan(
+tp_execute_plan(
 		Relation index, const TpIndexMetaPage snapshot, TpCompactionPlan *plan)
 {
 	BlockNumber		  output_heads[TP_MAX_LEVELS];
@@ -687,7 +733,7 @@ tp_execute_force_plan(
 					output_heads[batch->output_level],
 					&result))
 		{
-			if (output_counts[batch->output_level] >= PG_UINT16_MAX)
+			if (output_counts[batch->output_level] >= plan->output_capacity)
 				ereport(ERROR,
 						(errcode(ERRCODE_INTERNAL_ERROR),
 						 errmsg("compaction output exceeded level %u "
@@ -740,7 +786,7 @@ tp_execute_force_plan(
 	}
 
 	FlushRelationBuffers(index);
-	tp_publish_force_plan(
+	tp_publish_plan(
 			index,
 			snapshot,
 			output_heads,
@@ -748,6 +794,213 @@ tp_execute_force_plan(
 			pending_free_head,
 			final_docs,
 			final_tokens);
+}
+
+static uint32
+tp_compaction_candidate(
+		const uint16 level_counts[TP_MAX_LEVELS], uint32 first_level)
+{
+	for (uint32 level = first_level; level < TP_MAX_LEVELS - 1; level++)
+	{
+		if ((uint32)level_counts[level] >= (uint32)tp_segments_per_level)
+			return level;
+	}
+
+	return TP_MAX_LEVELS;
+}
+
+static void
+tp_initialize_ordinary_plan(
+		Relation index, const TpIndexMetaPage snapshot, TpCompactionPlan *plan)
+{
+	uint32 total_sources = 0;
+
+	memset(plan, 0, sizeof(*plan));
+	for (uint32 level = 0; level < TP_MAX_LEVELS; level++)
+	{
+		if (pg_add_u32_overflow(
+					total_sources,
+					(uint32)snapshot->level_counts[level],
+					&total_sources))
+			ereport(ERROR,
+					(errcode(ERRCODE_DATA_CORRUPTED),
+					 errmsg("segment count overflow in index \"%s\"",
+							RelationGetRelationName(index))));
+
+		plan->retained_heads[level]	 = snapshot->level_heads[level];
+		plan->retained_counts[level] = snapshot->level_counts[level];
+	}
+
+	Assert(total_sources > 0);
+	plan->source_capacity = total_sources;
+	plan->output_capacity = (uint32)tp_max_segments_per_level;
+	plan->sources		  = palloc0(
+			sizeof(TpCompactionSource) * plan->source_capacity);
+	plan->batches = palloc0(sizeof(TpCompactionBatch) * plan->source_capacity);
+}
+
+static uint32
+tp_select_level_prefix(
+		Relation			  index,
+		const TpIndexMetaPage snapshot,
+		TpCompactionPlan	 *plan,
+		uint32				  level,
+		uint32				  prefix_count)
+{
+	BlockNumber current;
+	uint32		first_source;
+	uint32		chain_position;
+
+	if (plan->retained_counts[level] < prefix_count)
+		ereport(ERROR,
+				(errcode(ERRCODE_INTERNAL_ERROR),
+				 errmsg("compaction level %u has no threshold-sized prefix",
+						level)));
+
+	first_source   = plan->num_sources;
+	current		   = plan->retained_heads[level];
+	chain_position = (uint32)snapshot->level_counts[level] -
+					 (uint32)plan->retained_counts[level];
+
+	for (uint32 i = 0; i < prefix_count; i++)
+		current = tp_collect_source(
+				index, plan, current, level, chain_position + i);
+
+	plan->retained_heads[level] = current;
+	plan->retained_counts[level] -= (uint16)prefix_count;
+	return first_source;
+}
+
+static void
+tp_assign_ordinary_batches(
+		TpCompactionPlan *plan,
+		uint32			  first_batch,
+		uint32			  planned_outputs[TP_MAX_LEVELS])
+{
+	for (uint32 i = first_batch; i < plan->num_batches; i++)
+	{
+		TpCompactionBatch  *batch  = &plan->batches[i];
+		TpCompactionSource *source = &plan->sources[batch->first_source];
+		uint32				minimum_level = source->source_level + 1;
+		uint32 output_level = tp_size_class(batch->estimate.bytes);
+
+		if (output_level < minimum_level)
+			output_level = minimum_level;
+		if (output_level >= TP_MAX_LEVELS)
+			ereport(ERROR,
+					(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
+					 errmsg("bounded compaction cannot promote a segment "
+							"above level %u",
+							source->source_level)));
+
+		for (uint32 j = 1; j < batch->source_count; j++)
+		{
+			if (plan->sources[batch->first_source + j].source_level !=
+				source->source_level)
+				ereport(ERROR,
+						(errcode(ERRCODE_INTERNAL_ERROR),
+						 errmsg("ordinary compaction batch crosses levels")));
+		}
+
+		batch->output_level = output_level;
+		planned_outputs[output_level]++;
+	}
+}
+
+static bool
+tp_build_ordinary_plan(
+		Relation			  index,
+		const TpIndexMetaPage snapshot,
+		uint32				  first_level,
+		TpCompactionPlan	 *plan)
+{
+	uint32 planned_outputs[TP_MAX_LEVELS] = {0};
+	uint32 candidate;
+	uint32 first_source;
+	uint32 first_batch;
+	uint32 threshold = (uint32)tp_segments_per_level;
+
+	memset(plan, 0, sizeof(*plan));
+	candidate = tp_compaction_candidate(snapshot->level_counts, first_level);
+	if (candidate >= TP_MAX_LEVELS - 1)
+		return false;
+
+	tp_initialize_ordinary_plan(index, snapshot, plan);
+	first_source = tp_select_level_prefix(
+			index, snapshot, plan, candidate, threshold);
+	first_batch = plan->num_batches;
+	tp_append_bounded_batches(plan, first_source, threshold);
+	tp_assign_ordinary_batches(plan, first_batch, planned_outputs);
+
+	for (uint32 level = candidate + 1; level < TP_MAX_LEVELS; level++)
+	{
+		while (planned_outputs[level] > 0 &&
+			   (uint64)plan->retained_counts[level] +
+							   (uint64)planned_outputs[level] >
+					   (uint64)plan->output_capacity)
+		{
+			if (level == TP_MAX_LEVELS - 1 ||
+				plan->retained_counts[level] < threshold)
+				ereport(ERROR,
+						(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
+						 errmsg("bm25 segment count limit reached at level %u",
+								level)));
+
+			first_source = tp_select_level_prefix(
+					index, snapshot, plan, level, threshold);
+			first_batch = plan->num_batches;
+			tp_append_bounded_batches(plan, first_source, threshold);
+			tp_assign_ordinary_batches(plan, first_batch, planned_outputs);
+		}
+	}
+
+	/*
+	 * Promoting only singleton batches would move the threshold unchanged
+	 * and make the outer driver chase it up the hierarchy indefinitely.
+	 */
+	return plan->num_batches < plan->num_sources;
+}
+
+static void
+tp_free_compaction_plan(TpCompactionPlan *plan)
+{
+	if (plan->sources != NULL)
+		pfree(plan->sources);
+	if (plan->batches != NULL)
+		pfree(plan->batches);
+}
+
+void
+tp_maybe_compact_level(
+		TpLocalIndexState *index_state, Relation index, uint32 first_level)
+{
+	tp_require_compaction_lock(index_state);
+	if (first_level >= TP_MAX_LEVELS - 1)
+		return;
+
+	while (true)
+	{
+		TpIndexMetaPage	 snapshot;
+		TpCompactionPlan plan;
+		uint32			 drained;
+
+		drained = tp_tombstone_drain(
+				index, NULL, tp_reclaim_horizon(NULL), /* own_lock */ false);
+		if (drained > 0)
+			IndexFreeSpaceMapVacuum(index);
+
+		snapshot = tp_get_metapage(index);
+		if (!tp_build_ordinary_plan(index, snapshot, first_level, &plan))
+		{
+			pfree(snapshot);
+			tp_free_compaction_plan(&plan);
+			return;
+		}
+
+		tp_execute_plan(index, snapshot, &plan);
+		pfree(snapshot);
+		tp_free_compaction_plan(&plan);
+	}
 }
 
 void
@@ -772,9 +1025,8 @@ tp_force_compact(TpLocalIndexState *index_state, Relation index)
 		return;
 	}
 
-	tp_execute_force_plan(index, snapshot, &plan);
+	tp_execute_plan(index, snapshot, &plan);
 
 	pfree(snapshot);
-	pfree(plan.sources);
-	pfree(plan.batches);
+	tp_free_compaction_plan(&plan);
 }

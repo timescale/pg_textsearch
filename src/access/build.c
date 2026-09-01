@@ -274,7 +274,7 @@ tp_finish_spill(
 
 	pgstat_progress_update_param(
 			PROGRESS_CREATEIDX_SUBPHASE, TP_PHASE_COMPACTING);
-	tp_maybe_compact_level(index_rel, 0);
+	tp_maybe_compact_level(index_state, index_rel, 0);
 	pgstat_progress_update_param(
 			PROGRESS_CREATEIDX_SUBPHASE, TP_PHASE_LOADING);
 }
@@ -1240,14 +1240,15 @@ tp_process_document_text(
  */
 typedef struct TpBuildCallbackState
 {
-	TpBuildContext *build_ctx;
-	Relation		index;
-	Oid				text_config_oid;
-	MemoryContext	per_doc_ctx;
-	bool			is_text_array;
-	uint64			total_docs;
-	uint64			total_len;
-	uint64			tuples_done;
+	TpBuildContext	  *build_ctx;
+	TpLocalIndexState *index_state;
+	Relation		   index;
+	Oid				   text_config_oid;
+	MemoryContext	   per_doc_ctx;
+	bool			   is_text_array;
+	uint64			   total_docs;
+	uint64			   total_len;
+	uint64			   tuples_done;
 } TpBuildCallbackState;
 
 /*
@@ -1330,7 +1331,7 @@ tp_build_callback(
 
 		pgstat_progress_update_param(
 				PROGRESS_CREATEIDX_SUBPHASE, TP_PHASE_COMPACTING);
-		tp_maybe_compact_level(bs->index, 0);
+		tp_maybe_compact_level(bs->index_state, bs->index, 0);
 		pgstat_progress_update_param(
 				PROGRESS_CREATEIDX_SUBPHASE, TP_PHASE_LOADING);
 	}
@@ -1567,6 +1568,7 @@ tp_build(Relation heap, Relation index, IndexInfo *indexInfo)
 		 */
 		index_state = tp_create_build_index_state(
 				RelationGetRelid(index), RelationGetRelid(heap));
+		tp_acquire_index_lock(index_state, LW_EXCLUSIVE);
 
 		/* Budget: maintenance_work_mem (in KB) -> bytes */
 		budget = (Size)maintenance_work_mem * 1024L;
@@ -1580,6 +1582,7 @@ tp_build(Relation heap, Relation index, IndexInfo *indexInfo)
 
 		/* Initialize callback state */
 		bs.build_ctx	   = build_ctx;
+		bs.index_state	   = index_state;
 		bs.index		   = index;
 		bs.text_config_oid = text_config_oid;
 		bs.is_text_array   = is_text_array;
