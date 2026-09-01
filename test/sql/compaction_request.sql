@@ -8,12 +8,25 @@ SET pg_textsearch.compaction_mode = 'background';
 
 CREATE SEQUENCE compaction_request_calls;
 SELECT setval('compaction_request_calls', 1, true) AS calls_before \gset
+CREATE SEQUENCE compaction_request_calls_docs2;
+-- Mark as called so the first nextval advances last_value, matching
+-- compaction_request_calls; otherwise the first call leaves it at 1.
+SELECT setval('compaction_request_calls_docs2', 1, true) AS docs2_init \gset
 CREATE TABLE compaction_callback_rows (idx regclass);
 
 CREATE FUNCTION record_compaction_request(idx regclass) RETURNS void
 LANGUAGE plpgsql AS $$
 BEGIN
     PERFORM nextval('compaction_request_calls');
+    /*
+     * Sequence advances are non-transactional, so they survive the
+     * subtransaction rollback that discards the callback's other work.
+     * A second counter for one specific index is therefore the only way
+     * to observe which index the callback was actually handed.
+     */
+    IF idx::text LIKE '%request_docs2_idx' THEN
+        PERFORM nextval('compaction_request_calls_docs2');
+    END IF;
     INSERT INTO compaction_callback_rows VALUES (idx);
 END;
 $$;
@@ -84,8 +97,12 @@ SELECT last_value - :calls_before AS commit_requests
 FROM compaction_request_calls;
 SELECT count(*) AS callback_local_rows FROM compaction_callback_rows;
 
--- Repeated requests for one index are deduplicated.
+-- Repeated requests for one index are deduplicated.  The segment delta
+-- proves both spills really reached the request path, so a single
+-- callback invocation is deduplication and not a single request.
 SELECT last_value AS calls_before FROM compaction_request_calls \gset
+SELECT (SELECT sum(c) FROM unnest(bm25_level_counts('request_docs_idx')) c)
+    AS segs_before \gset
 BEGIN;
 INSERT INTO request_docs (body)
 SELECT 'dedup one ' || i FROM generate_series(1, 20) i;
@@ -94,11 +111,16 @@ INSERT INTO request_docs (body)
 SELECT 'dedup two ' || i FROM generate_series(1, 20) i;
 SELECT bm25_spill_index('request_docs_idx') IS NOT NULL AS dedup_two;
 COMMIT;
+SELECT (SELECT sum(c) FROM unnest(bm25_level_counts('request_docs_idx')) c)
+    - :segs_before AS dedup_segments_added;
 SELECT last_value - :calls_before AS deduplicated_requests
 FROM compaction_request_calls;
 
--- Different indexes each dispatch once.
+-- Different indexes each dispatch once.  The per-index counter proves
+-- the second index was passed to the callback, so a total of two is not
+-- one index dispatched twice.
 SELECT last_value AS calls_before FROM compaction_request_calls \gset
+SELECT last_value AS docs2_before FROM compaction_request_calls_docs2 \gset
 BEGIN;
 INSERT INTO request_docs (body)
 SELECT 'multi one ' || i FROM generate_series(1, 20) i;
@@ -109,6 +131,8 @@ SELECT bm25_spill_index('request_docs2_idx') IS NOT NULL AS multi_two;
 COMMIT;
 SELECT last_value - :calls_before AS multiple_index_requests
 FROM compaction_request_calls;
+SELECT last_value - :docs2_before AS multiple_index_docs2_requests
+FROM compaction_request_calls_docs2;
 
 -- A savepoint rollback retains physical compaction debt and its request.
 CREATE TABLE savepoint_docs (id serial PRIMARY KEY, body text);
@@ -237,7 +261,12 @@ SELECT 1 AS backend_reused;
 COMMIT;
 SELECT last_value - :calls_before AS stale_requests
 FROM compaction_request_calls;
-ROLLBACK PREPARED 'compaction_request_prepare';
+-- COMMIT PREPARED must not dispatch again: PRE_PREPARE already did, and
+-- the committing backend holds no request for this transaction.
+SELECT last_value AS calls_before FROM compaction_request_calls \gset
+COMMIT PREPARED 'compaction_request_prepare';
+SELECT last_value - :calls_before AS commit_prepared_requests
+FROM compaction_request_calls;
 
 -- Temporary indexes compact inline in background mode.
 CREATE TEMP TABLE temp_request_docs (id serial PRIMARY KEY, body text);
@@ -328,6 +357,10 @@ FROM canceled_request_docs WHERE body LIKE 'cancel pending %';
 
 RESET pg_textsearch.compaction_mode;
 RESET pg_textsearch.compaction_request_function;
+RESET pg_textsearch.segments_per_level;
+RESET client_min_messages;
+RESET maintenance_work_mem;
+RESET max_parallel_maintenance_workers;
 DROP TABLE canceled_request_docs CASCADE;
 DROP TABLE inline_request_docs CASCADE;
 DROP TABLE off_request_docs CASCADE;
@@ -341,4 +374,8 @@ DROP TABLE request_docs2 CASCADE;
 DROP TABLE request_docs CASCADE;
 DROP TABLE compaction_callback_rows;
 DROP SEQUENCE compaction_request_calls CASCADE;
+DROP SEQUENCE compaction_request_calls_docs2 CASCADE;
+DROP FUNCTION record_compaction_request(regclass);
+DROP FUNCTION fail_compaction_request(regclass);
+DROP FUNCTION cancel_compaction_request(regclass);
 DROP EXTENSION pg_textsearch CASCADE;
