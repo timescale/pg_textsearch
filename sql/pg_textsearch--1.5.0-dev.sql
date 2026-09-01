@@ -282,29 +282,25 @@ COMMENT ON FUNCTION @extschema@.bm25_compact_step(regclass) IS
     'Run at most one compaction pass and report whether one ran, letting a caller spread a cascade over several transactions. A published pass is not undone by ROLLBACK.';
 
 -- VOLATILE because it reads live metapage state, and PARALLEL
--- RESTRICTED to match bm25_level_counts.  The terminal level is
--- excluded by array length rather than a literal so the predicate
--- tracks TP_MAX_LEVELS.
+-- RESTRICTED to match bm25_level_counts.  Every level counts: the top
+-- level compacts into itself, so its debt is reducible like any
+-- other's.
 CREATE FUNCTION @extschema@.bm25_needs_compaction(idx regclass)
 RETURNS boolean
 LANGUAGE sql VOLATILE STRICT PARALLEL RESTRICTED
 SET search_path = pg_catalog, pg_temp
 AS $$
-    WITH c(counts) AS (
-        SELECT @extschema@.bm25_level_counts(idx)
-    )
     SELECT EXISTS (
         SELECT 1
-        FROM c, pg_catalog.unnest(c.counts)
-             WITH ORDINALITY AS t(cnt, lvl)
-        WHERE t.lvl < pg_catalog.array_length(c.counts, 1)
-          AND t.cnt >= pg_catalog.current_setting(
+        FROM pg_catalog.unnest(
+                 @extschema@.bm25_level_counts(idx)) AS cnt
+        WHERE cnt >= pg_catalog.current_setting(
                   'pg_textsearch.segments_per_level')::int
     );
 $$;
 
 COMMENT ON FUNCTION @extschema@.bm25_needs_compaction(regclass) IS
-    'Report whether any non-terminal level holds at least segments_per_level segments. Advisory only: a level whose segments are all over budget reports debt that bm25_compact_step declines to reduce, so this must not be used on its own as a retry condition.';
+    'Report whether any level holds at least segments_per_level segments. Advisory only: a level whose segments are all over budget reports debt that bm25_compact_step declines to reduce, so this must not be used on its own as a retry condition.';
 
 -- Fast summary function showing only statistics (no content dump)
 CREATE FUNCTION @extschema@.bm25_summarize_index(text) RETURNS text

@@ -800,7 +800,11 @@ static uint32
 tp_compaction_candidate(
 		const uint16 level_counts[TP_MAX_LEVELS], uint32 first_level)
 {
-	for (uint32 level = first_level; level < TP_MAX_LEVELS - 1; level++)
+	/*
+	 * Every level is a candidate, including the top one: it compacts
+	 * into itself rather than promoting, so its debt is reducible.
+	 */
+	for (uint32 level = first_level; level < TP_MAX_LEVELS; level++)
 	{
 		if ((uint32)level_counts[level] >= (uint32)tp_segments_per_level)
 			return level;
@@ -886,12 +890,15 @@ tp_assign_ordinary_batches(
 
 		if (output_level < minimum_level)
 			output_level = minimum_level;
-		if (output_level >= TP_MAX_LEVELS)
-			ereport(ERROR,
-					(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
-					 errmsg("bounded compaction cannot promote a segment "
-							"above level %u",
-							source->source_level)));
+
+		/*
+		 * The top level is the ladder's terminal bucket, not a wall.
+		 * A run that would promote past it stays there and compacts
+		 * into itself, so the level is reducible like any other and
+		 * carries no special count ceiling.
+		 */
+		if (output_level > TP_MAX_LEVELS - 1)
+			output_level = TP_MAX_LEVELS - 1;
 
 		for (uint32 j = 1; j < batch->source_count; j++)
 		{
@@ -930,7 +937,7 @@ tp_build_ordinary_plan(
 
 		candidate =
 				tp_compaction_candidate(snapshot->level_counts, search_level);
-		if (candidate >= TP_MAX_LEVELS - 1)
+		if (candidate >= TP_MAX_LEVELS)
 			return false;
 
 		tp_initialize_ordinary_plan(index, snapshot, plan);
@@ -940,15 +947,20 @@ tp_build_ordinary_plan(
 		tp_append_bounded_batches(plan, first_source, threshold);
 		tp_assign_ordinary_batches(plan, first_batch, planned_outputs);
 
-		for (uint32 level = candidate + 1; level < TP_MAX_LEVELS; level++)
+		/*
+		 * Outputs no longer always land above the candidate: the top
+		 * level compacts into itself.  Check every level this plan
+		 * would grow, and treat a full level uniformly -- it is over
+		 * capacity only when it also has too few segments to compact.
+		 */
+		for (uint32 level = 0; level < TP_MAX_LEVELS; level++)
 		{
 			while (planned_outputs[level] > 0 &&
 				   (uint64)plan->retained_counts[level] +
 								   (uint64)planned_outputs[level] >
 						   (uint64)plan->output_capacity)
 			{
-				if (level == TP_MAX_LEVELS - 1 ||
-					plan->retained_counts[level] < threshold)
+				if (plan->retained_counts[level] < threshold)
 					ereport(ERROR,
 							(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
 							 errmsg("bm25 segment count limit reached at "
@@ -1010,7 +1022,7 @@ tp_compact_once(
 	uint32			 drained;
 
 	tp_require_compaction_lock(index_state);
-	if (first_level >= TP_MAX_LEVELS - 1)
+	if (first_level >= TP_MAX_LEVELS)
 		return false;
 
 	/*
@@ -1021,7 +1033,7 @@ tp_compact_once(
 	 */
 	snapshot = tp_get_metapage(index);
 	if (tp_compaction_candidate(snapshot->level_counts, first_level) >=
-		TP_MAX_LEVELS - 1)
+		TP_MAX_LEVELS)
 	{
 		pfree(snapshot);
 		return false;

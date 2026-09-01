@@ -268,16 +268,20 @@ RESET pg_textsearch.memtable_pages_threshold;
 RESET pg_textsearch.bulk_load_threshold;
 DROP TABLE compaction_unreducible CASCADE;
 
--- A full L7 blocks L6 promotion without changing the segment layout.
--- (Reclaim of already-parked pages may still run; only the published
--- level counts are asserted here.)
+-- The top level is a terminal bucket, not a wall.  When promotion out
+-- The top level is a terminal bucket, not a wall.  With a per-level
+-- count limit of 2, driving 384 segments up the ladder once failed
+-- closed with "segment count limit reached at level 7", because the
+-- top level was never a compaction candidate and so could never make
+-- room for a promotion out of L6.  It now compacts into itself, so
+-- the ladder drains instead of jamming.  (Reclaim of already-parked
+-- pages may also run; only the published level counts are asserted.)
 CREATE TABLE compaction_terminal (id serial PRIMARY KEY, body text);
 CREATE INDEX compaction_terminal_idx ON compaction_terminal
     USING bm25(body) WITH (text_config = 'english');
 SET pg_textsearch.debug_segment_count_limit = 2;
 DO $$
 DECLARE
-    counts int[];
     n integer;
 BEGIN
     FOR n IN 1..384 LOOP
@@ -289,42 +293,32 @@ BEGIN
         PERFORM set_config(
             'pg_textsearch.segments_per_level', '2', true);
 
+        -- The documented driver shape: stop on the step's own report
+        -- rather than on bm25_needs_compaction, which stays true on
+        -- debt no pass can reduce.
         WHILE bm25_needs_compaction(
                   'compaction_terminal_idx'::regclass) LOOP
-            counts :=
-                bm25_level_counts('compaction_terminal_idx'::regclass);
-            EXIT WHEN counts = ARRAY[0, 0, 0, 0, 0, 0, 2, 2];
-
-            IF NOT bm25_compact_step(
-                       'compaction_terminal_idx'::regclass) THEN
-                RAISE EXCEPTION
-                    'terminal setup stopped after source segment %', n;
-            END IF;
+            EXIT WHEN NOT bm25_compact_step(
+                              'compaction_terminal_idx'::regclass);
         END LOOP;
     END LOOP;
 END
 $$;
+SET pg_textsearch.segments_per_level = 2;
 SELECT bm25_level_counts('compaction_terminal_idx'::regclass) =
-           ARRAY[0, 0, 0, 0, 0, 0, 2, 2]
-       AND bm25_needs_compaction('compaction_terminal_idx'::regclass)
-       AS terminal_starts_blocked;
-CREATE TEMP TABLE compaction_terminal_before AS
-SELECT bm25_level_counts('compaction_terminal_idx'::regclass) AS counts;
+           ARRAY[0, 0, 0, 0, 0, 0, 0, 1]
+       AND NOT bm25_needs_compaction(
+                   'compaction_terminal_idx'::regclass)
+       AS top_level_drains;
+-- The ladder has settled: both entry points report no work rather
+-- than raising a capacity error.
 SELECT bm25_compact_step('compaction_terminal_idx'::regclass);
-SELECT bm25_level_counts('compaction_terminal_idx'::regclass) =
-           before.counts
-       AS terminal_step_fails_closed
-FROM compaction_terminal_before before;
 SELECT bm25_compact('compaction_terminal_idx'::regclass);
 SELECT bm25_level_counts('compaction_terminal_idx'::regclass) =
-           before.counts
-       AS terminal_full_fails_closed
-FROM compaction_terminal_before before;
+           ARRAY[0, 0, 0, 0, 0, 0, 0, 1]
+       AS terminal_is_settled;
 
--- Lower-level debt still compacts when a terminal conflict is present.
--- The bounded planner validates each pass in full before publishing it,
--- so every pass that runs is complete and durable; only the pass whose
--- output cannot fit reports the capacity limit.
+-- Lower-level debt compacts normally against a populated top level.
 SET pg_textsearch.segments_per_level = 64;
 DO $$
 DECLARE
@@ -339,26 +333,25 @@ END
 $$;
 SET pg_textsearch.segments_per_level = 2;
 SELECT bm25_level_counts('compaction_terminal_idx'::regclass) =
-           ARRAY[2, 0, 0, 0, 0, 0, 2, 2]
-       AS mixed_terminal_starts_blocked;
+           ARRAY[2, 0, 0, 0, 0, 0, 0, 1]
+       AS mixed_lower_debt_starts;
 SELECT bm25_compact('compaction_terminal_idx'::regclass);
 SELECT bm25_level_counts('compaction_terminal_idx'::regclass) =
-           ARRAY[0, 1, 0, 0, 0, 0, 2, 2]
-       AS mixed_full_compacts_legal_debt;
-SELECT count(*) = 386 AS mixed_rejection_preserves_documents
+           ARRAY[0, 1, 0, 0, 0, 0, 0, 1]
+       AS mixed_full_compacts_lower_debt;
+SELECT count(*) = 386 AS mixed_compaction_preserves_documents
 FROM (
     SELECT 1
     FROM compaction_terminal
     ORDER BY body <@> to_bm25query('filler', 'compaction_terminal_idx')
 ) ranked;
--- No legal pass remains, so a step reports the same conflict and
--- leaves the layout untouched.
+-- With every level under threshold a step is a no-op, not an error.
 CREATE TEMP TABLE compaction_mixed_after AS
 SELECT bm25_level_counts('compaction_terminal_idx'::regclass) AS counts;
 SELECT bm25_compact_step('compaction_terminal_idx'::regclass);
 SELECT bm25_level_counts('compaction_terminal_idx'::regclass) =
            after.counts
-       AS mixed_step_fails_closed
+       AS mixed_step_is_a_noop
 FROM compaction_mixed_after after;
 SELECT count(*) = 386 AS terminal_preserves_documents
 FROM (

@@ -5,10 +5,10 @@ compacting one BM25 index:
 
 - `bm25_level_counts(regclass)` returns the persisted segment count for each
   of the eight LSM levels.
-- `bm25_needs_compaction(regclass)` reports whether any compactable level,
-  L0 through L6, has reached `pg_textsearch.segments_per_level`.
-- `bm25_compact(regclass)` runs compaction passes until no compactable level
-  is left with debt this engine can reduce.
+- `bm25_needs_compaction(regclass)` reports whether any level, L0 through L7,
+  has reached `pg_textsearch.segments_per_level`.
+- `bm25_compact(regclass)` runs compaction passes until no level is left with
+  debt this engine can reduce.
 - `bm25_compact_step(regclass)` runs at most one compaction pass and returns
   whether a pass ran.
 
@@ -110,12 +110,16 @@ bm25_compact_step(...)` never terminates on such an index. Drive the loop from
 false; use `bm25_needs_compaction()` only to decide whether it is worth
 starting, and for observability.
 
-L7 is the terminal level and is not itself compactable, so
-`bm25_needs_compaction()` considers only L0 through L6. If L7 has no room for
-a promotion out of L6, planning that pass raises
-`bm25 segment count limit reached at level 7` and publishes no layout change.
-Passes that can legally run still run: `bm25_compact()` reduces the
-lower-level debt it can and then reports the terminal conflict — and, as
-above, the passes it already published stay published. A caller must treat
-this error as a permanent condition for an operator to resolve, not as a
-retryable failure.
+The top level (L7) is where the ladder ends, but it is not a wall: a run that
+would promote past it stays there instead, and the level compacts into itself
+under the same size budget. It is therefore reducible like any other level,
+carries no special count ceiling, and `bm25_needs_compaction()` considers
+every level including L7.
+
+Note that levels are cascade generations, not achievable size classes. A
+level's nominal size is `8MB * 8^level`, but no merge may exceed
+`pg_textsearch.max_segment_size`, whose default *and maximum* is 4095MB —
+just under L3's 4096MB boundary. So no merge can ever emit a segment whose
+size class is above L3; levels L4 through L7 are reached only by the
+one-level promotion that each pass applies to its output. A segment sitting
+at L7 is at most 4095MB, not the 2TB its level nominally denotes.
