@@ -14,3 +14,6 @@ BEGIN
             'Add pg_textsearch to shared_preload_libraries and restart.';
     END IF;
 END $$;
+
+COMMENT ON FUNCTION @extschema@.bm25_force_merge(text) IS
+    'Run one-shot copy-on-write compaction into the fewest conservatively size-bounded segments; existing over-budget singletons remain indivisible, and displaced pages enter deferred reclaim.';
