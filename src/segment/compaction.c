@@ -984,6 +984,21 @@ tp_maybe_compact_level(
 		TpCompactionPlan plan;
 		uint32			 drained;
 
+		/*
+		 * Reclaiming displaced pages is part of compacting, not part of
+		 * every write.  Leave the tombstone chain alone unless a level is
+		 * actually triggered, so an ordinary spill cannot free pages that
+		 * a merge parked for standby-safe reclaim.
+		 */
+		snapshot = tp_get_metapage(index);
+		if (tp_compaction_candidate(snapshot->level_counts, first_level) >=
+			TP_MAX_LEVELS - 1)
+		{
+			pfree(snapshot);
+			return;
+		}
+		pfree(snapshot);
+
 		drained = tp_tombstone_drain(
 				index, NULL, tp_reclaim_horizon(NULL), /* own_lock */ false);
 		if (drained > 0)
