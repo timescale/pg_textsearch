@@ -258,6 +258,45 @@ LANGUAGE C VOLATILE STRICT;
 COMMENT ON FUNCTION @extschema@.bm25_force_merge(text) IS
     'Run one-shot copy-on-write compaction into the fewest conservatively size-bounded segments; existing over-budget singletons remain indivisible, and displaced pages enter deferred reclaim.';
 
+CREATE FUNCTION @extschema@.bm25_level_counts(idx regclass)
+RETURNS int[]
+AS 'MODULE_PATHNAME', 'tp_level_counts'
+LANGUAGE C STRICT PARALLEL SAFE;
+
+CREATE FUNCTION @extschema@.bm25_compact(idx regclass)
+RETURNS void
+AS 'MODULE_PATHNAME', 'tp_compact_index'
+LANGUAGE C VOLATILE STRICT;
+
+COMMENT ON FUNCTION @extschema@.bm25_compact(regclass) IS
+    'Run threshold compaction to completion under one per-index exclusive lock, in size-bounded passes.';
+
+CREATE FUNCTION @extschema@.bm25_compact_step(idx regclass)
+RETURNS boolean
+AS 'MODULE_PATHNAME', 'tp_compact_index_step'
+LANGUAGE C VOLATILE STRICT;
+
+COMMENT ON FUNCTION @extschema@.bm25_compact_step(regclass) IS
+    'Run at most one size-bounded compaction pass and report whether one ran, letting a caller spread a cascade over several transactions.';
+
+CREATE FUNCTION @extschema@.bm25_needs_compaction(idx regclass)
+RETURNS boolean
+LANGUAGE sql STABLE
+SET search_path = pg_catalog, pg_temp
+AS $$
+    SELECT EXISTS (
+        SELECT 1
+        FROM pg_catalog.unnest(@extschema@.bm25_level_counts(idx))
+             WITH ORDINALITY AS t(cnt, lvl)
+        WHERE t.lvl <= 7
+          AND t.cnt >= pg_catalog.current_setting(
+                  'pg_textsearch.segments_per_level')::int
+    );
+$$;
+
+COMMENT ON FUNCTION @extschema@.bm25_needs_compaction(regclass) IS
+    'Report whether any level holds at least segments_per_level segments. Advisory: a level built entirely from over-budget segments reports debt that bm25_compact_step cannot reduce.';
+
 -- Fast summary function showing only statistics (no content dump)
 CREATE FUNCTION @extschema@.bm25_summarize_index(text) RETURNS text
     AS 'MODULE_PATHNAME', 'tp_summarize_index'

@@ -31,6 +31,7 @@ OBJS = \
 	src/access/build.o \
 	src/access/build_context.o \
 	src/access/build_parallel.o \
+	src/access/compaction_api.o \
 	src/access/scan.o \
 	src/access/vacuum.o \
 	src/memtable/arena.o \
@@ -86,7 +87,7 @@ PG_CPPFLAGS += -Wno-unknown-warning-option -Wno-clobbered -Wno-packed-not-aligne
 # PG_CPPFLAGS += -DDEBUG_DUMP_INDEX
 
 # Test configuration
-REGRESS = abort aerodocs basic binary_io bmw bmw_skip_advance bulk_load cache_apply cache_memory_cap cache_source cache_spill catalog_stats chain_source compression concurrent_build coverage deletion vacuum vacuum_bitmap vacuum_extended vacuum_rebuild dropped empty explicit_index expression_index filtered_seed force_merge implicit index inheritance large_documents limits lock manyterms memory memtable_append memtable_page memtable_spill memtable_spill_dead memtable_reclaim merge mixed parallel_build parallel_bmw partitioned partitioned_many partial_index pgstats queries quoted_identifiers rescan schema scoring1 scoring2 scoring3 scoring4 scoring5 scoring6 security security_acl segment segment_integrity segment_reclaim tombstone_reuse tombstone_recover strings temp_table text_array text_config unsupported updates vector vector_v1_rejected unlogged_index wand
+REGRESS = abort aerodocs basic binary_io bmw bmw_skip_advance bulk_load cache_apply cache_memory_cap cache_source cache_spill catalog_stats chain_source compaction compression concurrent_build coverage deletion vacuum vacuum_bitmap vacuum_extended vacuum_rebuild dropped empty explicit_index expression_index filtered_seed force_merge implicit index inheritance large_documents limits lock manyterms memory memtable_append memtable_page memtable_spill memtable_spill_dead memtable_reclaim merge mixed parallel_build parallel_bmw partitioned partitioned_many partial_index pgstats queries quoted_identifiers rescan schema scoring1 scoring2 scoring3 scoring4 scoring5 scoring6 security security_acl segment segment_integrity segment_reclaim tombstone_reuse tombstone_recover strings temp_table text_array text_config unsupported updates vector vector_v1_rejected unlogged_index wand
 REGRESS_OPTS = --inputdir=test --outputdir=test
 
 PG_CONFIG ?= pg_config
@@ -94,9 +95,12 @@ PGXS := $(shell $(PG_CONFIG) --pgxs)
 include $(PGXS)
 
 # SQL regression tests
-test:
+test: test-compaction-ownercheck
 	@echo "Running SQL regression tests..."
 	@$(pg_regress_installcheck) $(REGRESS_OPTS) $(REGRESS)
+
+test-compaction-ownercheck:
+	@./test/scripts/compaction_ownercheck_source.sh
 
 # Custom local test target with dedicated PostgreSQL instance
 test-local: install
@@ -136,6 +140,7 @@ test-recovery:
 	@cd test/scripts && ./recovery.sh
 	@cd test/scripts && ./shutdown_spill.sh
 	@cd test/scripts && ./standby_reclaim.sh
+	@cd test/scripts && ./compaction_recovery.sh
 
 test-segment:
 	@echo "Running multi-backend segment tests..."
@@ -344,6 +349,7 @@ help:
 	@echo ""
 	@echo "Testing targets:"
 	@echo "  make test         - Run source guard and SQL regression tests"
+	@echo "  make test-compaction-ownercheck - Check compaction ownership ordering"
 	@echo "  make installcheck - Run SQL regression tests"
 	@echo "  make test-local   - Run tests with dedicated PostgreSQL instance"
 	@echo "  make test-all     - Run all tests (SQL regression + shell scripts)"
@@ -378,4 +384,4 @@ help:
 	@echo "  make test-all"
 	@echo "  make format"
 
-.PHONY: test clean-test-dirs installcheck test-concurrency test-recovery test-segment test-stress test-cic test-chinese test-replication test-replication-extended test-logical-replication test-multi-index test-reindex test-shell test-all expected lint-format format format-check format-diff format-single coverage coverage-build coverage-clean coverage-report help
+.PHONY: test test-compaction-ownercheck clean-test-dirs installcheck test-concurrency test-recovery test-segment test-stress test-cic test-chinese test-replication test-replication-extended test-logical-replication test-multi-index test-reindex test-shell test-all expected lint-format format format-check format-diff format-single coverage coverage-build coverage-clean coverage-report help
