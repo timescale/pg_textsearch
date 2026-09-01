@@ -472,6 +472,8 @@ Setting | Default | Description
 `pg_textsearch.compress_segments` | on | Compress posting blocks in new segments
 `pg_textsearch.segments_per_level` | 8 | Segments per level before automatic compaction (2-64)
 `pg_textsearch.max_segment_size` | 4095MB | Conservative size budget for newly merged multi-source segments (1-4095MB)
+`pg_textsearch.compaction_mode` | inline | Spill-time compaction: `inline` runs it synchronously, `background` hands it to a callback at pre-commit, `off` leaves it to an explicit caller
+`pg_textsearch.compaction_request_function` | (empty) | Name of a function taking one `regclass`, invoked in `background` mode
 `pg_textsearch.bulk_load_threshold` | 100000 | Terms per transaction before auto-spill (0 = disable)
 `pg_textsearch.memtable_pages_threshold` | 64 | Chain pages before auto-spill (0 = disable)
 
@@ -607,14 +609,31 @@ sustained write-heavy workloads are not yet fully optimized. For initial
 data loading, creating the index after loading data is faster than
 incremental inserts. This is an active area of development.
 
-### No Background Compaction
+### No Background Compaction Worker
 
-Segment compaction runs synchronously during memtable spill operations, so
-write-heavy workloads may observe compaction latency during spills. No
-background worker compacts on its own; `bm25_compact()` and
-`bm25_compact_step()` let an external job drive it on a schedule of your
-choosing. See [Compacting an index](#compacting-an-index). A built-in
-background scheduler is planned for a future release.
+Segment compaction runs synchronously during memtable spill operations by
+default, so write-heavy workloads may observe compaction latency during
+spills. pg_textsearch ships no background worker that compacts on its own.
+
+Two ways to move that work off the writing transaction:
+
+- Set `pg_textsearch.compaction_mode = background` and point
+  `pg_textsearch.compaction_request_function` at a function taking one
+  `regclass`. A spill that leaves a level at the threshold then records a
+  request and calls that function at pre-commit instead of compacting.
+  pg_textsearch does not supply the scheduler; you provide the callback and
+  whatever runs the work. Note that the callback executes inside an internal
+  subtransaction that is rolled back afterwards, so it must hand the request
+  to something that survives a subtransaction abort — a plain `INSERT` into a
+  queue table will not persist.
+- Set `pg_textsearch.compaction_mode = off` and drive `bm25_compact()` or
+  `bm25_compact_step()` from an external job on a schedule of your choosing.
+  With `off` and no such job, segments accumulate until a level reaches the
+  per-level cap of 65535, after which spills fail with `bm25 segment count
+  limit reached`. Query performance degrades well before that point.
+
+See [Compacting an index](#compacting-an-index). A built-in background
+scheduler is planned for a future release.
 
 ### Partitioned Tables
 
