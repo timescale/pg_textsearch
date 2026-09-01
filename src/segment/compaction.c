@@ -988,52 +988,77 @@ tp_free_compaction_plan(TpCompactionPlan *plan)
 		pfree(plan->batches);
 }
 
+/*
+ * Plan and run a single bounded compaction pass, searching for a
+ * triggered level at or above first_level.  Returns true when a plan
+ * executed and false when no level at or above first_level carries
+ * threshold debt this engine can reduce.
+ *
+ * One pass is one publication: the plan is built in full -- including
+ * any recursive compaction of a blocking destination level -- and
+ * validated against the per-level segment capacity before
+ * tp_execute_plan touches a page.  A caller that must bound how long it
+ * holds the per-index exclusive lock can therefore run exactly one pass
+ * and release, leaving the index in a consistent state.
+ */
+static bool
+tp_compact_once(
+		TpLocalIndexState *index_state, Relation index, uint32 first_level)
+{
+	TpIndexMetaPage	 snapshot;
+	TpCompactionPlan plan;
+	uint32			 drained;
+
+	tp_require_compaction_lock(index_state);
+	if (first_level >= TP_MAX_LEVELS - 1)
+		return false;
+
+	/*
+	 * Reclaiming displaced pages is part of compacting, not part of every
+	 * write.  Leave the tombstone chain alone unless a level is actually
+	 * triggered, so an ordinary spill cannot free pages that a merge
+	 * parked for standby-safe reclaim.
+	 */
+	snapshot = tp_get_metapage(index);
+	if (tp_compaction_candidate(snapshot->level_counts, first_level) >=
+		TP_MAX_LEVELS - 1)
+	{
+		pfree(snapshot);
+		return false;
+	}
+	pfree(snapshot);
+
+	drained = tp_tombstone_drain(
+			index, NULL, tp_reclaim_horizon(NULL), /* own_lock */ false);
+	if (drained > 0)
+		IndexFreeSpaceMapVacuum(index);
+
+	snapshot = tp_get_metapage(index);
+	if (!tp_build_ordinary_plan(index, snapshot, first_level, &plan))
+	{
+		pfree(snapshot);
+		tp_free_compaction_plan(&plan);
+		return false;
+	}
+
+	tp_execute_plan(index, snapshot, &plan);
+	pfree(snapshot);
+	tp_free_compaction_plan(&plan);
+	return true;
+}
+
 void
 tp_maybe_compact_level(
 		TpLocalIndexState *index_state, Relation index, uint32 first_level)
 {
-	tp_require_compaction_lock(index_state);
-	if (first_level >= TP_MAX_LEVELS - 1)
-		return;
+	while (tp_compact_once(index_state, index, first_level))
+		;
+}
 
-	while (true)
-	{
-		TpIndexMetaPage	 snapshot;
-		TpCompactionPlan plan;
-		uint32			 drained;
-
-		/*
-		 * Reclaiming displaced pages is part of compacting, not part of
-		 * every write.  Leave the tombstone chain alone unless a level is
-		 * actually triggered, so an ordinary spill cannot free pages that
-		 * a merge parked for standby-safe reclaim.
-		 */
-		snapshot = tp_get_metapage(index);
-		if (tp_compaction_candidate(snapshot->level_counts, first_level) >=
-			TP_MAX_LEVELS - 1)
-		{
-			pfree(snapshot);
-			return;
-		}
-		pfree(snapshot);
-
-		drained = tp_tombstone_drain(
-				index, NULL, tp_reclaim_horizon(NULL), /* own_lock */ false);
-		if (drained > 0)
-			IndexFreeSpaceMapVacuum(index);
-
-		snapshot = tp_get_metapage(index);
-		if (!tp_build_ordinary_plan(index, snapshot, first_level, &plan))
-		{
-			pfree(snapshot);
-			tp_free_compaction_plan(&plan);
-			return;
-		}
-
-		tp_execute_plan(index, snapshot, &plan);
-		pfree(snapshot);
-		tp_free_compaction_plan(&plan);
-	}
+bool
+tp_compact_step(TpLocalIndexState *index_state, Relation index)
+{
+	return tp_compact_once(index_state, index, 0);
 }
 
 void
