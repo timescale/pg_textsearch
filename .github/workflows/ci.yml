@@ -159,6 +159,20 @@ jobs:
           echo "✗ Deferred-reclaim crash recovery tests failed"
           exit 1
         fi
+        echo "Running per-index compaction recovery-guard tests..."
+        if (cd test/scripts && ./compaction_recovery.sh); then
+          echo "✓ Compaction recovery-guard tests passed"
+        else
+          echo "✗ Compaction recovery-guard tests failed"
+          exit 1
+        fi
+        echo "Running compaction ownership-check source guard..."
+        if (cd test/scripts && ./compaction_ownercheck_source.sh); then
+          echo "✓ Compaction ownership-check source guard passed"
+        else
+          echo "✗ Compaction ownership-check source guard failed"
+          exit 1
+        fi
         echo "Running shutdown spill tests..."
         if (cd test/scripts && ./shutdown_spill.sh); then
           echo "✓ Shutdown spill tests passed"
@@ -701,6 +715,7 @@ jobs:
         (cd test/scripts && ./segment.sh) || true
         (cd test/scripts && ./recovery.sh) || true
         (cd test/scripts && ./standby_reclaim.sh) || true
+        (cd test/scripts && ./compaction_recovery.sh) || true
         (cd test/scripts && ./shutdown_spill.sh) || true
         (cd test/scripts && ./cic.sh) || true
         (cd test/scripts && ./multi_index.sh) || true

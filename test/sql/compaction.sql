@@ -79,7 +79,9 @@ BEGIN READ ONLY;
 SELECT bm25_compact_step('compaction_step_idx'::regclass);
 ROLLBACK;
 
--- One step merges exactly one batch and reports that work was performed.
+-- In this layout one pass happens to merge exactly one batch.  A pass is
+-- not limited to one batch in general; it may span several, and may pull
+-- in further batches to unblock a destination level.
 SELECT bm25_compact_step('compaction_step_idx'::regclass)
        AS one_batch_ran;
 SELECT bm25_level_counts('compaction_step_idx'::regclass) =
@@ -187,6 +189,36 @@ SELECT NOT bm25_needs_compaction('compaction_temp_step_idx'::regclass)
            'compaction_temp_full_idx'::regclass)
        AS temp_indexes_converged;
 
+-- A published pass is a physical change, so ROLLBACK does not undo it.
+-- A caller must not treat a step as transactional work.
+CREATE TABLE compaction_rollback (id serial, body text);
+CREATE INDEX compaction_rollback_idx ON compaction_rollback
+    USING bm25(body) WITH (text_config = 'english');
+SET pg_textsearch.segments_per_level = 64;
+DO $$
+DECLARE
+    n integer;
+BEGIN
+    FOR n IN 1..4 LOOP
+        INSERT INTO compaction_rollback (body)
+        VALUES (format('rollback document %s filler', n));
+        PERFORM bm25_spill_index('compaction_rollback_idx');
+    END LOOP;
+END
+$$;
+SET pg_textsearch.segments_per_level = 2;
+CREATE TEMP TABLE compaction_rollback_before AS
+SELECT bm25_level_counts('compaction_rollback_idx'::regclass) AS counts;
+BEGIN;
+SELECT bm25_compact_step('compaction_rollback_idx'::regclass)
+       AS rollback_step_ran;
+ROLLBACK;
+SELECT bm25_level_counts('compaction_rollback_idx'::regclass)
+           <> before.counts
+       AS rollback_does_not_undo_a_published_pass
+FROM compaction_rollback_before before;
+DROP TABLE compaction_rollback CASCADE;
+
 -- A level can carry threshold debt the engine cannot reduce: every
 -- candidate group already exceeds max_segment_size, and an over-budget
 -- segment is an indivisible singleton.  bm25_needs_compaction() is a
@@ -236,7 +268,9 @@ RESET pg_textsearch.memtable_pages_threshold;
 RESET pg_textsearch.bulk_load_threshold;
 DROP TABLE compaction_unreducible CASCADE;
 
--- A full L7 blocks L6 promotion without mutating the index.
+-- A full L7 blocks L6 promotion without changing the segment layout.
+-- (Reclaim of already-parked pages may still run; only the published
+-- level counts are asserted here.)
 CREATE TABLE compaction_terminal (id serial PRIMARY KEY, body text);
 CREATE INDEX compaction_terminal_idx ON compaction_terminal
     USING bm25(body) WITH (text_config = 'english');
