@@ -667,6 +667,13 @@ tp_force_merge(PG_FUNCTION_ARGS)
 	Relation  index_rel;
 	RangeVar *rv;
 
+	/* Replica is read-only; compaction is primary-only. Standby's
+	 * segments change only via WAL redo. */
+	if (RecoveryInProgress())
+		ereport(ERROR,
+				(errcode(ERRCODE_READ_ONLY_SQL_TRANSACTION),
+				 errmsg("bm25_force_merge() cannot run during recovery")));
+
 	rv = makeRangeVarFromNameList(stringToQualifiedNameList(index_name, NULL));
 	index_oid = RangeVarGetRelid(rv, AccessShareLock, false);
 
