@@ -95,7 +95,6 @@ include $(PGXS)
 
 # SQL regression tests
 test:
-	@./test/scripts/force_merge_invariant_source.sh
 	@echo "Running SQL regression tests..."
 	@$(pg_regress_installcheck) $(REGRESS_OPTS) $(REGRESS)
 

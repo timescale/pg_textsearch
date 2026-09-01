@@ -17,6 +17,15 @@ struct TpLocalIndexState;
 struct TpMergeSource;
 struct TpMergedTerm;
 
+typedef struct TpMergedSegmentResult
+{
+	BlockNumber root;
+	uint32		num_pages;
+	uint32		num_docs;
+	uint64		total_tokens;
+	uint64		data_size;
+} TpMergedSegmentResult;
+
 /*
  * Merge sink: writes merged segment data to index pages.
  */
@@ -43,7 +52,20 @@ extern void write_merged_segment_to_sink(
 		int					  num_sources,
 		uint32				  target_level,
 		uint64				  total_tokens,
-		bool				  disjoint_sources);
+		bool				  disjoint_sources,
+		BlockNumber			  next_segment);
+
+/*
+ * Merge exactly the supplied immutable segments into one unpublished
+ * current-format segment.  The caller publishes or discards the result.
+ */
+extern bool tp_merge_segment_batch(
+		Relation			   index,
+		const BlockNumber	  *source_roots,
+		uint32				   num_sources,
+		uint32				   output_level,
+		BlockNumber			   next_segment,
+		TpMergedSegmentResult *result);
 
 /*
  * Merge all segments at the specified level into a single segment
@@ -61,8 +83,8 @@ extern void write_merged_segment_to_sink(
  *   level - The level to merge (0 = L0, 1 = L1, etc.)
  *
  * Returns:
- *   The root block of the new merged segment, or InvalidBlockNumber
- * on failure.
+ *   The root block of the new merged segment, or InvalidBlockNumber when
+ *   every source document is dead.
  *
  * Note: The caller is responsible for holding an appropriate lock on
  * the index relation. This function modifies the metapage to update
@@ -83,24 +105,3 @@ tp_merge_level_segments(Relation index, uint32 level, uint32 max_merge);
  *   level - The level to check (0 = L0, 1 = L1, etc.)
  */
 extern void tp_maybe_compact_level(Relation index, uint32 level);
-
-/*
- * Reject force-merge layouts that cannot reach one segment without
- * consolidating L7. Include a prospective L0 segment when the prepared
- * memtable spill contains terms. Returns false when one lone L7 is already
- * complete.
- */
-extern bool
-tp_force_merge_preflight(Relation index, bool spill_creates_segment);
-
-/*
- * Compact all segments across all levels into one segment.
- *
- * Unlike tp_maybe_compact_level, this ignores the segments_per_level
- * threshold and merges ALL segments at each level in one batch.
- * Used by bm25_force_merge to produce a fully compacted index.
- *
- * Parameters:
- *   index - The index relation (must be opened with appropriate lock)
- */
-extern void tp_force_merge_all(Relation index);

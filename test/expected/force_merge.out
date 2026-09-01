@@ -1,9 +1,9 @@
 -- Test case: force_merge
--- Tests bm25_force_merge() which merges all segments into one.
+-- Tests bm25_force_merge() bounded best-effort compaction.
 --
 -- This test exercises:
 -- 1. Multiple segments across levels
--- 2. Force merge into a single segment
+-- 2. Force merge into size-bounded segments
 -- 3. Queries return correct results after merge
 -- 4. Inserts work normally after force merge
 CREATE EXTENSION IF NOT EXISTS pg_textsearch;
@@ -213,24 +213,6 @@ BEGIN
     END IF;
 END
 $$;
-SET pg_textsearch.debug_segment_count_limit = 2;
-DO $$
-DECLARE
-    summary_before text := bm25_summarize_index('force_spill_cascade_idx');
-BEGIN
-    BEGIN
-        PERFORM bm25_force_merge('force_spill_cascade_idx');
-        RAISE EXCEPTION 'capacity-overflowing force merge was accepted';
-    EXCEPTION
-        WHEN program_limit_exceeded THEN NULL;
-    END;
-
-    IF bm25_summarize_index('force_spill_cascade_idx') <> summary_before THEN
-        RAISE EXCEPTION 'force merge capacity rejection mutated the index';
-    END IF;
-END
-$$;
-RESET pg_textsearch.debug_segment_count_limit;
 SET pg_textsearch.segments_per_level = 2;
 DO $$
 BEGIN
@@ -259,7 +241,7 @@ END
 $$;
 DROP TABLE force_spill_cascade CASCADE;
 --------------------------------------------------------------------------------
--- Terminal L7 layouts reject before mutation.
+-- Force merge is bounded best-effort compaction, not forceMerge(1).
 --------------------------------------------------------------------------------
 SET pg_textsearch.segments_per_level = 2;
 CREATE TABLE force_l7_single (id serial PRIMARY KEY, content text);
@@ -354,36 +336,44 @@ DECLARE
     multiple_before text := bm25_summarize_index('force_l7_multiple_idx');
     mixed_before text := bm25_summarize_index('force_l7_mixed_idx');
     memtable_before text := bm25_summarize_index('force_l7_memtable_idx');
+    single_summary text;
+    multiple_summary text;
+    mixed_summary text;
+    memtable_summary text;
 BEGIN
     PERFORM bm25_force_merge('force_l7_single_idx');
+    PERFORM bm25_force_merge('force_l7_multiple_idx');
+    PERFORM bm25_force_merge('force_l7_mixed_idx');
+    PERFORM bm25_force_merge('force_l7_memtable_idx');
 
-    BEGIN
-        PERFORM bm25_force_merge('force_l7_multiple_idx');
-        RAISE EXCEPTION 'multiple L7 force merge was accepted';
-    EXCEPTION
-        WHEN program_limit_exceeded THEN NULL;
-    END;
+    single_summary := bm25_summarize_index('force_l7_single_idx');
+    multiple_summary := bm25_summarize_index('force_l7_multiple_idx');
+    mixed_summary := bm25_summarize_index('force_l7_mixed_idx');
+    memtable_summary := bm25_summarize_index('force_l7_memtable_idx');
 
-    BEGIN
-        PERFORM bm25_force_merge('force_l7_mixed_idx');
-        RAISE EXCEPTION 'mixed L7 force merge was accepted';
-    EXCEPTION
-        WHEN program_limit_exceeded THEN NULL;
-    END;
-
-    BEGIN
-        PERFORM bm25_force_merge('force_l7_memtable_idx');
-        RAISE EXCEPTION 'memtable L7 force merge was accepted';
-    EXCEPTION
-        WHEN program_limit_exceeded THEN NULL;
-    END;
-
-    IF bm25_summarize_index('force_l7_single_idx') <> single_before
-       OR bm25_summarize_index('force_l7_multiple_idx') <> multiple_before
-       OR bm25_summarize_index('force_l7_mixed_idx') <> mixed_before
-       OR bm25_summarize_index('force_l7_memtable_idx') <>
-          memtable_before THEN
-        RAISE EXCEPTION 'terminal force merge changed physical state';
+    IF regexp_count(single_summary, 'L[0-7] Segment [0-9]+:') >
+       regexp_count(single_before, 'L[0-7] Segment [0-9]+:') THEN
+        RAISE EXCEPTION 'force merge increased segment count: before %, after %',
+                        single_before, single_summary;
+    END IF;
+    IF regexp_count(multiple_summary, 'L[0-7] Segment [0-9]+:') >
+       regexp_count(multiple_before, 'L[0-7] Segment [0-9]+:') THEN
+        RAISE EXCEPTION 'force merge increased segment count: before %, after %',
+                        multiple_before, multiple_summary;
+    END IF;
+    IF regexp_count(mixed_summary, 'L[0-7] Segment [0-9]+:') >
+       regexp_count(mixed_before, 'L[0-7] Segment [0-9]+:') THEN
+        RAISE EXCEPTION 'force merge increased segment count: before %, after %',
+                        mixed_before, mixed_summary;
+    END IF;
+    IF regexp_count(memtable_summary, 'L[0-7] Segment [0-9]+:') >
+       regexp_count(memtable_before, 'L[0-7] Segment [0-9]+:') THEN
+        RAISE EXCEPTION 'force merge increased segment count: before %, after %',
+                        memtable_before, memtable_summary;
+    END IF;
+    IF memtable_summary !~ E'Memtable:\n  terms: 0\n  documents: 0' THEN
+        RAISE EXCEPTION 'force merge did not clear the memtable: %',
+                        memtable_summary;
     END IF;
 
     IF (SELECT count(*) FROM (
@@ -411,12 +401,12 @@ BEGIN
 END
 $$;
 -- A termless memtable contributes document accounting but no prospective
--- segment, so it can be cleared alongside an already-terminal lone L7.
+-- segment, so it can be cleared without rewriting a compacted singleton.
 DO $$
 BEGIN
     IF bm25_test_chain_source(
             'force_l7_single_idx', 'one_doc_no_terms') <> 'OK' THEN
-        RAISE EXCEPTION 'could not construct termless L7 memtable';
+        RAISE EXCEPTION 'could not construct termless singleton memtable';
     END IF;
 END
 $$;
@@ -425,24 +415,25 @@ DECLARE
     summary text := bm25_summarize_index('force_l7_single_idx');
 BEGIN
     IF regexp_count(summary, 'L[0-7] Segment [0-9]+:') <> 1
-       OR summary !~ 'L7 Segment 1:'
+       OR summary !~ 'L0 Segment 1:'
        OR summary !~ E'Memtable:\n  terms: 0\n  documents: 1' THEN
-        RAISE EXCEPTION 'termless L7 layout was not constructed: %', summary;
+        RAISE EXCEPTION 'termless singleton layout was not constructed: %',
+                        summary;
     END IF;
 
     PERFORM bm25_force_merge('force_l7_single_idx');
     summary := bm25_summarize_index('force_l7_single_idx');
 
     IF regexp_count(summary, 'L[0-7] Segment [0-9]+:') <> 1
-       OR summary !~ 'L7 Segment 1:'
+       OR summary !~ 'L0 Segment 1:'
        OR summary !~ E'Memtable:\n  terms: 0\n  documents: 0' THEN
-        RAISE EXCEPTION 'termless L7 force merge changed segment layout: %',
+        RAISE EXCEPTION 'termless force merge changed segment layout: %',
                         summary;
     END IF;
 
     IF bm25_dump_index('force_l7_single_idx')::text
        !~ E'total_docs: 129\n  total_len: 519\n' THEN
-        RAISE EXCEPTION 'termless L7 force merge lost document accounting';
+        RAISE EXCEPTION 'termless force merge lost document accounting';
     END IF;
 
     IF (SELECT count(*) FROM (
@@ -450,7 +441,7 @@ BEGIN
             ORDER BY content <@>
                      to_bm25query('filler', 'force_l7_single_idx')
         ) ranked) <> 128 THEN
-        RAISE EXCEPTION 'termless L7 force merge changed query results';
+        RAISE EXCEPTION 'termless force merge changed query results';
     END IF;
 END
 $$;
@@ -458,6 +449,69 @@ DROP TABLE force_l7_single CASCADE;
 DROP TABLE force_l7_multiple CASCADE;
 DROP TABLE force_l7_mixed CASCADE;
 DROP TABLE force_l7_memtable CASCADE;
+--------------------------------------------------------------------------------
+-- A bounded force merge produces maximal batches without exceeding the
+-- configured segment-size budget.
+--------------------------------------------------------------------------------
+SET pg_textsearch.segments_per_level = 64;
+SET pg_textsearch.max_segment_size = '1MB';
+CREATE TABLE force_bounded (id bigint PRIMARY KEY, content text);
+CREATE INDEX force_bounded_idx ON force_bounded USING bm25(content)
+  WITH (text_config='simple');
+NOTICE:  BM25 index build started for relation force_bounded_idx
+NOTICE:  Using text search configuration: simple
+NOTICE:  Using index options: k1=1.20, b=0.75
+NOTICE:  BM25 index build completed: 0 documents, avg_length=0.00
+DO $$
+DECLARE
+    batch integer;
+BEGIN
+    FOR batch IN 0..3 LOOP
+        INSERT INTO force_bounded
+        SELECT batch * 2000 + gs,
+               'common ' || repeat(md5((batch * 2000 + gs)::text), 4)
+        FROM generate_series(1, 2000) gs;
+        PERFORM bm25_spill_index('force_bounded_idx');
+    END LOOP;
+END
+$$;
+SELECT bm25_force_merge('force_bounded_idx');
+ bm25_force_merge 
+------------------
+ 
+(1 row)
+
+DO $$
+DECLARE
+    first_summary text := bm25_summarize_index('force_bounded_idx');
+    second_summary text;
+BEGIN
+    IF regexp_count(first_summary, 'L[0-7] Segment [0-9]+:') <> 2 THEN
+        RAISE EXCEPTION 'bounded force merge did not produce two segments: %',
+                        first_summary;
+    END IF;
+
+    PERFORM bm25_force_merge('force_bounded_idx');
+    second_summary := bm25_summarize_index('force_bounded_idx');
+    IF second_summary <> first_summary THEN
+        RAISE EXCEPTION 'bounded force merge was not idempotent: before %, after %',
+                        first_summary, second_summary;
+    END IF;
+END
+$$;
+SELECT count(*) = 8000 AS bounded_docs_preserved
+FROM (
+    SELECT 1 FROM force_bounded
+    ORDER BY content <@> to_bm25query('common', 'force_bounded_idx')
+    LIMIT 8000
+) ranked;
+ bounded_docs_preserved 
+------------------------
+ t
+(1 row)
+
+RESET pg_textsearch.max_segment_size;
+DROP TABLE force_bounded CASCADE;
 --------------------------------------------------------------------------------
 -- Cleanup
 --------------------------------------------------------------------------------

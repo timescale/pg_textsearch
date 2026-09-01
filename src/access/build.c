@@ -38,6 +38,7 @@
 #include "memtable/chain_source.h"
 #include "memtable/log.h"
 #include "memtable/page.h"
+#include "segment/compaction.h"
 #include "segment/dictionary.h"
 #include "segment/docmap.h"
 #include "segment/io.h"
@@ -647,9 +648,8 @@ PG_FUNCTION_INFO_V1(tp_force_merge);
 /*
  * SQL-callable: bm25_force_merge(index_name text) → void
  *
- * Force-merge all segments into a single segment, à la Lucene's
- * forceMerge(1).  Useful after bulk loads or when benchmarking
- * with a single-segment layout.
+ * Run one bounded best-effort compaction pass.  Useful after bulk loads or
+ * when benchmarking with a compact segment layout.
  */
 Datum
 tp_force_merge(PG_FUNCTION_ARGS)
@@ -685,7 +685,6 @@ tp_force_merge(PG_FUNCTION_ARGS)
 		TpLocalIndexState *index_state = tp_get_local_index_state(index_oid);
 		TpPreparedSpill	   spill;
 		bool			   has_memtable;
-		bool			   force_merge_needed;
 
 		if (index_state == NULL)
 			ereport(ERROR,
@@ -695,34 +694,24 @@ tp_force_merge(PG_FUNCTION_ARGS)
 							index_name)));
 
 		tp_acquire_index_lock(index_state, LW_EXCLUSIVE);
-		has_memtable = tp_prepare_spill(index_state, index_rel, &spill);
-		/*
-		 * Validate the exact force-merge count transitions before any
-		 * GenericXLog mutation. The prepared spill tells preflight whether
-		 * the memtable would add an L0 segment; doc-length-only chains do
-		 * not consume segment capacity.
-		 */
-		force_merge_needed = tp_force_merge_preflight(
-				index_rel, has_memtable && spill.num_terms > 0);
-		/*
-		 * A termless prepared spill still has document-length accounting
-		 * and a chain to finalize even when the existing lone L7 means no
-		 * physical segment merge is needed.
-		 */
-		if (has_memtable)
-			tp_finish_spill(
-					index_state, index_rel, &spill, NULL, TP_SPILL_POST_NONE);
-		if (force_merge_needed)
+		PG_TRY();
 		{
-			/*
-			 * Force merge owns compaction from this point onward. Flushing
-			 * through the normal spill path would run inline compaction
-			 * before that validated sequence.
-			 */
-			tp_force_merge_all(index_rel);
+			has_memtable = tp_prepare_spill(index_state, index_rel, &spill);
+			if (has_memtable)
+				tp_finish_spill(
+						index_state,
+						index_rel,
+						&spill,
+						NULL,
+						TP_SPILL_POST_NONE);
+			tp_force_compact(index_state, index_rel);
 			tp_truncate_dead_pages(index_rel);
 		}
-		tp_release_index_lock(index_state);
+		PG_FINALLY();
+		{
+			tp_release_index_lock(index_state);
+		}
+		PG_END_TRY();
 	}
 
 	index_close(index_rel, RowExclusiveLock);

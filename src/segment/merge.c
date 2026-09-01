@@ -8,6 +8,7 @@
 
 #include <access/generic_xlog.h>
 #include <access/relation.h>
+#include <common/int.h>
 #include <miscadmin.h>
 #include <storage/bufmgr.h>
 #include <storage/indexfsm.h>
@@ -993,7 +994,8 @@ write_merged_segment_to_sink(
 		int			   num_sources,
 		uint32		   target_level,
 		uint64		   total_tokens,
-		bool		   disjoint_sources)
+		bool		   disjoint_sources,
+		BlockNumber	   next_segment)
 {
 	TpSegmentHeader		header;
 	TpDictionary		dict;
@@ -1042,7 +1044,7 @@ write_merged_segment_to_sink(
 	header.num_pages	= 0;
 	header.num_terms	= num_terms;
 	header.level		= target_level;
-	header.next_segment = InvalidBlockNumber;
+	header.next_segment = next_segment;
 	header.num_docs		= docmap->num_docs;
 	header.total_tokens = total_tokens;
 	header.page_index	= InvalidBlockNumber;
@@ -1425,6 +1427,188 @@ write_merged_segment_to_sink(
 	tp_docmap_destroy(docmap);
 }
 
+bool
+tp_merge_segment_batch(
+		Relation			   index,
+		const BlockNumber	  *source_roots,
+		uint32				   num_sources,
+		uint32				   output_level,
+		BlockNumber			   next_segment,
+		TpMergedSegmentResult *result)
+{
+	TpMergeSource *sources;
+	TpMergedTerm  *merged_terms		= NULL;
+	uint32		   num_merged_terms = 0;
+	uint32		   merged_capacity	= 0;
+	uint64		   total_tokens		= 0;
+	bool		   has_live_docs	= false;
+	MemoryContext  merge_ctx;
+	MemoryContext  old_ctx;
+	uint32		   i;
+
+	Assert(num_sources > 0);
+	Assert(result != NULL);
+
+	memset(result, 0, sizeof(*result));
+	result->root = InvalidBlockNumber;
+
+	if (num_sources > PG_INT32_MAX)
+		ereport(ERROR,
+				(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
+				 errmsg("cannot merge %u segments in one batch",
+						num_sources)));
+
+	merge_ctx = AllocSetContextCreate(
+			CurrentMemoryContext,
+			"Segment Merge Batch",
+			ALLOCSET_DEFAULT_SIZES);
+	old_ctx = MemoryContextSwitchTo(merge_ctx);
+	sources = palloc0(sizeof(TpMergeSource) * num_sources);
+
+	for (i = 0; i < num_sources; i++)
+	{
+		uint64 source_tokens;
+
+		if (!merge_source_init(&sources[i], index, source_roots[i]))
+			ereport(ERROR,
+					(errcode(ERRCODE_DATA_CORRUPTED),
+					 errmsg("could not open segment at block %u for merge",
+							source_roots[i])));
+
+		source_tokens = sources[i].reader->header->total_tokens;
+		if (pg_add_u64_overflow(total_tokens, source_tokens, &total_tokens))
+			ereport(ERROR,
+					(errcode(ERRCODE_DATA_CORRUPTED),
+					 errmsg("segment token count overflow while merging "
+							"index \"%s\"",
+							RelationGetRelationName(index))));
+
+		if (sources[i].reader->header->alive_count > 0)
+			has_live_docs = true;
+	}
+
+	if (!has_live_docs)
+	{
+		for (i = 0; i < num_sources; i++)
+			merge_source_close(&sources[i]);
+
+		MemoryContextSwitchTo(old_ctx);
+		MemoryContextDelete(merge_ctx);
+		return false;
+	}
+
+	while (true)
+	{
+		int			  min_idx;
+		const char	 *min_term;
+		TpMergedTerm *current_merged;
+
+		min_idx = merge_find_min_source(sources, (int)num_sources);
+		if (min_idx < 0)
+			break;
+
+		min_term = sources[min_idx].current_term;
+		if (num_merged_terms >= merged_capacity)
+		{
+			merged_capacity = merged_capacity == 0 ? 1024
+												   : merged_capacity * 2;
+			if (merged_terms == NULL)
+				merged_terms = palloc_extended(
+						merged_capacity * sizeof(TpMergedTerm),
+						MCXT_ALLOC_HUGE);
+			else
+				merged_terms = repalloc_huge(
+						merged_terms, merged_capacity * sizeof(TpMergedTerm));
+		}
+
+		current_merged					 = &merged_terms[num_merged_terms];
+		current_merged->term_len		 = strlen(min_term);
+		current_merged->term			 = pstrdup(min_term);
+		current_merged->segment_refs	 = NULL;
+		current_merged->num_segment_refs = 0;
+		current_merged->segment_refs_capacity = 0;
+		current_merged->posting_offset		  = 0;
+		current_merged->posting_count		  = 0;
+		num_merged_terms++;
+
+		for (i = 0; i < num_sources; i++)
+		{
+			if (sources[i].exhausted)
+				continue;
+
+			if (strcmp(sources[i].current_term, current_merged->term) == 0)
+			{
+				merged_term_add_segment_ref(
+						current_merged, (int)i, &sources[i].current_entry);
+				merge_source_advance(&sources[i]);
+			}
+		}
+
+		CHECK_FOR_INTERRUPTS();
+	}
+
+	if (num_merged_terms == 0)
+		ereport(ERROR,
+				(errcode(ERRCODE_DATA_CORRUPTED),
+				 errmsg("live merge sources in index \"%s\" contain no terms",
+						RelationGetRelationName(index))));
+
+	{
+		TpMergeSink		 sink;
+		BlockNumber		 new_segment;
+		Buffer			 header_buf;
+		Page			 header_page;
+		TpSegmentHeader *header;
+
+		merge_sink_init_pages(&sink, index);
+		if (sink.writer.pages_allocated == 0)
+			elog(ERROR, "merge: failed to allocate segment pages");
+		new_segment = sink.writer.pages[0];
+
+		write_merged_segment_to_sink(
+				&sink,
+				merged_terms,
+				num_merged_terms,
+				sources,
+				(int)num_sources,
+				output_level,
+				total_tokens,
+				false,
+				next_segment);
+
+		header_buf = ReadBuffer(index, new_segment);
+		LockBuffer(header_buf, BUFFER_LOCK_SHARE);
+		header_page = BufferGetPage(header_buf);
+		header		= (TpSegmentHeader *)PageGetContents(header_page);
+
+		if (header->magic != TP_SEGMENT_MAGIC ||
+			header->version != TP_SEGMENT_FORMAT_VERSION ||
+			header->level != output_level ||
+			header->next_segment != next_segment)
+		{
+			UnlockReleaseBuffer(header_buf);
+			ereport(ERROR,
+					(errcode(ERRCODE_INTERNAL_ERROR),
+					 errmsg("merged segment header was not finalized before "
+							"publication")));
+		}
+
+		result->root		 = new_segment;
+		result->num_pages	 = header->num_pages;
+		result->num_docs	 = header->num_docs;
+		result->total_tokens = header->total_tokens;
+		result->data_size	 = header->data_size;
+		UnlockReleaseBuffer(header_buf);
+	}
+
+	for (i = 0; i < num_sources; i++)
+		merge_source_close(&sources[i]);
+
+	MemoryContextSwitchTo(old_ctx);
+	MemoryContextDelete(merge_ctx);
+	return true;
+}
+
 /* ----------------------------------------------------------------
  * Level-based merge (uses pages sink)
  * ----------------------------------------------------------------
@@ -1438,25 +1622,22 @@ write_merged_segment_to_sink(
 BlockNumber
 tp_merge_level_segments(Relation index, uint32 level, uint32 max_merge)
 {
-	TpIndexMetaPage metap;
-	Buffer			metabuf;
-	Page			metapage;
-	BlockNumber		first_segment;
-	uint32			total_at_level;
-	uint32			segment_count;
-	TpMergeSource  *sources;
-	int				num_sources;
-	int				i;
-	BlockNumber		current;
-	BlockNumber		remainder_head; /* First unmerged segment */
-	TpMergedTerm   *merged_terms	 = NULL;
-	uint32			num_merged_terms = 0;
-	uint32			merged_capacity	 = 0;
-	uint64			total_tokens	 = 0;
-	uint64			src_num_docs_sum = 0; /* Σ source header.num_docs */
-	BlockNumber		new_segment;
-	MemoryContext	merge_ctx;
-	MemoryContext	old_ctx;
+	TpIndexMetaPage		  metap;
+	Buffer				  metabuf;
+	Page				  metapage;
+	BlockNumber			  first_segment;
+	BlockNumber			  target_head;
+	uint32				  total_at_level;
+	uint16				  target_count;
+	uint32				  segment_count;
+	int					  i;
+	BlockNumber			  current;
+	BlockNumber			  remainder_head; /* First unmerged segment */
+	BlockNumber			 *source_roots;
+	uint64				  total_tokens	   = 0;
+	uint64				  src_num_docs_sum = 0; /* Σ source header.num_docs */
+	BlockNumber			  new_segment;
+	TpMergedSegmentResult result;
 
 	/* Page reclamation tracking (allocated outside merge context) */
 	BlockNumber **segment_pages		   = NULL; /* Array of page arrays */
@@ -1481,7 +1662,9 @@ tp_merge_level_segments(Relation index, uint32 level, uint32 max_merge)
 	metap	 = (TpIndexMetaPage)PageGetContents(metapage);
 
 	first_segment  = metap->level_heads[level];
+	target_head	   = metap->level_heads[level + 1];
 	total_at_level = metap->level_counts[level];
+	target_count   = metap->level_counts[level + 1];
 	if (first_segment != InvalidBlockNumber && total_at_level > 0)
 		tp_check_level_count_increment(metap, level + 1);
 
@@ -1527,243 +1710,76 @@ tp_merge_level_segments(Relation index, uint32 level, uint32 max_merge)
 	segment_pages = (BlockNumber **)palloc0(
 			sizeof(BlockNumber *) * segment_count);
 	segment_page_counts = palloc0(sizeof(uint32) * segment_count);
+	source_roots		= palloc(sizeof(BlockNumber) * segment_count);
 
-	/* Create memory context for merge operation */
-	merge_ctx = AllocSetContextCreate(
-			CurrentMemoryContext, "Segment Merge", ALLOCSET_DEFAULT_SIZES);
-	old_ctx = MemoryContextSwitchTo(merge_ctx);
-
-	/* Allocate array for merge sources */
-	sources		= palloc0(sizeof(TpMergeSource) * segment_count);
-	num_sources = 0;
-
-	/*
-	 * Walk the chain, consuming exactly segment_count segments.
-	 * Track segments_walked separately from num_sources because
-	 * merge_source_init can fail (e.g. empty segment), in which
-	 * case we still consumed the segment from the chain.
-	 */
+	current = first_segment;
+	for (uint32 source_idx = 0; source_idx < segment_count; source_idx++)
 	{
-		uint32 segments_walked = 0;
+		TpSegmentReader *reader;
+		uint32			 page_count;
 
-		current = first_segment;
-		while (current != InvalidBlockNumber &&
-			   segments_walked < segment_count)
+		if (!BlockNumberIsValid(current))
+			ereport(ERROR,
+					(errcode(ERRCODE_DATA_CORRUPTED),
+					 errmsg("segment chain for level %u ended before its "
+							"recorded count",
+							level)));
+
+		source_roots[source_idx] = current;
+		reader					 = tp_segment_open(index, current);
+		if (reader == NULL)
+			ereport(ERROR,
+					(errcode(ERRCODE_DATA_CORRUPTED),
+					 errmsg("could not open segment at block %u", current)));
+
+		if (pg_add_u64_overflow(
+					total_tokens,
+					reader->header->total_tokens,
+					&total_tokens) ||
+			pg_add_u64_overflow(
+					src_num_docs_sum,
+					(uint64)reader->header->num_docs,
+					&src_num_docs_sum))
 		{
-			TpSegmentReader *reader;
-			BlockNumber		 next;
-			uint64			 seg_tokens;
-
-			reader = tp_segment_open(index, current);
-			if (reader)
-			{
-				next	   = reader->header->next_segment;
-				seg_tokens = reader->header->total_tokens;
-				tp_segment_close(reader);
-
-				/*
-				 * Collect pages for later freeing (parent context).
-				 */
-				{
-					MemoryContext save_ctx = MemoryContextSwitchTo(old_ctx);
-					uint32		  page_count;
-
-					page_count = tp_segment_collect_pages(
-							index,
-							current,
-							&segment_pages[num_segments_tracked]);
-					segment_page_counts[num_segments_tracked] = page_count;
-					total_pages_to_free += page_count;
-					num_segments_tracked++;
-
-					MemoryContextSwitchTo(save_ctx);
-				}
-
-				if (merge_source_init(&sources[num_sources], index, current))
-				{
-					total_tokens += seg_tokens;
-					src_num_docs_sum +=
-							sources[num_sources].reader->header->num_docs;
-					num_sources++;
-				}
-
-				current = next;
-			}
-			else
-			{
-				break;
-			}
-			segments_walked++;
+			tp_segment_close(reader);
+			ereport(ERROR,
+					(errcode(ERRCODE_DATA_CORRUPTED),
+					 errmsg("segment statistics overflow while merging "
+							"level %u",
+							level)));
 		}
 
-		/* Update segment_count to reflect actual segments consumed */
-		segment_count = segments_walked;
+		current = reader->header->next_segment;
+		tp_segment_close(reader);
+
+		page_count = tp_segment_collect_pages(
+				index,
+				source_roots[source_idx],
+				&segment_pages[num_segments_tracked]);
+		segment_page_counts[num_segments_tracked] = page_count;
+		if (pg_add_u32_overflow(
+					total_pages_to_free, page_count, &total_pages_to_free))
+			ereport(ERROR,
+					(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
+					 errmsg("too many segment pages to reclaim in one "
+							"merge")));
+		num_segments_tracked++;
 	}
 
 	/* First unmerged segment (may be InvalidBlockNumber) */
 	remainder_head = current;
 
-	if (num_sources == 0)
-	{
-		MemoryContextSwitchTo(old_ctx);
-		MemoryContextDelete(merge_ctx);
+	(void)tp_merge_segment_batch(
+			index,
+			source_roots,
+			segment_count,
+			level + 1,
+			target_head,
+			&result);
+	new_segment = result.root;
 
-		/* Clean up page tracking arrays */
-		for (i = 0; i < (int)num_segments_tracked; i++)
-		{
-			if (segment_pages[i])
-				pfree(segment_pages[i]);
-		}
-		pfree((void *)segment_pages);
-		pfree(segment_page_counts);
-
-		return InvalidBlockNumber;
-	}
-
-	{
-		TpIndexMetaPage current_metap = tp_get_metapage(index);
-
-		tp_check_level_count_increment(current_metap, level + 1);
-		pfree(current_metap);
-	}
-
-	/* Perform N-way merge */
-	while (true)
-	{
-		int			  min_idx;
-		const char	 *min_term;
-		TpMergedTerm *current_merged;
-
-		/* Find source with smallest term */
-		min_idx = merge_find_min_source(sources, num_sources);
-		if (min_idx < 0)
-			break; /* All sources exhausted */
-
-		min_term = sources[min_idx].current_term;
-
-		/* Grow merged terms array if needed (may exceed 1GB for large
-		 * corpora) */
-		if (num_merged_terms >= merged_capacity)
-		{
-			merged_capacity = merged_capacity == 0 ? 1024
-												   : merged_capacity * 2;
-			if (merged_terms == NULL)
-				merged_terms = palloc_extended(
-						merged_capacity * sizeof(TpMergedTerm),
-						MCXT_ALLOC_HUGE);
-			else
-				merged_terms = repalloc_huge(
-						merged_terms, merged_capacity * sizeof(TpMergedTerm));
-		}
-
-		/* Initialize new merged term */
-		current_merged					 = &merged_terms[num_merged_terms];
-		current_merged->term_len		 = strlen(min_term);
-		current_merged->term			 = pstrdup(min_term);
-		current_merged->segment_refs	 = NULL;
-		current_merged->num_segment_refs = 0;
-		current_merged->segment_refs_capacity = 0;
-		current_merged->posting_offset		  = 0; /* Set during write */
-		current_merged->posting_count		  = 0; /* Set during write */
-		num_merged_terms++;
-
-		/*
-		 * Record which segments have this term (don't load postings yet).
-		 * IMPORTANT: Use current_merged->term (the pstrdup'd copy) for
-		 * comparison, NOT min_term. When we advance sources[min_idx],
-		 * merge_source_advance() frees sources[min_idx].current_term, which
-		 * min_term points to. Using min_term after that would be
-		 * use-after-free undefined behavior.
-		 */
-		for (i = 0; i < num_sources; i++)
-		{
-			if (sources[i].exhausted)
-				continue;
-
-			if (strcmp(sources[i].current_term, current_merged->term) == 0)
-			{
-				/* Record segment ref for later streaming merge */
-				merged_term_add_segment_ref(
-						current_merged, i, &sources[i].current_entry);
-
-				/* Advance this source to next term */
-				merge_source_advance(&sources[i]);
-			}
-		}
-
-		/* Check for interrupt */
-		CHECK_FOR_INTERRUPTS();
-	}
-
-	/* Write merged segment using pages sink */
-	if (num_merged_terms > 0)
-	{
-		TpMergeSink sink;
-
-		merge_sink_init_pages(&sink, index);
-		if (sink.writer.pages_allocated == 0)
-			elog(ERROR, "merge: failed to allocate segment pages");
-		new_segment = sink.writer.pages[0];
-
-		write_merged_segment_to_sink(
-				&sink,
-				merged_terms,
-				num_merged_terms,
-				sources,
-				num_sources,
-				level + 1,
-				total_tokens,
-				false);
-
-		/* Free writer pages array */
-		if (sink.writer.pages)
-			pfree(sink.writer.pages);
-
-		/* Free merged terms data */
-		for (i = 0; i < (int)num_merged_terms; i++)
-		{
-			if (merged_terms[i].term)
-				pfree(merged_terms[i].term);
-			if (merged_terms[i].segment_refs)
-				pfree(merged_terms[i].segment_refs);
-		}
-		pfree(merged_terms);
-	}
-	else
-	{
-		new_segment = InvalidBlockNumber;
-	}
-
-	/* Close all sources (after write is done with them) */
-	for (i = 0; i < num_sources; i++)
-	{
-		merge_source_close(&sources[i]);
-	}
-	pfree(sources);
-
-	/*
-	 * Now that all source segment readers are closed (no more pinned buffers),
-	 * flush dirty buffers to ensure merged segment is durable before updating
-	 * the metapage.
-	 */
+	/* Make the unpublished output durable before publishing its root. */
 	FlushRelationBuffers(index);
-
-	MemoryContextSwitchTo(old_ctx);
-	MemoryContextDelete(merge_ctx);
-
-	if (new_segment == InvalidBlockNumber)
-	{
-		/* Clean up page tracking arrays on failure */
-		for (i = 0; i < (int)num_segments_tracked; i++)
-		{
-			if (segment_pages[i])
-				pfree(segment_pages[i]);
-		}
-		pfree((void *)segment_pages);
-		pfree(segment_page_counts);
-
-		return InvalidBlockNumber;
-	}
 
 	/*
 	 * Update metapage: clear source level, add to target level, and
@@ -1780,24 +1796,10 @@ tp_merge_level_segments(Relation index, uint32 level, uint32 max_merge)
 	 * consistent metapage snapshot.
 	 */
 	{
-		uint32 merged_docs	 = 0;
-		uint64 merged_tokens = 0;
+		uint32 merged_docs	 = result.num_docs;
+		uint64 merged_tokens = result.total_tokens;
 		uint64 docs_shrinkage;
 		uint64 tokens_shrinkage;
-
-		/* Read merged segment header for its num_docs / total_tokens. */
-		{
-			Buffer			 b = ReadBuffer(index, new_segment);
-			Page			 p;
-			TpSegmentHeader *h;
-
-			LockBuffer(b, BUFFER_LOCK_SHARE);
-			p			  = BufferGetPage(b);
-			h			  = (TpSegmentHeader *)PageGetContents(p);
-			merged_docs	  = h->num_docs;
-			merged_tokens = h->total_tokens;
-			UnlockReleaseBuffer(b);
-		}
 
 		docs_shrinkage	 = (src_num_docs_sum > (uint64)merged_docs)
 								 ? src_num_docs_sum - (uint64)merged_docs
@@ -1810,7 +1812,6 @@ tp_merge_level_segments(Relation index, uint32 level, uint32 max_merge)
 			GenericXLogState *xlog_state;
 			Page			  meta_copy;
 			TpIndexMetaPage	  meta_ptr;
-			Buffer			  seg_buf	  = InvalidBuffer;
 			FullTransactionId merged_fxid = ReadNextFullTransactionId();
 			BlockNumber		  batch_head;
 
@@ -1849,6 +1850,19 @@ tp_merge_level_segments(Relation index, uint32 level, uint32 max_merge)
 			metabuf = ReadBuffer(index, 0);
 			LockBuffer(metabuf, BUFFER_LOCK_EXCLUSIVE);
 
+			metapage = BufferGetPage(metabuf);
+			meta_ptr = (TpIndexMetaPage)PageGetContents(metapage);
+			if (meta_ptr->level_heads[level] != first_segment ||
+				meta_ptr->level_counts[level] != total_at_level ||
+				meta_ptr->level_heads[level + 1] != target_head ||
+				meta_ptr->level_counts[level + 1] != target_count)
+			{
+				UnlockReleaseBuffer(metabuf);
+				ereport(ERROR,
+						(errcode(ERRCODE_INTERNAL_ERROR),
+						 errmsg("segment chains changed during merge")));
+			}
+
 			xlog_state = GenericXLogStart(index);
 			meta_copy  = GenericXLogRegisterBuffer(xlog_state, metabuf, 0);
 			tp_metapage_upgrade_to_current(index, meta_copy);
@@ -1857,21 +1871,11 @@ tp_merge_level_segments(Relation index, uint32 level, uint32 max_merge)
 			meta_ptr->level_heads[level]  = remainder_head;
 			meta_ptr->level_counts[level] = total_at_level - segment_count;
 
-			if (meta_ptr->level_heads[level + 1] != InvalidBlockNumber)
+			if (BlockNumberIsValid(new_segment))
 			{
-				Page			 seg_page;
-				TpSegmentHeader *seg_header;
-
-				seg_buf = ReadBuffer(index, new_segment);
-				LockBuffer(seg_buf, BUFFER_LOCK_EXCLUSIVE);
-				seg_page = GenericXLogRegisterBuffer(xlog_state, seg_buf, 0);
-				((PageHeader)seg_page)->pd_lower = BLCKSZ;
-				seg_header = (TpSegmentHeader *)PageGetContents(seg_page);
-				seg_header->next_segment = meta_ptr->level_heads[level + 1];
+				meta_ptr->level_heads[level + 1] = new_segment;
+				meta_ptr->level_counts[level + 1]++;
 			}
-
-			meta_ptr->level_heads[level + 1] = new_segment;
-			meta_ptr->level_counts[level + 1]++;
 
 			meta_ptr->total_docs = (meta_ptr->total_docs >= docs_shrinkage)
 										 ? meta_ptr->total_docs -
@@ -1895,8 +1899,6 @@ tp_merge_level_segments(Relation index, uint32 level, uint32 max_merge)
 				meta_ptr->pending_free_head = batch_head;
 
 			GenericXLogFinish(xlog_state);
-			if (BufferIsValid(seg_buf))
-				UnlockReleaseBuffer(seg_buf);
 			UnlockReleaseBuffer(metabuf);
 		}
 	}
@@ -1910,12 +1912,11 @@ tp_merge_level_segments(Relation index, uint32 level, uint32 max_merge)
 
 	elog(DEBUG1,
 		 "Merged %u segments from L%u into L%u segment at block %u "
-		 "(%u terms, parked %u pages)",
+		 "(parked %u pages)",
 		 segment_count,
 		 level,
 		 level + 1,
 		 new_segment,
-		 num_merged_terms,
 		 total_pages_to_free);
 
 	/* Clean up page tracking arrays */
@@ -1926,6 +1927,7 @@ tp_merge_level_segments(Relation index, uint32 level, uint32 max_merge)
 	}
 	pfree((void *)segment_pages);
 	pfree(segment_page_counts);
+	pfree(source_roots);
 
 	return new_segment;
 }
@@ -1994,233 +1996,5 @@ tp_maybe_compact_level(Relation index, uint32 level)
 			tp_maybe_compact_level(index, candidate + 1);
 			return;
 		}
-	}
-}
-
-typedef enum TpForceMergeAction
-{
-	TP_FORCE_MERGE_COMPLETE,
-	TP_FORCE_MERGE_LEVEL,
-	TP_FORCE_MERGE_IMPOSSIBLE
-} TpForceMergeAction;
-
-static uint32
-tp_force_merge_segment_count(const uint16 level_counts[TP_MAX_LEVELS])
-{
-	uint32 total = 0;
-
-	for (uint32 level = 0; level < TP_MAX_LEVELS; level++)
-		total += level_counts[level];
-
-	return total;
-}
-
-/*
- * Select the next physical merge in the force-merge sequence. If a
- * destination is full, walk upward to the first blocking level that can
- * promote. Both preflight and execution use this planner so their capacity
- * and carry semantics cannot diverge.
- */
-static TpForceMergeAction
-tp_force_merge_next_action(
-		const uint16 level_counts[TP_MAX_LEVELS], uint32 *merge_level)
-{
-	uint32 level;
-
-	if (tp_force_merge_segment_count(level_counts) <= 1)
-		return TP_FORCE_MERGE_COMPLETE;
-
-	for (level = 0; level < TP_MAX_LEVELS - 1; level++)
-	{
-		if (level_counts[level] == 0)
-			continue;
-
-		while (level < TP_MAX_LEVELS - 2 &&
-			   level_counts[level + 1] >= tp_max_segments_per_level)
-			level++;
-
-		if (level_counts[level + 1] >= tp_max_segments_per_level)
-			return TP_FORCE_MERGE_IMPOSSIBLE;
-
-		*merge_level = level;
-		return TP_FORCE_MERGE_LEVEL;
-	}
-
-	return TP_FORCE_MERGE_IMPOSSIBLE;
-}
-
-static void
-tp_force_merge_apply_count_transition(
-		uint16 level_counts[TP_MAX_LEVELS], uint32 merge_level)
-{
-	Assert(merge_level < TP_MAX_LEVELS - 1);
-	Assert(level_counts[merge_level] > 0);
-	Assert(level_counts[merge_level + 1] < tp_max_segments_per_level);
-
-	level_counts[merge_level] = 0;
-	level_counts[merge_level + 1]++;
-}
-
-bool
-tp_force_merge_preflight(Relation index, bool spill_creates_segment)
-{
-	TpIndexMetaPage metap;
-	uint16			level_counts[TP_MAX_LEVELS];
-	uint16			top_count;
-	bool			has_lower_segments = false;
-
-	metap	  = tp_get_metapage(index);
-	top_count = metap->level_counts[TP_MAX_LEVELS - 1];
-	memcpy(level_counts, metap->level_counts, sizeof(level_counts));
-	for (uint32 level = 0; level < TP_MAX_LEVELS - 1; level++)
-	{
-		if (metap->level_counts[level] > 0)
-			has_lower_segments = true;
-	}
-	pfree(metap);
-
-	if (top_count > 1)
-		ereport(ERROR,
-				(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
-				 errmsg("cannot force merge \"%s\": "
-						"level %u contains multiple segments",
-						RelationGetRelationName(index),
-						TP_MAX_LEVELS - 1)));
-
-	if (top_count == 1)
-	{
-		if (has_lower_segments)
-			ereport(ERROR,
-					(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
-					 errmsg("cannot force merge \"%s\": "
-							"level %u is occupied while lower levels remain",
-							RelationGetRelationName(index),
-							TP_MAX_LEVELS - 1)));
-		if (spill_creates_segment)
-			ereport(ERROR,
-					(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
-					 errmsg("cannot force merge \"%s\": "
-							"level %u is occupied while spilling the "
-							"memtable would create another segment",
-							RelationGetRelationName(index),
-							TP_MAX_LEVELS - 1)));
-
-		return false;
-	}
-
-	if (spill_creates_segment)
-	{
-		if (level_counts[0] >= tp_max_segments_per_level)
-			ereport(ERROR,
-					(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
-					 errmsg("cannot force merge \"%s\": "
-							"spilling the memtable would exceed the "
-							"level 0 segment limit",
-							RelationGetRelationName(index))));
-		level_counts[0]++;
-	}
-
-	while (true)
-	{
-		TpForceMergeAction action;
-		uint32			   merge_level = 0;
-
-		action = tp_force_merge_next_action(level_counts, &merge_level);
-		if (action == TP_FORCE_MERGE_COMPLETE)
-			break;
-		if (action == TP_FORCE_MERGE_IMPOSSIBLE)
-			ereport(ERROR,
-					(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
-					 errmsg("cannot force merge \"%s\": "
-							"the merge sequence would leave multiple "
-							"segments at level %u",
-							RelationGetRelationName(index),
-							TP_MAX_LEVELS - 1)));
-
-		tp_force_merge_apply_count_transition(level_counts, merge_level);
-	}
-
-	return true;
-}
-
-/*
- * Force-merge all segments into a single segment, à la Lucene's
- * forceMerge(1).  Merges ALL segments at each level in a single
- * batch, ignoring the segments_per_level threshold.
- */
-void
-tp_force_merge_all(Relation index)
-{
-	while (true)
-	{
-		TpIndexMetaPage	   metap;
-		uint16			   level_counts[TP_MAX_LEVELS];
-		TpForceMergeAction action;
-		uint32			   merge_level = 0;
-		BlockNumber		   merged_segment;
-
-		metap = tp_get_metapage(index);
-		memcpy(level_counts, metap->level_counts, sizeof(level_counts));
-		pfree(metap);
-
-		action = tp_force_merge_next_action(level_counts, &merge_level);
-		if (action == TP_FORCE_MERGE_COMPLETE)
-			break;
-
-		if (action != TP_FORCE_MERGE_LEVEL)
-			ereport(ERROR,
-					(errcode(ERRCODE_INTERNAL_ERROR),
-					 errmsg("internal force-merge invariant failure for "
-							"index \"%s\": planner returned no executable "
-							"merge with %u segments remaining",
-							RelationGetRelationName(index),
-							tp_force_merge_segment_count(level_counts))));
-		Assert(action == TP_FORCE_MERGE_LEVEL);
-
-		merged_segment =
-				tp_merge_level_segments(index, merge_level, UINT32_MAX);
-		if (!BlockNumberIsValid(merged_segment))
-		{
-			uint32 remaining_segment_count;
-
-			metap = tp_get_metapage(index);
-			memcpy(level_counts, metap->level_counts, sizeof(level_counts));
-			pfree(metap);
-
-			remaining_segment_count = tp_force_merge_segment_count(
-					level_counts);
-			if (remaining_segment_count > 1)
-				ereport(ERROR,
-						(errcode(ERRCODE_INTERNAL_ERROR),
-						 errmsg("internal force-merge invariant failure for "
-								"index \"%s\": planned merge of level %u "
-								"failed with %u segments remaining",
-								RelationGetRelationName(index),
-								merge_level,
-								remaining_segment_count)));
-			Assert(remaining_segment_count <= 1);
-			break;
-		}
-	}
-
-	{
-		TpIndexMetaPage metap;
-		uint16			level_counts[TP_MAX_LEVELS];
-		uint32			final_segment_count;
-
-		metap = tp_get_metapage(index);
-		memcpy(level_counts, metap->level_counts, sizeof(level_counts));
-		pfree(metap);
-
-		final_segment_count = tp_force_merge_segment_count(level_counts);
-		if (final_segment_count > 1)
-			ereport(ERROR,
-					(errcode(ERRCODE_INTERNAL_ERROR),
-					 errmsg("internal force-merge invariant failure for "
-							"index \"%s\": %u segments remain after "
-							"execution",
-							RelationGetRelationName(index),
-							final_segment_count)));
-		Assert(final_segment_count <= 1);
 	}
 }
