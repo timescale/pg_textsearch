@@ -366,10 +366,14 @@ BEGIN
         RAISE EXCEPTION 'force merge increased segment count: before %, after %',
                         deep_before, deep_summary;
     END IF;
-    IF regexp_count(mixed_summary, 'L[0-7] Segment [0-9]+:') >
-       regexp_count(mixed_before, 'L[0-7] Segment [0-9]+:') THEN
-        RAISE EXCEPTION 'force merge increased segment count: before %, after %',
-                        mixed_before, mixed_summary;
+    -- The mixed fixture is the multi-segment case, so force merge must
+    -- actually combine its L0 and L7 segments.  Asserting only that the
+    -- count did not increase would also accept a no-op.
+    IF regexp_count(mixed_summary, 'L[0-7] Segment [0-9]+:') <> 1
+       OR mixed_summary !~ 'L0 Segment 1:' THEN
+        RAISE EXCEPTION
+            'force merge did not combine the mixed layout: before %, after %',
+            mixed_before, mixed_summary;
     END IF;
     IF regexp_count(memtable_summary, 'L[0-7] Segment [0-9]+:') >
        regexp_count(memtable_before, 'L[0-7] Segment [0-9]+:') THEN

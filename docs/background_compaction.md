@@ -34,7 +34,9 @@ page:
 * A pass that fails can still have written pages. It drains the deferred-free
   tombstone chain before planning, and it merges its outputs before
   publishing, so a failure can leave reclaimed pages reclaimed and unpublished
-  output pages unreachable until the next `VACUUM` or `REINDEX`.
+  output pages allocated but unreachable. `VACUUM` does not recover those:
+  it reclaims dead memtable pages and past-horizon tombstones, not pages a
+  failed pass never linked. `REINDEX` is what returns them.
 
 A published pass is **not undone by `ROLLBACK`**. The metapage update is a
 physical change, so it survives abort of the surrounding transaction:
@@ -116,10 +118,19 @@ under the same size budget. It is therefore reducible like any other level,
 carries no special count ceiling, and `bm25_needs_compaction()` considers
 every level including L7.
 
-Note that levels are cascade generations, not achievable size classes. A
-level's nominal size is `8MB * 8^level`, but no merge may exceed
-`pg_textsearch.max_segment_size`, whose default *and maximum* is 4095MB —
-just under L3's 4096MB boundary. So no merge can ever emit a segment whose
-size class is above L3; levels L4 through L7 are reached only by the
-one-level promotion that each pass applies to its output. A segment sitting
-at L7 is at most 4095MB, not the 2TB its level nominally denotes.
+Note that a level is a hybrid rank rather than a pure size class. A pass
+places its output at whichever is higher: the output's size class, or one
+level above the level the sources came from. A level's nominal ceiling is
+`8MB * segments_per_level^level`, so the ladder's shape follows
+`pg_textsearch.segments_per_level` (2 to 64, default 8) and is not fixed.
+
+At the default fanout of 8 that ceiling reaches 4096MB at L3, while
+`pg_textsearch.max_segment_size` caps a newly combined segment at 4095MB, so
+under default settings no merge emits a segment above size class 3 and L4
+through L7 are reached only by the one-level promotion. That is a property of
+the default, not of the design: at `segments_per_level = 2` the L6 ceiling is
+512MB and a 4095MB output lands at L7 on size alone.
+
+`max_segment_size` also bounds only the segments a pass *combines*. An
+existing segment larger than the current setting stays a valid indivisible
+singleton, so a segment at any level may exceed it.
