@@ -421,6 +421,7 @@ Setting | Default | Description
 `pg_textsearch.default_limit` | 1000 | Max documents scored when no LIMIT clause is present
 `pg_textsearch.compress_segments` | on | Compress posting blocks in new segments
 `pg_textsearch.segments_per_level` | 8 | Segments per level before automatic compaction (2-64)
+`pg_textsearch.max_segment_size` | 4095MB | Conservative size budget for newly merged multi-source segments (1-4095MB)
 `pg_textsearch.bulk_load_threshold` | 100000 | Terms per transaction before auto-spill (0 = disable)
 `pg_textsearch.memtable_pages_threshold` | 64 | Chain pages before auto-spill (0 = disable)
 

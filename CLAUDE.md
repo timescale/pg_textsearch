@@ -151,6 +151,7 @@ make format-single FILE=path/to/file.c  # format specific file
 | `pg_textsearch.bulk_load_threshold` | Terms/xact to trigger spill (0 = disable) | 100000 |
 | `pg_textsearch.memtable_pages_threshold` | Chain pages before auto-spill (0 = disable) | 64 |
 | `pg_textsearch.segments_per_level` | Segments before compaction | 8 |
+| `pg_textsearch.max_segment_size` | Conservative size budget for newly merged multi-source segments (1-4095MB) | 4095MB |
 | `pg_textsearch.compress_segments` | Enable compression for new segment blocks | true |
 | `pg_textsearch.filtered_seed` | Seed the BM25 internal top-K from estimated filter selectivity so filtered top-k queries (`WHERE ... ORDER BY score LIMIT k`) avoid executor backoff re-drives. Results identical. | true |
 | `pg_textsearch.filtered_seed_margin` | Seed = `ceil(margin * LIMIT / selectivity)`. Higher captures the true top-k in one scoring pass more often, at the cost of scoring deeper. Range [1, 1000] | 3.0 |
@@ -282,6 +283,14 @@ See [RELEASING.md](RELEASING.md) for release instructions.
 - `bm25_summarize_index(index_name)` - Shows high-level index statistics
 - `bm25_spill_index(index_name)` - Forces memtable spill to disk segment,
   returns number of entries spilled
+- `bm25_force_merge(index_name)` - Runs one bounded, copy-on-write
+  compaction pass, combining the largest adjacent groups that fit
+  `pg_textsearch.max_segment_size`. It does **not** guarantee a single
+  segment: large indexes may intentionally retain several immutable
+  segments, and an existing segment that already exceeds the budget
+  remains an indivisible singleton. Published sources stay immutable
+  while replacements are built; displaced pages enter deferred reclaim
+  (see #380) rather than becoming immediately reusable.
 - `bm25_pending_free_pages(index_name)` - Count displaced segment pages
   currently parked in the deferred-free tombstone chain (issue #380),
   awaiting standby-safe FSM reclaim

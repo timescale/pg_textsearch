@@ -144,12 +144,6 @@ merger() {
             "SELECT bm25_spill_index('docs_bm25');
              SELECT bm25_force_merge('docs_bm25')" 2>&1); then
             printf '%s\n' "$output" >>"${ERR_DIR}/merger.log"
-            if [[ "$output" == \
-*"level 7 is occupied while lower levels remain"* ]] \
-                || [[ "$output" == \
-*"level 7 is occupied while spilling the memtable would create another segment"* ]]; then
-                continue
-            fi
             return 30
         fi
         printf '%s\n' "$output" >>"${ERR_DIR}/merger.log"
