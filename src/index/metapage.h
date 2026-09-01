@@ -153,7 +153,7 @@ StaticAssertDecl(
 /*
  * Metapage operations
  */
-extern int tp_debug_segment_count_limit;
+extern int tp_max_segments_per_level;
 
 extern void			   tp_init_metapage(Page page, Oid text_config_oid);
 extern TpIndexMetaPage tp_get_metapage(Relation index);

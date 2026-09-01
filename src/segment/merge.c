@@ -1948,7 +1948,7 @@ tp_compaction_candidate(
 			continue;
 
 		while (level < TP_MAX_LEVELS - 2 &&
-			   level_counts[level + 1] >= tp_debug_segment_count_limit)
+			   level_counts[level + 1] >= tp_max_segments_per_level)
 			level++;
 
 		return level;
@@ -2036,10 +2036,10 @@ tp_force_merge_next_action(
 			continue;
 
 		while (level < TP_MAX_LEVELS - 2 &&
-			   level_counts[level + 1] >= tp_debug_segment_count_limit)
+			   level_counts[level + 1] >= tp_max_segments_per_level)
 			level++;
 
-		if (level_counts[level + 1] >= tp_debug_segment_count_limit)
+		if (level_counts[level + 1] >= tp_max_segments_per_level)
 			return TP_FORCE_MERGE_IMPOSSIBLE;
 
 		*merge_level = level;
@@ -2055,7 +2055,7 @@ tp_force_merge_apply_count_transition(
 {
 	Assert(merge_level < TP_MAX_LEVELS - 1);
 	Assert(level_counts[merge_level] > 0);
-	Assert(level_counts[merge_level + 1] < tp_debug_segment_count_limit);
+	Assert(level_counts[merge_level + 1] < tp_max_segments_per_level);
 
 	level_counts[merge_level] = 0;
 	level_counts[merge_level + 1]++;
@@ -2110,7 +2110,7 @@ tp_force_merge_preflight(Relation index, bool spill_creates_segment)
 
 	if (spill_creates_segment)
 	{
-		if (level_counts[0] >= tp_debug_segment_count_limit)
+		if (level_counts[0] >= tp_max_segments_per_level)
 			ereport(ERROR,
 					(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
 					 errmsg("cannot force merge \"%s\": "

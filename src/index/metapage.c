@@ -75,7 +75,7 @@ tp_check_level_count_increment(TpIndexMetaPage metap, uint32 level)
 				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
 				 errmsg("invalid bm25 segment level %u", level)));
 
-	if (metap->level_counts[level] >= tp_debug_segment_count_limit)
+	if (metap->level_counts[level] >= tp_max_segments_per_level)
 		ereport(ERROR,
 				(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
 				 errmsg("bm25 segment count limit reached at level %u",

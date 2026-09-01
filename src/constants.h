@@ -75,6 +75,10 @@
 /* Segment hierarchy configuration */
 #define TP_MAX_LEVELS				  8 /* Supports 8^8 = 16M segments */
 #define TP_DEFAULT_SEGMENTS_PER_LEVEL 8
+#define TP_MIN_SEGMENT_SIZE_MB		  1
+#define TP_DEFAULT_SEGMENT_SIZE_MB	  4095
+#define TP_MAX_SEGMENT_SIZE_MB		  4095
+#define TP_BASE_LEVEL_SIZE_BYTES	  ((uint64)8 * 1024 * 1024)
 
 /* BM25 scoring constants */
 #define TP_DEFAULT_K1 1.2
@@ -199,5 +203,6 @@ extern bool	  tp_log_scores;
 extern int	  tp_bulk_load_threshold;
 extern int	  tp_memtable_pages_threshold;
 extern int	  tp_segments_per_level;
+extern int	  tp_max_segment_size_mb;
 extern bool	  tp_filtered_seed;
 extern double tp_filtered_seed_margin;
