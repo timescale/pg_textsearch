@@ -379,6 +379,28 @@ jobs:
         EXPECTED_VERSION=$(awk -F"'" '/^[\t ]*default_version/ {print $2}' \
           pg_textsearch.control | cut -d. -f1,2)
 
+        psql -h /tmp -d upgrade_test << 'SQL'
+        \set ON_ERROR_STOP on
+        DO $$
+        BEGIN
+          IF NOT EXISTS (
+            SELECT FROM pg_amop AS member
+            JOIN pg_opfamily AS family ON family.oid = member.amopfamily
+            JOIN pg_am AS am ON am.oid = family.opfmethod
+            WHERE family.opfname = 'text_bm25_ops'
+              AND am.amname = 'bm25'
+              AND member.amopstrategy = 1
+              AND member.amoplefttype = 'text'::regtype
+              AND member.amoprighttype = 'tsquery'::regtype
+              AND member.amopopr =
+                  'pg_catalog.@@(text,tsquery)'::regoperator
+          ) THEN
+            RAISE EXCEPTION
+              'FAIL: text_bm25_ops does not contain text @@ tsquery';
+          END IF;
+        END $$;
+        SQL
+
         # Source metapage version for the Phase 1a "still old version"
         # assertion: v1.3.0 natively writes v7 (issue #374); v1.3.1+
         # already write the current v8 metapage; v0.5.1–1.2.x write v6

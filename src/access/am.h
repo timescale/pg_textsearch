@@ -12,6 +12,7 @@
 #include <access/reloptions.h>
 #include <access/transam.h>
 #include <storage/block.h>
+#include <storage/buffile.h>
 #include <storage/bufpage.h>
 #include <tsearch/ts_type.h>
 
@@ -28,6 +29,11 @@ typedef struct TpScanOpaqueData
 	/* Query processing state */
 	char	 *query_text;	/* Search query text */
 	TpVector *query_vector; /* Original query vector from ORDER BY */
+	TSQuery		  boolean_query; /* Query from an ordinary @@ scan key */
+	MemoryContext boolean_context;
+	bool		  is_boolean_scan;
+	bool		  boolean_recheck;
+	BufFile		 *boolean_results;
 	Oid		  index_oid;	/* Index OID */
 
 	/* Scan results state */

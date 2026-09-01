@@ -329,16 +329,8 @@ tp_parallel_build_worker_main(dsm_segment *seg, shm_toc *toc)
 
 		MemoryContextSwitchTo(oldctx);
 
-		if (term_count > 0)
-		{
-			tp_build_context_add_document(
-					build_ctx,
-					terms,
-					frequencies,
-					term_count,
-					doc_length,
-					ctid);
-		}
+		tp_build_context_add_document(
+				build_ctx, terms, frequencies, term_count, doc_length, ctid);
 
 		/* Reset per-doc context */
 		MemoryContextReset(build_tmpctx);

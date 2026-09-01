@@ -430,6 +430,19 @@ chain_get_doc_freq(TpDataSource *source, const char *term)
 }
 
 static void
+chain_foreach_document(
+		TpDataSource *source, TpDocumentCallback callback, void *arg)
+{
+	TpMemtableChainSource *src = (TpMemtableChainSource *)source;
+	HASH_SEQ_STATUS		   sequence;
+	ChainDocLenEntry	  *entry;
+
+	hash_seq_init(&sequence, src->doclen_ht);
+	while ((entry = hash_seq_search(&sequence)) != NULL)
+		callback(&entry->ctid, arg);
+}
+
+static void
 chain_close(TpDataSource *source)
 {
 	TpMemtableChainSource *src = (TpMemtableChainSource *)source;
@@ -442,11 +455,12 @@ chain_close(TpDataSource *source)
 }
 
 static const TpDataSourceOps chain_source_ops = {
-		.get_postings	= chain_get_postings,
-		.free_postings	= chain_free_postings,
-		.get_doc_length = chain_get_doc_length,
-		.get_doc_freq	= chain_get_doc_freq,
-		.close			= chain_close,
+		.get_postings	  = chain_get_postings,
+		.free_postings	  = chain_free_postings,
+		.get_doc_length	  = chain_get_doc_length,
+		.get_doc_freq	  = chain_get_doc_freq,
+		.foreach_document = chain_foreach_document,
+		.close			  = chain_close,
 };
 
 /* ---------- public constructor ---------- */

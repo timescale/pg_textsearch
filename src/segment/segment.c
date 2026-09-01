@@ -990,9 +990,6 @@ tp_write_segment(
 	/* Initialize the writer to avoid garbage values */
 	memset(&writer, 0, sizeof(TpSegmentWriter));
 
-	if (num_terms == 0)
-		return InvalidBlockNumber;
-
 	/* Initialize writer with incremental page allocation */
 	tp_segment_writer_init(&writer, index);
 
@@ -1495,8 +1492,10 @@ tp_write_segment(
 	FlushRelationBuffers(index);
 
 	/* Clean up writer-owned state. Caller frees terms[] and docmap. */
-	pfree(string_offsets);
-	pfree(term_blocks);
+	if (string_offsets)
+		pfree(string_offsets);
+	if (term_blocks)
+		pfree(term_blocks);
 	if (writer.pages)
 		pfree(writer.pages);
 
