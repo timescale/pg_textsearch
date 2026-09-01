@@ -183,6 +183,9 @@ tp_finish_spill(
 		TpSpillPostAction  post_action)
 {
 	BlockNumber root;
+	uint32		segment_capacity = post_action == TP_SPILL_POST_NONE
+										 ? PG_UINT16_MAX
+										 : tp_max_segments_per_level;
 
 	if (spill->num_terms == 0)
 	{
@@ -197,7 +200,10 @@ tp_finish_spill(
 	{
 		TpIndexMetaPage metap = tp_get_metapage(index_rel);
 
-		tp_check_level_count_increment(metap, 0);
+		if (metap->level_counts[0] >= segment_capacity)
+			ereport(ERROR,
+					(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
+					 errmsg("bm25 segment count limit reached at level 0")));
 		pfree(metap);
 
 		root = tp_write_segment(
@@ -235,7 +241,8 @@ tp_finish_spill(
 				index_rel,
 				root,
 				spill->docs_delta,
-				spill->len_delta);
+				spill->len_delta,
+				segment_capacity);
 
 		if (tp_debug_panic_after_spill_finalize)
 		{

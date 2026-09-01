@@ -27,6 +27,7 @@ typedef struct TpSegmentEstimate
 	uint64 terms;
 	uint64 string_bytes;
 	uint64 postings;
+	uint64 skip_entries;
 	uint64 pages;
 } TpSegmentEstimate;
 
@@ -115,7 +116,6 @@ tp_estimate_physical_bytes(TpSegmentEstimate *estimate, bool *representable)
 {
 	uint64 bytes = sizeof(TpSegmentHeader);
 	uint64 contribution;
-	uint64 posting_blocks;
 	uint64 data_pages;
 	uint64 entries_per_index_page;
 	uint64 index_pages;
@@ -133,9 +133,8 @@ tp_estimate_physical_bytes(TpSegmentEstimate *estimate, bool *representable)
 		!tp_u64_multiply(
 				estimate->postings, sizeof(TpBlockPosting), &contribution) ||
 		!tp_u64_add(bytes, contribution, &bytes) ||
-		!tp_u64_round_up_divide(
-				estimate->postings, TP_BLOCK_SIZE, &posting_blocks) ||
-		!tp_u64_multiply(posting_blocks, sizeof(TpSkipEntry), &contribution) ||
+		!tp_u64_multiply(
+				estimate->skip_entries, sizeof(TpSkipEntry), &contribution) ||
 		!tp_u64_add(bytes, contribution, &bytes) ||
 		!tp_u64_multiply(estimate->docs, sizeof(uint8), &contribution) ||
 		!tp_u64_add(bytes, contribution, &bytes) ||
@@ -170,7 +169,7 @@ tp_estimate_physical_bytes(TpSegmentEstimate *estimate, bool *representable)
 
 	if (estimate->docs > PG_UINT32_MAX || estimate->terms > PG_UINT32_MAX ||
 		estimate->string_bytes > PG_UINT32_MAX ||
-		posting_blocks > PG_UINT32_MAX || data_pages > PG_UINT32_MAX ||
+		estimate->skip_entries > PG_UINT32_MAX || data_pages > PG_UINT32_MAX ||
 		total_pages >= InvalidBlockNumber)
 		*representable = false;
 
@@ -198,6 +197,7 @@ tp_collect_source_estimate(TpCompactionSource *source, TpSegmentReader *reader)
 	for (uint32 term = 0; term < header->num_terms; term++)
 	{
 		TpDictEntry entry;
+		uint64		term_skip_entries;
 
 		tp_segment_read_dict_entry(reader, header, term, &entry);
 		if (!tp_u64_add(
@@ -207,6 +207,18 @@ tp_collect_source_estimate(TpCompactionSource *source, TpSegmentReader *reader)
 			ereport(ERROR,
 					(errcode(ERRCODE_DATA_CORRUPTED),
 					 errmsg("segment posting count overflow at block %u",
+							source->root)));
+		if (!tp_u64_round_up_divide(
+					(uint64)entry.doc_freq,
+					TP_BLOCK_SIZE,
+					&term_skip_entries) ||
+			!tp_u64_add(
+					source->estimate.skip_entries,
+					term_skip_entries,
+					&source->estimate.skip_entries))
+			ereport(ERROR,
+					(errcode(ERRCODE_DATA_CORRUPTED),
+					 errmsg("segment skip entry count overflow at block %u",
 							source->root)));
 	}
 
@@ -237,6 +249,10 @@ tp_estimate_add(
 				right->string_bytes,
 				&result->string_bytes) ||
 		!tp_u64_add(left->postings, right->postings, &result->postings) ||
+		!tp_u64_add(
+				left->skip_entries,
+				right->skip_entries,
+				&result->skip_entries) ||
 		!tp_u64_add(left->pages, right->pages, &result->pages) ||
 		!tp_estimate_physical_bytes(result, &representable))
 		return false;
@@ -458,7 +474,7 @@ tp_build_force_batches(TpCompactionPlan *plan)
 
 		for (uint32 level = preferred; level < TP_MAX_LEVELS; level++)
 		{
-			if (assigned_counts[level] < tp_max_segments_per_level)
+			if (assigned_counts[level] < PG_UINT16_MAX)
 			{
 				selected = level;
 				break;
@@ -469,7 +485,7 @@ tp_build_force_batches(TpCompactionPlan *plan)
 		{
 			for (int level = (int)preferred - 1; level >= 0; level--)
 			{
-				if (assigned_counts[level] < tp_max_segments_per_level)
+				if (assigned_counts[level] < PG_UINT16_MAX)
 				{
 					selected = (uint32)level;
 					break;
@@ -611,13 +627,47 @@ tp_execute_force_plan(
 {
 	BlockNumber		  output_heads[TP_MAX_LEVELS];
 	uint16			  output_counts[TP_MAX_LEVELS];
-	uint64			  output_docs		= 0;
-	uint64			  output_tokens		= 0;
+	uint64			  selected_docs	  = 0;
+	uint64			  selected_tokens = 0;
+	uint64			  output_docs	  = 0;
+	uint64			  output_tokens	  = 0;
+	uint64			  removed_docs;
+	uint64			  removed_tokens;
+	uint64			  final_docs;
+	uint64			  final_tokens;
 	BlockNumber		  pending_free_head = snapshot->pending_free_head;
 	FullTransactionId merged_fxid		= ReadNextFullTransactionId();
 
 	memcpy(output_heads, plan->retained_heads, sizeof(output_heads));
 	memcpy(output_counts, plan->retained_counts, sizeof(output_counts));
+
+	for (uint32 i = 0; i < plan->num_sources; i++)
+	{
+		TpSegmentReader *reader;
+
+		reader = tp_segment_open(index, plan->sources[i].root);
+		if (reader == NULL)
+			ereport(ERROR,
+					(errcode(ERRCODE_DATA_CORRUPTED),
+					 errmsg("could not open segment at block %u",
+							plan->sources[i].root)));
+
+		if (!tp_u64_add(
+					selected_docs,
+					(uint64)reader->header->num_docs,
+					&selected_docs) ||
+			!tp_u64_add(
+					selected_tokens,
+					reader->header->total_tokens,
+					&selected_tokens))
+		{
+			tp_segment_close(reader);
+			ereport(ERROR,
+					(errcode(ERRCODE_DATA_CORRUPTED),
+					 errmsg("source segment statistics overflow")));
+		}
+		tp_segment_close(reader);
+	}
 
 	for (uint32 reverse = plan->num_batches; reverse > 0; reverse--)
 	{
@@ -637,8 +687,7 @@ tp_execute_force_plan(
 					output_heads[batch->output_level],
 					&result))
 		{
-			if (output_counts[batch->output_level] >=
-				tp_max_segments_per_level)
+			if (output_counts[batch->output_level] >= PG_UINT16_MAX)
 				ereport(ERROR,
 						(errcode(ERRCODE_INTERNAL_ERROR),
 						 errmsg("compaction output exceeded level %u "
@@ -658,6 +707,24 @@ tp_execute_force_plan(
 
 		pfree(roots);
 	}
+
+	if (output_docs > selected_docs || output_tokens > selected_tokens)
+		ereport(ERROR,
+				(errcode(ERRCODE_DATA_CORRUPTED),
+				 errmsg("compaction output statistics exceed source "
+						"statistics")));
+
+	removed_docs   = selected_docs - output_docs;
+	removed_tokens = selected_tokens - output_tokens;
+	if (snapshot->total_docs < removed_docs ||
+		snapshot->total_len < removed_tokens)
+		ereport(ERROR,
+				(errcode(ERRCODE_DATA_CORRUPTED),
+				 errmsg("compaction source statistics exceed index "
+						"statistics")));
+
+	final_docs	 = snapshot->total_docs - removed_docs;
+	final_tokens = snapshot->total_len - removed_tokens;
 
 	for (uint32 i = 0; i < plan->num_sources; i++)
 	{
@@ -679,8 +746,8 @@ tp_execute_force_plan(
 			output_heads,
 			output_counts,
 			pending_free_head,
-			output_docs,
-			output_tokens);
+			final_docs,
+			final_tokens);
 }
 
 void
