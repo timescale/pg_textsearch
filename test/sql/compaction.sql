@@ -219,10 +219,12 @@ SELECT bm25_level_counts('compaction_rollback_idx'::regclass)
 FROM compaction_rollback_before before;
 DROP TABLE compaction_rollback CASCADE;
 
--- A level can carry threshold debt the engine cannot reduce: every
--- candidate group already exceeds max_segment_size, and an over-budget
--- segment is an indivisible singleton.  bm25_needs_compaction() is a
--- count-only signal, so it reports debt that bm25_compact_step()
+-- A level can sit at the segment threshold with nothing to compact:
+-- every candidate group already exceeds max_segment_size, and an
+-- over-budget segment is an uncombinable singleton.  This is not
+-- compaction debt -- no pass would reduce it -- but
+-- bm25_needs_compaction() is a count-only signal and cannot tell the
+-- two apart, so it reports the full level that bm25_compact_step()
 -- correctly declines to act on.  A scheduler that retried on a false
 -- return would spin here.
 CREATE TABLE compaction_unreducible (id bigint PRIMARY KEY, body text);
@@ -249,7 +251,7 @@ SELECT bm25_level_counts('compaction_unreducible_idx'::regclass) =
            ARRAY[2, 0, 0, 0, 0, 0, 0, 0]
        AS unreducible_level_is_at_threshold;
 SELECT bm25_needs_compaction('compaction_unreducible_idx'::regclass)
-       AS unreducible_reports_debt;
+       AS unreducible_reports_full_level;
 SELECT bm25_compact_step('compaction_unreducible_idx'::regclass)
        AS unreducible_step_declines;
 SELECT bm25_compact('compaction_unreducible_idx'::regclass);
@@ -268,7 +270,65 @@ RESET pg_textsearch.memtable_pages_threshold;
 RESET pg_textsearch.bulk_load_threshold;
 DROP TABLE compaction_unreducible CASCADE;
 
--- The top level is a terminal bucket, not a wall.  When promotion out
+-- A pass must not copy segments it cannot combine.  Spills prepend, so
+-- a level reads newest-first and its oldest, largest runs sit at the
+-- tail.  Here two fresh small segments head a 2MB run that is already
+-- over max_segment_size: the pair merges, and the run is handed back
+-- instead of being rewritten to say the same thing in a new place.
+--
+-- The handback is visible as a level count: a retained segment keeps
+-- its level, while a rewritten one is promoted.  Without the trim this
+-- ends at [0, 2, ...] with the run copied to a fresh block, and the
+-- index grows by the full size of the run rather than by the pair.
+CREATE TABLE compaction_uncombinable_tail (id bigint PRIMARY KEY, body text);
+CREATE INDEX compaction_uncombinable_tail_idx ON compaction_uncombinable_tail
+    USING bm25(body) WITH (text_config = 'simple');
+SET pg_textsearch.memtable_pages_threshold = 0;
+SET pg_textsearch.bulk_load_threshold = 0;
+SET pg_textsearch.max_segment_size = '1MB';
+-- Build the layout with a fanout no spill can reach, so that the only
+-- compaction in this fixture is the one under test.
+SET pg_textsearch.segments_per_level = 64;
+INSERT INTO compaction_uncombinable_tail
+SELECT gs, 'common ' || repeat(md5(gs::text), 32)
+FROM generate_series(1, 2000) gs;
+SELECT bm25_spill_index('compaction_uncombinable_tail_idx') > 0
+       AS tail_run_spilled;
+INSERT INTO compaction_uncombinable_tail
+SELECT 100000 + gs, 'common small ' || gs FROM generate_series(1, 20) gs;
+SELECT bm25_spill_index('compaction_uncombinable_tail_idx') > 0
+       AS head_pair_first_spilled;
+INSERT INTO compaction_uncombinable_tail
+SELECT 200000 + gs, 'common small ' || gs FROM generate_series(1, 20) gs;
+SELECT bm25_spill_index('compaction_uncombinable_tail_idx') > 0
+       AS head_pair_second_spilled;
+SET pg_textsearch.segments_per_level = 3;
+SELECT bm25_level_counts('compaction_uncombinable_tail_idx'::regclass) =
+           ARRAY[3, 0, 0, 0, 0, 0, 0, 0]
+       AS tail_level_is_at_threshold;
+CREATE TEMP TABLE compaction_tail_before AS
+SELECT pg_relation_size('compaction_uncombinable_tail_idx') AS bytes;
+SELECT bm25_compact('compaction_uncombinable_tail_idx'::regclass);
+SELECT bm25_level_counts('compaction_uncombinable_tail_idx'::regclass) =
+           ARRAY[1, 1, 0, 0, 0, 0, 0, 0]
+       AS tail_run_retained_at_its_level;
+SELECT pg_relation_size('compaction_uncombinable_tail_idx') - before.bytes
+           < 1024 * 1024
+       AS tail_run_was_not_copied
+FROM compaction_tail_before before;
+SELECT count(*) = 2040 AS tail_preserves_documents
+FROM (
+    SELECT 1
+    FROM compaction_uncombinable_tail
+    ORDER BY body <@> to_bm25query(
+        'common', 'compaction_uncombinable_tail_idx')
+    LIMIT 5000
+) ranked;
+RESET pg_textsearch.max_segment_size;
+RESET pg_textsearch.memtable_pages_threshold;
+RESET pg_textsearch.bulk_load_threshold;
+DROP TABLE compaction_uncombinable_tail CASCADE;
+
 -- The top level is a terminal bucket, not a wall.  With a per-level
 -- count limit of 2, driving 384 segments up the ladder once failed
 -- closed with "segment count limit reached at level 7", because the

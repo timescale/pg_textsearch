@@ -16,7 +16,7 @@ BEGIN
 END $$;
 
 COMMENT ON FUNCTION @extschema@.bm25_force_merge(text) IS
-    'Run one-shot copy-on-write compaction into the fewest conservatively size-bounded segments; existing over-budget singletons remain indivisible, and displaced pages enter deferred reclaim.';
+    'Run one-shot copy-on-write compaction into the fewest conservatively size-bounded segments; existing over-budget singletons remain uncombinable, and displaced pages enter deferred reclaim.';
 
 -- PARALLEL RESTRICTED: opens the index relation, which may be a local
 -- temporary index whose buffers a parallel worker cannot reach.
@@ -60,4 +60,4 @@ AS $$
 $$;
 
 COMMENT ON FUNCTION @extschema@.bm25_needs_compaction(regclass) IS
-    'Report whether any level holds at least segments_per_level segments. Advisory only: a level whose segments are all over budget reports debt that bm25_compact_step declines to reduce, so this must not be used on its own as a retry condition.';
+    'Report whether any level holds at least segments_per_level segments. Advisory only: a level whose segments are all over budget is reported as full even though bm25_compact_step has no way to reduce it, so this must not be used on its own as a retry condition.';

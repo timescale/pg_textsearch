@@ -26,6 +26,28 @@ built and validated against the per-level segment capacity before any output
 is merged, and every output a pass produces becomes visible in one metapage
 update.
 
+Batching is greedy over a head prefix of the level, and a batch that ends up
+holding a single segment combines nothing: merging it rewrites the whole
+segment to produce a segment of the same size. Because spills prepend, a
+level reads newest-first, so its oldest and largest runs — the ones already
+past `max_segment_size` — sit at the tail. A pass therefore hands the
+trailing run of single-segment batches back to the level before planning
+anything further, and leaves those segments where they are, at the level
+they were already on. Without that, one pairable pair at the head of a level
+would authorize rewriting every over-budget segment behind it.
+
+This applies to the level a pass chose to compact. When a pass instead
+compacts a level to make room for its own output, promoting a
+single-segment batch is what makes that room, so those are not handed
+back.
+
+Handing back a *trailing* run is what keeps this cheap. The selection is a
+head prefix, so the chain behind it is untouched and returning segments is
+just moving the level's head pointer back; nothing on disk changes. A
+single-segment batch in the middle of a prefix is still rewritten, because
+excising one would mean repointing its predecessor, and those writes do not
+fit alongside the metapage update that publishes the pass.
+
 The guarantee is about the visible segment layout, not about every physical
 page:
 
@@ -82,7 +104,7 @@ is the main reason to prefer `bm25_compact_step()` for scheduled work:
 `pg_textsearch.segments_per_level` is `PGC_SUSET`. The planner and
 `bm25_needs_compaction()` both read the *calling* session's value, so a
 scheduler session with a different setting than the writers will disagree with
-them about which levels carry debt.
+them about which levels are full.
 
 ## Restrictions
 
@@ -95,17 +117,19 @@ Partitioned BM25 parent indexes have no physical storage and are rejected by
 all four per-index functions. Call the functions on the physical indexes of
 individual partitions instead.
 
-## Debt that cannot be reduced
+## Full levels with nothing to compact
 
 `bm25_needs_compaction()` is a cheap advisory signal derived from the level
-counts alone. A level can hold `segments_per_level` segments that the engine
-still cannot compact, because a pass runs only when at least one batch merges
+counts alone. It answers "is any level at its segment threshold", not "is
+there work to do". A level can sit at `segments_per_level` and still have
+nothing to compact, because a pass runs only when at least one batch merges
 two or more segments, and every candidate group here is a single over-budget
-segment. In that case `bm25_needs_compaction()` reports true while
-`bm25_compact_step()` returns false.
+segment. Such a level is not carrying compaction debt — no pass would reduce
+it — but a count-only signal cannot tell the two apart, so it reports true
+while `bm25_compact_step()` returns false.
 
 **`bm25_needs_compaction()` must not be used on its own as a retry or loop
-condition.** It does not go false when the debt it reports is unreducible, so
+condition.** It stays true on a full level that has nothing to reduce, so
 a scheduler that loops `WHILE bm25_needs_compaction(...) DO
 bm25_compact_step(...)` never terminates on such an index. Drive the loop from
 `bm25_compact_step()`'s return value instead, and stop as soon as it returns
@@ -132,5 +156,5 @@ the default, not of the design: at `segments_per_level = 2` the L6 ceiling is
 512MB and a 4095MB output lands at L7 on size alone.
 
 `max_segment_size` also bounds only the segments a pass *combines*. An
-existing segment larger than the current setting stays a valid indivisible
+existing segment larger than the current setting stays a valid uncombinable
 singleton, so a segment at any level may exceed it.

@@ -346,7 +346,7 @@ BEGIN
         PERFORM bm25_spill_index('merge_starve_idx');
     END LOOP;
     -- Each of these alone exceeds the budget, so L0 becomes an
-    -- indivisible run while staying below the level threshold.
+    -- uncombinable run while staying below the level threshold.
     FOR batch IN 8..11 LOOP
         INSERT INTO merge_starve
         SELECT batch * 2000 + gs,
@@ -373,7 +373,7 @@ DECLARE
 BEGIN
     IF regexp_count(summary, 'L1 Segment [0-9]+:') <> 0
        OR regexp_count(summary, 'L2 Segment [0-9]+:') = 0 THEN
-        RAISE EXCEPTION 'indivisible L0 starved a compactable L1: %',
+        RAISE EXCEPTION 'uncombinable L0 starved a compactable L1: %',
                         summary;
     END IF;
 END

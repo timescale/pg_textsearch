@@ -288,7 +288,7 @@ _PG_init(void)
 			"pg_textsearch.max_segment_size",
 			"Maximum conservative size of a merged segment.",
 			"Bounds newly merged multi-source segments. A larger existing "
-			"segment remains an indivisible singleton.",
+			"segment remains an uncombinable singleton.",
 			&tp_max_segment_size_mb,
 			TP_DEFAULT_SEGMENT_SIZE_MB,
 			TP_MIN_SEGMENT_SIZE_MB,

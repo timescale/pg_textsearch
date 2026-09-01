@@ -46,7 +46,7 @@ typedef struct TpCompactionBatch
 	uint32			  first_source;
 	uint32			  source_count;
 	uint32			  output_level;
-	bool			  indivisible;
+	bool			  uncombinable;
 	TpSegmentEstimate estimate;
 } TpCompactionBatch;
 
@@ -113,7 +113,7 @@ tp_u64_round_up_divide(uint64 value, uint64 divisor, uint64 *result)
 /*
  * Calculate the conservative current-format bound.  Arithmetic overflow is
  * distinct from a representational limit: source overflow is corrupt
- * metadata, while an otherwise valid oversized source remains indivisible.
+ * metadata, while an otherwise valid oversized source remains uncombinable.
  */
 static bool
 tp_estimate_physical_bytes(TpSegmentEstimate *estimate, bool *representable)
@@ -454,10 +454,10 @@ tp_append_bounded_batches(
 		batch->first_source = source_index;
 		batch->source_count = 1;
 		batch->estimate		= plan->sources[source_index].estimate;
-		batch->indivisible	= batch->estimate.bytes > budget;
+		batch->uncombinable = batch->estimate.bytes > budget;
 		source_index++;
 
-		while (!batch->indivisible && source_index < source_end)
+		while (!batch->uncombinable && source_index < source_end)
 		{
 			TpSegmentEstimate combined;
 
@@ -875,6 +875,46 @@ tp_select_level_prefix(
 	return first_source;
 }
 
+/*
+ * Give back a trailing run of batches that combine nothing.
+ *
+ * A one-source batch rewrites its whole segment and produces a segment
+ * of the same size, so the pass pays a full copy for no reduction.  At
+ * the tail of a prefix those are usually the level's oldest and largest
+ * runs, already past max_segment_size and unable to absorb anything, so
+ * a single pairable pair at the head can otherwise authorize rewriting
+ * every one of them.
+ *
+ * Returning them is cheap precisely because the selection is a head
+ * prefix: the chain behind it is untouched, so moving the retained head
+ * back to the first returned segment restores the level without
+ * rewriting any segment header.  They also keep their level, so nothing
+ * about them changes on disk.  A one-source batch in the middle of a
+ * prefix is still rewritten -- excising it would require repointing its
+ * predecessor, which no longer fits in the publishing metapage record.
+ *
+ * This applies only to the level a pass chose to compact.  The capacity
+ * recourse below selects a level to make room at, and there promoting a
+ * one-source batch is the mechanism that makes it: handing those back
+ * would leave the level exactly as full and turn a wasteful pass into a
+ * failed one.
+ */
+static void
+tp_trim_uncombinable_tail(
+		TpCompactionPlan *plan, uint32 first_batch, uint32 level)
+{
+	while (plan->num_batches > first_batch &&
+		   plan->batches[plan->num_batches - 1].source_count == 1)
+	{
+		TpCompactionBatch *batch = &plan->batches[plan->num_batches - 1];
+
+		plan->retained_heads[level] = plan->sources[batch->first_source].root;
+		plan->retained_counts[level]++;
+		plan->num_sources = batch->first_source;
+		plan->num_batches--;
+	}
+}
+
 static void
 tp_assign_ordinary_batches(
 		TpCompactionPlan *plan,
@@ -945,6 +985,7 @@ tp_build_ordinary_plan(
 				index, snapshot, plan, candidate, threshold);
 		first_batch = plan->num_batches;
 		tp_append_bounded_batches(plan, first_source, threshold);
+		tp_trim_uncombinable_tail(plan, first_batch, candidate);
 		tp_assign_ordinary_batches(plan, first_batch, planned_outputs);
 
 		/*
