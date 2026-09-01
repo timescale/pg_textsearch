@@ -321,6 +321,77 @@ RESET pg_textsearch.max_segment_size;
 RESET pg_textsearch.segments_per_level;
 DROP TABLE merge_bounded CASCADE;
 
+-- A level with no legal count reduction must not starve a higher
+-- level that has one.  Explicit spills only, so the layout below is
+-- deterministic.
+SET pg_textsearch.memtable_pages_threshold = 0;
+SET pg_textsearch.bulk_load_threshold = 0;
+SET pg_textsearch.max_segment_size = '1MB';
+SET pg_textsearch.segments_per_level = 8;
+
+CREATE TABLE merge_starve (id bigint PRIMARY KEY, content text);
+CREATE INDEX merge_starve_idx ON merge_starve USING bm25(content)
+  WITH (text_config='simple');
+
+DO $$
+DECLARE
+    batch integer;
+BEGIN
+    -- Eight pairable segments compact into a four-segment L1 run.
+    FOR batch IN 0..7 LOOP
+        INSERT INTO merge_starve
+        SELECT batch * 2000 + gs,
+               'common ' || repeat(md5((batch * 2000 + gs)::text), 4)
+        FROM generate_series(1, 2000) gs;
+        PERFORM bm25_spill_index('merge_starve_idx');
+    END LOOP;
+    -- Each of these alone exceeds the budget, so L0 becomes an
+    -- indivisible run while staying below the level threshold.
+    FOR batch IN 8..11 LOOP
+        INSERT INTO merge_starve
+        SELECT batch * 2000 + gs,
+               'common ' || repeat(md5((batch * 2000 + gs)::text), 32)
+        FROM generate_series(1, 2000) gs;
+        PERFORM bm25_spill_index('merge_starve_idx');
+    END LOOP;
+END
+$$;
+
+-- Widening the budget makes L1's run legally mergeable (4 x 0.8MB fits)
+-- while L0's 2.1MB segments still cannot pair.  Lowering the threshold
+-- triggers both levels at once.
+SET pg_textsearch.max_segment_size = '4MB';
+SET pg_textsearch.segments_per_level = 4;
+INSERT INTO merge_starve
+SELECT 24000 + gs, 'common ' || repeat(md5((24000 + gs)::text), 32)
+FROM generate_series(1, 2000) gs;
+SELECT bm25_spill_index('merge_starve_idx') > 0 AS starve_spilled;
+
+DO $$
+DECLARE
+    summary text := bm25_summarize_index('merge_starve_idx');
+BEGIN
+    IF regexp_count(summary, 'L1 Segment [0-9]+:') <> 0
+       OR regexp_count(summary, 'L2 Segment [0-9]+:') = 0 THEN
+        RAISE EXCEPTION 'indivisible L0 starved a compactable L1: %',
+                        summary;
+    END IF;
+END
+$$;
+
+SELECT count(*) = 26000 AS starve_docs_preserved
+FROM (
+    SELECT 1 FROM merge_starve
+    ORDER BY content <@> to_bm25query('common', 'merge_starve_idx')
+    LIMIT 26000
+) ranked;
+
+RESET pg_textsearch.max_segment_size;
+RESET pg_textsearch.segments_per_level;
+RESET pg_textsearch.bulk_load_threshold;
+RESET pg_textsearch.memtable_pages_threshold;
+DROP TABLE merge_starve CASCADE;
+
 -- Cleanup
 DROP TABLE merge_test CASCADE;
 DROP EXTENSION pg_textsearch CASCADE;

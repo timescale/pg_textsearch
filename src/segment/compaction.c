@@ -907,6 +907,8 @@ tp_assign_ordinary_batches(
 	}
 }
 
+static void tp_free_compaction_plan(TpCompactionPlan *plan);
+
 static bool
 tp_build_ordinary_plan(
 		Relation			  index,
@@ -914,51 +916,67 @@ tp_build_ordinary_plan(
 		uint32				  first_level,
 		TpCompactionPlan	 *plan)
 {
-	uint32 planned_outputs[TP_MAX_LEVELS] = {0};
-	uint32 candidate;
-	uint32 first_source;
-	uint32 first_batch;
-	uint32 threshold = (uint32)tp_segments_per_level;
+	uint32 threshold	= (uint32)tp_segments_per_level;
+	uint32 search_level = first_level;
 
 	memset(plan, 0, sizeof(*plan));
-	candidate = tp_compaction_candidate(snapshot->level_counts, first_level);
-	if (candidate >= TP_MAX_LEVELS - 1)
-		return false;
 
-	tp_initialize_ordinary_plan(index, snapshot, plan);
-	first_source = tp_select_level_prefix(
-			index, snapshot, plan, candidate, threshold);
-	first_batch = plan->num_batches;
-	tp_append_bounded_batches(plan, first_source, threshold);
-	tp_assign_ordinary_batches(plan, first_batch, planned_outputs);
-
-	for (uint32 level = candidate + 1; level < TP_MAX_LEVELS; level++)
+	while (true)
 	{
-		while (planned_outputs[level] > 0 &&
-			   (uint64)plan->retained_counts[level] +
-							   (uint64)planned_outputs[level] >
-					   (uint64)plan->output_capacity)
+		uint32 planned_outputs[TP_MAX_LEVELS] = {0};
+		uint32 candidate;
+		uint32 first_source;
+		uint32 first_batch;
+
+		candidate =
+				tp_compaction_candidate(snapshot->level_counts, search_level);
+		if (candidate >= TP_MAX_LEVELS - 1)
+			return false;
+
+		tp_initialize_ordinary_plan(index, snapshot, plan);
+		first_source = tp_select_level_prefix(
+				index, snapshot, plan, candidate, threshold);
+		first_batch = plan->num_batches;
+		tp_append_bounded_batches(plan, first_source, threshold);
+		tp_assign_ordinary_batches(plan, first_batch, planned_outputs);
+
+		for (uint32 level = candidate + 1; level < TP_MAX_LEVELS; level++)
 		{
-			if (level == TP_MAX_LEVELS - 1 ||
-				plan->retained_counts[level] < threshold)
-				ereport(ERROR,
-						(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
-						 errmsg("bm25 segment count limit reached at level %u",
-								level)));
+			while (planned_outputs[level] > 0 &&
+				   (uint64)plan->retained_counts[level] +
+								   (uint64)planned_outputs[level] >
+						   (uint64)plan->output_capacity)
+			{
+				if (level == TP_MAX_LEVELS - 1 ||
+					plan->retained_counts[level] < threshold)
+					ereport(ERROR,
+							(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
+							 errmsg("bm25 segment count limit reached at "
+									"level %u",
+									level)));
 
-			first_source = tp_select_level_prefix(
-					index, snapshot, plan, level, threshold);
-			first_batch = plan->num_batches;
-			tp_append_bounded_batches(plan, first_source, threshold);
-			tp_assign_ordinary_batches(plan, first_batch, planned_outputs);
+				first_source = tp_select_level_prefix(
+						index, snapshot, plan, level, threshold);
+				first_batch = plan->num_batches;
+				tp_append_bounded_batches(plan, first_source, threshold);
+				tp_assign_ordinary_batches(plan, first_batch, planned_outputs);
+			}
 		}
-	}
 
-	/*
-	 * Promoting only singleton batches would move the threshold unchanged
-	 * and make the outer driver chase it up the hierarchy indefinitely.
-	 */
-	return plan->num_batches < plan->num_sources;
+		if (plan->num_batches < plan->num_sources)
+			return true;
+
+		/*
+		 * Promoting only singleton batches would leave the level count
+		 * unchanged and make the outer driver chase the threshold up the
+		 * hierarchy indefinitely.  Abandon this candidate, but keep
+		 * searching: a level with no legal count reduction must not
+		 * starve a higher level that has one.
+		 */
+		tp_free_compaction_plan(plan);
+		memset(plan, 0, sizeof(*plan));
+		search_level = candidate + 1;
+	}
 }
 
 static void
