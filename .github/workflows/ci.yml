@@ -86,6 +86,7 @@ jobs:
         echo "log_statement = 'all'" >> tmp_check_shared/data/postgresql.conf
         echo "shared_buffers = 256MB" >> tmp_check_shared/data/postgresql.conf
         echo "max_connections = 20" >> tmp_check_shared/data/postgresql.conf
+        echo "max_prepared_transactions = 10" >> tmp_check_shared/data/postgresql.conf
         echo "shared_preload_libraries = 'timescaledb,${LIB_NAME}'" >> tmp_check_shared/data/postgresql.conf || true
         echo "unix_socket_directories = '$PWD/tmp_check_shared'" >> tmp_check_shared/data/postgresql.conf
 
@@ -503,6 +504,7 @@ jobs:
         LIB_NAME="pg_textsearch"
         echo "port = 55433" >> tmp_sanitizer_test/data/postgresql.conf
         echo "unix_socket_directories = '$PWD/tmp_sanitizer_test'" >> tmp_sanitizer_test/data/postgresql.conf
+        echo "max_prepared_transactions = 10" >> tmp_sanitizer_test/data/postgresql.conf
         echo "shared_preload_libraries = '${LIB_NAME}'" >> tmp_sanitizer_test/data/postgresql.conf
 
         # Start PostgreSQL
@@ -687,6 +689,7 @@ jobs:
         echo "log_statement = 'all'" >> tmp_check_shared/data/postgresql.conf
         echo "shared_buffers = 256MB" >> tmp_check_shared/data/postgresql.conf
         echo "max_connections = 20" >> tmp_check_shared/data/postgresql.conf
+        echo "max_prepared_transactions = 10" >> tmp_check_shared/data/postgresql.conf
         echo "shared_preload_libraries = '${LIB_NAME}'" >> tmp_check_shared/data/postgresql.conf
         echo "unix_socket_directories = '$PWD/tmp_check_shared'" >> tmp_check_shared/data/postgresql.conf
         pg_ctl start -D tmp_check_shared/data -l tmp_check_shared/data/logfile -w

@@ -32,6 +32,7 @@
 #include "access/build_context.h"
 #include "access/build_parallel.h"
 #include "constants.h"
+#include "index/compaction_request.h"
 #include "index/metapage.h"
 #include "index/registry.h"
 #include "index/state.h"
@@ -274,7 +275,20 @@ tp_finish_spill(
 
 	pgstat_progress_update_param(
 			PROGRESS_CREATEIDX_SUBPHASE, TP_PHASE_COMPACTING);
-	tp_maybe_compact_level(index_state, index_rel, 0);
+	switch (tp_compaction_mode)
+	{
+	case TP_COMPACTION_INLINE:
+		tp_maybe_compact_level(index_state, index_rel, 0);
+		break;
+	case TP_COMPACTION_BACKGROUND:
+		if (RelationUsesLocalBuffers(index_rel))
+			tp_maybe_compact_level(index_state, index_rel, 0);
+		else if (tp_compaction_needed(index_rel))
+			tp_compaction_request(RelationGetRelid(index_rel));
+		break;
+	case TP_COMPACTION_OFF:
+		break;
+	}
 	pgstat_progress_update_param(
 			PROGRESS_CREATEIDX_SUBPHASE, TP_PHASE_LOADING);
 }
@@ -1338,7 +1352,12 @@ tp_build_callback(
 
 		pgstat_progress_update_param(
 				PROGRESS_CREATEIDX_SUBPHASE, TP_PHASE_COMPACTING);
-		tp_maybe_compact_level(bs->index_state, bs->index, 0);
+		/*
+		 * CREATE INDEX always compacts inline because another session
+		 * cannot open it until the build commits.  Off remains off.
+		 */
+		if (tp_compaction_mode != TP_COMPACTION_OFF)
+			tp_maybe_compact_level(bs->index_state, bs->index, 0);
 		pgstat_progress_update_param(
 				PROGRESS_CREATEIDX_SUBPHASE, TP_PHASE_LOADING);
 	}
@@ -1637,7 +1656,15 @@ tp_build(Relation heap, Relation index, IndexInfo *indexInfo)
 
 		/* Write final segment if data remains */
 		if (build_ctx->num_docs > 0)
+		{
 			tp_build_flush_and_link(build_ctx, index);
+			if (tp_compaction_mode != TP_COMPACTION_OFF)
+			{
+				pgstat_progress_update_param(
+						PROGRESS_CREATEIDX_SUBPHASE, TP_PHASE_COMPACTING);
+				tp_maybe_compact_level(index_state, index, 0);
+			}
+		}
 
 		/* Update metapage with corpus statistics */
 		{

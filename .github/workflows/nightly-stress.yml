@@ -195,6 +195,7 @@ jobs:
         LIB_NAME="pg_textsearch"
         echo "port = 55437" >> tmp_nightly_test/data/postgresql.conf
         echo "unix_socket_directories = '$PWD/tmp_nightly_test'" >> tmp_nightly_test/data/postgresql.conf
+        echo "max_prepared_transactions = 10" >> tmp_nightly_test/data/postgresql.conf
         echo "shared_preload_libraries = '${LIB_NAME}'" >> tmp_nightly_test/data/postgresql.conf
 
         pg_ctl start -D tmp_nightly_test/data -l tmp_nightly_test/data/logfile -w

@@ -25,6 +25,7 @@
 
 #include "access/am.h"
 #include "constants.h"
+#include "index/compaction_request.h"
 #include "index/metapage.h"
 #include "index/registry.h"
 #include "index/state.h"
@@ -66,6 +67,12 @@ int tp_segments_per_level = TP_DEFAULT_SEGMENTS_PER_LEVEL;
 
 /* Conservative size budget for newly merged multi-source segments. */
 int tp_max_segment_size_mb = TP_DEFAULT_SEGMENT_SIZE_MB;
+
+static const struct config_enum_entry compaction_mode_options[] =
+		{{"inline", TP_COMPACTION_INLINE, false},
+		 {"background", TP_COMPACTION_BACKGROUND, false},
+		 {"off", TP_COMPACTION_OFF, false},
+		 {NULL, 0, false}};
 
 /* Global variable for segment compression (on by default - benchmarks show
  * compression improves both size and query performance)
@@ -296,6 +303,35 @@ _PG_init(void)
 			PGC_SUSET,
 			GUC_UNIT_MB,
 			NULL,
+			NULL,
+			NULL);
+
+	DefineCustomEnumVariable(
+			"pg_textsearch.compaction_mode",
+			"Controls spill-time segment compaction",
+			"inline compacts during the spilling transaction; background "
+			"records a request for a later worker; off disables automatic "
+			"compaction.",
+			&tp_compaction_mode,
+			TP_COMPACTION_INLINE,
+			compaction_mode_options,
+			PGC_SUSET,
+			0,
+			NULL,
+			NULL,
+			NULL);
+
+	DefineCustomStringVariable(
+			"pg_textsearch.compaction_request_function",
+			"Function called for background compaction requests",
+			"Names a function taking a single regclass argument. In "
+			"background compaction mode, pg_textsearch calls this function "
+			"at transaction pre-commit for each index that needs compaction.",
+			&tp_compaction_request_function,
+			"",
+			PGC_SUSET,
+			0,
+			tp_check_compaction_request_function,
 			NULL,
 			NULL);
 
@@ -569,12 +605,16 @@ tp_xact_callback(XactEvent event, void *arg pg_attribute_unused())
 	switch (event)
 	{
 	case XACT_EVENT_PRE_COMMIT:
-	case XACT_EVENT_PARALLEL_PRE_COMMIT:
 		/*
 		 * Check for bulk load auto-spill before commit.
 		 * If any index had a large number of terms added this transaction,
 		 * spill to disk to prevent unbounded memory growth.
 		 */
+		tp_bulk_load_spill_check();
+		tp_compaction_flush_requests();
+		break;
+
+	case XACT_EVENT_PARALLEL_PRE_COMMIT:
 		tp_bulk_load_spill_check();
 		break;
 
@@ -584,6 +624,7 @@ tp_xact_callback(XactEvent event, void *arg pg_attribute_unused())
 		tp_release_all_index_locks();
 		/* Reset bulk load counters for next transaction */
 		tp_reset_bulk_load_counters();
+		tp_compaction_reset_requests();
 		break;
 
 	case XACT_EVENT_ABORT:
@@ -594,11 +635,18 @@ tp_xact_callback(XactEvent event, void *arg pg_attribute_unused())
 		tp_release_all_index_locks();
 		/* Reset bulk load counters for next transaction */
 		tp_reset_bulk_load_counters();
+		tp_compaction_reset_requests();
 		break;
 
 	case XACT_EVENT_PRE_PREPARE:
+		tp_bulk_load_spill_check();
+		tp_compaction_flush_requests();
+		break;
+
 	case XACT_EVENT_PREPARE:
-		/* Nothing to do for these events */
+		tp_release_all_index_locks();
+		tp_reset_bulk_load_counters();
+		tp_compaction_reset_requests();
 		break;
 	}
 }

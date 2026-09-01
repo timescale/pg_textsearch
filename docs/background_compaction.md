@@ -158,3 +158,31 @@ the default, not of the design: at `segments_per_level = 2` the L6 ceiling is
 `max_segment_size` also bounds only the segments a pass *combines*. An
 existing segment larger than the current setting stays a valid uncombinable
 singleton, so a segment at any level may exceed it.
+
+## Spill-time dispatch
+
+`pg_textsearch.compaction_mode` controls what happens when a spill leaves a
+level at the compaction threshold:
+
+- `inline` (the default) preserves synchronous compaction.
+- `background` records one request per affected index and invokes the
+  configured callback at transaction pre-commit.
+- `off` leaves compaction debt for an explicit caller.
+
+Set `pg_textsearch.compaction_request_function` to an unqualified or
+schema-qualified function name. The function must accept one `regclass`
+argument; its return type is ignored. Name validation is syntax-only so an
+external scheduler can be installed independently of pg_textsearch.
+
+Requests are backend-local, transaction-local, and deduplicated by index.
+Aborted transactions dispatch nothing, pending index OIDs are revalidated
+against the transaction's final catalog state, and prepared transactions
+dispatch before prepare and then clear backend-local state. Temporary indexes
+always compact inline because another backend cannot open them.
+
+Each callback runs in a protected internal subtransaction. Its local effects
+are rolled back after invocation, so the callback should hand work to a
+facility whose submission survives that rollback. Ordinary lookup or callback
+errors produce a warning and do not abort the writer transaction. Query
+cancellation and server shutdown errors are rethrown.
+This interface is scheduler-neutral and has no pg_durable dependency.

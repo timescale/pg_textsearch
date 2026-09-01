@@ -170,6 +170,7 @@ jobs:
         LIB_NAME="pg_textsearch"
         echo "port = 55433" >> tmp_sanitizer_test/data/postgresql.conf
         echo "unix_socket_directories = '$PWD/tmp_sanitizer_test'" >> tmp_sanitizer_test/data/postgresql.conf
+        echo "max_prepared_transactions = 10" >> tmp_sanitizer_test/data/postgresql.conf
         echo "shared_preload_libraries = '${LIB_NAME}'" >> tmp_sanitizer_test/data/postgresql.conf
 
         # Start PostgreSQL
