@@ -17,6 +17,15 @@ struct TpLocalIndexState;
 struct TpMergeSource;
 struct TpMergedTerm;
 
+typedef struct TpMergedSegmentResult
+{
+	BlockNumber root;
+	uint32		num_pages;
+	uint32		num_docs;
+	uint64		total_tokens;
+	uint64		data_size;
+} TpMergedSegmentResult;
+
 /*
  * Merge sink: writes merged segment data to index pages.
  */
@@ -43,55 +52,17 @@ extern void write_merged_segment_to_sink(
 		int					  num_sources,
 		uint32				  target_level,
 		uint64				  total_tokens,
-		bool				  disjoint_sources);
+		bool				  disjoint_sources,
+		BlockNumber			  next_segment);
 
 /*
- * Merge all segments at the specified level into a single segment
- * at level+1.
- *
- * This performs an N-way merge of all segments in the level's chain:
- * 1. Opens all segment readers for the level
- * 2. Merges term dictionaries using linear scan (O(n) per term)
- * 3. Combines posting lists for duplicate terms
- * 4. Writes merged segment at the next level
- * 5. Updates metapage to reflect the new structure
- *
- * Parameters:
- *   index - The index relation (must be opened with appropriate lock)
- *   level - The level to merge (0 = L0, 1 = L1, etc.)
- *
- * Returns:
- *   The root block of the new merged segment, or InvalidBlockNumber
- * on failure.
- *
- * Note: The caller is responsible for holding an appropriate lock on
- * the index relation. This function modifies the metapage to update
- * level chains.
+ * Merge exactly the supplied immutable segments into one unpublished
+ * current-format segment.  The caller publishes or discards the result.
  */
-extern BlockNumber
-tp_merge_level_segments(Relation index, uint32 level, uint32 max_merge);
-
-/*
- * Check if a level needs compaction and trigger merge if so.
- *
- * Called after adding a segment to check if the level has reached
- * tp_segments_per_level. If so, merges up to segments_per_level
- * segments per batch, then recursively checks the next level.
- *
- * Parameters:
- *   index - The index relation (must be opened with appropriate lock)
- *   level - The level to check (0 = L0, 1 = L1, etc.)
- */
-extern void tp_maybe_compact_level(Relation index, uint32 level);
-
-/*
- * Compact all segments across all levels into one segment per level.
- *
- * Unlike tp_maybe_compact_level, this ignores the segments_per_level
- * threshold and merges ALL segments at each level in one batch.
- * Used by bm25_force_merge to produce a fully compacted index.
- *
- * Parameters:
- *   index - The index relation (must be opened with appropriate lock)
- */
-extern void tp_force_merge_all(Relation index);
+extern bool tp_merge_segment_batch(
+		Relation			   index,
+		const BlockNumber	  *source_roots,
+		uint32				   num_sources,
+		uint32				   output_level,
+		BlockNumber			   next_segment,
+		TpMergedSegmentResult *result);

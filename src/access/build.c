@@ -38,6 +38,7 @@
 #include "memtable/chain_source.h"
 #include "memtable/log.h"
 #include "memtable/page.h"
+#include "segment/compaction.h"
 #include "segment/dictionary.h"
 #include "segment/docmap.h"
 #include "segment/io.h"
@@ -66,6 +67,22 @@ static struct
 	uint64 total_docs;
 	uint64 total_len;
 } build_progress;
+
+typedef struct TpPreparedSpill
+{
+	TpDataSource	*source;
+	TermInfo		*terms;
+	uint32			 num_terms;
+	TpDocMapBuilder *docmap;
+	uint64			 docs_delta;
+	uint64			 len_delta;
+} TpPreparedSpill;
+
+typedef enum TpSpillPostAction
+{
+	TP_SPILL_POST_NORMAL,
+	TP_SPILL_POST_NONE
+} TpSpillPostAction;
 
 void
 tp_build_progress_begin(void)
@@ -125,37 +142,13 @@ tp_buildphasename(int64 phase)
 	}
 }
 
-/*
- * Spill the current index's memtable to a disk segment.
- * Returns true if a segment was written (or the chain was non-empty
- * and a doc-length-only contribution was applied).
- *
- * Caller must already hold LW_EXCLUSIVE on the per-index lock.
- */
-bool
-tp_do_spill(
+static bool
+tp_prepare_spill(
 		TpLocalIndexState *index_state,
 		Relation		   index_rel,
-		BlockNumber		  *out_segment_root)
+		TpPreparedSpill	  *spill)
 {
-	TpDataSource	*src;
-	TermInfo		*terms;
-	uint32			 num_terms;
-	TpDocMapBuilder *docmap;
-	BlockNumber		 root;
-	uint64			 docs_delta;
-	uint64			 len_delta;
-
-	if (out_segment_root != NULL)
-		*out_segment_root = InvalidBlockNumber;
-
-	/*
-	 * Standby is read-only; spill is primary-only.  All durable
-	 * state lives on disk; redo applies GenericXLog records and
-	 * never invokes spill itself.
-	 */
-	if (RecoveryInProgress())
-		return false;
+	memset(spill, 0, sizeof(*spill));
 
 	/*
 	 * Open a chain source.  This idempotently re-acquires the
@@ -163,17 +156,38 @@ tp_do_spill(
 	 * the caller holds it EXCLUSIVE; the constructor returns
 	 * NULL for an empty chain.
 	 */
-	src = tp_memtable_chain_source_create(index_state, index_rel, NULL, 0);
-	if (src == NULL)
+	spill->source =
+			tp_memtable_chain_source_create(index_state, index_rel, NULL, 0);
+	if (spill->source == NULL)
 		return false;
 
-	docs_delta = (uint64)src->total_docs;
-	len_delta  = (uint64)src->total_len;
+	spill->docs_delta = (uint64)spill->source->total_docs;
+	spill->len_delta  = (uint64)spill->source->total_len;
 
 	tp_memtable_chain_source_extract(
-			src, CurrentMemoryContext, &terms, &num_terms, &docmap);
+			spill->source,
+			CurrentMemoryContext,
+			&spill->terms,
+			&spill->num_terms,
+			&spill->docmap);
 
-	if (num_terms == 0)
+	return true;
+}
+
+static void
+tp_finish_spill(
+		TpLocalIndexState *index_state,
+		Relation		   index_rel,
+		TpPreparedSpill	  *spill,
+		BlockNumber		  *out_segment_root,
+		TpSpillPostAction  post_action)
+{
+	BlockNumber root;
+	uint32		segment_capacity = post_action == TP_SPILL_POST_NONE
+										 ? PG_UINT16_MAX
+										 : tp_max_segments_per_level;
+
+	if (spill->num_terms == 0)
 	{
 		/*
 		 * Chain exists but yielded no terms (e.g. records with
@@ -184,7 +198,16 @@ tp_do_spill(
 	}
 	else
 	{
-		root = tp_write_segment(index_rel, terms, num_terms, docmap);
+		TpIndexMetaPage metap = tp_get_metapage(index_rel);
+
+		if (metap->level_counts[0] >= segment_capacity)
+			ereport(ERROR,
+					(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
+					 errmsg("bm25 segment count limit reached at level 0")));
+		pfree(metap);
+
+		root = tp_write_segment(
+				index_rel, spill->terms, spill->num_terms, spill->docmap);
 	}
 
 	if (out_segment_root != NULL)
@@ -213,7 +236,13 @@ tp_do_spill(
 		chain_head = metap->memtable_head_blkno;
 		pfree(metap);
 
-		tp_spill_finalize(index_state, index_rel, root, docs_delta, len_delta);
+		tp_spill_finalize(
+				index_state,
+				index_rel,
+				root,
+				spill->docs_delta,
+				spill->len_delta,
+				segment_capacity);
 
 		if (tp_debug_panic_after_spill_finalize)
 		{
@@ -228,9 +257,9 @@ tp_do_spill(
 	}
 
 	/* Free dictionary + docmap (chain source no longer needed). */
-	tp_free_dictionary(terms, num_terms);
-	tp_docmap_destroy(docmap);
-	tp_source_close(src);
+	tp_free_dictionary(spill->terms, spill->num_terms);
+	tp_docmap_destroy(spill->docmap);
+	tp_source_close(spill->source);
 
 	/*
 	 * Reset chain_page_count: the chain is empty after
@@ -240,13 +269,60 @@ tp_do_spill(
 	 */
 	pg_atomic_write_u32(&index_state->shared->chain_page_count, 0);
 
+	if (post_action == TP_SPILL_POST_NONE)
+		return;
+
 	pgstat_progress_update_param(
 			PROGRESS_CREATEIDX_SUBPHASE, TP_PHASE_COMPACTING);
-	tp_maybe_compact_level(index_rel, 0);
+	tp_maybe_compact_level(index_state, index_rel, 0);
 	pgstat_progress_update_param(
 			PROGRESS_CREATEIDX_SUBPHASE, TP_PHASE_LOADING);
+}
+
+static bool
+tp_do_spill_internal(
+		TpLocalIndexState *index_state,
+		Relation		   index_rel,
+		BlockNumber		  *out_segment_root,
+		TpSpillPostAction  post_action)
+{
+	TpPreparedSpill spill;
+
+	if (out_segment_root != NULL)
+		*out_segment_root = InvalidBlockNumber;
+
+	/*
+	 * Standby is read-only; spill is primary-only.  All durable
+	 * state lives on disk; redo applies GenericXLog records and
+	 * never invokes spill itself.
+	 */
+	if (RecoveryInProgress())
+		return false;
+
+	if (!tp_prepare_spill(index_state, index_rel, &spill))
+		return false;
+
+	tp_finish_spill(
+			index_state, index_rel, &spill, out_segment_root, post_action);
 
 	return true;
+}
+
+/*
+ * Spill the current index's memtable to a disk segment.
+ * Returns true if a segment was written (or the chain was non-empty
+ * and a doc-length-only contribution was applied).
+ *
+ * Caller must already hold LW_EXCLUSIVE on the per-index lock.
+ */
+bool
+tp_do_spill(
+		TpLocalIndexState *index_state,
+		Relation		   index_rel,
+		BlockNumber		  *out_segment_root)
+{
+	return tp_do_spill_internal(
+			index_state, index_rel, out_segment_root, TP_SPILL_POST_NORMAL);
 }
 
 /*
@@ -331,6 +407,8 @@ tp_link_l0_chain_head(Relation index, BlockNumber segment_root)
 	state	 = GenericXLogStart(index);
 	metapage = GenericXLogRegisterBuffer(state, metabuf, 0);
 	metap	 = (TpIndexMetaPage)PageGetContents(metapage);
+
+	tp_check_level_count_increment(metap, 0);
 
 	if (metap->level_heads[0] != InvalidBlockNumber)
 	{
@@ -577,9 +655,8 @@ PG_FUNCTION_INFO_V1(tp_force_merge);
 /*
  * SQL-callable: bm25_force_merge(index_name text) → void
  *
- * Force-merge all segments into a single segment, à la Lucene's
- * forceMerge(1).  Useful after bulk loads or when benchmarking
- * with a single-segment layout.
+ * Run one bounded best-effort compaction pass.  Useful after bulk loads or
+ * when benchmarking with a compact segment layout.
  */
 Datum
 tp_force_merge(PG_FUNCTION_ARGS)
@@ -589,6 +666,13 @@ tp_force_merge(PG_FUNCTION_ARGS)
 	Oid		  index_oid;
 	Relation  index_rel;
 	RangeVar *rv;
+
+	/* Replica is read-only; compaction is primary-only. Standby's
+	 * segments change only via WAL redo. */
+	if (RecoveryInProgress())
+		ereport(ERROR,
+				(errcode(ERRCODE_READ_ONLY_SQL_TRANSACTION),
+				 errmsg("bm25_force_merge() cannot run during recovery")));
 
 	rv = makeRangeVarFromNameList(stringToQualifiedNameList(index_name, NULL));
 	index_oid = RangeVarGetRelid(rv, AccessShareLock, false);
@@ -613,6 +697,8 @@ tp_force_merge(PG_FUNCTION_ARGS)
 	 */
 	{
 		TpLocalIndexState *index_state = tp_get_local_index_state(index_oid);
+		TpPreparedSpill	   spill;
+		bool			   has_memtable;
 
 		if (index_state == NULL)
 			ereport(ERROR,
@@ -622,15 +708,24 @@ tp_force_merge(PG_FUNCTION_ARGS)
 							index_name)));
 
 		tp_acquire_index_lock(index_state, LW_EXCLUSIVE);
-		/*
-		 * Spill the memtable first so force-merge produces a
-		 * truly single-segment layout.  tp_do_spill is a no-op
-		 * when the chain is empty.
-		 */
-		(void)tp_do_spill(index_state, index_rel, NULL);
-		tp_force_merge_all(index_rel);
-		tp_truncate_dead_pages(index_rel);
-		tp_release_index_lock(index_state);
+		PG_TRY();
+		{
+			has_memtable = tp_prepare_spill(index_state, index_rel, &spill);
+			if (has_memtable)
+				tp_finish_spill(
+						index_state,
+						index_rel,
+						&spill,
+						NULL,
+						TP_SPILL_POST_NONE);
+			tp_force_compact(index_state, index_rel);
+			tp_truncate_dead_pages(index_rel);
+		}
+		PG_FINALLY();
+		{
+			tp_release_index_lock(index_state);
+		}
+		PG_END_TRY();
 	}
 
 	index_close(index_rel, RowExclusiveLock);
@@ -1152,14 +1247,15 @@ tp_process_document_text(
  */
 typedef struct TpBuildCallbackState
 {
-	TpBuildContext *build_ctx;
-	Relation		index;
-	Oid				text_config_oid;
-	MemoryContext	per_doc_ctx;
-	bool			is_text_array;
-	uint64			total_docs;
-	uint64			total_len;
-	uint64			tuples_done;
+	TpBuildContext	  *build_ctx;
+	TpLocalIndexState *index_state;
+	Relation		   index;
+	Oid				   text_config_oid;
+	MemoryContext	   per_doc_ctx;
+	bool			   is_text_array;
+	uint64			   total_docs;
+	uint64			   total_len;
+	uint64			   tuples_done;
 } TpBuildCallbackState;
 
 /*
@@ -1242,7 +1338,7 @@ tp_build_callback(
 
 		pgstat_progress_update_param(
 				PROGRESS_CREATEIDX_SUBPHASE, TP_PHASE_COMPACTING);
-		tp_maybe_compact_level(bs->index, 0);
+		tp_maybe_compact_level(bs->index_state, bs->index, 0);
 		pgstat_progress_update_param(
 				PROGRESS_CREATEIDX_SUBPHASE, TP_PHASE_LOADING);
 	}
@@ -1479,6 +1575,7 @@ tp_build(Relation heap, Relation index, IndexInfo *indexInfo)
 		 */
 		index_state = tp_create_build_index_state(
 				RelationGetRelid(index), RelationGetRelid(heap));
+		tp_acquire_index_lock(index_state, LW_EXCLUSIVE);
 
 		/* Budget: maintenance_work_mem (in KB) -> bytes */
 		budget = (Size)maintenance_work_mem * 1024L;
@@ -1492,6 +1589,7 @@ tp_build(Relation heap, Relation index, IndexInfo *indexInfo)
 
 		/* Initialize callback state */
 		bs.build_ctx	   = build_ctx;
+		bs.index_state	   = index_state;
 		bs.index		   = index;
 		bs.text_config_oid = text_config_oid;
 		bs.is_text_array   = is_text_array;

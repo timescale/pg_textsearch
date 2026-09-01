@@ -77,6 +77,8 @@ SET pg_textsearch.memtable_pages_threshold = 0;
 ERROR:  permission denied to set parameter "pg_textsearch.memtable_pages_threshold"
 SET pg_textsearch.segments_per_level = 2;
 ERROR:  permission denied to set parameter "pg_textsearch.segments_per_level"
+SET pg_textsearch.max_segment_size = '1MB';
+ERROR:  permission denied to set parameter "pg_textsearch.max_segment_size"
 -- Logging GUCs should require superuser (info disclosure in pooled envs)
 SET pg_textsearch.log_scores = on;
 ERROR:  permission denied to set parameter "pg_textsearch.log_scores"
@@ -99,6 +101,20 @@ SHOW pg_textsearch.compress_segments;
 
 -- Reset to superuser
 RESET ROLE;
+SHOW pg_textsearch.max_segment_size;
+ pg_textsearch.max_segment_size 
+--------------------------------
+ 4095MB
+(1 row)
+
+SET pg_textsearch.max_segment_size = '1MB';
+SHOW pg_textsearch.max_segment_size;
+ pg_textsearch.max_segment_size 
+--------------------------------
+ 1MB
+(1 row)
+
+RESET pg_textsearch.max_segment_size;
 -- Cleanup
 DROP TABLE security_test;
 DROP OWNED BY test_nonsuperuser CASCADE;

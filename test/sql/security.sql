@@ -46,6 +46,7 @@ SELECT has_function_privilege('test_nonsuperuser', 'bm25_summarize_index(text)',
 SET pg_textsearch.bulk_load_threshold = 1;
 SET pg_textsearch.memtable_pages_threshold = 0;
 SET pg_textsearch.segments_per_level = 2;
+SET pg_textsearch.max_segment_size = '1MB';
 
 -- Logging GUCs should require superuser (info disclosure in pooled envs)
 SET pg_textsearch.log_scores = on;
@@ -59,6 +60,10 @@ SHOW pg_textsearch.compress_segments;
 
 -- Reset to superuser
 RESET ROLE;
+SHOW pg_textsearch.max_segment_size;
+SET pg_textsearch.max_segment_size = '1MB';
+SHOW pg_textsearch.max_segment_size;
+RESET pg_textsearch.max_segment_size;
 
 -- Cleanup
 DROP TABLE security_test;

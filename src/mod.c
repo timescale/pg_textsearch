@@ -25,6 +25,7 @@
 
 #include "access/am.h"
 #include "constants.h"
+#include "index/metapage.h"
 #include "index/registry.h"
 #include "index/state.h"
 #include "planner/hooks.h"
@@ -63,6 +64,9 @@ int tp_memtable_pages_threshold = TP_DEFAULT_MEMTABLE_PAGES_THRESHOLD;
 /* Global variable for segments per level before compaction */
 int tp_segments_per_level = TP_DEFAULT_SEGMENTS_PER_LEVEL;
 
+/* Conservative size budget for newly merged multi-source segments. */
+int tp_max_segment_size_mb = TP_DEFAULT_SEGMENT_SIZE_MB;
+
 /* Global variable for segment compression (on by default - benchmarks show
  * compression improves both size and query performance)
  */
@@ -99,6 +103,9 @@ bool tp_log_cache_state = false;
 
 /* Debug: trigger PANIC after spill finalize for crash-safety testing */
 bool tp_debug_panic_after_spill_finalize = false;
+
+/* Per-level segment capacity; the debug GUC may lower it in tests. */
+int tp_max_segments_per_level = PG_UINT16_MAX;
 
 /*
  * Soft+hard memory budget for the in-memory memtable cache, in
@@ -277,6 +284,21 @@ _PG_init(void)
 			NULL,
 			NULL);
 
+	DefineCustomIntVariable(
+			"pg_textsearch.max_segment_size",
+			"Maximum conservative size of a merged segment.",
+			"Bounds newly merged multi-source segments. A larger existing "
+			"segment remains an indivisible singleton.",
+			&tp_max_segment_size_mb,
+			TP_DEFAULT_SEGMENT_SIZE_MB,
+			TP_MIN_SEGMENT_SIZE_MB,
+			TP_MAX_SEGMENT_SIZE_MB,
+			PGC_SUSET,
+			GUC_UNIT_MB,
+			NULL,
+			NULL,
+			NULL);
+
 	DefineCustomBoolVariable(
 			"pg_textsearch.compress_segments",
 			"Enable compression for new segment blocks",
@@ -370,6 +392,20 @@ _PG_init(void)
 			false,
 			PGC_SUSET, /* superuser-only: forces a server-wide PANIC,
 						* so unprivileged roles must not reach it */
+			0,
+			NULL,
+			NULL,
+			NULL);
+
+	DefineCustomIntVariable(
+			"pg_textsearch.debug_segment_count_limit",
+			"Set the maximum persisted segment count per level.",
+			"Testing-only limit for exercising segment-count overflow.",
+			&tp_max_segments_per_level,
+			PG_UINT16_MAX,
+			1,
+			PG_UINT16_MAX,
+			PGC_SUSET,
 			0,
 			NULL,
 			NULL,

@@ -443,6 +443,46 @@ the linkage isn't being WAL-emitted as a custom record."
     log "Test 4 PASSED: long-lived read after merge stays consistent"
 }
 
+#
+# Test 5: write-path functions are rejected on a standby
+#
+# bm25_spill_index() and bm25_force_merge() mutate index pages, so both
+# must refuse to run during recovery rather than failing deep in the
+# write path with a low-level WAL error.
+#
+test_write_functions_rejected_on_standby() {
+    log "Test 5: write-path functions rejected on standby"
+
+    primary_sql "
+        DROP TABLE IF EXISTS sp5_docs CASCADE;
+        CREATE TABLE sp5_docs (id SERIAL PRIMARY KEY, content TEXT);
+        INSERT INTO sp5_docs (content)
+            SELECT 'doc ' || i || ' alpha bravo'
+            FROM generate_series(1,50) i;
+        CREATE INDEX sp5_idx ON sp5_docs USING bm25(content)
+            WITH (text_config='simple');
+    " >/dev/null
+    wait_for_standby_catchup
+
+    local spill_out force_out
+    spill_out=$(standby_sql "SELECT bm25_spill_index('sp5_idx');")
+    force_out=$(standby_sql "SELECT bm25_force_merge('sp5_idx');")
+
+    log "  spill on standby: ${spill_out}"
+    log "  force merge on standby: ${force_out}"
+
+    if [[ "${spill_out}" != *"cannot run during recovery"* ]]; then
+        error "Test 5: bm25_spill_index() was not rejected on the \
+standby: ${spill_out}"
+    fi
+    if [[ "${force_out}" != *"cannot run during recovery"* ]]; then
+        error "Test 5: bm25_force_merge() was not rejected on the \
+standby: ${force_out}"
+    fi
+
+    log "Test 5 PASSED: write-path functions refuse to run during recovery"
+}
+
 main() {
     log "Starting spill-paths replication test..."
     check_required_tools
@@ -465,6 +505,8 @@ main() {
         failures="${failures} test_cold_start_corpus_stats"
     ( test_long_lived_read_after_segment_merge ) || \
         failures="${failures} test_long_lived_read_after_segment_merge"
+    ( test_write_functions_rejected_on_standby ) || \
+        failures="${failures} test_write_functions_rejected_on_standby"
 
     if [ -n "${failures}" ]; then
         error "Spill-paths failures:${failures}"

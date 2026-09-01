@@ -945,6 +945,25 @@ bm25_test_chain_source(PG_FUNCTION_ARGS)
 			TEST_FAIL("get_doc_length mismatch");
 		TEST_OK();
 	}
+	else if (strcmp(case_name, "one_doc_no_terms") == 0)
+	{
+		ItemPointerData ctid;
+		TpVector	   *v;
+
+		ItemPointerSet(&ctid, 800, 1);
+		v = test_make_tpvector(idx_name, 0, NULL, NULL);
+		tp_memtable_append(rel, &ctid, 7, (const char *)v, VARSIZE(v));
+		pfree(v);
+
+		src = tp_memtable_chain_source_create(state, rel, NULL, 0);
+		if (src == NULL)
+			TEST_FAIL("chain source NULL after termless append");
+		if (src->total_docs != 1)
+			TEST_FAIL("total_docs=%d, expected 1", src->total_docs);
+		if (src->total_len != 7)
+			TEST_FAIL("total_len=%lld, expected 7", (long long)src->total_len);
+		TEST_OK();
+	}
 	else if (strcmp(case_name, "multi_doc_shared_term") == 0)
 	{
 		const char	   *terms[] = {"shared"};

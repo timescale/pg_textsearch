@@ -706,7 +706,8 @@ tp_spill_finalize(
 		Relation		   rel,
 		BlockNumber		   new_segment_root,
 		uint64			   docs_delta,
-		uint64			   len_delta)
+		uint64			   len_delta,
+		uint32			   segment_capacity)
 {
 	Buffer			  metabuf;
 	Buffer			  seg_buf = InvalidBuffer;
@@ -717,6 +718,7 @@ tp_spill_finalize(
 	TpMemtable		 *memtable = NULL;
 
 	Assert(rel != NULL);
+	Assert(segment_capacity > 0 && segment_capacity <= PG_UINT16_MAX);
 
 	/*
 	 * Step 1: bump the cache's spill-generation token BEFORE we
@@ -752,6 +754,11 @@ tp_spill_finalize(
 	{
 		Page			 seg_page;
 		TpSegmentHeader *seg_header;
+
+		if (metap->level_counts[0] >= segment_capacity)
+			ereport(ERROR,
+					(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
+					 errmsg("bm25 segment count limit reached at level 0")));
 
 		seg_buf = ReadBuffer(rel, new_segment_root);
 		LockBuffer(seg_buf, BUFFER_LOCK_EXCLUSIVE);

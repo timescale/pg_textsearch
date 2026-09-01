@@ -801,7 +801,8 @@ tp_build_parallel(
 					num_sources,
 					0, /* target_level: L0 */
 					total_tokens,
-					true /* disjoint_sources */);
+					true, /* disjoint_sources */
+					InvalidBlockNumber);
 
 			/*
 			 * Flush dirty buffers before updating the metapage,

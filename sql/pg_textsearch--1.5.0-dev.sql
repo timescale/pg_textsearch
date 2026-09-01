@@ -249,11 +249,14 @@ RETURNS int4
 AS 'MODULE_PATHNAME', 'tp_spill_memtable'
 LANGUAGE C VOLATILE STRICT;
 
--- Force-merge all segments into one, à la Lucene's forceMerge(1)
+-- One-shot, size-bounded copy-on-write segment compaction
 CREATE FUNCTION @extschema@.bm25_force_merge(index_name text)
 RETURNS void
 AS 'MODULE_PATHNAME', 'tp_force_merge'
 LANGUAGE C VOLATILE STRICT;
+
+COMMENT ON FUNCTION @extschema@.bm25_force_merge(text) IS
+    'Run one-shot copy-on-write compaction into the fewest conservatively size-bounded segments; existing over-budget singletons remain indivisible, and displaced pages enter deferred reclaim.';
 
 -- Fast summary function showing only statistics (no content dump)
 CREATE FUNCTION @extschema@.bm25_summarize_index(text) RETURNS text

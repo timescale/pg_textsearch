@@ -114,13 +114,19 @@ extern BlockNumber tp_memtable_append(
  * pass NULL; in that case the spill_generation bump and the
  * tp_cache_clear call are both skipped (the build path constructs
  * an empty cache anyway).
+ *
+ * `segment_capacity` is the maximum representable L0 count for this
+ * operation. Normal spills pass the configured test limit; force compaction
+ * passes the persisted uint16 limit so lowering the test limit cannot block
+ * its mandatory spill.
  */
 extern void tp_spill_finalize(
 		TpLocalIndexState *state,
 		Relation		   rel,
 		BlockNumber		   new_segment_root,
 		uint64			   docs_delta,
-		uint64			   len_delta);
+		uint64			   len_delta,
+		uint32			   segment_capacity);
 
 /*
  * WAL-stamp every page in the memtable chain rooted at `head` as

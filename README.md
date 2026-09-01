@@ -353,16 +353,19 @@ large partitioned datasets.
 
 The index stores data in multiple segments across levels (similar to an LSM
 tree). After bulk loads or sustained incremental inserts, multiple segments
-may accumulate; consolidating them into one improves query speed by reducing
-the number of segments scanned:
+may accumulate. Force merge performs one copy-on-write compaction pass into
+the fewest segments that fit a conservative size estimate, reducing the
+number of segments scanned:
 
 ```sql
 SELECT bm25_force_merge('docs_idx');
 ```
 
-This is analogous to Lucene's `forceMerge(1)`. It rewrites all segments into
-a single segment and reclaims the freed pages. Best used after large batch
-inserts, not during ongoing write traffic.
+Published source segments remain immutable while replacement segments are
+built. Existing segments that already exceed the configured size budget
+remain indivisible singletons. Pages displaced by publication enter deferred
+reclaim rather than becoming immediately reusable. Best used after large
+batch inserts, not during ongoing write traffic.
 
 #### Index fragmentation on update-heavy workloads
 
@@ -418,6 +421,7 @@ Setting | Default | Description
 `pg_textsearch.default_limit` | 1000 | Max documents scored when no LIMIT clause is present
 `pg_textsearch.compress_segments` | on | Compress posting blocks in new segments
 `pg_textsearch.segments_per_level` | 8 | Segments per level before automatic compaction (2-64)
+`pg_textsearch.max_segment_size` | 4095MB | Conservative size budget for newly merged multi-source segments (1-4095MB)
 `pg_textsearch.bulk_load_threshold` | 100000 | Terms per transaction before auto-spill (0 = disable)
 `pg_textsearch.memtable_pages_threshold` | 64 | Chain pages before auto-spill (0 = disable)
 
@@ -803,7 +807,7 @@ superuser privileges.
 
 Function | Description
 --- | ---
-bm25_force_merge(index_name) → void | Merge all segments into one (improves query speed)
+bm25_force_merge(index_name) → void | Run one-shot copy-on-write compaction into the fewest conservatively size-bounded segments; over-budget singletons remain indivisible and displaced pages enter deferred reclaim
 bm25_spill_index(index_name) → int4 | Force memtable spill to disk segment
 bm25_dump_index(index_name) † → text | Dump internal index structure (truncated)
 bm25_summarize_index(index_name) † → text | Show index statistics without content
@@ -813,7 +817,7 @@ Additional file-writing debug functions (`bm25_dump_index(text, text)` and
 `-DDEBUG_DUMP_INDEX`).
 
 ```sql
--- Merge all segments into one (best after bulk loads)
+-- Compact once into the fewest conservatively size-bounded segments
 SELECT bm25_force_merge('docs_idx');
 
 -- Force spill to disk (returns number of entries spilled)

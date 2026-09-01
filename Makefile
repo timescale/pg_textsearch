@@ -48,6 +48,7 @@ OBJS = \
 	src/segment/dictionary.o \
 	src/segment/scan.o \
 	src/segment/merge.o \
+	src/segment/compaction.o \
 	src/segment/tombstone.o \
 	src/segment/docmap.o \
 	src/segment/alive_bitset.o \
@@ -342,7 +343,7 @@ help:
 	@echo "  make clean        - Clean build artifacts and test directories"
 	@echo ""
 	@echo "Testing targets:"
-	@echo "  make test         - Run SQL regression tests only"
+	@echo "  make test         - Run source guard and SQL regression tests"
 	@echo "  make installcheck - Run SQL regression tests"
 	@echo "  make test-local   - Run tests with dedicated PostgreSQL instance"
 	@echo "  make test-all     - Run all tests (SQL regression + shell scripts)"
