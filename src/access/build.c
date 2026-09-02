@@ -282,9 +282,9 @@ tp_finish_spill(
 		break;
 	case TP_COMPACTION_BACKGROUND:
 		/*
-		 * A temporary index is unreachable from any other session, and
-		 * a process that cannot dispatch would only record a request
-		 * that is later discarded.  Both compact inline.
+		 * Temporary indexes are unreachable from other sessions, and a
+		 * process that cannot dispatch would record a request that is
+		 * later discarded.  Both compact inline.
 		 */
 		if (RelationUsesLocalBuffers(index_rel) ||
 			!tp_compaction_dispatch_possible())

@@ -637,22 +637,18 @@ Two ways to move that work off the writing transaction:
   limit reached`. Query performance degrades well before that point.
 
 The policy is per index, so one index can hand compaction to a scheduler
-while another keeps compacting inline. Change it at any time with
+while another keeps compacting inline. Change it with
 `ALTER INDEX ... SET (compaction = ...)`; the setting is read after each
 spill, and the statement does not block concurrent readers or writers.
 
-`background` falls back to compacting inline where a request could not be
-handed off or would be pointless: on temporary indexes, which no other
-session can open; during autovacuum, which must not execute arbitrary user
-SQL; and for a spill caused by the callback itself. `CREATE INDEX` likewise
-compacts inline, because no other session can open the index until the build
-commits. `off` is honored everywhere, including all of these cases.
+`background` compacts inline where a request could not be handed off: on
+temporary indexes, during autovacuum, for a spill caused by the callback
+itself, and during `CREATE INDEX`. `off` is honored in all of these.
 
-Two-phase transactions hand off nothing. Callback SQL run at `PREPARE` time
-could leave transaction-global state that PostgreSQL validates immediately
-afterward — reading a temporary table, for instance, would make an otherwise
-valid `PREPARE TRANSACTION` fail — so the debt is left for the next ordinary
-spill or for the scheduler's own sweep.
+Two-phase transactions hand off nothing. Callback SQL at `PREPARE` time could
+leave transaction-global state that PostgreSQL validates immediately
+afterward — reading a temporary table, for instance, would fail an otherwise
+valid `PREPARE TRANSACTION`.
 
 See [Compacting an index](#compacting-an-index). A built-in background
 scheduler is planned for a future release.

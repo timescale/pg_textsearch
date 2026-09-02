@@ -48,11 +48,7 @@ BEGIN
 END;
 $$;
 
--- The callback GUC requires a schema-qualified name.  A one-part name
--- would be resolved through the search_path of whichever backend is
--- committing, and the function then runs as that backend's user, so any
--- role able to create a function in an earlier schema on that path could
--- execute arbitrary SQL as the writer.
+-- The callback GUC requires a schema-qualified name.
 SET pg_textsearch.compaction_request_function = 'record_compaction_request';
 SET pg_textsearch.compaction_request_function = 'invalid..callback';
 SET pg_textsearch.compaction_request_function = 'db.schema.callback';
@@ -86,9 +82,9 @@ CREATE INDEX request_docs2_idx ON request_docs2
     USING bm25(body)
     WITH (text_config = 'english', compaction = 'background');
 
--- Seeding stays below the threshold, so it must dispatch nothing.  Without
--- this, every later delta would still hold if the code dispatched on every
--- spill instead of only on real debt.
+-- Seeding stays below the threshold, so it must dispatch nothing.
+-- Without this, every later delta would still hold if the code
+-- dispatched on every spill rather than on real debt.
 SELECT last_value AS calls_before FROM compaction_request_calls \gset
 BEGIN;
 INSERT INTO request_docs (body)
@@ -104,8 +100,7 @@ SELECT NOT bm25_needs_compaction('request_docs_idx'::regclass)
        AS seed_below_threshold;
 
 -- Top-level abort discards the pending request.  The interposed
--- transaction forces any request that leaked past the abort to be
--- dispatched before the delta is read.
+-- transaction flushes any leaked request before the delta is read.
 SELECT last_value AS calls_before FROM compaction_request_calls \gset
 BEGIN;
 INSERT INTO request_docs (body)
@@ -130,8 +125,7 @@ FROM compaction_request_calls;
 SELECT count(*) AS callback_local_rows FROM compaction_callback_rows;
 
 -- Repeated requests for one index are deduplicated.  The segment delta
--- proves both spills really reached the request path, so a single
--- callback invocation is deduplication and not a single request.
+-- proves both spills reached the request path.
 SELECT last_value AS calls_before FROM compaction_request_calls \gset
 SELECT (SELECT sum(c) FROM unnest(bm25_level_counts('request_docs_idx')) c)
     AS segs_before \gset
@@ -149,8 +143,7 @@ SELECT last_value - :calls_before AS deduplicated_requests
 FROM compaction_request_calls;
 
 -- Different indexes each dispatch once.  The per-index counter proves
--- the second index was passed to the callback, so a total of two is not
--- one index dispatched twice.
+-- the second index was dispatched, not the first one twice.
 SELECT last_value AS calls_before FROM compaction_request_calls \gset
 SELECT last_value AS docs2_before FROM compaction_request_calls_docs2 \gset
 BEGIN;
@@ -166,9 +159,8 @@ FROM compaction_request_calls;
 SELECT last_value - :docs2_before AS multiple_index_docs2_requests
 FROM compaction_request_calls_docs2;
 
--- The configured callback is resolved as written, not through the
--- committing backend's search_path.  A same-named function in a schema
--- earlier on that path must not be reached.
+-- The callback is resolved as written, not through the committing
+-- backend's search_path.
 CREATE SCHEMA request_shadow;
 CREATE SEQUENCE compaction_request_calls_shadow;
 SELECT setval('compaction_request_calls_shadow', 1, true)
@@ -233,9 +225,9 @@ COMMIT;
 SELECT last_value - :calls_before AS rollback_drop_requests
 FROM compaction_request_calls;
 
--- An index and request created in an aborted savepoint are not dispatched.
--- The recording callback stays configured, so a zero delta means the
--- request was discarded rather than the counter being unreachable.
+-- An index and request created in an aborted savepoint are not
+-- dispatched.  The recording callback stays configured, so a zero delta
+-- means the request was discarded, not that the counter was unreachable.
 CREATE TABLE aborted_index_docs (id serial PRIMARY KEY, body text);
 SELECT last_value AS calls_before FROM compaction_request_calls \gset
 BEGIN;
@@ -274,9 +266,8 @@ COMMIT;
 SELECT last_value - :calls_before AS dropped_index_requests
 FROM compaction_request_calls;
 
--- A callback that vanished between SET and dispatch warns, and the writer
--- transaction still commits.  The warning is the assertion here; a counter
--- delta could not distinguish this from a silent skip.
+-- A callback that vanished between SET and dispatch warns, and the
+-- writer transaction still commits.  The warning is the assertion.
 CREATE FUNCTION public.disappearing_request(regclass) RETURNS void
 LANGUAGE sql AS $$ SELECT NULL::void $$;
 SET pg_textsearch.compaction_request_function =
@@ -290,10 +281,10 @@ COMMIT;
 SELECT count(*) = 20 AS disappeared_callback_committed
 FROM request_docs WHERE body LIKE 'disappearing callback %';
 
--- The callback is resolved by name at dispatch, not cached as an OID when
--- the GUC is set.  Renaming the original away and creating a different
--- function under the same name must divert the call: a cached OID would
--- still reach the renamed original, which keeps its OID.
+-- The callback is resolved by name at dispatch, not cached as an OID.
+-- Renaming the original away and creating a different function under the
+-- same name must divert the call; a cached OID would reach the original,
+-- which keeps its OID across the rename.
 CREATE SEQUENCE compaction_request_calls_replaced;
 SELECT setval('compaction_request_calls_replaced', 1, true)
     AS replaced_init \gset
@@ -346,9 +337,8 @@ COMMIT;
 SELECT count(*) = 20 AS callback_failure_committed
 FROM request_docs WHERE body LIKE 'callback failure %';
 
--- A two-phase transaction dispatches nothing.  Running callback SQL at
--- PRE_PREPARE could set transaction-global state that PostgreSQL checks
--- afterward, so the debt is left for a later spill or the worker's sweep.
+-- A two-phase transaction dispatches nothing; the debt is left for a
+-- later spill or the scheduler's sweep.
 CREATE TABLE prepared_request_docs (id serial PRIMARY KEY, body text);
 CREATE INDEX prepared_request_docs_idx ON prepared_request_docs
     USING bm25(body)
@@ -380,9 +370,8 @@ SELECT last_value - :calls_before AS commit_prepared_requests
 FROM compaction_request_calls;
 
 -- A callback touching a temporary object would set transaction-global
--- state that PostgreSQL validates after PRE_PREPARE, and subtransaction
--- rollback cannot clear it.  Because two-phase transactions do not
--- dispatch, PREPARE still succeeds.
+-- state that PostgreSQL validates after PRE_PREPARE.  Because two-phase
+-- transactions do not dispatch, PREPARE still succeeds.
 CREATE TEMP TABLE prepare_temp_probe (x int);
 CREATE FUNCTION public.temp_touching_request(regclass) RETURNS void
 LANGUAGE plpgsql AS $$
@@ -404,10 +393,9 @@ FROM prepared_request_docs WHERE body LIKE 'prepare temp %';
 SET pg_textsearch.compaction_request_function =
     'public.record_compaction_request';
 
--- A spill caused by the callback itself compacts inline.  Its request
--- would land in a list this dispatch has already stopped reading and be
--- freed at commit, while the spill is physical and survives the
--- callback's rollback, so that debt would never be paid.
+-- A spill caused by the callback compacts inline.  Its request would
+-- land in a list this dispatch has stopped reading and be freed at
+-- commit, while the spill survives the callback's rollback.
 CREATE TABLE reentrant_outer (id serial PRIMARY KEY, body text);
 CREATE INDEX reentrant_outer_idx ON reentrant_outer
     USING bm25(body)
@@ -444,8 +432,7 @@ SELECT NOT bm25_needs_compaction('reentrant_inner_idx'::regclass)
 SET pg_textsearch.compaction_request_function =
     'public.record_compaction_request';
 
--- Temporary indexes compact inline even when set to background, because
--- no other session can open them.
+-- Temporary indexes compact inline even when set to background.
 CREATE TEMP TABLE temp_request_docs (id serial PRIMARY KEY, body text);
 CREATE INDEX temp_request_docs_idx ON temp_request_docs
     USING bm25(body)
@@ -475,8 +462,8 @@ SELECT bm25_spill_index('temp_off_docs_idx') IS NOT NULL;
 SELECT bm25_needs_compaction('temp_off_docs_idx'::regclass)
        AS temp_off_debt_remains;
 
--- A final serial build batch must receive the same inline compaction policy
--- as budget-triggered intermediate batches.
+-- The final serial build batch gets the same policy as intermediate
+-- batches.
 SET max_parallel_maintenance_workers = 0;
 SET maintenance_work_mem = '1MB';
 CREATE TABLE final_build_docs (

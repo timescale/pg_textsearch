@@ -490,10 +490,8 @@ _PG_init(void)
 			NoLock);
 
 	/*
-	 * Spill-time compaction policy for this index.  Taken with
-	 * ShareUpdateExclusiveLock so ALTER INDEX ... SET (compaction = ...)
-	 * does not block concurrent readers or writers: the setting is
-	 * consulted after a spill and changes no on-disk structure.
+	 * ShareUpdateExclusiveLock: the value is read after a spill and
+	 * changes no on-disk structure, so ALTER INDEX need not block.
 	 */
 	add_enum_reloption(
 			tp_relopt_kind,
@@ -647,13 +645,10 @@ tp_xact_callback(XactEvent event, void *arg pg_attribute_unused())
 
 	case XACT_EVENT_PRE_PREPARE:
 		/*
-		 * Spill, but do not run the callback.  Callback SQL that touches
-		 * a temporary object would set XACT_FLAGS_ACCESSEDTEMPNAMESPACE
-		 * on the top transaction, which PostgreSQL checks *after* this
-		 * event and which subtransaction rollback cannot clear, so an
-		 * otherwise valid PREPARE TRANSACTION would fail.  Two-phase
-		 * transactions therefore hand off nothing; the debt is picked up
-		 * by the next ordinary spill or by the worker's own sweep.
+		 * Spill, but do not run the callback: SQL touching a temporary
+		 * object sets XACT_FLAGS_ACCESSEDTEMPNAMESPACE, which is
+		 * checked after this event and which subtransaction rollback
+		 * cannot clear, failing an otherwise valid PREPARE.
 		 */
 		tp_bulk_load_spill_check();
 		tp_compaction_reset_requests();

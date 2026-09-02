@@ -42,13 +42,8 @@ typedef struct TpResolvedRequestFunction
 } TpResolvedRequestFunction;
 
 /*
- * Can this process hand a compaction request off at commit?
- *
- * Parallel workers and startup cannot run the callback at all, an
- * autovacuum worker must not execute arbitrary user SQL, and a spill
- * caused by the callback itself has no later flush to be picked up by.
- * In every one of these cases the caller compacts inline instead, so
- * the debt is paid rather than recorded and dropped.
+ * Can this process hand a compaction request off at commit?  Callers
+ * that cannot compact inline instead, so the debt is never dropped.
  */
 bool
 tp_compaction_dispatch_possible(void)
@@ -58,12 +53,7 @@ tp_compaction_dispatch_possible(void)
 			AmAutoVacuumWorkerProcess() || tp_dispatch_active);
 }
 
-/*
- * Spill-time compaction policy for one index.
- *
- * Indexes created before this option existed, and indexes created
- * without it, carry no reloption and compact inline.
- */
+/* Spill-time compaction policy.  No reloption means inline. */
 int
 tp_index_compaction_mode(Relation index_rel)
 {
@@ -91,11 +81,9 @@ tp_check_compaction_request_function(
 	rawname = pstrdup(*newval);
 	valid	= SplitIdentifierString(rawname, '.', &names);
 	/*
-	 * Require a schema-qualified name.  A one-part name would be
-	 * resolved through the search_path of whichever backend happens to
-	 * be committing, and the function then runs as that backend's user.
-	 * Any role able to create a function in a schema earlier on that
-	 * search_path could therefore execute arbitrary SQL as the writer.
+	 * Require a schema-qualified name: a one-part name resolves through
+	 * the committing backend's search_path, and the callback runs as
+	 * that backend's user.
 	 */
 	valid = valid && list_length(names) == 2;
 	if (valid)
@@ -355,11 +343,9 @@ tp_compaction_flush_requests(void)
 		return;
 
 	/*
-	 * Defensive: a process that cannot dispatch should never have
-	 * recorded a request, because the spill path compacts inline
-	 * instead.  Reaching this point means the two disagree; discard the
-	 * requests rather than run callback SQL somewhere it is unsafe.
-	 * The debt itself is on disk, so a later spill re-detects it.
+	 * Defensive: such a process never records a request, because the
+	 * spill path compacts inline.  Discard rather than run callback SQL
+	 * where it is unsafe; the debt is on disk and re-detected later.
 	 */
 	if (!tp_compaction_dispatch_possible())
 	{
@@ -373,11 +359,9 @@ tp_compaction_flush_requests(void)
 	tp_pending_compactions = NIL;
 
 	/*
-	 * Any spill triggered by the callback itself compacts inline: the
-	 * request it would otherwise record lands in a fresh list that this
-	 * flush has already stopped looking at, and would be freed at
-	 * commit.  The spill is physical and survives the callback's
-	 * subtransaction rollback, so that debt would never be paid.
+	 * A spill caused by the callback compacts inline: its request would
+	 * land in a list this flush has stopped reading and be freed at
+	 * commit, while the spill itself survives the callback's rollback.
 	 */
 	tp_dispatch_active = true;
 
