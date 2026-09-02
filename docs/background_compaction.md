@@ -161,7 +161,7 @@ singleton, so a segment at any level may exceed it.
 
 ## Spill-time dispatch
 
-`pg_textsearch.compaction_mode` controls what happens when a spill leaves a
+The `compaction` index option controls what happens when a spill leaves a
 level at the compaction threshold:
 
 - `inline` (the default) preserves synchronous compaction.
@@ -169,20 +169,55 @@ level at the compaction threshold:
   configured callback at transaction pre-commit.
 - `off` leaves compaction debt for an explicit caller.
 
-Set `pg_textsearch.compaction_request_function` to an unqualified or
-schema-qualified function name. The function must accept one `regclass`
-argument; its return type is ignored. Name validation is syntax-only so an
-external scheduler can be installed independently of pg_textsearch.
+Because it is a per-index option rather than a session setting, one index
+can hand compaction to a scheduler while another compacts inline, and the
+policy travels with the index instead of with whoever happens to be writing.
+`ALTER INDEX ... SET (compaction = ...)` changes it under
+`ShareUpdateExclusiveLock`; the value is read after each spill.
+
+Set `pg_textsearch.compaction_request_function` to a *schema-qualified*
+function name. A one-part name would be resolved through the search_path of
+whichever backend is committing, and the function then runs as that backend's
+user, so any role able to create a function in an earlier schema on that path
+could execute arbitrary SQL as the writer. The function must accept one
+`regclass` argument; its return type is ignored. Existence is not checked
+when the GUC is set, so an external scheduler can be installed independently
+of pg_textsearch. The name is resolved at each dispatch rather than cached,
+so replacing the function behind the name takes effect without re-setting the
+GUC.
 
 Requests are backend-local, transaction-local, and deduplicated by index.
-Aborted transactions dispatch nothing, pending index OIDs are revalidated
-against the transaction's final catalog state, and prepared transactions
-dispatch before prepare and then clear backend-local state. Temporary indexes
-always compact inline because another backend cannot open them.
+Aborting the top-level transaction dispatches nothing; a rolled-back
+savepoint still dispatches, because the spill it performed is physical and
+survives the rollback. Pending index OIDs are revalidated against the
+transaction's final catalog state.
+
+`background` falls back to inline compaction wherever a request could not be
+handed off or would be pointless:
+
+- **Temporary indexes**, which no other backend can open.
+- **Autovacuum**, which must not execute arbitrary user SQL. The request
+  would otherwise be recorded and then discarded, stranding the debt.
+- **A spill caused by the callback itself**, whose request would land in a
+  list the running dispatch has already stopped reading and be freed at
+  commit, while the spill survives the callback's rollback.
+- **`CREATE INDEX`**, because no other session can open the index until the
+  build commits.
+
+`off` is honored in every one of these cases.
+
+Two-phase transactions dispatch nothing. Callback SQL run at `PRE_PREPARE`
+can leave transaction-global state that PostgreSQL validates after the event
+and that subtransaction rollback cannot clear — reading a temporary object
+sets `XACT_FLAGS_ACCESSEDTEMPNAMESPACE`, which would make an otherwise valid
+`PREPARE TRANSACTION` fail. The debt is left for the next ordinary spill or
+for the scheduler's own sweep.
 
 Each callback runs in a protected internal subtransaction. Its local effects
 are rolled back after invocation, so the callback should hand work to a
 facility whose submission survives that rollback. Ordinary lookup or callback
 errors produce a warning and do not abort the writer transaction. Query
-cancellation and server shutdown errors are rethrown.
+cancellation and server shutdown errors are rethrown, and therefore can abort
+the writer transaction — a callback that cancels the backend will fail the
+commit it was invoked from.
 This interface is scheduler-neutral and has no pg_durable dependency.

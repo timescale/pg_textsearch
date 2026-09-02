@@ -25,18 +25,55 @@
 #include <utils/syscache.h>
 #include <utils/varlena.h>
 
+#include "access/am.h"
 #include "index/compaction_request.h"
 
-int	  tp_compaction_mode			 = TP_COMPACTION_INLINE;
 char *tp_compaction_request_function = "";
 
 static List *tp_pending_compactions = NIL;
+
+/* True while tp_compaction_flush_requests() is running callback SQL. */
+static bool tp_dispatch_active = false;
 
 typedef struct TpResolvedRequestFunction
 {
 	NameData namespace_name;
 	NameData function_name;
 } TpResolvedRequestFunction;
+
+/*
+ * Can this process hand a compaction request off at commit?
+ *
+ * Parallel workers and startup cannot run the callback at all, an
+ * autovacuum worker must not execute arbitrary user SQL, and a spill
+ * caused by the callback itself has no later flush to be picked up by.
+ * In every one of these cases the caller compacts inline instead, so
+ * the debt is paid rather than recorded and dropped.
+ */
+bool
+tp_compaction_dispatch_possible(void)
+{
+	return !(
+			IsParallelWorker() || IsInParallelMode() || RecoveryInProgress() ||
+			AmAutoVacuumWorkerProcess() || tp_dispatch_active);
+}
+
+/*
+ * Spill-time compaction policy for one index.
+ *
+ * Indexes created before this option existed, and indexes created
+ * without it, carry no reloption and compact inline.
+ */
+int
+tp_index_compaction_mode(Relation index_rel)
+{
+	TpOptions *options = (TpOptions *)index_rel->rd_options;
+
+	if (options == NULL)
+		return TP_COMPACTION_INLINE;
+
+	return options->compaction;
+}
 
 bool
 tp_check_compaction_request_function(
@@ -53,7 +90,14 @@ tp_check_compaction_request_function(
 
 	rawname = pstrdup(*newval);
 	valid	= SplitIdentifierString(rawname, '.', &names);
-	valid	= valid && list_length(names) >= 1 && list_length(names) <= 2;
+	/*
+	 * Require a schema-qualified name.  A one-part name would be
+	 * resolved through the search_path of whichever backend happens to
+	 * be committing, and the function then runs as that backend's user.
+	 * Any role able to create a function in a schema earlier on that
+	 * search_path could therefore execute arbitrary SQL as the writer.
+	 */
+	valid = valid && list_length(names) == 2;
 	if (valid)
 	{
 		foreach_ptr(char, name, names)
@@ -67,8 +111,8 @@ tp_check_compaction_request_function(
 	}
 	if (!valid)
 		GUC_check_errdetail(
-				"Must be empty, an unqualified identifier, or a "
-				"schema-qualified identifier.");
+				"Must be empty or a schema-qualified identifier of the "
+				"form \"schema.function\".");
 
 	pfree(rawname);
 	list_free(names);
@@ -310,16 +354,32 @@ tp_compaction_flush_requests(void)
 	if (tp_pending_compactions == NIL)
 		return;
 
+	/*
+	 * Defensive: a process that cannot dispatch should never have
+	 * recorded a request, because the spill path compacts inline
+	 * instead.  Reaching this point means the two disagree; discard the
+	 * requests rather than run callback SQL somewhere it is unsafe.
+	 * The debt itself is on disk, so a later spill re-detects it.
+	 */
+	if (!tp_compaction_dispatch_possible())
+	{
+		list_free(tp_pending_compactions);
+		tp_pending_compactions = NIL;
+		return;
+	}
+
 	/* Take ownership so callback re-entry cannot loop. */
 	pending				   = tp_pending_compactions;
 	tp_pending_compactions = NIL;
 
-	if (IsParallelWorker() || IsInParallelMode() || RecoveryInProgress() ||
-		AmAutoVacuumWorkerProcess())
-	{
-		list_free(pending);
-		return;
-	}
+	/*
+	 * Any spill triggered by the callback itself compacts inline: the
+	 * request it would otherwise record lands in a fresh list that this
+	 * flush has already stopped looking at, and would be freed at
+	 * commit.  The spill is physical and survives the callback's
+	 * subtransaction rollback, so that debt would never be paid.
+	 */
+	tp_dispatch_active = true;
 
 	PG_TRY();
 	{
@@ -342,6 +402,7 @@ tp_compaction_flush_requests(void)
 	}
 	PG_FINALLY();
 	{
+		tp_dispatch_active = false;
 		if (function != NULL)
 			pfree(function);
 		list_free(pending);

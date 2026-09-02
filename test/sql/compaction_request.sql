@@ -1,10 +1,12 @@
 CREATE EXTENSION IF NOT EXISTS pg_textsearch;
 
 \pset format unaligned
-SHOW pg_textsearch.compaction_mode;
 SET client_min_messages = warning;
 SET pg_textsearch.segments_per_level = 2;
-SET pg_textsearch.compaction_mode = 'background';
+
+-- The two-phase commit coverage below is meaningless without this.
+SELECT current_setting('max_prepared_transactions')::int > 0
+       AS twophase_enabled;
 
 CREATE SEQUENCE compaction_request_calls;
 SELECT setval('compaction_request_calls', 1, true) AS calls_before \gset
@@ -14,7 +16,7 @@ CREATE SEQUENCE compaction_request_calls_docs2;
 SELECT setval('compaction_request_calls_docs2', 1, true) AS docs2_init \gset
 CREATE TABLE compaction_callback_rows (idx regclass);
 
-CREATE FUNCTION record_compaction_request(idx regclass) RETURNS void
+CREATE FUNCTION public.record_compaction_request(idx regclass) RETURNS void
 LANGUAGE plpgsql AS $$
 BEGIN
     PERFORM nextval('compaction_request_calls');
@@ -31,14 +33,14 @@ BEGIN
 END;
 $$;
 
-CREATE FUNCTION fail_compaction_request(idx regclass) RETURNS void
+CREATE FUNCTION public.fail_compaction_request(idx regclass) RETURNS void
 LANGUAGE plpgsql AS $$
 BEGIN
     RAISE EXCEPTION 'intentional request failure for %', idx;
 END;
 $$;
 
-CREATE FUNCTION cancel_compaction_request(idx regclass) RETURNS void
+CREATE FUNCTION public.cancel_compaction_request(idx regclass) RETURNS void
 LANGUAGE plpgsql AS $$
 BEGIN
     PERFORM pg_catalog.pg_cancel_backend(pg_catalog.pg_backend_pid());
@@ -46,43 +48,73 @@ BEGIN
 END;
 $$;
 
-SET pg_textsearch.compaction_request_function =
-    'record_compaction_request';
-
--- The callback GUC validates syntax only.
-SET pg_textsearch.compaction_request_function = 'missing_callback';
-SET pg_textsearch.compaction_request_function =
-    'public.record_compaction_request';
+-- The callback GUC requires a schema-qualified name.  A one-part name
+-- would be resolved through the search_path of whichever backend is
+-- committing, and the function then runs as that backend's user, so any
+-- role able to create a function in an earlier schema on that path could
+-- execute arbitrary SQL as the writer.
+SET pg_textsearch.compaction_request_function = 'record_compaction_request';
 SET pg_textsearch.compaction_request_function = 'invalid..callback';
 SET pg_textsearch.compaction_request_function = 'db.schema.callback';
 SET pg_textsearch.compaction_request_function = '""';
 SET pg_textsearch.compaction_request_function = 'schema.""';
 SET pg_textsearch.compaction_request_function = '"".callback';
+-- A qualified name passes; existence is checked at dispatch, not here.
+SET pg_textsearch.compaction_request_function = 'public.missing_callback';
 SET pg_textsearch.compaction_request_function =
-    'record_compaction_request';
+    'public.record_compaction_request';
+
+-- The compaction policy is a per-index option defaulting to inline.
+CREATE TABLE relopt_docs (id serial PRIMARY KEY, body text);
+CREATE INDEX relopt_docs_idx ON relopt_docs
+    USING bm25(body) WITH (text_config = 'english', compaction = 'bogus');
+CREATE INDEX relopt_docs_idx ON relopt_docs
+    USING bm25(body) WITH (text_config = 'english');
+SELECT reloptions IS NULL OR NOT (reloptions::text LIKE '%compaction%')
+       AS compaction_unset_by_default
+FROM pg_class WHERE relname = 'relopt_docs_idx';
+ALTER INDEX relopt_docs_idx SET (compaction = 'background');
+SELECT reloptions::text LIKE '%compaction=background%' AS compaction_altered
+FROM pg_class WHERE relname = 'relopt_docs_idx';
 
 CREATE TABLE request_docs (id serial PRIMARY KEY, body text);
 CREATE INDEX request_docs_idx ON request_docs
-    USING bm25(body) WITH (text_config = 'english');
+    USING bm25(body)
+    WITH (text_config = 'english', compaction = 'background');
 CREATE TABLE request_docs2 (id serial PRIMARY KEY, body text);
 CREATE INDEX request_docs2_idx ON request_docs2
-    USING bm25(body) WITH (text_config = 'english');
+    USING bm25(body)
+    WITH (text_config = 'english', compaction = 'background');
 
--- Seed below the threshold.
+-- Seeding stays below the threshold, so it must dispatch nothing.  Without
+-- this, every later delta would still hold if the code dispatched on every
+-- spill instead of only on real debt.
+SELECT last_value AS calls_before FROM compaction_request_calls \gset
+BEGIN;
 INSERT INTO request_docs (body)
 SELECT 'seed one ' || i FROM generate_series(1, 20) i;
 SELECT bm25_spill_index('request_docs_idx') IS NOT NULL AS seed_one;
 INSERT INTO request_docs2 (body)
 SELECT 'seed two ' || i FROM generate_series(1, 20) i;
 SELECT bm25_spill_index('request_docs2_idx') IS NOT NULL AS seed_two;
+COMMIT;
+SELECT last_value - :calls_before AS below_threshold_requests
+FROM compaction_request_calls;
+SELECT NOT bm25_needs_compaction('request_docs_idx'::regclass)
+       AS seed_below_threshold;
 
--- Top-level abort discards the pending request.
+-- Top-level abort discards the pending request.  The interposed
+-- transaction forces any request that leaked past the abort to be
+-- dispatched before the delta is read.
 SELECT last_value AS calls_before FROM compaction_request_calls \gset
 BEGIN;
 INSERT INTO request_docs (body)
 SELECT 'abort ' || i FROM generate_series(1, 20) i;
 SELECT bm25_spill_index('request_docs_idx') IS NOT NULL AS abort_spill;
 ROLLBACK;
+BEGIN;
+SELECT 1 AS flush_any_leaked_request;
+COMMIT;
 SELECT last_value - :calls_before AS abort_requests
 FROM compaction_request_calls;
 
@@ -134,10 +166,39 @@ FROM compaction_request_calls;
 SELECT last_value - :docs2_before AS multiple_index_docs2_requests
 FROM compaction_request_calls_docs2;
 
+-- The configured callback is resolved as written, not through the
+-- committing backend's search_path.  A same-named function in a schema
+-- earlier on that path must not be reached.
+CREATE SCHEMA request_shadow;
+CREATE SEQUENCE compaction_request_calls_shadow;
+SELECT setval('compaction_request_calls_shadow', 1, true)
+    AS shadow_init \gset
+CREATE FUNCTION request_shadow.record_compaction_request(idx regclass)
+RETURNS void LANGUAGE plpgsql AS $$
+BEGIN
+    PERFORM nextval('compaction_request_calls_shadow');
+END;
+$$;
+SET search_path = request_shadow, public;
+SELECT last_value AS calls_before FROM compaction_request_calls \gset
+SELECT last_value AS shadow_before
+FROM compaction_request_calls_shadow \gset
+BEGIN;
+INSERT INTO request_docs (body)
+SELECT 'shadowed ' || i FROM generate_series(1, 20) i;
+SELECT bm25_spill_index('request_docs_idx') IS NOT NULL AS shadow_spill;
+COMMIT;
+SELECT last_value - :calls_before AS shadowed_trusted_requests
+FROM compaction_request_calls;
+SELECT last_value - :shadow_before AS shadowed_attacker_requests
+FROM compaction_request_calls_shadow;
+RESET search_path;
+
 -- A savepoint rollback retains physical compaction debt and its request.
 CREATE TABLE savepoint_docs (id serial PRIMARY KEY, body text);
 CREATE INDEX savepoint_docs_idx ON savepoint_docs
-    USING bm25(body) WITH (text_config = 'english');
+    USING bm25(body)
+    WITH (text_config = 'english', compaction = 'background');
 INSERT INTO savepoint_docs (body)
 SELECT 'savepoint seed ' || i FROM generate_series(1, 20) i;
 SELECT bm25_spill_index('savepoint_docs_idx') IS NOT NULL;
@@ -155,7 +216,8 @@ FROM compaction_request_calls;
 -- Rolling back a DROP restores an already-pending request.
 CREATE TABLE rollback_drop_docs (id serial PRIMARY KEY, body text);
 CREATE INDEX rollback_drop_docs_idx ON rollback_drop_docs
-    USING bm25(body) WITH (text_config = 'english');
+    USING bm25(body)
+    WITH (text_config = 'english', compaction = 'background');
 INSERT INTO rollback_drop_docs (body)
 SELECT 'rollback drop seed ' || i FROM generate_series(1, 20) i;
 SELECT bm25_spill_index('rollback_drop_docs_idx') IS NOT NULL;
@@ -172,14 +234,15 @@ SELECT last_value - :calls_before AS rollback_drop_requests
 FROM compaction_request_calls;
 
 -- An index and request created in an aborted savepoint are not dispatched.
+-- The recording callback stays configured, so a zero delta means the
+-- request was discarded rather than the counter being unreachable.
 CREATE TABLE aborted_index_docs (id serial PRIMARY KEY, body text);
-SET pg_textsearch.compaction_request_function =
-    'missing_stale_callback';
 SELECT last_value AS calls_before FROM compaction_request_calls \gset
 BEGIN;
 SAVEPOINT create_request;
 CREATE INDEX aborted_index_docs_idx ON aborted_index_docs
-    USING bm25(body) WITH (text_config = 'english');
+    USING bm25(body)
+    WITH (text_config = 'english', compaction = 'background');
 INSERT INTO aborted_index_docs (body)
 SELECT 'aborted index one ' || i FROM generate_series(1, 20) i;
 SELECT bm25_spill_index('aborted_index_docs_idx') IS NOT NULL;
@@ -192,13 +255,12 @@ SELECT last_value - :calls_before AS aborted_index_requests
 FROM compaction_request_calls;
 SELECT to_regclass('aborted_index_docs_idx') IS NULL
        AS aborted_index_absent;
-SET pg_textsearch.compaction_request_function =
-    'record_compaction_request';
 
 -- A dropped index is removed from the pending set.
 CREATE TABLE dropped_request_docs (id serial PRIMARY KEY, body text);
 CREATE INDEX dropped_request_docs_idx ON dropped_request_docs
-    USING bm25(body) WITH (text_config = 'english');
+    USING bm25(body)
+    WITH (text_config = 'english', compaction = 'background');
 INSERT INTO dropped_request_docs (body)
 SELECT 'drop seed ' || i FROM generate_series(1, 20) i;
 SELECT bm25_spill_index('dropped_request_docs_idx') IS NOT NULL;
@@ -212,44 +274,47 @@ COMMIT;
 SELECT last_value - :calls_before AS dropped_index_requests
 FROM compaction_request_calls;
 
--- A missing callback still warns when at least one live request exists.
-CREATE FUNCTION disappearing_request(regclass) RETURNS void
+-- A callback that vanished between SET and dispatch warns, and the writer
+-- transaction still commits.  The warning is the assertion here; a counter
+-- delta could not distinguish this from a silent skip.
+CREATE FUNCTION public.disappearing_request(regclass) RETURNS void
 LANGUAGE sql AS $$ SELECT NULL::void $$;
-SET pg_textsearch.compaction_request_function = 'disappearing_request';
-DROP FUNCTION disappearing_request(regclass);
-SELECT last_value AS calls_before FROM compaction_request_calls \gset
+SET pg_textsearch.compaction_request_function =
+    'public.disappearing_request';
+DROP FUNCTION public.disappearing_request(regclass);
 BEGIN;
 INSERT INTO request_docs (body)
 SELECT 'disappearing callback ' || i FROM generate_series(1, 20) i;
 SELECT bm25_spill_index('request_docs_idx') IS NOT NULL;
 COMMIT;
-SELECT last_value - :calls_before AS disappeared_callback_requests
-FROM compaction_request_calls;
 SELECT count(*) = 20 AS disappeared_callback_committed
 FROM request_docs WHERE body LIKE 'disappearing callback %';
 
--- The callback is resolved at dispatch, not when the GUC is set, so
--- replacing the function body takes effect without re-setting the GUC.
+-- The callback is resolved by name at dispatch, not cached as an OID when
+-- the GUC is set.  Renaming the original away and creating a different
+-- function under the same name must divert the call: a cached OID would
+-- still reach the renamed original, which keeps its OID.
 CREATE SEQUENCE compaction_request_calls_replaced;
 SELECT setval('compaction_request_calls_replaced', 1, true)
     AS replaced_init \gset
-CREATE FUNCTION replaceable_request(regclass) RETURNS void
+CREATE FUNCTION public.callback_slot(regclass) RETURNS void
 LANGUAGE plpgsql AS $$
 BEGIN
     PERFORM nextval('compaction_request_calls');
 END;
 $$;
-SET pg_textsearch.compaction_request_function = 'replaceable_request';
+SET pg_textsearch.compaction_request_function = 'public.callback_slot';
 SELECT last_value AS calls_before FROM compaction_request_calls \gset
 BEGIN;
 INSERT INTO request_docs (body)
-SELECT 'replaceable original ' || i FROM generate_series(1, 20) i;
+SELECT 'slot original ' || i FROM generate_series(1, 20) i;
 SELECT bm25_spill_index('request_docs_idx') IS NOT NULL;
 COMMIT;
 SELECT last_value - :calls_before AS original_callback_requests
 FROM compaction_request_calls;
 
-CREATE OR REPLACE FUNCTION replaceable_request(regclass) RETURNS void
+ALTER FUNCTION public.callback_slot(regclass) RENAME TO callback_slot_old;
+CREATE FUNCTION public.callback_slot(regclass) RETURNS void
 LANGUAGE plpgsql AS $$
 BEGIN
     PERFORM nextval('compaction_request_calls_replaced');
@@ -260,18 +325,19 @@ SELECT last_value AS replaced_before
 FROM compaction_request_calls_replaced \gset
 BEGIN;
 INSERT INTO request_docs (body)
-SELECT 'replaceable new ' || i FROM generate_series(1, 20) i;
+SELECT 'slot replacement ' || i FROM generate_series(1, 20) i;
 SELECT bm25_spill_index('request_docs_idx') IS NOT NULL;
 COMMIT;
-SELECT last_value - :calls_before AS replaced_callback_old_requests
+SELECT last_value - :calls_before AS renamed_callback_old_requests
 FROM compaction_request_calls;
-SELECT last_value - :replaced_before AS replaced_callback_new_requests
+SELECT last_value - :replaced_before AS renamed_callback_new_requests
 FROM compaction_request_calls_replaced;
 SET pg_textsearch.compaction_request_function =
-    'record_compaction_request';
+    'public.record_compaction_request';
 
 -- Ordinary callback errors warn and preserve the writer transaction.
-SET pg_textsearch.compaction_request_function = 'fail_compaction_request';
+SET pg_textsearch.compaction_request_function =
+    'public.fail_compaction_request';
 BEGIN;
 INSERT INTO request_docs (body)
 SELECT 'callback failure ' || i FROM generate_series(1, 20) i;
@@ -280,12 +346,15 @@ COMMIT;
 SELECT count(*) = 20 AS callback_failure_committed
 FROM request_docs WHERE body LIKE 'callback failure %';
 
--- PRE_PREPARE dispatches and PREPARE leaves no stale backend request.
+-- A two-phase transaction dispatches nothing.  Running callback SQL at
+-- PRE_PREPARE could set transaction-global state that PostgreSQL checks
+-- afterward, so the debt is left for a later spill or the worker's sweep.
 CREATE TABLE prepared_request_docs (id serial PRIMARY KEY, body text);
 CREATE INDEX prepared_request_docs_idx ON prepared_request_docs
-    USING bm25(body) WITH (text_config = 'english');
+    USING bm25(body)
+    WITH (text_config = 'english', compaction = 'background');
 SET pg_textsearch.compaction_request_function =
-    'record_compaction_request';
+    'public.record_compaction_request';
 INSERT INTO prepared_request_docs (body)
 SELECT 'prepare seed ' || i FROM generate_series(1, 20) i;
 SELECT bm25_spill_index('prepared_request_docs_idx') IS NOT NULL;
@@ -297,23 +366,90 @@ SELECT bm25_spill_index('prepared_request_docs_idx') IS NOT NULL;
 PREPARE TRANSACTION 'compaction_request_prepare';
 SELECT last_value - :calls_before AS prepare_requests
 FROM compaction_request_calls;
+SELECT bm25_needs_compaction('prepared_request_docs_idx'::regclass)
+       AS prepare_debt_retained;
 SELECT last_value AS calls_before FROM compaction_request_calls \gset
 BEGIN;
 SELECT 1 AS backend_reused;
 COMMIT;
 SELECT last_value - :calls_before AS stale_requests
 FROM compaction_request_calls;
--- COMMIT PREPARED must not dispatch again: PRE_PREPARE already did, and
--- the committing backend holds no request for this transaction.
 SELECT last_value AS calls_before FROM compaction_request_calls \gset
 COMMIT PREPARED 'compaction_request_prepare';
 SELECT last_value - :calls_before AS commit_prepared_requests
 FROM compaction_request_calls;
 
--- Temporary indexes compact inline in background mode.
+-- A callback touching a temporary object would set transaction-global
+-- state that PostgreSQL validates after PRE_PREPARE, and subtransaction
+-- rollback cannot clear it.  Because two-phase transactions do not
+-- dispatch, PREPARE still succeeds.
+CREATE TEMP TABLE prepare_temp_probe (x int);
+CREATE FUNCTION public.temp_touching_request(regclass) RETURNS void
+LANGUAGE plpgsql AS $$
+DECLARE n bigint;
+BEGIN
+    SELECT count(*) INTO n FROM prepare_temp_probe;
+END;
+$$;
+SET pg_textsearch.compaction_request_function =
+    'public.temp_touching_request';
+BEGIN;
+INSERT INTO prepared_request_docs (body)
+SELECT 'prepare temp ' || i FROM generate_series(1, 20) i;
+SELECT bm25_spill_index('prepared_request_docs_idx') IS NOT NULL;
+PREPARE TRANSACTION 'compaction_request_prepare_temp';
+COMMIT PREPARED 'compaction_request_prepare_temp';
+SELECT count(*) = 20 AS prepare_temp_committed
+FROM prepared_request_docs WHERE body LIKE 'prepare temp %';
+SET pg_textsearch.compaction_request_function =
+    'public.record_compaction_request';
+
+-- A spill caused by the callback itself compacts inline.  Its request
+-- would land in a list this dispatch has already stopped reading and be
+-- freed at commit, while the spill is physical and survives the
+-- callback's rollback, so that debt would never be paid.
+CREATE TABLE reentrant_outer (id serial PRIMARY KEY, body text);
+CREATE INDEX reentrant_outer_idx ON reentrant_outer
+    USING bm25(body)
+    WITH (text_config = 'english', compaction = 'background');
+CREATE TABLE reentrant_inner (id serial PRIMARY KEY, body text);
+CREATE INDEX reentrant_inner_idx ON reentrant_inner
+    USING bm25(body)
+    WITH (text_config = 'english', compaction = 'background');
+INSERT INTO reentrant_outer (body)
+SELECT 'reentrant outer seed ' || i FROM generate_series(1, 20) i;
+SELECT bm25_spill_index('reentrant_outer_idx') IS NOT NULL;
+INSERT INTO reentrant_inner (body)
+SELECT 'reentrant inner seed ' || i FROM generate_series(1, 20) i;
+SELECT bm25_spill_index('reentrant_inner_idx') IS NOT NULL;
+CREATE FUNCTION public.reentrant_request(idx regclass) RETURNS void
+LANGUAGE plpgsql AS $$
+BEGIN
+    PERFORM nextval('compaction_request_calls');
+    IF idx::text LIKE '%reentrant_outer_idx' THEN
+        INSERT INTO reentrant_inner (body)
+        SELECT 'reentrant callback ' || i FROM generate_series(1, 20) i;
+        PERFORM bm25_spill_index('reentrant_inner_idx');
+    END IF;
+END;
+$$;
+SET pg_textsearch.compaction_request_function = 'public.reentrant_request';
+BEGIN;
+INSERT INTO reentrant_outer (body)
+SELECT 'reentrant trigger ' || i FROM generate_series(1, 20) i;
+SELECT bm25_spill_index('reentrant_outer_idx') IS NOT NULL;
+COMMIT;
+SELECT NOT bm25_needs_compaction('reentrant_inner_idx'::regclass)
+       AS reentrant_inner_compacted;
+SET pg_textsearch.compaction_request_function =
+    'public.record_compaction_request';
+
+-- Temporary indexes compact inline even when set to background, because
+-- no other session can open them.
 CREATE TEMP TABLE temp_request_docs (id serial PRIMARY KEY, body text);
 CREATE INDEX temp_request_docs_idx ON temp_request_docs
-    USING bm25(body) WITH (text_config = 'english');
+    USING bm25(body)
+    WITH (text_config = 'english', compaction = 'background');
 SELECT last_value AS calls_before FROM compaction_request_calls \gset
 INSERT INTO temp_request_docs (body)
 SELECT 'temp one ' || i FROM generate_series(1, 20) i;
@@ -325,6 +461,19 @@ SELECT last_value - :calls_before AS temp_requests
 FROM compaction_request_calls;
 SELECT NOT bm25_needs_compaction('temp_request_docs_idx'::regclass)
        AS temp_compacted_inline;
+
+-- A temporary index set to off keeps its debt: off is off everywhere.
+CREATE TEMP TABLE temp_off_docs (id serial PRIMARY KEY, body text);
+CREATE INDEX temp_off_docs_idx ON temp_off_docs
+    USING bm25(body) WITH (text_config = 'english', compaction = 'off');
+INSERT INTO temp_off_docs (body)
+SELECT 'temp off one ' || i FROM generate_series(1, 20) i;
+SELECT bm25_spill_index('temp_off_docs_idx') IS NOT NULL;
+INSERT INTO temp_off_docs (body)
+SELECT 'temp off two ' || i FROM generate_series(1, 20) i;
+SELECT bm25_spill_index('temp_off_docs_idx') IS NOT NULL;
+SELECT bm25_needs_compaction('temp_off_docs_idx'::regclass)
+       AS temp_off_debt_remains;
 
 -- A final serial build batch must receive the same inline compaction policy
 -- as budget-triggered intermediate batches.
@@ -339,15 +488,28 @@ SELECT i, 'token' || i || ' ' || repeat(md5(i::text) || ' ', 8)
 FROM generate_series(1, 10000) i;
 CREATE INDEX final_build_docs_idx ON final_build_docs
     USING bm25(body) WITH (text_config = 'simple');
-SELECT bm25_level_counts('final_build_docs_idx'::regclass) =
-           ARRAY[0, 1, 0, 0, 0, 0, 0, 0]
+SELECT NOT bm25_needs_compaction('final_build_docs_idx'::regclass)
        AS final_build_batch_compacted;
 
--- Off mode leaves debt in place and dispatches nothing.
+-- CREATE INDEX honors off, leaving its build batches uncompacted.
+CREATE TABLE off_build_docs (
+    id integer PRIMARY KEY,
+    body text
+);
+INSERT INTO off_build_docs
+SELECT i, 'token' || i || ' ' || repeat(md5(i::text) || ' ', 8)
+FROM generate_series(1, 10000) i;
+CREATE INDEX off_build_docs_idx ON off_build_docs
+    USING bm25(body) WITH (text_config = 'simple', compaction = 'off');
+SELECT bm25_needs_compaction('off_build_docs_idx'::regclass)
+       AS off_build_debt_remains;
+RESET maintenance_work_mem;
+RESET max_parallel_maintenance_workers;
+
+-- Off leaves debt in place and dispatches nothing.
 CREATE TABLE off_request_docs (id serial PRIMARY KEY, body text);
 CREATE INDEX off_request_docs_idx ON off_request_docs
-    USING bm25(body) WITH (text_config = 'english');
-SET pg_textsearch.compaction_mode = 'off';
+    USING bm25(body) WITH (text_config = 'english', compaction = 'off');
 SELECT last_value AS calls_before FROM compaction_request_calls \gset
 INSERT INTO off_request_docs (body)
 SELECT 'off one ' || i FROM generate_series(1, 20) i;
@@ -360,11 +522,21 @@ FROM compaction_request_calls;
 SELECT bm25_needs_compaction('off_request_docs_idx'::regclass)
        AS off_debt_remains;
 
--- Inline mode compacts synchronously and dispatches nothing.
+-- Switching an existing index to background makes it dispatch.
+SELECT last_value AS calls_before FROM compaction_request_calls \gset
+ALTER INDEX off_request_docs_idx SET (compaction = 'background');
+BEGIN;
+INSERT INTO off_request_docs (body)
+SELECT 'off switched ' || i FROM generate_series(1, 20) i;
+SELECT bm25_spill_index('off_request_docs_idx') IS NOT NULL;
+COMMIT;
+SELECT last_value - :calls_before AS switched_requests
+FROM compaction_request_calls;
+
+-- Inline compacts synchronously and dispatches nothing.
 CREATE TABLE inline_request_docs (id serial PRIMARY KEY, body text);
 CREATE INDEX inline_request_docs_idx ON inline_request_docs
-    USING bm25(body) WITH (text_config = 'english');
-SET pg_textsearch.compaction_mode = 'inline';
+    USING bm25(body) WITH (text_config = 'english', compaction = 'inline');
 SELECT last_value AS calls_before FROM compaction_request_calls \gset
 INSERT INTO inline_request_docs (body)
 SELECT 'inline one ' || i FROM generate_series(1, 20) i;
@@ -380,10 +552,10 @@ SELECT NOT bm25_needs_compaction('inline_request_docs_idx'::regclass)
 -- Cancellation remains an error and aborts the writer transaction.
 CREATE TABLE canceled_request_docs (id serial PRIMARY KEY, body text);
 CREATE INDEX canceled_request_docs_idx ON canceled_request_docs
-    USING bm25(body) WITH (text_config = 'english');
-SET pg_textsearch.compaction_mode = 'background';
+    USING bm25(body)
+    WITH (text_config = 'english', compaction = 'background');
 SET pg_textsearch.compaction_request_function =
-    'cancel_compaction_request';
+    'public.cancel_compaction_request';
 INSERT INTO canceled_request_docs (body)
 SELECT 'cancel seed ' || i FROM generate_series(1, 20) i;
 SELECT bm25_spill_index('canceled_request_docs_idx') IS NOT NULL;
@@ -397,29 +569,35 @@ COMMIT;
 SELECT count(*) AS canceled_rows
 FROM canceled_request_docs WHERE body LIKE 'cancel pending %';
 
-RESET pg_textsearch.compaction_mode;
 RESET pg_textsearch.compaction_request_function;
 RESET pg_textsearch.segments_per_level;
 RESET client_min_messages;
-RESET maintenance_work_mem;
-RESET max_parallel_maintenance_workers;
 DROP TABLE canceled_request_docs CASCADE;
 DROP TABLE inline_request_docs CASCADE;
 DROP TABLE off_request_docs CASCADE;
+DROP TABLE off_build_docs CASCADE;
 DROP TABLE final_build_docs CASCADE;
+DROP TABLE reentrant_outer CASCADE;
+DROP TABLE reentrant_inner CASCADE;
 DROP TABLE prepared_request_docs CASCADE;
 DROP TABLE dropped_request_docs CASCADE;
 DROP TABLE aborted_index_docs CASCADE;
 DROP TABLE rollback_drop_docs CASCADE;
 DROP TABLE savepoint_docs CASCADE;
+DROP TABLE relopt_docs CASCADE;
 DROP TABLE request_docs2 CASCADE;
 DROP TABLE request_docs CASCADE;
 DROP TABLE compaction_callback_rows;
 DROP SEQUENCE compaction_request_calls CASCADE;
 DROP SEQUENCE compaction_request_calls_docs2 CASCADE;
 DROP SEQUENCE compaction_request_calls_replaced CASCADE;
-DROP FUNCTION record_compaction_request(regclass);
-DROP FUNCTION fail_compaction_request(regclass);
-DROP FUNCTION cancel_compaction_request(regclass);
-DROP FUNCTION replaceable_request(regclass);
+DROP SEQUENCE compaction_request_calls_shadow CASCADE;
+DROP FUNCTION public.record_compaction_request(regclass);
+DROP FUNCTION public.fail_compaction_request(regclass);
+DROP FUNCTION public.cancel_compaction_request(regclass);
+DROP FUNCTION public.temp_touching_request(regclass);
+DROP FUNCTION public.reentrant_request(regclass);
+DROP FUNCTION public.callback_slot(regclass);
+DROP FUNCTION public.callback_slot_old(regclass);
+DROP SCHEMA request_shadow CASCADE;
 DROP EXTENSION pg_textsearch CASCADE;

@@ -275,13 +275,19 @@ tp_finish_spill(
 
 	pgstat_progress_update_param(
 			PROGRESS_CREATEIDX_SUBPHASE, TP_PHASE_COMPACTING);
-	switch (tp_compaction_mode)
+	switch (tp_index_compaction_mode(index_rel))
 	{
 	case TP_COMPACTION_INLINE:
 		tp_maybe_compact_level(index_state, index_rel, 0);
 		break;
 	case TP_COMPACTION_BACKGROUND:
-		if (RelationUsesLocalBuffers(index_rel))
+		/*
+		 * A temporary index is unreachable from any other session, and
+		 * a process that cannot dispatch would only record a request
+		 * that is later discarded.  Both compact inline.
+		 */
+		if (RelationUsesLocalBuffers(index_rel) ||
+			!tp_compaction_dispatch_possible())
 			tp_maybe_compact_level(index_state, index_rel, 0);
 		else if (tp_compaction_needed(index_rel))
 			tp_compaction_request(RelationGetRelid(index_rel));
@@ -1356,7 +1362,7 @@ tp_build_callback(
 		 * CREATE INDEX always compacts inline because another session
 		 * cannot open it until the build commits.  Off remains off.
 		 */
-		if (tp_compaction_mode != TP_COMPACTION_OFF)
+		if (tp_index_compaction_mode(bs->index) != TP_COMPACTION_OFF)
 			tp_maybe_compact_level(bs->index_state, bs->index, 0);
 		pgstat_progress_update_param(
 				PROGRESS_CREATEIDX_SUBPHASE, TP_PHASE_LOADING);
@@ -1658,7 +1664,7 @@ tp_build(Relation heap, Relation index, IndexInfo *indexInfo)
 		if (build_ctx->num_docs > 0)
 		{
 			tp_build_flush_and_link(build_ctx, index);
-			if (tp_compaction_mode != TP_COMPACTION_OFF)
+			if (tp_index_compaction_mode(index) != TP_COMPACTION_OFF)
 			{
 				pgstat_progress_update_param(
 						PROGRESS_CREATEIDX_SUBPHASE, TP_PHASE_COMPACTING);

@@ -23,6 +23,37 @@ if ! grep -Fq "SearchSysCacheExists1" "${REQUEST_SOURCE}" ||
     exit 1
 fi
 
+# Running callback SQL at PRE_PREPARE can leave transaction-global state
+# (notably XACT_FLAGS_ACCESSEDTEMPNAMESPACE) that PostgreSQL validates
+# after the event and that subtransaction rollback cannot clear, making an
+# otherwise valid PREPARE TRANSACTION fail.
+preprepare_body="$(
+    sed -n '/case XACT_EVENT_PRE_PREPARE:/,/break;/p' "${MODULE_SOURCE}"
+)"
+if grep -Fq "tp_compaction_flush_requests" <<<"${preprepare_body}"; then
+    echo "PRE_PREPARE dispatches callback SQL" >&2
+    exit 1
+fi
+if ! grep -Fq "tp_compaction_reset_requests" <<<"${preprepare_body}"; then
+    echo "PRE_PREPARE does not discard pending requests" >&2
+    exit 1
+fi
+
+# A one-part callback name would resolve through the committing backend's
+# search_path and run as that backend's user.
+if ! grep -Fq "list_length(names) == 2" "${REQUEST_SOURCE}"; then
+    echo "callback GUC does not require a schema-qualified name" >&2
+    exit 1
+fi
+
+# A spill caused by the callback must compact inline: its request would
+# land in a list the running dispatch has already stopped reading.
+if ! grep -Fq "tp_dispatch_active = true" "${REQUEST_SOURCE}" ||
+    ! grep -Fq "tp_dispatch_active" "${REQUEST_SOURCE}"; then
+    echo "callback re-entry is not routed to inline compaction" >&2
+    exit 1
+fi
+
 flush_body="$(
     sed -n '/^tp_compaction_flush_requests(void)/,$p' "${REQUEST_SOURCE}"
 )"

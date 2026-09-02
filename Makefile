@@ -106,6 +106,11 @@ test-compaction-ownercheck:
 test-compaction-request-source:
 	@./test/scripts/compaction_request_source.sh
 
+# These guards cover invariants the SQL suite cannot observe, so they must
+# gate every way the suite is run, not just `make test`.
+installcheck: test-compaction-ownercheck test-compaction-request-source
+test-local: test-compaction-ownercheck test-compaction-request-source
+
 # Custom local test target with dedicated PostgreSQL instance
 test-local: install
 	@echo "Setting up temporary PostgreSQL instance for local testing..."
