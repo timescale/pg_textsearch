@@ -209,6 +209,11 @@ DROP TABLE force_spill_cascade CASCADE;
 
 --------------------------------------------------------------------------------
 -- Force merge is bounded best-effort compaction, not forceMerge(1).
+--
+-- Four top-level layouts: a single L7 segment, a deeper cascade that
+-- still settles at one L7 segment because the top level compacts into
+-- itself, a mixed L0+L7 pair (the multi-segment case), and an L7
+-- segment with a pending memtable.
 --------------------------------------------------------------------------------
 
 SET pg_textsearch.segments_per_level = 2;
@@ -216,8 +221,8 @@ SET pg_textsearch.segments_per_level = 2;
 CREATE TABLE force_l7_single (id serial PRIMARY KEY, content text);
 CREATE INDEX force_l7_single_idx ON force_l7_single USING bm25(content)
   WITH (text_config='english');
-CREATE TABLE force_l7_multiple (id serial PRIMARY KEY, content text);
-CREATE INDEX force_l7_multiple_idx ON force_l7_multiple USING bm25(content)
+CREATE TABLE force_l7_deep (id serial PRIMARY KEY, content text);
+CREATE INDEX force_l7_deep_idx ON force_l7_deep USING bm25(content)
   WITH (text_config='english');
 CREATE TABLE force_l7_mixed (id serial PRIMARY KEY, content text);
 CREATE INDEX force_l7_mixed_idx ON force_l7_mixed USING bm25(content)
@@ -231,9 +236,9 @@ DECLARE
     n integer;
 BEGIN
     FOR n IN 1..256 LOOP
-        INSERT INTO force_l7_multiple (content)
+        INSERT INTO force_l7_deep (content)
         VALUES (format('multiple terminal %s filler', n));
-        PERFORM bm25_spill_index('force_l7_multiple_idx');
+        PERFORM bm25_spill_index('force_l7_deep_idx');
 
         IF n <= 128 THEN
             INSERT INTO force_l7_single (content)
@@ -257,7 +262,7 @@ $$;
 DO $$
 DECLARE
     single_summary text := bm25_summarize_index('force_l7_single_idx');
-    multiple_summary text := bm25_summarize_index('force_l7_multiple_idx');
+    deep_summary text := bm25_summarize_index('force_l7_deep_idx');
     mixed_summary text := bm25_summarize_index('force_l7_mixed_idx');
     memtable_summary text := bm25_summarize_index('force_l7_memtable_idx');
 BEGIN
@@ -266,10 +271,10 @@ BEGIN
         RAISE EXCEPTION 'single L7 layout was not constructed: %',
                         single_summary;
     END IF;
-    IF regexp_count(multiple_summary, 'L[0-7] Segment [0-9]+:') <> 2
-       OR multiple_summary !~ 'L7 Segment 2:' THEN
-        RAISE EXCEPTION 'multiple L7 layout was not constructed: %',
-                        multiple_summary;
+    IF regexp_count(deep_summary, 'L[0-7] Segment [0-9]+:') <> 1
+       OR deep_summary !~ 'L7 Segment 1:' THEN
+        RAISE EXCEPTION 'deep cascade did not settle at one L7 segment: %',
+                        deep_summary;
     END IF;
     IF regexp_count(mixed_summary, 'L[0-7] Segment [0-9]+:') <> 2
        OR mixed_summary !~ 'L0 Segment 1:'
@@ -289,21 +294,21 @@ $$;
 DO $$
 DECLARE
     single_before text := bm25_summarize_index('force_l7_single_idx');
-    multiple_before text := bm25_summarize_index('force_l7_multiple_idx');
+    deep_before text := bm25_summarize_index('force_l7_deep_idx');
     mixed_before text := bm25_summarize_index('force_l7_mixed_idx');
     memtable_before text := bm25_summarize_index('force_l7_memtable_idx');
     single_summary text;
-    multiple_summary text;
+    deep_summary text;
     mixed_summary text;
     memtable_summary text;
 BEGIN
     PERFORM bm25_force_merge('force_l7_single_idx');
-    PERFORM bm25_force_merge('force_l7_multiple_idx');
+    PERFORM bm25_force_merge('force_l7_deep_idx');
     PERFORM bm25_force_merge('force_l7_mixed_idx');
     PERFORM bm25_force_merge('force_l7_memtable_idx');
 
     single_summary := bm25_summarize_index('force_l7_single_idx');
-    multiple_summary := bm25_summarize_index('force_l7_multiple_idx');
+    deep_summary := bm25_summarize_index('force_l7_deep_idx');
     mixed_summary := bm25_summarize_index('force_l7_mixed_idx');
     memtable_summary := bm25_summarize_index('force_l7_memtable_idx');
 
@@ -312,15 +317,19 @@ BEGIN
         RAISE EXCEPTION 'force merge increased segment count: before %, after %',
                         single_before, single_summary;
     END IF;
-    IF regexp_count(multiple_summary, 'L[0-7] Segment [0-9]+:') >
-       regexp_count(multiple_before, 'L[0-7] Segment [0-9]+:') THEN
+    IF regexp_count(deep_summary, 'L[0-7] Segment [0-9]+:') >
+       regexp_count(deep_before, 'L[0-7] Segment [0-9]+:') THEN
         RAISE EXCEPTION 'force merge increased segment count: before %, after %',
-                        multiple_before, multiple_summary;
+                        deep_before, deep_summary;
     END IF;
-    IF regexp_count(mixed_summary, 'L[0-7] Segment [0-9]+:') >
-       regexp_count(mixed_before, 'L[0-7] Segment [0-9]+:') THEN
-        RAISE EXCEPTION 'force merge increased segment count: before %, after %',
-                        mixed_before, mixed_summary;
+    -- The mixed fixture is the multi-segment case, so force merge must
+    -- actually combine its L0 and L7 segments.  Asserting only that the
+    -- count did not increase would also accept a no-op.
+    IF regexp_count(mixed_summary, 'L[0-7] Segment [0-9]+:') <> 1
+       OR mixed_summary !~ 'L0 Segment 1:' THEN
+        RAISE EXCEPTION
+            'force merge did not combine the mixed layout: before %, after %',
+            mixed_before, mixed_summary;
     END IF;
     IF regexp_count(memtable_summary, 'L[0-7] Segment [0-9]+:') >
        regexp_count(memtable_before, 'L[0-7] Segment [0-9]+:') THEN
@@ -338,9 +347,9 @@ BEGIN
                      to_bm25query('filler', 'force_l7_single_idx')
         ) ranked) <> 128
        OR (SELECT count(*) FROM (
-               SELECT 1 FROM force_l7_multiple
+               SELECT 1 FROM force_l7_deep
                ORDER BY content <@>
-                        to_bm25query('filler', 'force_l7_multiple_idx')
+                        to_bm25query('filler', 'force_l7_deep_idx')
            ) ranked) <> 256
        OR (SELECT count(*) FROM (
                SELECT 1 FROM force_l7_mixed
@@ -405,7 +414,7 @@ END
 $$;
 
 DROP TABLE force_l7_single CASCADE;
-DROP TABLE force_l7_multiple CASCADE;
+DROP TABLE force_l7_deep CASCADE;
 DROP TABLE force_l7_mixed CASCADE;
 DROP TABLE force_l7_memtable CASCADE;
 

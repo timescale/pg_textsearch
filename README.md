@@ -363,9 +363,59 @@ SELECT bm25_force_merge('docs_idx');
 
 Published source segments remain immutable while replacement segments are
 built. Existing segments that already exceed the configured size budget
-remain indivisible singletons. Pages displaced by publication enter deferred
+remain uncombinable singletons. Pages displaced by publication enter deferred
 reclaim rather than becoming immediately reusable. Best used after large
 batch inserts, not during ongoing write traffic.
+
+#### Compacting an index
+
+`bm25_force_merge()` collapses an index into as few segments as it can. When
+you instead want to work off only the levels that have accumulated segments,
+use the threshold-driven controls:
+
+```sql
+-- Is any level at pg_textsearch.segments_per_level segments?
+SELECT bm25_needs_compaction('docs_idx'::regclass);
+
+-- Segments held at each of the eight LSM levels
+SELECT bm25_level_counts('docs_idx'::regclass);
+
+-- Compact until no level is over threshold
+SELECT bm25_compact('docs_idx'::regclass);
+
+-- Or run a single pass, reporting whether one ran
+SELECT bm25_compact_step('docs_idx'::regclass);
+```
+
+A *pass* is the unit of work and of publication: every segment a pass produces
+becomes visible in one metapage update, so a pass that fails leaves the layout
+it started from. `bm25_compact()` runs passes until none is due, all under one
+per-index exclusive lock. `bm25_compact_step()` runs at most one, so a
+maintenance job can spread a cascade over several transactions and release the
+lock in between.
+
+Three properties matter when scripting these:
+
+- **A published pass is not undone by `ROLLBACK`.** It is a physical change,
+  so a cascade that errors partway leaves its earlier passes applied.
+- **Neither mutating function is cancellable while a pass runs**, and a pass
+  is not a bounded amount of work. Holding the lock also holds off interrupts.
+- **`bm25_needs_compaction()` is advisory and must not be used on its own as
+  a loop condition.** It answers "is any level at the threshold", not "is
+  there work to do": a level whose segments all exceed
+  `pg_textsearch.max_segment_size` cannot be reduced but still counts as
+  full, so `WHILE bm25_needs_compaction(...) DO bm25_compact_step(...)` never
+  terminates on such an index. Drive the loop from `bm25_compact_step()`'s
+  return value instead, and stop when it returns false.
+
+The mutating functions require ownership of the index. They are rejected on
+partitioned parent indexes, which have no storage of their own — compact each
+partition's index instead — and during recovery. A session can compact its own
+temporary index in a read-only transaction; permanent and unlogged indexes it
+cannot.
+
+See [docs/background_compaction.md](docs/background_compaction.md) for the
+engine's level, sizing, and page-reclaim rules.
 
 #### Index fragmentation on update-heavy workloads
 
@@ -559,9 +609,12 @@ incremental inserts. This is an active area of development.
 
 ### No Background Compaction
 
-Segment compaction currently runs synchronously during memtable spill
-operations. Write-heavy workloads may observe compaction latency during
-spills. Background compaction is planned for a future release.
+Segment compaction runs synchronously during memtable spill operations, so
+write-heavy workloads may observe compaction latency during spills. No
+background worker compacts on its own; `bm25_compact()` and
+`bm25_compact_step()` let an external job drive it on a schedule of your
+choosing. See [Compacting an index](#compacting-an-index). A built-in
+background scheduler is planned for a future release.
 
 ### Partitioned Tables
 
@@ -799,6 +852,22 @@ An end-to-end regression test for this setup lives in
 above applies the same `n,v,a,i,e,l` zhparser mapping to a chunked
 `text[]` column.
 
+### Compaction Functions
+
+Compaction runs automatically during memtable spills. These functions let an
+administrator or a maintenance job drive it explicitly. All four take a
+`regclass`, so an index can be named as `'docs_idx'::regclass` or by OID. The
+mutating functions require ownership of the index; the inspection functions do
+not. See [Compacting an index](#compacting-an-index) for the caveats that
+matter when scripting them.
+
+Function | Description
+--- | ---
+bm25_level_counts(index) → int4[] | Segments held at each of the eight LSM levels
+bm25_needs_compaction(index) → bool | Whether any level holds at least `segments_per_level` segments; advisory only, and not safe as a loop condition on its own
+bm25_compact(index) → void | Run compaction passes to completion under one per-index exclusive lock
+bm25_compact_step(index) → bool | Run at most one pass and report whether one ran, letting a caller spread a cascade over several transactions
+
 ### Development Functions
 
 These functions are for debugging and development use only. Their interface may
@@ -807,8 +876,9 @@ superuser privileges.
 
 Function | Description
 --- | ---
-bm25_force_merge(index_name) → void | Run one-shot copy-on-write compaction into the fewest conservatively size-bounded segments; over-budget singletons remain indivisible and displaced pages enter deferred reclaim
+bm25_force_merge(index_name) → void | Run one-shot copy-on-write compaction into the fewest conservatively size-bounded segments; over-budget singletons remain uncombinable and displaced pages enter deferred reclaim
 bm25_spill_index(index_name) → int4 | Force memtable spill to disk segment
+bm25_pending_free_pages(index_name) † → int8 | Count displaced segment pages parked in the deferred-free chain, awaiting standby-safe reclaim
 bm25_dump_index(index_name) † → text | Dump internal index structure (truncated)
 bm25_summarize_index(index_name) † → text | Show index statistics without content
 

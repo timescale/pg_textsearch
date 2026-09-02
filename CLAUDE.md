@@ -288,9 +288,22 @@ See [RELEASING.md](RELEASING.md) for release instructions.
   `pg_textsearch.max_segment_size`. It does **not** guarantee a single
   segment: large indexes may intentionally retain several immutable
   segments, and an existing segment that already exceeds the budget
-  remains an indivisible singleton. Published sources stay immutable
+  remains an uncombinable singleton. Published sources stay immutable
   while replacements are built; displaced pages enter deferred reclaim
   (see #380) rather than becoming immediately reusable.
+- `bm25_level_counts(idx regclass)` - Segments held at each of the eight
+  LSM levels
+- `bm25_needs_compaction(idx regclass)` - Whether any level holds at
+  least `segments_per_level` segments. Advisory only: a level whose
+  segments all exceed `max_segment_size` cannot be reduced but still
+  counts as full, so this must not be used on its own as a loop
+  condition. Drive loops from `bm25_compact_step()`'s return value.
+- `bm25_compact(idx regclass)` - Run compaction passes to completion
+  under one per-index exclusive lock. Requires index ownership. A
+  published pass is a physical change and is **not** undone by ROLLBACK.
+- `bm25_compact_step(idx regclass)` - Run at most one pass and report
+  whether one ran, letting a caller spread a cascade over several
+  transactions. Requires index ownership.
 - `bm25_pending_free_pages(index_name)` - Count displaced segment pages
   currently parked in the deferred-free tombstone chain (issue #380),
   awaiting standby-safe FSM reclaim

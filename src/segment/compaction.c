@@ -46,7 +46,7 @@ typedef struct TpCompactionBatch
 	uint32			  first_source;
 	uint32			  source_count;
 	uint32			  output_level;
-	bool			  indivisible;
+	bool			  uncombinable;
 	TpSegmentEstimate estimate;
 } TpCompactionBatch;
 
@@ -113,7 +113,7 @@ tp_u64_round_up_divide(uint64 value, uint64 divisor, uint64 *result)
 /*
  * Calculate the conservative current-format bound.  Arithmetic overflow is
  * distinct from a representational limit: source overflow is corrupt
- * metadata, while an otherwise valid oversized source remains indivisible.
+ * metadata, while an otherwise valid oversized source remains uncombinable.
  */
 static bool
 tp_estimate_physical_bytes(TpSegmentEstimate *estimate, bool *representable)
@@ -454,10 +454,10 @@ tp_append_bounded_batches(
 		batch->first_source = source_index;
 		batch->source_count = 1;
 		batch->estimate		= plan->sources[source_index].estimate;
-		batch->indivisible	= batch->estimate.bytes > budget;
+		batch->uncombinable = batch->estimate.bytes > budget;
 		source_index++;
 
-		while (!batch->indivisible && source_index < source_end)
+		while (!batch->uncombinable && source_index < source_end)
 		{
 			TpSegmentEstimate combined;
 
@@ -800,7 +800,11 @@ static uint32
 tp_compaction_candidate(
 		const uint16 level_counts[TP_MAX_LEVELS], uint32 first_level)
 {
-	for (uint32 level = first_level; level < TP_MAX_LEVELS - 1; level++)
+	/*
+	 * Every level is a candidate, including the top one: it compacts
+	 * into itself rather than promoting, so its debt is reducible.
+	 */
+	for (uint32 level = first_level; level < TP_MAX_LEVELS; level++)
 	{
 		if ((uint32)level_counts[level] >= (uint32)tp_segments_per_level)
 			return level;
@@ -871,6 +875,46 @@ tp_select_level_prefix(
 	return first_source;
 }
 
+/*
+ * Give back a trailing run of batches that combine nothing.
+ *
+ * A one-source batch rewrites its whole segment and produces a segment
+ * of the same size, so the pass pays a full copy for no reduction.  At
+ * the tail of a prefix those are usually the level's oldest and largest
+ * runs, already past max_segment_size and unable to absorb anything, so
+ * a single pairable pair at the head can otherwise authorize rewriting
+ * every one of them.
+ *
+ * Returning them is cheap precisely because the selection is a head
+ * prefix: the chain behind it is untouched, so moving the retained head
+ * back to the first returned segment restores the level without
+ * rewriting any segment header.  They also keep their level, so nothing
+ * about them changes on disk.  A one-source batch in the middle of a
+ * prefix is still rewritten -- excising it would require repointing its
+ * predecessor, which no longer fits in the publishing metapage record.
+ *
+ * This applies only to the level a pass chose to compact.  The capacity
+ * recourse below selects a level to make room at, and there promoting a
+ * one-source batch is the mechanism that makes it: handing those back
+ * would leave the level exactly as full and turn a wasteful pass into a
+ * failed one.
+ */
+static void
+tp_trim_uncombinable_tail(
+		TpCompactionPlan *plan, uint32 first_batch, uint32 level)
+{
+	while (plan->num_batches > first_batch &&
+		   plan->batches[plan->num_batches - 1].source_count == 1)
+	{
+		TpCompactionBatch *batch = &plan->batches[plan->num_batches - 1];
+
+		plan->retained_heads[level] = plan->sources[batch->first_source].root;
+		plan->retained_counts[level]++;
+		plan->num_sources = batch->first_source;
+		plan->num_batches--;
+	}
+}
+
 static void
 tp_assign_ordinary_batches(
 		TpCompactionPlan *plan,
@@ -886,12 +930,15 @@ tp_assign_ordinary_batches(
 
 		if (output_level < minimum_level)
 			output_level = minimum_level;
-		if (output_level >= TP_MAX_LEVELS)
-			ereport(ERROR,
-					(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
-					 errmsg("bounded compaction cannot promote a segment "
-							"above level %u",
-							source->source_level)));
+
+		/*
+		 * The top level is the ladder's terminal bucket, not a wall.
+		 * A run that would promote past it stays there and compacts
+		 * into itself, so the level is reducible like any other and
+		 * carries no special count ceiling.
+		 */
+		if (output_level > TP_MAX_LEVELS - 1)
+			output_level = TP_MAX_LEVELS - 1;
 
 		for (uint32 j = 1; j < batch->source_count; j++)
 		{
@@ -930,7 +977,7 @@ tp_build_ordinary_plan(
 
 		candidate =
 				tp_compaction_candidate(snapshot->level_counts, search_level);
-		if (candidate >= TP_MAX_LEVELS - 1)
+		if (candidate >= TP_MAX_LEVELS)
 			return false;
 
 		tp_initialize_ordinary_plan(index, snapshot, plan);
@@ -938,17 +985,23 @@ tp_build_ordinary_plan(
 				index, snapshot, plan, candidate, threshold);
 		first_batch = plan->num_batches;
 		tp_append_bounded_batches(plan, first_source, threshold);
+		tp_trim_uncombinable_tail(plan, first_batch, candidate);
 		tp_assign_ordinary_batches(plan, first_batch, planned_outputs);
 
-		for (uint32 level = candidate + 1; level < TP_MAX_LEVELS; level++)
+		/*
+		 * Outputs no longer always land above the candidate: the top
+		 * level compacts into itself.  Check every level this plan
+		 * would grow, and treat a full level uniformly -- it is over
+		 * capacity only when it also has too few segments to compact.
+		 */
+		for (uint32 level = 0; level < TP_MAX_LEVELS; level++)
 		{
 			while (planned_outputs[level] > 0 &&
 				   (uint64)plan->retained_counts[level] +
 								   (uint64)planned_outputs[level] >
 						   (uint64)plan->output_capacity)
 			{
-				if (level == TP_MAX_LEVELS - 1 ||
-					plan->retained_counts[level] < threshold)
+				if (plan->retained_counts[level] < threshold)
 					ereport(ERROR,
 							(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
 							 errmsg("bm25 segment count limit reached at "
@@ -988,52 +1041,77 @@ tp_free_compaction_plan(TpCompactionPlan *plan)
 		pfree(plan->batches);
 }
 
+/*
+ * Plan and run a single bounded compaction pass, searching for a
+ * triggered level at or above first_level.  Returns true when a plan
+ * executed and false when no level at or above first_level carries
+ * threshold debt this engine can reduce.
+ *
+ * One pass is one publication: the plan is built in full -- including
+ * any recursive compaction of a blocking destination level -- and
+ * validated against the per-level segment capacity before
+ * tp_execute_plan touches a page.  A caller that must bound how long it
+ * holds the per-index exclusive lock can therefore run exactly one pass
+ * and release, leaving the index in a consistent state.
+ */
+static bool
+tp_compact_once(
+		TpLocalIndexState *index_state, Relation index, uint32 first_level)
+{
+	TpIndexMetaPage	 snapshot;
+	TpCompactionPlan plan;
+	uint32			 drained;
+
+	tp_require_compaction_lock(index_state);
+	if (first_level >= TP_MAX_LEVELS)
+		return false;
+
+	/*
+	 * Reclaiming displaced pages is part of compacting, not part of every
+	 * write.  Leave the tombstone chain alone unless a level is actually
+	 * triggered, so an ordinary spill cannot free pages that a merge
+	 * parked for standby-safe reclaim.
+	 */
+	snapshot = tp_get_metapage(index);
+	if (tp_compaction_candidate(snapshot->level_counts, first_level) >=
+		TP_MAX_LEVELS)
+	{
+		pfree(snapshot);
+		return false;
+	}
+	pfree(snapshot);
+
+	drained = tp_tombstone_drain(
+			index, NULL, tp_reclaim_horizon(NULL), /* own_lock */ false);
+	if (drained > 0)
+		IndexFreeSpaceMapVacuum(index);
+
+	snapshot = tp_get_metapage(index);
+	if (!tp_build_ordinary_plan(index, snapshot, first_level, &plan))
+	{
+		pfree(snapshot);
+		tp_free_compaction_plan(&plan);
+		return false;
+	}
+
+	tp_execute_plan(index, snapshot, &plan);
+	pfree(snapshot);
+	tp_free_compaction_plan(&plan);
+	return true;
+}
+
 void
 tp_maybe_compact_level(
 		TpLocalIndexState *index_state, Relation index, uint32 first_level)
 {
-	tp_require_compaction_lock(index_state);
-	if (first_level >= TP_MAX_LEVELS - 1)
-		return;
+	while (tp_compact_once(index_state, index, first_level))
+		;
+}
 
-	while (true)
-	{
-		TpIndexMetaPage	 snapshot;
-		TpCompactionPlan plan;
-		uint32			 drained;
-
-		/*
-		 * Reclaiming displaced pages is part of compacting, not part of
-		 * every write.  Leave the tombstone chain alone unless a level is
-		 * actually triggered, so an ordinary spill cannot free pages that
-		 * a merge parked for standby-safe reclaim.
-		 */
-		snapshot = tp_get_metapage(index);
-		if (tp_compaction_candidate(snapshot->level_counts, first_level) >=
-			TP_MAX_LEVELS - 1)
-		{
-			pfree(snapshot);
-			return;
-		}
-		pfree(snapshot);
-
-		drained = tp_tombstone_drain(
-				index, NULL, tp_reclaim_horizon(NULL), /* own_lock */ false);
-		if (drained > 0)
-			IndexFreeSpaceMapVacuum(index);
-
-		snapshot = tp_get_metapage(index);
-		if (!tp_build_ordinary_plan(index, snapshot, first_level, &plan))
-		{
-			pfree(snapshot);
-			tp_free_compaction_plan(&plan);
-			return;
-		}
-
-		tp_execute_plan(index, snapshot, &plan);
-		pfree(snapshot);
-		tp_free_compaction_plan(&plan);
-	}
+bool
+tp_compact_step(TpLocalIndexState *index_state, Relation index)
+{
+	return tp_compact_once(index_state, index, 0);
 }
 
 void
