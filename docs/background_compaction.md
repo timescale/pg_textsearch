@@ -181,10 +181,20 @@ so a scheduler can be installed independently. The name is resolved at each
 dispatch rather than cached, so replacing the function behind it takes effect
 without re-setting the GUC.
 
-Requests are backend-local, transaction-local, and deduplicated by index, and
-pending OIDs are revalidated against the transaction's final catalog state.
-Aborting the top-level transaction dispatches nothing; a rolled-back savepoint
-still dispatches, because the spill it performed survives the rollback.
+Requests are backend-local, deduplicated by index, and held in
+`TopTransactionContext`, so PostgreSQL frees them at commit, prepare, and
+abort alike. Pending OIDs are revalidated against the transaction's final
+catalog state. Aborting the top-level transaction dispatches nothing; a
+rolled-back savepoint still dispatches, because the spill it performed
+survives the rollback, and because that context outlives subtransactions.
+
+Two-phase transactions therefore dispatch nothing without any special case:
+`PREPARE TRANSACTION` frees the pending list along with the rest of the
+transaction's memory. This is also why no callback runs at `PRE_PREPARE`,
+which matters — callback SQL there could set transaction-global state that
+PostgreSQL validates immediately afterward, such as
+`XACT_FLAGS_ACCESSEDTEMPNAMESPACE` from reading a temporary object, failing
+an otherwise valid `PREPARE`.
 
 `background` compacts inline wherever the request could not be handed off,
 since the alternative is to record one and discard it:
@@ -196,11 +206,6 @@ since the alternative is to record one and discard it:
 - **`CREATE INDEX`**, until the build commits.
 
 `off` is honored in all of these.
-
-Two-phase transactions dispatch nothing: callback SQL at `PRE_PREPARE` can set
-transaction-global state that PostgreSQL validates immediately afterward —
-reading a temporary object sets `XACT_FLAGS_ACCESSEDTEMPNAMESPACE`, failing an
-otherwise valid `PREPARE TRANSACTION`.
 
 Each callback runs in a protected internal subtransaction whose local effects
 are rolled back, so it must hand work to a facility that survives that

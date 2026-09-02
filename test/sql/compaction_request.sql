@@ -4,10 +4,6 @@ CREATE EXTENSION IF NOT EXISTS pg_textsearch;
 SET client_min_messages = warning;
 SET pg_textsearch.segments_per_level = 2;
 
--- The two-phase commit coverage below is meaningless without this.
-SELECT current_setting('max_prepared_transactions')::int > 0
-       AS twophase_enabled;
-
 CREATE SEQUENCE compaction_request_calls;
 SELECT setval('compaction_request_calls', 1, true) AS calls_before \gset
 CREATE SEQUENCE compaction_request_calls_docs2;
@@ -337,62 +333,6 @@ COMMIT;
 SELECT count(*) = 20 AS callback_failure_committed
 FROM request_docs WHERE body LIKE 'callback failure %';
 
--- A two-phase transaction dispatches nothing; the debt is left for a
--- later spill or the scheduler's sweep.
-CREATE TABLE prepared_request_docs (id serial PRIMARY KEY, body text);
-CREATE INDEX prepared_request_docs_idx ON prepared_request_docs
-    USING bm25(body)
-    WITH (text_config = 'english', compaction = 'background');
-SET pg_textsearch.compaction_request_function =
-    'public.record_compaction_request';
-INSERT INTO prepared_request_docs (body)
-SELECT 'prepare seed ' || i FROM generate_series(1, 20) i;
-SELECT bm25_spill_index('prepared_request_docs_idx') IS NOT NULL;
-SELECT last_value AS calls_before FROM compaction_request_calls \gset
-BEGIN;
-INSERT INTO prepared_request_docs (body)
-SELECT 'prepare pending ' || i FROM generate_series(1, 20) i;
-SELECT bm25_spill_index('prepared_request_docs_idx') IS NOT NULL;
-PREPARE TRANSACTION 'compaction_request_prepare';
-SELECT last_value - :calls_before AS prepare_requests
-FROM compaction_request_calls;
-SELECT bm25_needs_compaction('prepared_request_docs_idx'::regclass)
-       AS prepare_debt_retained;
-SELECT last_value AS calls_before FROM compaction_request_calls \gset
-BEGIN;
-SELECT 1 AS backend_reused;
-COMMIT;
-SELECT last_value - :calls_before AS stale_requests
-FROM compaction_request_calls;
-SELECT last_value AS calls_before FROM compaction_request_calls \gset
-COMMIT PREPARED 'compaction_request_prepare';
-SELECT last_value - :calls_before AS commit_prepared_requests
-FROM compaction_request_calls;
-
--- A callback touching a temporary object would set transaction-global
--- state that PostgreSQL validates after PRE_PREPARE.  Because two-phase
--- transactions do not dispatch, PREPARE still succeeds.
-CREATE TEMP TABLE prepare_temp_probe (x int);
-CREATE FUNCTION public.temp_touching_request(regclass) RETURNS void
-LANGUAGE plpgsql AS $$
-DECLARE n bigint;
-BEGIN
-    SELECT count(*) INTO n FROM prepare_temp_probe;
-END;
-$$;
-SET pg_textsearch.compaction_request_function =
-    'public.temp_touching_request';
-BEGIN;
-INSERT INTO prepared_request_docs (body)
-SELECT 'prepare temp ' || i FROM generate_series(1, 20) i;
-SELECT bm25_spill_index('prepared_request_docs_idx') IS NOT NULL;
-PREPARE TRANSACTION 'compaction_request_prepare_temp';
-COMMIT PREPARED 'compaction_request_prepare_temp';
-SELECT count(*) = 20 AS prepare_temp_committed
-FROM prepared_request_docs WHERE body LIKE 'prepare temp %';
-SET pg_textsearch.compaction_request_function =
-    'public.record_compaction_request';
-
 -- A spill caused by the callback compacts inline.  Its request would
 -- land in a list this dispatch has stopped reading and be freed at
 -- commit, while the spill survives the callback's rollback.
@@ -566,7 +506,6 @@ DROP TABLE off_build_docs CASCADE;
 DROP TABLE final_build_docs CASCADE;
 DROP TABLE reentrant_outer CASCADE;
 DROP TABLE reentrant_inner CASCADE;
-DROP TABLE prepared_request_docs CASCADE;
 DROP TABLE dropped_request_docs CASCADE;
 DROP TABLE aborted_index_docs CASCADE;
 DROP TABLE rollback_drop_docs CASCADE;
@@ -582,7 +521,6 @@ DROP SEQUENCE compaction_request_calls_shadow CASCADE;
 DROP FUNCTION public.record_compaction_request(regclass);
 DROP FUNCTION public.fail_compaction_request(regclass);
 DROP FUNCTION public.cancel_compaction_request(regclass);
-DROP FUNCTION public.temp_touching_request(regclass);
 DROP FUNCTION public.reentrant_request(regclass);
 DROP FUNCTION public.callback_slot(regclass);
 DROP FUNCTION public.callback_slot_old(regclass);

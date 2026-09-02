@@ -645,10 +645,9 @@ spill, and the statement does not block concurrent readers or writers.
 temporary indexes, during autovacuum, for a spill caused by the callback
 itself, and during `CREATE INDEX`. `off` is honored in all of these.
 
-Two-phase transactions hand off nothing. Callback SQL at `PREPARE` time could
-leave transaction-global state that PostgreSQL validates immediately
-afterward — reading a temporary table, for instance, would fail an otherwise
-valid `PREPARE TRANSACTION`.
+Two-phase transactions hand off nothing, because pending requests live in
+transaction-local memory that `PREPARE TRANSACTION` frees. The debt is left
+for the next ordinary spill or for the scheduler's own sweep.
 
 See [Compacting an index](#compacting-an-index). A built-in background
 scheduler is planned for a future release.

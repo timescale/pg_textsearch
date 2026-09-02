@@ -629,7 +629,6 @@ tp_xact_callback(XactEvent event, void *arg pg_attribute_unused())
 		tp_release_all_index_locks();
 		/* Reset bulk load counters for next transaction */
 		tp_reset_bulk_load_counters();
-		tp_compaction_reset_requests();
 		break;
 
 	case XACT_EVENT_ABORT:
@@ -640,24 +639,11 @@ tp_xact_callback(XactEvent event, void *arg pg_attribute_unused())
 		tp_release_all_index_locks();
 		/* Reset bulk load counters for next transaction */
 		tp_reset_bulk_load_counters();
-		tp_compaction_reset_requests();
 		break;
 
 	case XACT_EVENT_PRE_PREPARE:
-		/*
-		 * Spill, but do not run the callback: SQL touching a temporary
-		 * object sets XACT_FLAGS_ACCESSEDTEMPNAMESPACE, which is
-		 * checked after this event and which subtransaction rollback
-		 * cannot clear, failing an otherwise valid PREPARE.
-		 */
-		tp_bulk_load_spill_check();
-		tp_compaction_reset_requests();
-		break;
-
 	case XACT_EVENT_PREPARE:
-		tp_release_all_index_locks();
-		tp_reset_bulk_load_counters();
-		tp_compaction_reset_requests();
+		/* Nothing to do for these events */
 		break;
 	}
 }

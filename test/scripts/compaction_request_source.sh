@@ -23,6 +23,27 @@ if ! grep -Fq "SearchSysCacheExists1" "${REQUEST_SOURCE}" ||
     exit 1
 fi
 
+# Pending requests must live in TopTransactionContext, which PostgreSQL
+# frees at commit, prepare, and abort alike.  TopMemoryContext would
+# outlive the transaction and leak stale OIDs into the next one, and would
+# need a discard at every transaction end, including PREPARE.
+request_body="$(
+    sed -n '/^tp_compaction_request(Oid indexoid)/,/^}/p' "${REQUEST_SOURCE}"
+)"
+if ! grep -Fq "MemoryContextSwitchTo(TopTransactionContext)" \
+    <<<"${request_body}"; then
+    echo "pending requests are not allocated in TopTransactionContext" >&2
+    exit 1
+fi
+if grep -Fq "TopMemoryContext" <<<"${request_body}"; then
+    echo "pending requests outlive the recording transaction" >&2
+    exit 1
+fi
+if ! grep -Fq "MemoryContextRegisterResetCallback" <<<"${request_body}"; then
+    echo "pending request list pointer is not cleared with its context" >&2
+    exit 1
+fi
+
 # Running callback SQL at PRE_PREPARE can leave transaction-global state
 # (notably XACT_FLAGS_ACCESSEDTEMPNAMESPACE) that PostgreSQL validates
 # after the event and that subtransaction rollback cannot clear, making an
@@ -32,10 +53,6 @@ preprepare_body="$(
 )"
 if grep -Fq "tp_compaction_flush_requests" <<<"${preprepare_body}"; then
     echo "PRE_PREPARE dispatches callback SQL" >&2
-    exit 1
-fi
-if ! grep -Fq "tp_compaction_reset_requests" <<<"${preprepare_body}"; then
-    echo "PRE_PREPARE does not discard pending requests" >&2
     exit 1
 fi
 

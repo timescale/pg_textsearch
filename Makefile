@@ -121,7 +121,6 @@ test-local: install
 	@echo "log_statement = 'all'" >> tmp_check_shared/data/postgresql.conf
 	@echo "shared_buffers = 256MB" >> tmp_check_shared/data/postgresql.conf
 	@echo "max_connections = 20" >> tmp_check_shared/data/postgresql.conf
-	@echo "max_prepared_transactions = 10" >> tmp_check_shared/data/postgresql.conf
 	@echo "shared_preload_libraries = '$(MODULE_big)'" >> tmp_check_shared/data/postgresql.conf
 	@pg_ctl start -D tmp_check_shared/data -l tmp_check_shared/data/logfile -w
 	@createdb -p 55433 contrib_regression

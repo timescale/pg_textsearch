@@ -30,7 +30,15 @@
 
 char *tp_compaction_request_function = "";
 
+/*
+ * Pending requests live in TopTransactionContext, which PostgreSQL frees
+ * at commit, prepare, and abort alike, so no transaction callback has to
+ * clear them.  A reset callback nulls this pointer when that happens.
+ * The context outlives subtransactions, so a request from a rolled-back
+ * savepoint survives, matching the spill it recorded.
+ */
 static List *tp_pending_compactions = NIL;
+static bool	 tp_pending_registered	= false;
 
 /* True while tp_compaction_flush_requests() is running callback SQL. */
 static bool tp_dispatch_active = false;
@@ -108,6 +116,13 @@ tp_check_compaction_request_function(
 	return valid;
 }
 
+static void
+tp_pending_compactions_reset(void *arg pg_attribute_unused())
+{
+	tp_pending_compactions = NIL;
+	tp_pending_registered  = false;
+}
+
 void
 tp_compaction_request(Oid indexoid)
 {
@@ -121,16 +136,19 @@ tp_compaction_request(Oid indexoid)
 	if (list_member_oid(tp_pending_compactions, indexoid))
 		return;
 
-	oldcxt				   = MemoryContextSwitchTo(TopMemoryContext);
+	oldcxt = MemoryContextSwitchTo(TopTransactionContext);
+
+	if (!tp_pending_registered)
+	{
+		MemoryContextCallback *cb = palloc0(sizeof(*cb));
+
+		cb->func = tp_pending_compactions_reset;
+		MemoryContextRegisterResetCallback(TopTransactionContext, cb);
+		tp_pending_registered = true;
+	}
+
 	tp_pending_compactions = lappend_oid(tp_pending_compactions, indexoid);
 	MemoryContextSwitchTo(oldcxt);
-}
-
-void
-tp_compaction_reset_requests(void)
-{
-	list_free(tp_pending_compactions);
-	tp_pending_compactions = NIL;
 }
 
 static TpResolvedRequestFunction *

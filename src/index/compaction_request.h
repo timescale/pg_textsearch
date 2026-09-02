@@ -26,4 +26,3 @@ extern bool tp_check_compaction_request_function(
 		char **newval, void **extra, GucSource source);
 extern void tp_compaction_request(Oid indexoid);
 extern void tp_compaction_flush_requests(void);
-extern void tp_compaction_reset_requests(void);
