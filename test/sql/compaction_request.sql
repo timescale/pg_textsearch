@@ -228,6 +228,48 @@ FROM compaction_request_calls;
 SELECT count(*) = 20 AS disappeared_callback_committed
 FROM request_docs WHERE body LIKE 'disappearing callback %';
 
+-- The callback is resolved at dispatch, not when the GUC is set, so
+-- replacing the function body takes effect without re-setting the GUC.
+CREATE SEQUENCE compaction_request_calls_replaced;
+SELECT setval('compaction_request_calls_replaced', 1, true)
+    AS replaced_init \gset
+CREATE FUNCTION replaceable_request(regclass) RETURNS void
+LANGUAGE plpgsql AS $$
+BEGIN
+    PERFORM nextval('compaction_request_calls');
+END;
+$$;
+SET pg_textsearch.compaction_request_function = 'replaceable_request';
+SELECT last_value AS calls_before FROM compaction_request_calls \gset
+BEGIN;
+INSERT INTO request_docs (body)
+SELECT 'replaceable original ' || i FROM generate_series(1, 20) i;
+SELECT bm25_spill_index('request_docs_idx') IS NOT NULL;
+COMMIT;
+SELECT last_value - :calls_before AS original_callback_requests
+FROM compaction_request_calls;
+
+CREATE OR REPLACE FUNCTION replaceable_request(regclass) RETURNS void
+LANGUAGE plpgsql AS $$
+BEGIN
+    PERFORM nextval('compaction_request_calls_replaced');
+END;
+$$;
+SELECT last_value AS calls_before FROM compaction_request_calls \gset
+SELECT last_value AS replaced_before
+FROM compaction_request_calls_replaced \gset
+BEGIN;
+INSERT INTO request_docs (body)
+SELECT 'replaceable new ' || i FROM generate_series(1, 20) i;
+SELECT bm25_spill_index('request_docs_idx') IS NOT NULL;
+COMMIT;
+SELECT last_value - :calls_before AS replaced_callback_old_requests
+FROM compaction_request_calls;
+SELECT last_value - :replaced_before AS replaced_callback_new_requests
+FROM compaction_request_calls_replaced;
+SET pg_textsearch.compaction_request_function =
+    'record_compaction_request';
+
 -- Ordinary callback errors warn and preserve the writer transaction.
 SET pg_textsearch.compaction_request_function = 'fail_compaction_request';
 BEGIN;
@@ -375,7 +417,9 @@ DROP TABLE request_docs CASCADE;
 DROP TABLE compaction_callback_rows;
 DROP SEQUENCE compaction_request_calls CASCADE;
 DROP SEQUENCE compaction_request_calls_docs2 CASCADE;
+DROP SEQUENCE compaction_request_calls_replaced CASCADE;
 DROP FUNCTION record_compaction_request(regclass);
 DROP FUNCTION fail_compaction_request(regclass);
 DROP FUNCTION cancel_compaction_request(regclass);
+DROP FUNCTION replaceable_request(regclass);
 DROP EXTENSION pg_textsearch CASCADE;

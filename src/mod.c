@@ -596,8 +596,14 @@ tp_shmem_startup(void)
 }
 
 /*
- * Transaction callback - release index locks at transaction end
- * and check for bulk load auto-spill at pre-commit
+ * Transaction callback - release index locks at transaction end, check
+ * for bulk load auto-spill at pre-commit, and dispatch any compaction
+ * requests those spills registered.
+ *
+ * The spill check runs first: a spill can register a request, so
+ * flushing afterwards is what lets that request reach the callback in
+ * the same transaction.  Parallel workers deliberately do not flush;
+ * dispatch runs subtransactions and SPI, which a worker must not do.
  */
 static void
 tp_xact_callback(XactEvent event, void *arg pg_attribute_unused())
