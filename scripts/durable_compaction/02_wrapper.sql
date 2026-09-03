@@ -305,6 +305,9 @@ SELECT pg_catalog.set_config(
 RESET ROLE;
 COMMIT;
 
+BEGIN;
+SET LOCAL search_path = pg_catalog, pg_temp;
+
 DO $$
 DECLARE
     canary_id      pg_catalog.text :=
@@ -313,7 +316,8 @@ DECLARE
     instance_state pg_catalog.text;
     node_result    pg_catalog.text;
     deadline       pg_catalog.timestamptz :=
-        pg_catalog.clock_timestamp() + interval '60 seconds';
+        pg_catalog.clock_timestamp() OPERATOR(pg_catalog.+)
+            '60 seconds'::pg_catalog.interval;
 BEGIN
     LOOP
         SELECT instance.status
@@ -321,7 +325,8 @@ BEGIN
         FROM df.instances instance
         WHERE instance.id OPERATOR(pg_catalog.=) canary_id;
 
-        EXIT WHEN instance_state IN ('completed', 'failed', 'cancelled');
+        EXIT WHEN instance_state OPERATOR(pg_catalog.=) ANY (ARRAY[
+            'completed', 'failed', 'cancelled']);
 
         IF pg_catalog.clock_timestamp() OPERATOR(pg_catalog.>=) deadline THEN
             RAISE EXCEPTION
@@ -337,7 +342,7 @@ BEGIN
     END LOOP;
 
     IF instance_state OPERATOR(pg_catalog.<>) 'completed' THEN
-        SELECT node.result #>> '{}'
+        SELECT node.result OPERATOR(pg_catalog.#>>) '{}'
         INTO node_result
         FROM df.nodes node
         WHERE node.instance_id OPERATOR(pg_catalog.=) canary_id
@@ -354,6 +359,8 @@ BEGIN
     END IF;
 END
 $$;
+
+COMMIT;
 
 BEGIN;
 
