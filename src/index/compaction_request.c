@@ -167,13 +167,7 @@ tp_lookup_request_function(void)
 
 	if (tp_compaction_request_function == NULL ||
 		tp_compaction_request_function[0] == '\0')
-	{
-		ereport(WARNING,
-				(errmsg("bm25: pg_textsearch.compaction_request_function "
-						"is unset or unresolvable; skipping background "
-						"compaction")));
 		return NULL;
-	}
 
 	/*
 	 * Name and catalog resolution can ERROR on permissions or concurrent
