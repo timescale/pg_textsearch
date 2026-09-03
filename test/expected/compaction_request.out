@@ -117,6 +117,46 @@ SELECT NOT bm25_needs_compaction('request_docs_idx'::regclass)
 seed_below_threshold
 t
 (1 row)
+-- An empty callback selects periodic-sweep mode: committing debt emits no
+-- warning, and the sweep picks it up.
+SET pg_textsearch.compaction_request_function = '';
+CREATE TABLE sweep_only_docs (id serial PRIMARY KEY, body text);
+CREATE INDEX sweep_only_docs_idx ON sweep_only_docs
+    USING bm25(body)
+    WITH (text_config = 'english', compaction = 'background');
+BEGIN;
+INSERT INTO sweep_only_docs (body)
+SELECT 'sweep only one ' || i FROM generate_series(1, 20) i;
+SELECT bm25_spill_index('sweep_only_docs_idx') IS NOT NULL
+       AS sweep_only_first;
+sweep_only_first
+t
+(1 row)
+INSERT INTO sweep_only_docs (body)
+SELECT 'sweep only two ' || i FROM generate_series(1, 20) i;
+SELECT bm25_spill_index('sweep_only_docs_idx') IS NOT NULL
+       AS sweep_only_second;
+sweep_only_second
+t
+(1 row)
+COMMIT;
+SELECT bm25_needs_compaction('sweep_only_docs_idx'::regclass)
+       AS sweep_only_debt_recorded;
+sweep_only_debt_recorded
+t
+(1 row)
+SELECT bm25_compact_pending() AS sweep_only_passes;
+sweep_only_passes
+1
+(1 row)
+SELECT NOT bm25_needs_compaction('sweep_only_docs_idx'::regclass)
+       AS sweep_only_debt_compacted;
+sweep_only_debt_compacted
+t
+(1 row)
+DROP TABLE sweep_only_docs CASCADE;
+SET pg_textsearch.compaction_request_function =
+    'public.record_compaction_request';
 -- Top-level abort discards the pending request.  The interposed
 -- transaction flushes any leaked request before the delta is read.
 SELECT last_value AS calls_before FROM compaction_request_calls \gset

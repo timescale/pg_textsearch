@@ -159,6 +159,26 @@ the default, not of the design: at `segments_per_level = 2` the L6 ceiling is
 existing segment larger than the current setting stays a valid uncombinable
 singleton, so a segment at any level may exceed it.
 
+## Periodic sweep
+
+`bm25_compact_pending()` is a scheduler-neutral sweep over non-temporary,
+valid, ready, live BM25 indexes with the exact `compaction=background`
+reloption. It calls `bm25_compact_step()` once per eligible index and returns
+the number of passes that ran. An ordinary error on one index raises a warning
+and does not stop later indexes; cancellation and shutdown errors are rethrown.
+
+For example, pg_cron can run the sweep every five minutes:
+
+```sql
+SELECT cron.schedule(
+    'pg_textsearch-compaction', '*/5 * * * *',
+    $$SELECT public.bm25_compact_pending()$$
+);
+```
+
+The scheduling role must own each target index or be a member of its owner
+role.
+
 ## Spill-time dispatch
 
 The `compaction` index option controls what happens when a spill leaves a

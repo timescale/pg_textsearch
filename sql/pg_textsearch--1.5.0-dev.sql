@@ -281,6 +281,53 @@ LANGUAGE C VOLATILE STRICT;
 COMMENT ON FUNCTION @extschema@.bm25_compact_step(regclass) IS
     'Run at most one compaction pass and report whether one ran, letting a caller spread a cascade over several transactions. A published pass is not undone by ROLLBACK.';
 
+CREATE FUNCTION @extschema@.bm25_compact_pending()
+RETURNS integer
+LANGUAGE plpgsql VOLATILE
+SECURITY INVOKER
+SET search_path = pg_catalog, pg_temp
+AS $$
+DECLARE
+    idx regclass;
+    passes integer := 0;
+BEGIN
+    FOR idx IN
+        SELECT c.oid::regclass
+        FROM pg_catalog.pg_class AS c
+        JOIN pg_catalog.pg_am AS am ON am.oid = c.relam
+        JOIN pg_catalog.pg_index AS i ON i.indexrelid = c.oid
+        WHERE am.amname = 'bm25'
+          AND c.relkind = 'i'
+          AND c.relpersistence <> 't'
+          AND i.indisvalid
+          AND i.indisready
+          AND i.indislive
+          AND c.reloptions @> ARRAY['compaction=background']
+        ORDER BY c.oid
+    LOOP
+        BEGIN
+            IF @extschema@.bm25_compact_step(idx) THEN
+                passes := passes + 1;
+            END IF;
+        EXCEPTION
+            WHEN SQLSTATE '57014'
+                OR SQLSTATE '57P01'
+                OR SQLSTATE '57P02'
+            THEN
+                RAISE;
+            WHEN OTHERS THEN
+                RAISE WARNING 'could not compact index %: %', idx, SQLERRM;
+        END;
+    END LOOP;
+
+    RETURN passes;
+END
+$$;
+
+COMMENT ON FUNCTION @extschema@.bm25_compact_pending() IS
+    'Run one compaction pass for every live non-temporary BM25 index '
+    'configured for background compaction; report passes run.';
+
 -- VOLATILE because it reads live metapage state, and PARALLEL
 -- RESTRICTED to match bm25_level_counts.  Every level counts: the top
 -- level compacts into itself, so its debt is reducible like any
