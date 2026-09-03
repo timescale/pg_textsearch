@@ -57,7 +57,7 @@ CREATE FUNCTION @extschema@.bm25_needs_compaction_if_current(
     relfilenumber oid)
 RETURNS boolean
 AS 'MODULE_PATHNAME', 'tp_needs_compaction_if_current'
-LANGUAGE C STABLE STRICT;
+LANGUAGE C VOLATILE STRICT;
 
 REVOKE ALL ON FUNCTION
     @extschema@.bm25_compact_step_if_current(oid, oid, oid, oid),
