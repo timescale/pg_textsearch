@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1788416616640,
+  "lastUpdate": 1788416621230,
   "repoUrl": "https://github.com/timescale/pg_textsearch",
   "entries": {
     "cranfield Benchmarks": [
@@ -287840,6 +287840,78 @@ window.BENCHMARK_DATA = {
           {
             "name": "msmarco_vacuum - Query Latency After Update VACUUM",
             "value": 8.48,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tjgreen@gmail.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "a8174dc86fa032e300332e655b42467785b9b993",
+          "message": "Add per-index compaction controls (#475)\n\n## Summary\n\nExpose scheduler-independent SQL controls for inspecting and compacting\none\nBM25 index. This layer makes compaction usable by administrators and\nfuture\nscheduler adapters without introducing a dependency on pg_durable or any\nother job runner.\n\n## Why\n\nThe storage layer compacts automatically during a spill, but background\nworkers and operators need a stable way to inspect the segment layout\nand\nwork off outstanding compaction in bounded transactions. Those entry\npoints must preserve the same\ncapacity, locking, ownership, recovery, and relation-lifecycle\nguarantees as\ninline compaction.\n\n## APIs\n\n- `bm25_level_counts(regclass)` returns the persisted segment count for\neach\n  of the eight LSM levels.\n- `bm25_needs_compaction(regclass)` reports whether any level holds at\nleast\n  `segments_per_level` segments.\n- `bm25_compact(regclass)` runs compaction passes to completion under\none\n  per-index exclusive lock.\n- `bm25_compact_step(regclass)` runs at most one pass and reports\nwhether one\n  ran, allowing callers to split a cascade across transactions.\n\n## One pass, one publication\n\nBoth mutating functions drive the size-bounded engine from #474 through\na new\n`tp_compact_step`, so the stepped and full paths cannot diverge in\ncapacity\nchecking or level selection.\n\nA pass is the engine's unit of work and of publication. The planner\npicks the\nlowest triggered level, groups its segments into batches that fit\n`max_segment_size`, and recursively plans whatever additional compaction\nis\nneeded to make room at the destination levels. The whole plan is\nvalidated\nagainst the per-level segment capacity before any output is merged, and\nevery\noutput a pass produces becomes visible in one metapage update, so a pass\nthat\nfails leaves the segment layout it started from. That is what makes\nstopping\nbetween passes safe, and it is why `bm25_compact()` and repeated\n`bm25_compact_step()` calls converge on the same layout.\n\nThe guarantee covers the visible layout, not every physical page: a pass\ndrains the deferred-free tombstone chain before planning and merges its\noutputs before publishing, so a failed pass can leave pages reclaimed\nand\nunpublished output pages allocated but unreachable. `VACUUM` does not\nrecover\nthose — it reclaims dead memtable pages and past-horizon tombstones, not\npages\na failed pass never linked — so `REINDEX` is the remedy. A published\npass is a\nphysical change and is **not undone by `ROLLBACK`**.\n\nA pass is not a bounded amount of work, and neither function is\ncancellable\nwhile one runs: holding an `LWLock` also holds off interrupts.\n\n## Not rewriting what cannot be combined\n\nBatching is greedy over a head prefix of the level, and a batch that\nends up\nholding a single segment combines nothing: merging it rewrites the whole\nsegment to produce a segment of the same size. Spills prepend, so a\nlevel\nreads newest-first and its oldest, largest runs — the ones already past\n`max_segment_size` — sit at the tail. One pairable pair at the head of a\nlevel\ntherefore authorized rewriting every over-budget segment behind it.\n\nA pass now hands the trailing run of single-segment batches back to the\nlevel\nbefore planning further, and leaves those segments where they are, at\nthe\nlevel they were already on. That is cheap precisely because the\nselection is a\nhead prefix: the chain behind it is untouched, so returning segments is\njust\nmoving the level's head pointer back, and nothing on disk changes.\nCopy-on-write is preserved — no segment header is patched, which is what\nmakes\na failed pass leave the old layout intact, and those writes would not\nfit\nalongside the metapage update that publishes the pass in any case.\n\nTwo limits are deliberate. A single-segment batch in the *middle* of a\nprefix\nis still rewritten, because excising one would mean repointing its\npredecessor. And the trim applies only to the level a pass chose to\ncompact:\nin the capacity recourse a pass compacts a level to make room for its\nown\noutput, and there promoting a single-segment batch is what makes that\nroom, so\nhanding those back would leave the level exactly as full and turn a\nwasteful\npass into a failed one.\n\nOn a level holding a 2MB over-budget run behind two small segments, a\npass\npreviously copied the run to a fresh block and grew the index by 2.2MB;\nit now\nmerges only the pair and grows it by 32KB.\n\n## The top level is not a wall\n\nPreviously the engine treated L7 as terminal: it was never a compaction\ncandidate, so a pass that wanted to promote a run out of a full L6 into\na full\nL7 had no way to make room and planning failed with `bm25 segment count\nlimit\nreached at level 7`. Because nothing could ever reduce L7, that error\nwas a\none-way ratchet — an index that reached it could not compact again.\n\nThis PR makes the top level an ordinary level. A run that would promote\npast\nit stays there and the level compacts into itself under the same size\nbudget,\nso its count is always reducible and it needs no special ceiling. The\ncapacity\ncheck now applies one rule everywhere: a level is over capacity only\nwhen it\nalso holds too few segments to compact. `bm25_needs_compaction()` counts\nevery\nlevel to match.\n\nA level is a hybrid rank, not a pure size class: a pass places its\noutput at\nwhichever is higher, the output's size class or one level above its\nsources.\nThe forced promotion is what drains a level to zero instead of rewriting\nthe\nsame segments in place, so it stays.\n\nA level's ceiling is `8MB * segments_per_level^level`: `tp_size_class()`\nscales by the session's `pg_textsearch.segments_per_level`, which ranges\nfrom\n2 to 64, so the ladder's shape is not fixed. At the default\nfanout of 8 the L3 ceiling is 4096MB and `max_segment_size` caps a\ncombined\nsegment at 4095MB, so under default settings no merge emits a segment\nabove\nsize class 3 and L4 through L7 are reached only by promotion — but that\nis a\nproperty of the default, not of the design. At fanout 2 the L6 ceiling\nis\n512MB and a 4095MB output lands at L7 on size alone. `max_segment_size`\nalso\nbounds only segments a pass *combines*; a larger existing segment stays\na\nvalid uncombinable singleton, so a segment at any level may exceed it.\n\"Uncombinable\" is the property that it cannot be combined any further,\nnot\nthat it cannot be split.\n\n## Safety and behavior\n\n- Both mutating APIs require ownership of the physical BM25 index, and\nrecheck it after opening the relation because `ALTER OWNER` can complete\n  while a caller waits for the lock.\n- Partitioned parent indexes are rejected because they have no physical\nindex\n  storage; callers operate on each partition's index instead.\n- Permanent and unlogged indexes cannot be compacted in read-only\n  transactions, and no index can be compacted during recovery.\n- A backend may compact its own temporary index in a read-only\ntransaction.\n- `bm25_needs_compaction()` is derived from level counts alone and is\ntherefore advisory: it answers \"is any level at its segment threshold\",\nnot\n\"is there work to do\". A level whose every candidate group already\nexceeds\n`max_segment_size` is not carrying compaction debt — no pass would\nreduce\nit — but a count-only signal cannot tell the two apart, so it reports\ntrue\nwhile `bm25_compact_step()` returns false. It does **not** go false on\nsuch\nan index, so it must not be used on its own as a loop or retry\ncondition;\n  drive the loop from `bm25_compact_step()`'s return value instead.\n- `bm25_level_counts()` is `PARALLEL RESTRICTED` because it opens the\nindex\nrelation, which may be a local temporary index.\n`bm25_needs_compaction()`\n  is `VOLATILE` and `STRICT` because it reads live metapage state.\n- Fresh-install and upgrade SQL expose the same functions and\nprivileges.\n\n## Test coverage\n\nRegression coverage exercises threshold detection, full and stepped\ncascades and\ntheir convergence, ownership checks, partitioned and temporary\nrelations,\nread-only and recovery restrictions, and top-level behavior. New\ncoverage\npins the advisory pairing — full level reported, pass declined, full\ncompaction a terminating no-op — and that `ROLLBACK` does not undo a\npublished pass. Those\ntests record the contract; they do not prevent a caller from misusing\nit, so a\nscheduler that loops on `bm25_needs_compaction()` alone will still spin.\nA\nsource guard preserves the ownership check ordering around\n`relation_open`.\nBoth new shell tests run in the blocking CI shell-test step.\n\n`compaction_terminal` now asserts a deep cascade drains to a single\ntop-level\nsegment and settles, and that lower-level debt beside an occupied top\nlevel\nstill compacts with every document preserved. It was verified to fail\nwithout\nthe engine change.\n\n`force_merge.sql`'s `force_l7_multiple` fixture built two top-level\nsegments\nonly because the top level never compacted. It is renamed\n`force_l7_deep` and\nretargeted at the property that now holds: a deeper cascade still\nsettles at\none top-level segment. Multi-segment force merge stays covered by\n`force_l7_mixed`, whose post-merge assertion is tightened from \"the\nsegment\ncount did not increase\" — which a no-op would satisfy — to the exact\ncombined\nlayout.\n\n`compaction_uncombinable_tail` builds a level holding a 2MB over-budget\nrun\nbehind two small segments and asserts that compacting it merges only the\npair:\nthe run keeps its level rather than being promoted, and the index grows\nby far\nless than the run's size. It was verified to fail on both assertions\nwithout\nthe engine change.\n\n## Stack position\n\nThis is the second independently reviewable layer of GitHub stack #479.\nIt\nbuilds on the size-bounded engine in #474; later layers add transaction\ndispatch and optional scheduler integration.",
+          "timestamp": "2026-09-01T23:23:31Z",
+          "url": "https://github.com/timescale/pg_textsearch/commit/a8174dc86fa032e300332e655b42467785b9b993"
+        },
+        "date": 1788416620345,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "msmarco_vacuum - Index Size",
+            "value": 2432.6,
+            "unit": "MB"
+          },
+          {
+            "name": "msmarco_vacuum - Partial VACUUM (concentrated delete)",
+            "value": 1165.625,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco_vacuum - Full VACUUM (uniform delete)",
+            "value": 6713.704,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco_vacuum - Full VACUUM (uniform update)",
+            "value": 4902.22,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco_vacuum - Index Size After Partial VACUUM",
+            "value": 2432.6,
+            "unit": "MB"
+          },
+          {
+            "name": "msmarco_vacuum - Index Size After Full VACUUM",
+            "value": 2432.63,
+            "unit": "MB"
+          },
+          {
+            "name": "msmarco_vacuum - Query Latency After Partial VACUUM",
+            "value": 9.38,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco_vacuum - Query Latency After Full VACUUM",
+            "value": 9.1,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco_vacuum - Index Size After Update VACUUM",
+            "value": 2432.63,
+            "unit": "MB"
+          },
+          {
+            "name": "msmarco_vacuum - Query Latency After Update VACUUM",
+            "value": 8.64,
             "unit": "ms"
           }
         ]
