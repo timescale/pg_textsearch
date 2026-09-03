@@ -109,8 +109,10 @@ test-compaction-request-source:
 
 # These guards cover invariants the SQL suite cannot observe, so they must
 # gate every way the suite is run, not just `make test`.
-installcheck: test-compaction-ownercheck test-compaction-request-source
-test-local: test-compaction-ownercheck test-compaction-request-source
+installcheck: test-compaction-ownercheck test-compaction-request-source \
+	test-durable-static
+test-local: test-compaction-ownercheck test-compaction-request-source \
+	test-durable-static
 
 # Custom local test target with dedicated PostgreSQL instance
 test-local: install
