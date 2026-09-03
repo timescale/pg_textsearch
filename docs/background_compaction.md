@@ -278,14 +278,14 @@ execute as the compactor.
 
 **Merge is blocked on a pg_durable release containing
 [microsoft/pg_durable#354](https://github.com/microsoft/pg_durable/pull/354).**
-That draft targets 0.2.7; released v0.2.6 and current `main` do not provide
-failure-resilient recurrence. The adapter keeps the existing two-argument
-`df.loop` and applies `max_attempts`, `max_backoff`, and `on_failure` through
-the exact seven-argument `df.start` signature introduced by #354. Its catalog
-check is localized at the start of each operator script so the released
-version floor can be recorded without changing adapter behavior. See
-`scripts/durable_compaction/README.md` for installation, authentication, and
-validation instructions.
+v0.2.7 shipped without it and #354 is still an open draft, so no released
+pg_durable provides failure-resilient recurrence. The adapter keeps the
+existing two-argument `df.loop` and applies `max_attempts`, `max_backoff`,
+and `on_failure` through the seven-argument `df.start` signature that #354
+adds. Its catalog check is localized at the start of each operator script so
+the released version floor can be recorded without changing adapter behavior.
+See `scripts/durable_compaction/README.md` for installation, authentication,
+and validation instructions.
 
 This slice intentionally has no recurring schedule, cross-index sweep, or
 extension packaging. The later recurring-registration PR must apply #354's

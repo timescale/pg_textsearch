@@ -7,7 +7,8 @@ pg_durable at build or install time.
 
 > **Merge blocker:** do not merge this adapter until
 > [microsoft/pg_durable#354](https://github.com/microsoft/pg_durable/pull/354)
-> lands in a release. That change currently targets pg_durable 0.2.7.
+> lands in a release. v0.2.7 shipped without it and #354 is still an open
+> draft.
 
 The required pg_durable build provides:
 
@@ -21,11 +22,10 @@ df.start(
     on_failure => 'continue')
 ```
 
-Released pg_durable v0.2.6 and current upstream `main` do not contain the
-failure policy. Both scripts check the exact seven-argument,
-extension-owned `df.start` catalog signature before any managed side effect.
-Once #354 is released, replace the localized capability-only message with the
-released minimum version.
+No released pg_durable contains the failure policy. Both scripts check the
+exact seven-argument, extension-owned `df.start` catalog signature before any
+managed side effect. Once #354 is released, replace the localized
+capability-only message with the released minimum version.
 
 ## Prerequisites
 
@@ -88,14 +88,20 @@ the selected writer. Omit `writer_role` to grant no writer.
 
 ## Configure
 
-After the callback-dispatch branch is present, configure settings at a scope
-visible to both writers and worker sessions:
+Set the callback and threshold at a scope visible to both writers and worker
+sessions:
 
 ```conf
-pg_textsearch.compaction_mode = 'background'
 pg_textsearch.compaction_request_function = \
     'public.bm25_request_compaction'
 pg_textsearch.segments_per_level = 8
+```
+
+Background dispatch is a per-index option, so enable it on each index that
+should use the adapter:
+
+```sql
+ALTER INDEX docs_idx SET (compaction = 'background');
 ```
 
 The wrapper accepts only BM25 indexes. It rejects temporary indexes and
@@ -131,8 +137,8 @@ df.start(
 `transaction_mode => 'new'` persists the request in an independent
 transaction, which is required because pg_textsearch invokes callbacks from a
 late transaction callback and discards their local transactional effects.
-The #354 instance policy retries a failed node up to five times with capped
-exponential backoff. Once those attempts are exhausted,
+The #354 instance policy allows a failed node five attempts total, with
+capped exponential backoff. Once those attempts are exhausted,
 `on_failure => 'continue'` abandons that iteration and starts the next one.
 Every iteration revalidates physical identity and compaction debt.
 
