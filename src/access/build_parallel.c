@@ -745,17 +745,20 @@ tp_build_parallel(
 
 				if (num_merged_terms >= merged_capacity)
 				{
-					merged_capacity = merged_capacity == 0
-											? 1024
-											: merged_capacity * 2;
+					merged_capacity =
+							tp_grow_capacity(merged_capacity, 1024, "terms");
 					if (merged_terms == NULL)
 						merged_terms = palloc_extended(
-								merged_capacity * sizeof(TpMergedTerm),
+								mul_size(
+										(Size)merged_capacity,
+										sizeof(TpMergedTerm)),
 								MCXT_ALLOC_HUGE);
 					else
 						merged_terms = repalloc_huge(
 								merged_terms,
-								merged_capacity * sizeof(TpMergedTerm));
+								mul_size(
+										(Size)merged_capacity,
+										sizeof(TpMergedTerm)));
 				}
 
 				current_merged				 = &merged_terms[num_merged_terms];

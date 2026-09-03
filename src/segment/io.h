@@ -16,6 +16,70 @@
 #include "segment/segment.h"
 
 /*
+ * Shared overflow guards for the segment write paths.
+ *
+ * The segment format stores string-pool offsets as uint32, and the
+ * build/merge accumulators size their arrays with uint32 capacities.
+ * The same arithmetic is needed by the in-memory build path, the
+ * parallel-build BufFile path, the single-segment write path, and the
+ * merge write path, so it lives here rather than being copied into
+ * each of them (issue #432).
+ */
+
+/*
+ * Size of one string-pool entry: a uint32 length prefix, the term
+ * bytes, and the uint32 posting-list offset that follows them.
+ */
+static inline uint64
+tp_string_pool_entry_size(uint32 term_len)
+{
+	return (uint64)sizeof(uint32) + term_len + sizeof(uint32);
+}
+
+/*
+ * True when appending entry_size bytes at string_pos would push the
+ * string pool past the uint32 offsets used by the segment format.
+ * The starting offset and the increment are checked separately so a
+ * final term crossing the limit cannot wrap past it unnoticed.
+ */
+static inline bool
+tp_string_pool_offset_overflows(uint64 string_pos, uint64 entry_size)
+{
+	return string_pos > (uint64)PG_UINT32_MAX ||
+		   entry_size > ((uint64)PG_UINT32_MAX + 1) - string_pos;
+}
+
+/*
+ * Double a uint32 array capacity without wrapping.
+ *
+ * Doubling a uint32 unchecked wraps to zero once the capacity passes
+ * 2^31, which would "grow" the array to a zero-length allocation and
+ * let the next indexed write run past its end.  Growth is clamped to
+ * PG_UINT32_MAX - 1 instead (PG_UINT32_MAX is reserved as the doc_id
+ * sentinel) and errors out once the cap is reached.  A zero capacity
+ * starts the array at initial.  what names the elements being counted
+ * for the error message.
+ */
+static inline uint32
+tp_grow_capacity(uint32 capacity, uint32 initial, const char *what)
+{
+	if (capacity == 0)
+		return initial;
+
+	if (capacity >= PG_UINT32_MAX - 1)
+		ereport(ERROR,
+				(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
+				 errmsg("pg_textsearch: too many %s in segment (max %u)",
+						what,
+						PG_UINT32_MAX - 1)));
+
+	if (capacity > (PG_UINT32_MAX - 1) / 2)
+		return PG_UINT32_MAX - 1;
+
+	return capacity * 2;
+}
+
+/*
  * Segment reader context
  */
 
