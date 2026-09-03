@@ -12,7 +12,9 @@ for scalability.
 
 **Current Version**: 1.5.0-dev
 
-**Postgres Version Support**: 17, 18 (tested in CI)
+**Postgres Version Support**: 17, 18 (tested in CI). 19 (beta) is
+supported on a best-effort basis; its CI job is allowed to fail while
+19 is in beta.
 
 **Schema Organization**: Currently uses public schema. Future versions may
 consider a dedicated `pg_textsearch` schema for cleaner namespace management.
@@ -264,7 +266,8 @@ The `benchmarks/` directory contains performance testing tools:
 ## Continuous Integration
 
 GitHub Actions workflows:
-- `ci.yml` - Main CI pipeline testing Postgres 17, 18
+- `ci.yml` - Main CI pipeline testing Postgres 17, 18, and 19 (beta,
+  allow-failure)
 - `sanitizer-build-and-test.yml` - Address sanitizer builds
 - `formatting.yml` - Code formatting validation
 - `release.yml` - Automated release workflow

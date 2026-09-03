@@ -180,7 +180,7 @@ tpvector_validate_v2(TpVector *v)
 	if (VARSIZE(v) < sizeof(TpVector))
 		ereport(ERROR,
 				(errcode(ERRCODE_DATA_CORRUPTED),
-				 errmsg("v2 bm25vector too small: %u", VARSIZE(v))));
+				 errmsg("v2 bm25vector too small: %zu", (Size)VARSIZE(v))));
 
 	if (v->version != TPVECTOR_VERSION)
 		ereport(ERROR,
