@@ -569,15 +569,14 @@ psql_super -c "GRANT EXECUTE ON FUNCTION
 psql_super -c "ALTER SYSTEM SET
     pg_textsearch.segments_per_level = '2';"
 psql_super -c "ALTER SYSTEM SET
-    pg_textsearch.compaction_mode = 'background';"
-psql_super -c "ALTER SYSTEM SET
     pg_textsearch.compaction_request_function =
         'public.bm25_request_compaction';"
 psql_super -c "SELECT pg_catalog.pg_reload_conf();" >/dev/null
 psql_super <<'SQL'
 CREATE TABLE compact_docs (id integer PRIMARY KEY, body text);
 CREATE INDEX compact_docs_idx ON compact_docs
-    USING bm25(body) WITH (text_config = 'english');
+    USING bm25(body) WITH (text_config = 'english',
+                           compaction = 'background');
 ALTER TABLE compact_docs OWNER TO app_owner;
 ALTER INDEX compact_docs_idx OWNER TO app_owner;
 SQL
@@ -615,7 +614,8 @@ levels_after=$(psql_super -c "SELECT
 psql_super <<'SQL'
 CREATE TABLE prepare_docs (id integer PRIMARY KEY, body text);
 CREATE INDEX prepare_docs_idx ON prepare_docs
-    USING bm25(body) WITH (text_config = 'english');
+    USING bm25(body) WITH (text_config = 'english',
+                           compaction = 'background');
 ALTER TABLE prepare_docs OWNER TO app_owner;
 ALTER INDEX prepare_docs_idx OWNER TO app_owner;
 SQL
@@ -636,10 +636,10 @@ prepare_instance=$(psql_super -c "SELECT id
     WHERE label = '${prepare_label}'
     ORDER BY created_at DESC
     LIMIT 1;")
-[ -n "${prepare_instance}" ] \
-    || fail "PREPARE did not persist an adapter request"
-[ "$(wait_for_instance "${prepare_instance}")" = "completed" ] \
-    || fail "PREPARE adapter request did not complete"
+# Requests live in TopTransactionContext, which PREPARE TRANSACTION
+# discards. Dispatch happens at PRE_COMMIT only.
+[ -z "${prepare_instance}" ] \
+    || fail "PREPARE dispatched an adapter request"
 psql_as app_owner -c \
     "ROLLBACK PREPARED 'durable_compaction_prepare';" >/dev/null
 
