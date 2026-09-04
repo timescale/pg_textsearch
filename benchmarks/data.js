@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1788505285679,
+  "lastUpdate": 1788505289732,
   "repoUrl": "https://github.com/timescale/pg_textsearch",
   "entries": {
     "cranfield Benchmarks": [
@@ -83900,6 +83900,43 @@ window.BENCHMARK_DATA = {
           {
             "name": "cranfield_gin_insert - Insert Time",
             "value": 284.671,
+            "unit": "ms"
+          },
+          {
+            "name": "cranfield_gin_insert - Index Size",
+            "value": 2.17,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tjgreen@gmail.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "f940210f9a7761529fab1cf85fc10e5d70699f0b",
+          "message": "Dispatch compaction requests at commit (#477)\n\n## Summary\n\nAdd scheduler-neutral transaction dispatch for background compaction. A\nspill\nthat leaves a level at the compaction threshold can record a request and\ninvoke a configured callback at the transaction boundary, instead of\nrunning\nthe cascade inline. pg_textsearch links against no scheduler to do it.\n\n## Why\n\nInline compaction charges its full cost to whichever transaction happens\nto\ncross a spill threshold, showing up as an unpredictable latency spike on\nan\nordinary `INSERT`. This adds a handoff point so a deployment can move\nthat\nwork to its own job runner. Inline stays the default.\n\n## Configuration\n\nThe policy is a per-index option.\n\n- `compaction`\n  - `inline` (default) — today's synchronous compaction, unchanged.\n  - `background` — record one request per affected index, dispatch at\n    pre-commit.\n  - `off` — leave the debt for an explicit caller.\n\n  Alterable with `ALTER INDEX ... SET (compaction = ...)` under\n  `ShareUpdateExclusiveLock`; the value is read after each spill.\n\n- `pg_textsearch.compaction_request_function` (`PGC_SUSET`) — a\n**schema-qualified** function name taking one `regclass`; its return\nvalue\nis ignored. Existence is checked at dispatch, not at `SET` time, so the\n  scheduler can be installed after the setting.\n\nQualification is required, not merely recommended: a one-part name\nresolves\nthrough the committing backend's `search_path`, and the callback then\nruns\n  as that backend's user with no privilege switch. The subtransaction\n  rollback does not undo that.\n\n## Behavior\n\nRequests are backend-local, deduplicated by index, and held in\n`TopTransactionContext`, so PostgreSQL frees them at commit, prepare,\nand\nabort alike rather than a transaction callback having to discard them at\neach\nof those points. That context outlives subtransactions, which is what\nmakes a\nrolled-back savepoint still dispatch — matching the spill it recorded,\nwhich\nalso survives. Pending OIDs are revalidated against the transaction's\nfinal\ncatalog state, so an index dropped later in the same transaction is\nskipped.\n\nTwo-phase transactions consequently dispatch nothing and keep their\ndebt,\nwithout any code to make that happen: `PREPARE TRANSACTION` frees the\npending\nlist along with the rest of the transaction's memory. `PRE_PREPARE` and\n`PREPARE` remain no-ops, unchanged from main.\n\n`background` compacts inline wherever the request could not be handed\noff,\nsince the alternative is to record one and discard it, stranding debt\nthe\nspill already committed:\n\n- **Temporary indexes**, which no other backend can open.\n- **Autovacuum**, which must not execute arbitrary user SQL.\n- **A spill caused by the callback itself**, whose request would land in\na\n  list the running dispatch has stopped reading.\n- **`CREATE INDEX`**, until the build commits.\n\n`off` is honored in all of these.\n\nLookup and callback failures raise a `WARNING` and leave the writer\nintact.\nCancellation and shutdown errors are rethrown, so a callback that\ncancels the\nbackend fails the commit it was invoked from.\n\n`tp_compaction_needed()` shares `tp_compaction_candidate()` with the\nplanner\nso it cannot drift from `bm25_needs_compaction()`, and carries the same\nadvisory caveat: a level whose segments all exceed `max_segment_size`\nreports\nas full even though no pass can reduce it. Such an index re-requests on\nevery\nspill and its scheduler finds nothing to do.\n\n### The callback's transactional effects are rolled back\n\nEach callback runs inside an internal subtransaction that is rolled back\nafter it returns, on success as well as on failure. **Only effects that\noutlive a subtransaction abort survive** — a sequence advance, or\nsubmission\nto a facility that does not keep its queue in transactional heap\nstorage. A\nscheduler that enqueues with a plain `INSERT` will see that row\ndisappear.\n\nThis is deliberate: the callback runs at pre-commit inside someone\nelse's\ntransaction and must not leave partial state behind when it errors. The\ntest\npins both halves — the callback demonstrably runs (its `nextval` is\nobserved)\nwhile its insert is discarded (`callback_local_rows = 0`).\n\n### `off` requires an external driver\n\nWith `compaction = 'off'` and no explicit caller, segments accumulate\nuntil a\nlevel reaches the per-level cap of 65535, after which spills fail with\n`bm25\nsegment count limit reached`. That cap is a backstop against silent\nunbounded\ngrowth, not a safe operating point: query performance degrades long\nbefore\nit. `off` is for deployments that drive `bm25_compact()` themselves.\n\n## Also in this PR\n\nTwo robustness fixes in the pre-commit path this change extends, in\ntheir own\ncommit:\n\n- `tp_get_local_index_state` and `tp_bulk_load_spill_check` caught a\nfailed\n`index_open` with `PG_CATCH` + `FlushErrorState` and continued.\nSwallowing\nan error without rolling back to a subtransaction leaves transaction\nstate\n  undefined; both now use `try_index_open`.\n- `tp_bulk_load_spill_check` took the per-index LWLock *before* opening\nthe\n  relation, putting catalog access and a potential heavyweight lock wait\n  inside the per-index lock ordering domain. It now opens first.\n\n## Documentation\n\nThe README documents `compaction` alongside the other index options, and\nits\nbackground-compaction section covers the inline fallbacks, how two-phase\ntransactions behave, the rollback constraint, and what `off` costs.\n`CLAUDE.md` and\n`docs/background_compaction.md` match.\n\n## Test coverage\n\n`test/sql/compaction_request.sql` covers the option and its `ALTER\nINDEX`\npath, callback-name validation, deduplication, abort and subtransaction\ncleanup, catalog revalidation, callback removal, callback failure,\ncancellation, temporary indexes, reentrancy, and both the final build\nbatch\nand `CREATE INDEX` under `off`.\n\nSeveral assertions are built to fail if the mechanism they describe were\nremoved:\n\n- A same-named function in an earlier schema on `search_path` is proven\n*not*\n  to be reached, so qualification is tested rather than asserted.\n- Replacement is tested by renaming the original away and creating a\ndifferent function under the same name, so a cached OID would still\nreach\n  the original. Replacing a body in place proves nothing, since\n  `CREATE OR REPLACE` preserves the OID.\n- Below-threshold spills are asserted to dispatch nothing, catching a\n  regression that dispatched on every spill rather than on real debt.\n- The abort case interposes a transaction before reading the counter, so\na\n  request that leaked past the abort is visible.\n\n`test/scripts/compaction_request_source.sh` guards the source-level\ninvariants the SQL suite cannot observe, including the memory context\nthe\npending list is allocated in — the property that makes the\ntransaction-end\nbehavior automatic. Both source guards now gate `installcheck` and\n`test-local`, not just `make test`.\n\n## Stack position\n\nThird layer of the background-compaction stack. It intentionally\ncontains no\npg_durable dependency; #476 supplies the optional adapter.",
+          "timestamp": "2026-09-03T16:28:19Z",
+          "url": "https://github.com/timescale/pg_textsearch/commit/f940210f9a7761529fab1cf85fc10e5d70699f0b"
+        },
+        "date": 1788505289144,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "cranfield_gin_insert - Index Build Time",
+            "value": 0.531,
+            "unit": "ms"
+          },
+          {
+            "name": "cranfield_gin_insert - Insert Time",
+            "value": 296.934,
             "unit": "ms"
           },
           {
