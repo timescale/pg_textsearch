@@ -191,4 +191,70 @@ ORDER BY id;
 
 RESET enable_seqscan;
 DROP TABLE boolean_empty_docs;
+
+CREATE TABLE boolean_segment_docs (
+    id integer PRIMARY KEY,
+    body text NOT NULL
+);
+
+INSERT INTO boolean_segment_docs VALUES
+    (1, 'alpha beta'),
+    (2, 'alpha'),
+    (3, 'beta');
+
+SET client_min_messages = WARNING;
+CREATE INDEX boolean_segment_docs_body_idx
+    ON boolean_segment_docs USING bm25(body)
+    WITH (text_config = 'english');
+RESET client_min_messages;
+
+INSERT INTO boolean_segment_docs VALUES
+    (4, 'gamma delta'),
+    (5, 'gamma'),
+    (6, 'delta'),
+    (7, 'alpha gamma');
+
+SELECT bm25_spill_index('boolean_segment_docs_body_idx') IS NOT NULL
+    AS spilled_segment_docs;
+
+INSERT INTO boolean_segment_docs VALUES
+    (8, 'alpha delta'),
+    (9, 'beta gamma'),
+    (10, 'epsilon');
+
+DELETE FROM boolean_segment_docs WHERE id = 2;
+VACUUM boolean_segment_docs;
+
+SET enable_seqscan = off;
+
+SELECT array_agg(id ORDER BY id) AS nested_matches
+FROM boolean_segment_docs
+WHERE body @@ to_tsquery('english', '(alpha & beta) | (gamma & delta)');
+
+SELECT array_agg(id ORDER BY id) AS anchored_not_matches
+FROM boolean_segment_docs
+WHERE body @@ to_tsquery('english', 'alpha & !gamma');
+
+SELECT array_agg(id ORDER BY id) AS duplicate_term_matches
+FROM boolean_segment_docs
+WHERE body @@ to_tsquery('english', 'alpha | alpha');
+
+SELECT count(*) AS missing_and_matches
+FROM boolean_segment_docs
+WHERE body @@ to_tsquery('english', 'alpha & missing');
+
+SELECT array_agg(id ORDER BY id) AS mixed_source_matches
+FROM boolean_segment_docs
+WHERE body @@ to_tsquery('english', 'alpha | epsilon');
+
+SELECT array_agg(id ORDER BY id) AS pure_negative_matches
+FROM boolean_segment_docs
+WHERE body @@ to_tsquery('english', '!missing');
+
+SELECT array_agg(id ORDER BY id) AS phrase_matches
+FROM boolean_segment_docs
+WHERE body @@ to_tsquery('english', 'alpha <-> beta');
+
+RESET enable_seqscan;
+DROP TABLE boolean_segment_docs;
 DROP EXTENSION pg_textsearch;
