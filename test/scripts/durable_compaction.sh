@@ -151,9 +151,56 @@ initialize_database() {
     sql_super -c "CREATE EXTENSION pg_textsearch;"
     sql_super -c "GRANT CREATE ON SCHEMA public TO durable_owner;"
     sql_super -c "SELECT df.grant_usage('durable_owner');" >/dev/null
+    sql_super -c "CREATE SCHEMA owner_shadow AUTHORIZATION durable_owner;"
+    sql_as durable_owner <<'SQL'
+CREATE FUNCTION owner_shadow.reject_text_equality(left_value text,
+                                                   right_value text)
+RETURNS boolean
+LANGUAGE plpgsql
+IMMUTABLE
+AS $body$
+BEGIN
+    IF pg_catalog.left(left_value, 20)
+           OPERATOR(pg_catalog.=) 'pg_textsearch:bg:v1:'
+       OR left_value OPERATOR(pg_catalog.=)
+           ANY (ARRAY['pending', 'running', 'completed', 'failed',
+                      'cancelled']::pg_catalog.text[]) THEN
+        RAISE EXCEPTION 'owner search_path resolved shadow text equality';
+    END IF;
+    RETURN left_value OPERATOR(pg_catalog.=) right_value;
+END
+$body$;
+
+CREATE FUNCTION owner_shadow.reject_text_like(text, text)
+RETURNS boolean
+LANGUAGE plpgsql
+IMMUTABLE
+AS $body$
+BEGIN
+    RAISE EXCEPTION 'owner search_path resolved shadow text LIKE';
+END
+$body$;
+
+CREATE OPERATOR owner_shadow.= (
+    LEFTARG = pg_catalog.text,
+    RIGHTARG = pg_catalog.text,
+    FUNCTION = owner_shadow.reject_text_equality
+);
+
+CREATE OPERATOR owner_shadow.~~ (
+    LEFTARG = pg_catalog.text,
+    RIGHTARG = pg_catalog.text,
+    FUNCTION = owner_shadow.reject_text_like
+);
+SQL
     sql_super -c "ALTER ROLE durable_owner IN DATABASE ${TEST_DB}
-                   SET search_path = public, pg_catalog;"
+                   SET search_path = owner_shadow, public, pg_catalog;
+                   ALTER ROLE durable_owner IN DATABASE ${TEST_DB}
+                   SET maintenance_work_mem = '1MB';"
     wait_for_durable_worker
+    assert_eq "hostile owner search_path is active" \
+        "owner_shadow, public, pg_catalog" \
+        "$(sql_as durable_owner -c "SHOW search_path;")"
 }
 
 dependency_count() {
@@ -204,7 +251,8 @@ setup_cluster() {
         "${PKGLIBDIR}/pg_durable.so" \
         "${PKGLIBDIR}/pg_textsearch.so" \
         "${SHAREDIR}/extension/pg_durable--0.2.7.sql"; do
-        [ -f "${required}" ] || error "required install artifact missing: ${required}"
+        [ -f "${required}" ] ||
+            error "required install artifact missing: ${required}"
     done
 
     rm -rf "${DATA_DIR}"
@@ -237,6 +285,68 @@ setup_cluster() {
     sql_super -c "CREATE ROLE durable_nologin NOLOGIN;"
 }
 
+test_missing_durable_cic() {
+    local create_error
+
+    sql_super -c "CREATE EXTENSION pg_textsearch;
+                   CREATE TABLE missing_durable_docs (body text);"
+    if create_error="$(sql_super -c "
+        CREATE INDEX CONCURRENTLY missing_durable_idx
+          ON missing_durable_docs USING bm25(body)
+          WITH (text_config = 'english', compaction = 'background');" \
+        2>&1)"; then
+        error "background CIC succeeded without pg_durable"
+    fi
+    if ! grep -Fq \
+        "background compaction requires pg_durable 0.2.7 or newer" \
+        <<<"${create_error}"; then
+        error "missing-pg_durable CIC did not use the stable admission message"
+    fi
+    assert_eq "rejected missing-pg_durable CIC leaves no relation" "t" \
+        "$(sql_super -c "SELECT
+            pg_catalog.to_regclass('missing_durable_idx') IS NULL;")"
+    sql_super -c "DROP TABLE missing_durable_docs;
+                   DROP EXTENSION pg_textsearch;"
+}
+
+test_cic_preflight_rejections() {
+    local create_error
+
+    sql_super -c "CREATE TABLE superuser_docs (body text);"
+    if create_error="$(sql_super -c "
+        CREATE INDEX CONCURRENTLY superuser_docs_idx
+          ON superuser_docs USING bm25(body)
+          WITH (text_config = 'english', compaction = 'background');" \
+        2>&1)"; then
+        error "background CIC accepted a disallowed superuser owner"
+    fi
+    if ! grep -Fq "pg_durable superuser instances are disabled" \
+        <<<"${create_error}"; then
+        error "superuser rejection did not happen during CIC preflight"
+    fi
+    assert_eq "rejected superuser CIC leaves no relation" "t" \
+        "$(sql_super -c "SELECT
+            pg_catalog.to_regclass('superuser_docs_idx') IS NULL;")"
+    sql_super -c "DROP TABLE superuser_docs;"
+
+    sql_super -c "CREATE TABLE invalid_schedule_docs (body text);
+                   ALTER TABLE invalid_schedule_docs OWNER TO durable_owner;"
+    if create_error="$(sql_as durable_owner -c "
+        CREATE INDEX CONCURRENTLY invalid_schedule_docs_idx
+          ON invalid_schedule_docs USING bm25(body)
+          WITH (text_config = 'english', compaction = 'background',
+                compaction_schedule = 'not a cron');" 2>&1)"; then
+        error "background CIC accepted an invalid compaction schedule"
+    fi
+    if ! grep -Fq "Invalid cron expression" <<<"${create_error}"; then
+        error "invalid schedule was not rejected during CIC preflight"
+    fi
+    assert_eq "rejected invalid-schedule CIC leaves no relation" "t" \
+        "$(sql_super -c "SELECT
+            pg_catalog.to_regclass('invalid_schedule_docs_idx') IS NULL;")"
+    sql_super -c "DROP TABLE invalid_schedule_docs;"
+}
+
 test_create_activation() {
     local index_oid create_output canonical_label
 
@@ -246,11 +356,14 @@ test_create_activation() {
         SELECT i, 'document ' || i || ' filler filler filler'
         FROM generate_series(1, 10000) AS i;"
 
-    create_output="$(sql_as durable_owner -c "
-        SET client_min_messages = warning;
-        SET maintenance_work_mem = '1MB';
-        CREATE INDEX documents_idx ON documents USING bm25(body)
-          WITH (text_config = 'english', compaction = 'background');" 2>&1)"
+    if ! create_output="$(sql_as durable_owner -c "
+        CREATE INDEX CONCURRENTLY documents_idx
+          ON documents USING bm25(body)
+          WITH (text_config = 'english', compaction = 'background');" \
+        2>&1)"; then
+        error "background CIC failed under hostile owner search_path: \
+${create_output}"
+    fi
     if ! grep -Fq \
         "pg_textsearch background compaction is a preview feature" \
         <<<"${create_output}"; then
@@ -259,7 +372,11 @@ test_create_activation() {
 
     index_oid="$(sql_super -c \
         "SELECT 'documents_idx'::regclass::oid;")"
-    assert_eq "CREATE admits one active owner job" "1" \
+    assert_eq "successful background CIC is valid and ready" "t" \
+        "$(sql_super -c "SELECT index.indisvalid AND index.indisready
+                          FROM pg_catalog.pg_index AS index
+                          WHERE index.indexrelid = ${index_oid};")"
+    assert_eq "hostile-path activation admits one active owner job" "1" \
         "$(active_jobs_for_index "${index_oid}")"
     canonical_label="$(sql_super -c "SELECT pg_catalog.format(
         'pg_textsearch:bg:v1:%s:%s:%s:%s:%s:%s',
@@ -287,7 +404,7 @@ test_create_activation() {
                           FROM df.instances
                           WHERE id = '$(active_job_id "${index_oid}")';")"
     wait_for_no_debt documents_idx 60
-    assert_eq "job remains active after the initial cascade" "1" \
+    assert_eq "hostile-path current selection keeps the job active" "1" \
         "$(active_jobs_for_index "${index_oid}")"
     assert_eq "activation pins pg_durable with a normal dependency" "1" \
         "$(dependency_count)"
@@ -297,7 +414,7 @@ test_create_activation() {
     wait_for_signal_node "${first_instance}" 30
     create_compaction_debt
     wait_for_no_debt documents_idx 30
-    assert_eq "spill signaling reuses the owner workflow" \
+    assert_eq "hostile-path current selection survives spill signaling" \
         "${first_instance}" "$(active_job_id "${index_oid}")"
 
     sql_as durable_owner -c \
@@ -327,10 +444,11 @@ test_rollback_in_fresh_database() {
     sql_super -c "GRANT CREATE ON SCHEMA public TO durable_nologin;
                    CREATE TABLE nologin_documents (id integer, body text);
                    ALTER TABLE nologin_documents OWNER TO durable_nologin;"
-    if nologin_error="$(sql_super -c "
-        SET ROLE durable_nologin;
-        CREATE INDEX nologin_documents_idx ON nologin_documents
-          USING bm25(body)
+    if nologin_error="$(sql_super \
+        -c "SET ROLE durable_nologin;" \
+        -c "
+        CREATE INDEX CONCURRENTLY nologin_documents_idx
+          ON nologin_documents USING bm25(body)
           WITH (text_config = 'english', compaction = 'background');" \
         2>&1)"; then
         error "background CREATE accepted a NOLOGIN index owner"
@@ -341,6 +459,9 @@ test_rollback_in_fresh_database() {
         error "NOLOGIN rejection did not use the stable admission message"
     fi
     log "PASS: background admission rejects a NOLOGIN index owner"
+    assert_eq "rejected NOLOGIN CIC leaves no relation" "t" \
+        "$(sql_super -c "SELECT
+            pg_catalog.to_regclass('nologin_documents_idx') IS NULL;")"
     assert_eq "failed NOLOGIN admission leaves no sticky dependency" "0" \
         "$(dependency_count)"
 
@@ -384,7 +505,9 @@ test_sticky_dependency() {
 }
 
 setup_cluster
+test_missing_durable_cic
 initialize_database
+test_cic_preflight_rejections
 test_create_activation
 test_sticky_dependency
 test_rollback_in_fresh_database

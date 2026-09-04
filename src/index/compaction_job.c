@@ -50,9 +50,9 @@
 #define TP_JOB_LABEL_PREFIX "pg_textsearch:bg:v1:"
 
 /*
- * Required v0.2.7 entry points include df.wait_for_signal and
- * df.wait_for_schedule.  Their catalog identities are resolved below rather
- * than trusting search_path.
+ * Required v0.2.7 entry points include df.wait_for_signal,
+ * df.wait_for_schedule, and df.explain.  Their catalog identities are resolved
+ * below rather than trusting search_path.
  */
 typedef struct TpCompactionJobTarget
 {
@@ -70,11 +70,13 @@ typedef struct TpCompactionJobObjects
 {
 	Oid	  durable_extension_oid;
 	Oid	  textsearch_extension_owner;
+	Oid	  start_function_oid;
 	Oid	  step_function_oid;
 	Oid	  current_function_oid;
 	char *durable_schema;
 	char *operator_schema;
 	char *start_function;
+	char *explain_function;
 	char *signal_function;
 	char *wait_signal_function;
 	char *wait_schedule_function;
@@ -378,7 +380,11 @@ tp_discover_job_objects(TpCompactionJobObjects *objects)
 
 	objects->durable_extension_oid = durable_oid;
 	objects->durable_schema		   = pstrdup(durable_schema);
+	objects->start_function_oid	   = start_oid;
 	objects->start_function		   = tp_qualified_function_name(start_oid);
+	objects->explain_function	   = tp_qualified_function_name(
+			 tp_resolve_extension_function(
+					 durable_oid, durable_schema, "explain", 1, text_args));
 
 	objects->signal_function = tp_qualified_function_name(
 			tp_resolve_extension_function(
@@ -482,6 +488,44 @@ tp_require_owner_login(Oid owner_oid)
 				(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
 				 errmsg("index owner must have LOGIN for background "
 						"compaction")));
+}
+
+static void
+tp_require_owner_superuser_policy(Oid owner_oid)
+{
+	HeapTuple	   tuple;
+	Form_pg_authid role;
+	bool		   is_superuser;
+	const char	  *superuser_setting;
+	bool		   superuser_enabled;
+	char		  *owner_name;
+
+	tuple = SearchSysCache1(AUTHOID, ObjectIdGetDatum(owner_oid));
+	if (!HeapTupleIsValid(tuple))
+		ereport(ERROR,
+				(errcode(ERRCODE_UNDEFINED_OBJECT),
+				 errmsg("index owner role with OID %u does not exist",
+						owner_oid)));
+
+	role		 = (Form_pg_authid)GETSTRUCT(tuple);
+	is_superuser = role->rolsuper;
+	ReleaseSysCache(tuple);
+
+	superuser_setting = GetConfigOption(
+			"pg_durable.enable_superuser_instances", true, false);
+	if (is_superuser && superuser_setting != NULL &&
+		(!parse_bool(superuser_setting, &superuser_enabled) ||
+		 !superuser_enabled))
+	{
+		owner_name = GetUserNameFromId(owner_oid, false);
+		ereport(ERROR,
+				(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
+				 errmsg("pg_durable superuser instances are disabled"),
+				 errdetail(
+						 "Index owner \"%s\" is a superuser, but "
+						 "pg_durable.enable_superuser_instances is off.",
+						 owner_name)));
+	}
 }
 
 static char *
@@ -874,8 +918,9 @@ tp_find_exact_instance(
 			&sql,
 			"SELECT instance.id::pg_catalog.text "
 			"FROM %s AS instance "
-			"WHERE instance.label = $1 "
-			"AND instance.status IN ('pending', 'running') "
+			"WHERE instance.label OPERATOR(pg_catalog.=) $1 "
+			"AND instance.status OPERATOR(pg_catalog.=) "
+			"ANY (ARRAY['pending', 'running']::pg_catalog.text[]) "
 			"ORDER BY instance.created_at DESC, instance.id DESC",
 			objects->instances_relation);
 	rc = SPI_execute_with_args(sql.data, 1, argtypes, values, NULL, true, 0);
@@ -919,13 +964,14 @@ tp_find_family_instance(
 			&sql,
 			"SELECT instance.id::pg_catalog.text, instance.label "
 			"FROM %s AS instance "
-			"WHERE instance.label LIKE "
+			"WHERE instance.label OPERATOR(pg_catalog.~~) "
 			"($1 OPERATOR(pg_catalog.||) '%%') "
-			"AND instance.status %s "
+			"AND instance.status OPERATOR(pg_catalog.=) "
+			"ANY (ARRAY[%s]::pg_catalog.text[]) "
 			"ORDER BY instance.created_at DESC, instance.id DESC",
 			objects->instances_relation,
-			terminal ? "IN ('completed', 'failed', 'cancelled')"
-					 : "IN ('pending', 'running')");
+			terminal ? "'completed', 'failed', 'cancelled'"
+					 : "'pending', 'running'");
 	rc = SPI_execute_with_args(sql.data, 1, argtypes, values, NULL, true, 0);
 	pfree(sql.data);
 	if (rc != SPI_OK_SELECT)
@@ -994,10 +1040,13 @@ tp_build_worker_queries(
 			"SELECT (%s(%u::pg_catalog.oid, %u::pg_catalog.oid, "
 			"%u::pg_catalog.oid, %u::pg_catalog.oid, "
 			"%u::pg_catalog.oid) AND coalesce(("
-			"SELECT instance.id = '{sys_instance_id}' "
+			"SELECT instance.id OPERATOR(pg_catalog.=) "
+			"'{sys_instance_id}' "
 			"FROM %s AS instance "
-			"WHERE pg_catalog.left(instance.label, %zu) = %s "
-			"AND instance.status IN ('pending', 'running') "
+			"WHERE pg_catalog.left(instance.label, %zu) "
+			"OPERATOR(pg_catalog.=) %s "
+			"AND instance.status OPERATOR(pg_catalog.=) "
+			"ANY (ARRAY['pending', 'running']::pg_catalog.text[]) "
 			"ORDER BY instance.created_at DESC, instance.id DESC "
 			"LIMIT 1), false)) AS current",
 			objects->current_function,
@@ -1046,6 +1095,40 @@ tp_append_cascade(StringInfo sql, const TpCompactionJobObjects *objects)
 			objects->break_function);
 }
 
+static void
+tp_append_job_graph(StringInfo sql, const TpCompactionJobObjects *objects)
+{
+	const char *operator_schema = quote_identifier(objects->operator_schema);
+
+	appendStringInfo(sql, "%s((", objects->loop_function);
+	tp_append_guard(sql, objects);
+	appendStringInfo(sql, " OPERATOR(%s.~>) ", operator_schema);
+	tp_append_cascade(sql, objects);
+	appendStringInfo(
+			sql,
+			" OPERATOR(%s.~>) %s(("
+			"%s('compact'::pg_catalog.text, NULL::pg_catalog.int4) "
+			"OPERATOR(%s.|) "
+			"%s($3::pg_catalog.text) "
+			"OPERATOR(%s.~>) ",
+			operator_schema,
+			objects->loop_function,
+			objects->wait_signal_function,
+			operator_schema,
+			objects->wait_schedule_function,
+			operator_schema);
+	tp_append_guard(sql, objects);
+	appendStringInfo(sql, " OPERATOR(%s.~>) ", operator_schema);
+	tp_append_cascade(sql, objects);
+	appendStringInfo(
+			sql,
+			"), NULL::pg_catalog.text) "
+			"OPERATOR(%s.~>) %s('stale'::pg_catalog.text)), "
+			"NULL::pg_catalog.text)",
+			operator_schema,
+			objects->break_function);
+}
+
 static char *
 tp_start_job(
 		const TpCompactionJobObjects *objects,
@@ -1061,41 +1144,16 @@ tp_start_job(
 	Datum		   values[4];
 	char		  *instance_id;
 	int			   rc;
-	const char *operator_schema = quote_identifier(objects->operator_schema);
 
 	tp_build_worker_queries(objects, target, &step_sql, &current_sql);
 
 	initStringInfo(&sql);
 	appendStringInfo(&sql, "SELECT %s(", objects->start_function);
-	appendStringInfo(&sql, "%s((", objects->loop_function);
-	tp_append_guard(&sql, objects);
-	appendStringInfo(&sql, " OPERATOR(%s.~>) ", operator_schema);
-	tp_append_cascade(&sql, objects);
+	tp_append_job_graph(&sql, objects);
 	appendStringInfo(
 			&sql,
-			" OPERATOR(%s.~>) %s(("
-			"%s('compact'::pg_catalog.text, NULL::pg_catalog.int4) "
-			"OPERATOR(%s.|) "
-			"%s($3::pg_catalog.text) "
-			"OPERATOR(%s.~>) ",
-			operator_schema,
-			objects->loop_function,
-			objects->wait_signal_function,
-			operator_schema,
-			objects->wait_schedule_function,
-			operator_schema);
-	tp_append_guard(&sql, objects);
-	appendStringInfo(&sql, " OPERATOR(%s.~>) ", operator_schema);
-	tp_append_cascade(&sql, objects);
-	appendStringInfo(
-			&sql,
-			"), NULL::pg_catalog.text) "
-			"OPERATOR(%s.~>) %s('stale'::pg_catalog.text)), "
-			"NULL::pg_catalog.text), "
-			"$4::pg_catalog.text, pg_catalog.current_database(), "
-			"'caller'::pg_catalog.text)",
-			operator_schema,
-			objects->break_function);
+			", $4::pg_catalog.text, pg_catalog.current_database(), "
+			"'caller'::pg_catalog.text)");
 
 	values[0] = CStringGetTextDatum(step_sql);
 	values[1] = CStringGetTextDatum(current_sql);
@@ -1113,6 +1171,91 @@ tp_start_job(
 	pfree(step_sql);
 	pfree(current_sql);
 	return instance_id;
+}
+
+static void
+tp_validate_graph_as_owner(
+		const TpCompactionJobObjects *objects,
+		const TpCompactionJobTarget	 *target)
+{
+	static const char *failure_prefixes[] = {
+			"Cannot explain input",
+			"Expression returned NULL",
+			"Failed to evaluate expression",
+			"Failed to parse Durofut JSON",
+			"Invalid durable function graph",
+	};
+	MemoryContext  result_context = CurrentMemoryContext;
+	Oid			   save_userid;
+	int			   save_sec_context;
+	bool		   spi_connected = false;
+	StringInfoData sql;
+	char		  *step_sql;
+	char		  *current_sql;
+	char		  *explanation = NULL;
+	Oid			   argtypes[3] = {TEXTOID, TEXTOID, TEXTOID};
+	Datum		   values[3];
+	int			   rc;
+
+	GetUserIdAndSecContext(&save_userid, &save_sec_context);
+	SetUserIdAndSecContext(
+			target->owner_oid,
+			save_sec_context | SECURITY_LOCAL_USERID_CHANGE);
+	PG_TRY();
+	{
+		if (SPI_connect() != SPI_OK_CONNECT)
+			elog(ERROR, "SPI_connect failed");
+		spi_connected = true;
+
+		tp_build_worker_queries(objects, target, &step_sql, &current_sql);
+		initStringInfo(&sql);
+		appendStringInfo(&sql, "SELECT %s(", objects->explain_function);
+		tp_append_job_graph(&sql, objects);
+		appendStringInfoChar(&sql, ')');
+
+		values[0] = CStringGetTextDatum(step_sql);
+		values[1] = CStringGetTextDatum(current_sql);
+		values[2] = CStringGetTextDatum(target->schedule);
+		rc		  = SPI_execute_with_args(
+				   sql.data, 3, argtypes, values, NULL, true, 1);
+		if (rc != SPI_OK_SELECT || SPI_processed != 1)
+			elog(ERROR, "could not validate pg_durable compaction workflow");
+		explanation = tp_copy_spi_text(
+				SPI_tuptable->vals[0],
+				SPI_tuptable->tupdesc,
+				1,
+				result_context);
+
+		pfree(sql.data);
+		pfree(step_sql);
+		pfree(current_sql);
+
+		SPI_finish();
+		spi_connected = false;
+	}
+	PG_FINALLY();
+	{
+		if (spi_connected)
+			SPI_finish();
+		SetUserIdAndSecContext(save_userid, save_sec_context);
+	}
+	PG_END_TRY();
+
+	if (explanation == NULL)
+		elog(ERROR, "pg_durable returned no workflow validation result");
+
+	for (Size i = 0; i < lengthof(failure_prefixes); i++)
+	{
+		if (strncmp(explanation,
+					failure_prefixes[i],
+					strlen(failure_prefixes[i])) == 0)
+			ereport(ERROR,
+					(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+					 errmsg("pg_durable rejected the background compaction "
+							"workflow"),
+					 errdetail("%s", explanation)));
+	}
+	pfree(explanation);
 }
 
 static char *
@@ -1230,6 +1373,38 @@ tp_reconcile_as_owner(
 }
 
 void
+tp_compaction_job_preflight(Oid owner_oid, const char *schedule)
+{
+	TpCompactionJobTarget  target;
+	TpCompactionJobObjects objects;
+
+	if (schedule == NULL)
+		elog(ERROR, "background compaction schedule is not initialized");
+
+	tp_require_owner_login(owner_oid);
+	tp_discover_job_objects(&objects);
+	tp_require_owner_superuser_policy(owner_oid);
+
+	memset(&target, 0, sizeof(target));
+	target.database_oid	 = MyDatabaseId;
+	target.owner_oid	 = owner_oid;
+	target.schedule		 = pstrdup(schedule);
+	target.family_prefix = tp_build_family_prefix(&target);
+
+	if (object_aclcheck(
+				ProcedureRelationId,
+				objects.start_function_oid,
+				owner_oid,
+				ACL_EXECUTE) != ACLCHECK_OK)
+		ereport(ERROR,
+				(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
+				 errmsg("index owner lacks EXECUTE privilege on "
+						"pg_durable start API")));
+
+	tp_validate_graph_as_owner(&objects, &target);
+}
+
+void
 tp_compaction_job_activate(Oid indexoid, bool refresh_default)
 {
 	TpCompactionJobTarget  target;
@@ -1238,6 +1413,7 @@ tp_compaction_job_activate(Oid indexoid, bool refresh_default)
 
 	tp_capture_target(indexoid, refresh_default, &target);
 	tp_discover_job_objects(&objects);
+	tp_require_owner_superuser_policy(target.owner_oid);
 	tp_pin_durable_dependency(&objects);
 	tp_grant_helper_access(&objects, target.owner_oid);
 	tp_take_admission_lock(&target);

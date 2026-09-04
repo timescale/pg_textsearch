@@ -432,4 +432,14 @@ help:
 	@echo "  make test-all"
 	@echo "  make format"
 
-.PHONY: test test-compaction-ownercheck test-compaction-request-source test-segment-io-limits test-boolean-lock test-boolean-memory test-boolean-rescan test-durable clean-test-dirs installcheck test-rls-locking test-concurrency test-recovery test-segment test-stress test-cic test-chinese test-replication test-replication-extended test-logical-replication test-multi-index test-reindex test-shell test-all expected lint-format format format-check format-diff format-single coverage coverage-build coverage-clean coverage-report help
+.PHONY: \
+	test test-compaction-ownercheck test-compaction-request-source \
+	test-segment-io-limits test-boolean-lock test-boolean-memory \
+	test-boolean-rescan test-durable clean-test-dirs installcheck \
+	test-rls-locking test-concurrency test-recovery test-segment \
+	test-stress test-cic test-chinese \
+	test-replication test-replication-extended \
+	test-logical-replication test-multi-index test-reindex \
+	test-shell test-all expected lint-format format format-check \
+	format-diff format-single coverage coverage-build coverage-clean \
+	coverage-report help

@@ -18,15 +18,30 @@ UPGRADE_SQL="${REPO_ROOT}/sql/pg_textsearch--1.4.0--1.5.0-dev.sql"
 for required in \
     "df.wait_for_signal" \
     "df.wait_for_schedule" \
+    "df.explain" \
     "bm25_compact_step_if_current" \
     "{sys_instance_id}" \
     "DEPENDENCY_NORMAL" \
-    "AccessMethodRelationId"; do
+    "AccessMethodRelationId" \
+    "OPERATOR(pg_catalog.=)" \
+    "OPERATOR(pg_catalog.~~)" \
+    "ANY (ARRAY["; do
     if ! grep -Fq "${required}" "${JOB_SOURCE}"; then
         echo "managed compaction source is missing ${required}" >&2
         exit 1
     fi
 done
+
+if ! grep -Fq "tp_compaction_job_preflight" "${JOB_SOURCE}" ||
+    ! grep -Fq "tp_compaction_job_preflight" "${MODULE_SOURCE}"; then
+    echo "background CIC admission is not preflighted" >&2
+    exit 1
+fi
+
+if grep -Fq " IN (" "${JOB_SOURCE}"; then
+    echo "managed compaction SQL contains a search-path-sensitive IN" >&2
+    exit 1
+fi
 
 if grep -Fq "bm25_compact_pending" "${FRESH_SQL}" "${UPGRADE_SQL}"; then
     echo "database-wide background compaction sweep remains installed" >&2
