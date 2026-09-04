@@ -6,6 +6,7 @@
  */
 #include <postgres.h>
 
+#include <access/htup_details.h>
 #include <access/relation.h>
 #include <access/xlog.h>
 #include <catalog/objectaccess.h>

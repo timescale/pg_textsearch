@@ -28,6 +28,17 @@ FROM pg_class WHERE oid = 'relopt_docs_idx'::regclass;
 ?column?
 t
 (1 row)
+-- Managed background mode requires pg_durable, but temporary indexes are
+-- rejected before admission is attempted.
+CREATE INDEX relopt_background_idx ON relopt_docs
+    USING bm25(body)
+    WITH (text_config = 'english', compaction = 'background');
+ERROR:  background compaction requires pg_durable 0.2.7 or newer
+CREATE TEMP TABLE relopt_temp_docs (id integer, body text);
+CREATE INDEX relopt_temp_background_idx ON relopt_temp_docs
+    USING bm25(body)
+    WITH (text_config = 'english', compaction = 'background');
+ERROR:  background compaction is not supported for temporary indexes
 -- Manual mode leaves spill-time compaction debt in place.
 CREATE TABLE manual_docs (id serial PRIMARY KEY, body text);
 CREATE INDEX manual_docs_idx ON manual_docs
