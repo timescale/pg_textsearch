@@ -21,6 +21,7 @@
 #include <catalog/pg_depend_d.h>
 #include <catalog/pg_extension.h>
 #include <catalog/pg_extension_d.h>
+#include <catalog/pg_namespace_d.h>
 #include <catalog/pg_operator_d.h>
 #include <catalog/pg_proc_d.h>
 #include <catalog/pg_type_d.h>
@@ -69,10 +70,16 @@ typedef struct TpCompactionJobTarget
 typedef struct TpCompactionJobObjects
 {
 	Oid	  durable_extension_oid;
+	Oid	  durable_namespace_oid;
 	Oid	  textsearch_extension_owner;
 	Oid	  start_function_oid;
+	Oid	  explain_function_oid;
+	Oid	  signal_function_oid;
 	Oid	  step_function_oid;
 	Oid	  current_function_oid;
+	Oid	  instances_relation_oid;
+	Oid	  nodes_relation_oid;
+	Oid	  vars_relation_oid;
 	char *durable_schema;
 	char *operator_schema;
 	char *start_function;
@@ -202,6 +209,7 @@ tp_resolve_start_function(Oid extension_oid)
 	Oid				  function_oid = InvalidOid;
 	List			 *names;
 	FuncCandidateList candidates;
+	bool			  ambiguous = false;
 
 	names = list_make2(
 			makeString(pstrdup("df")), makeString(pstrdup("start")));
@@ -210,24 +218,33 @@ tp_resolve_start_function(Oid extension_oid)
 	for (FuncCandidateList candidate = candidates; candidate != NULL;
 		 candidate					 = candidate->next)
 	{
-		bool matches = candidate->nargs == 4;
+		bool matches = candidate->nominalnargs >= 4 && candidate->nargs >= 4 &&
+					   candidate->nargs - candidate->ndargs == 4;
 
 		for (int i = 0; matches && i < 4; i++)
 			matches = candidate->args[i] == TEXTOID;
 		if (!matches)
 			continue;
 
+		if (!OidIsValid(candidate->oid))
+		{
+			ambiguous = true;
+			continue;
+		}
+		if (get_func_rettype(candidate->oid) != TEXTOID ||
+			getExtensionOfObject(ProcedureRelationId, candidate->oid) !=
+					extension_oid)
+			continue;
 		if (OidIsValid(function_oid) && function_oid != candidate->oid)
-			tp_durable_not_initialized(
-					"df.start(text,text,text,text) is ambiguous");
+			ambiguous = true;
 		function_oid = candidate->oid;
 	}
 	list_free_deep(names);
 
-	if (!OidIsValid(function_oid) ||
-		get_func_rettype(function_oid) != TEXTOID ||
-		getExtensionOfObject(ProcedureRelationId, function_oid) !=
-				extension_oid)
+	if (ambiguous)
+		tp_durable_not_initialized(
+				"df.start(text,text,text,text) is ambiguous");
+	if (!OidIsValid(function_oid))
 		tp_durable_not_initialized("df.start(text,text,text,text) is missing");
 
 	LockDatabaseObject(ProcedureRelationId, function_oid, 0, AccessShareLock);
@@ -271,6 +288,27 @@ tp_resolve_extension_operator(
 				operator_name));
 
 	return operator_oid;
+}
+
+static Oid
+tp_resolve_extension_relation(
+		Oid extension_oid, Oid namespace_oid, const char *relation_name)
+{
+	Oid relation_oid = get_relname_relid(relation_name, namespace_oid);
+
+	if (!OidIsValid(relation_oid) ||
+		getExtensionOfObject(RelationRelationId, relation_oid) !=
+				extension_oid)
+		tp_durable_not_initialized(
+				psprintf("df.%s is missing", relation_name));
+
+	LockRelationOid(relation_oid, AccessShareLock);
+	if (getExtensionOfObject(RelationRelationId, relation_oid) !=
+		extension_oid)
+		tp_durable_not_initialized(
+				psprintf("df.%s changed during admission", relation_name));
+
+	return relation_oid;
 }
 
 static char *
@@ -322,6 +360,7 @@ tp_discover_job_objects(TpCompactionJobObjects *objects)
 	char	   *textsearch_schema;
 	Oid			operator_schema_oid;
 	char	   *operator_schema;
+	AttrNumber	submitted_by_attnum;
 	Oid			text_args[2]		= {TEXTOID, TEXTOID};
 	Oid			signal_args[3]		= {TEXTOID, TEXTOID, TEXTOID};
 	Oid			wait_signal_args[2] = {TEXTOID, INT4OID};
@@ -379,16 +418,19 @@ tp_discover_job_objects(TpCompactionJobObjects *objects)
 		tp_durable_not_initialized("the pg_durable schema is missing");
 
 	objects->durable_extension_oid = durable_oid;
+	objects->durable_namespace_oid = durable_namespace_oid;
 	objects->durable_schema		   = pstrdup(durable_schema);
 	objects->start_function_oid	   = start_oid;
 	objects->start_function		   = tp_qualified_function_name(start_oid);
-	objects->explain_function	   = tp_qualified_function_name(
-			 tp_resolve_extension_function(
-					 durable_oid, durable_schema, "explain", 1, text_args));
+	objects->explain_function_oid  = tp_resolve_extension_function(
+			 durable_oid, durable_schema, "explain", 1, text_args);
+	objects->explain_function = tp_qualified_function_name(
+			objects->explain_function_oid);
 
+	objects->signal_function_oid = tp_resolve_extension_function(
+			durable_oid, durable_schema, "signal", 3, signal_args);
 	objects->signal_function = tp_qualified_function_name(
-			tp_resolve_extension_function(
-					durable_oid, durable_schema, "signal", 3, signal_args));
+			objects->signal_function_oid);
 	objects->wait_signal_function = tp_qualified_function_name(
 			tp_resolve_extension_function(
 					durable_oid,
@@ -422,22 +464,22 @@ tp_discover_job_objects(TpCompactionJobObjects *objects)
 	tp_resolve_extension_operator(durable_oid, operator_schema, "!>");
 	tp_resolve_extension_operator(durable_oid, operator_schema, "|");
 
-	{
-		Oid instances_oid =
-				get_relname_relid("instances", durable_namespace_oid);
+	objects->instances_relation_oid = tp_resolve_extension_relation(
+			durable_oid, durable_namespace_oid, "instances");
+	objects->nodes_relation_oid = tp_resolve_extension_relation(
+			durable_oid, durable_namespace_oid, "nodes");
+	objects->vars_relation_oid = tp_resolve_extension_relation(
+			durable_oid, durable_namespace_oid, "vars");
+	objects->instances_relation = quote_qualified_identifier(
+			durable_schema, get_rel_name(objects->instances_relation_oid));
 
-		if (!OidIsValid(instances_oid) ||
-			getExtensionOfObject(RelationRelationId, instances_oid) !=
-					durable_oid)
-			tp_durable_not_initialized("df.instances is missing");
-		LockRelationOid(instances_oid, AccessShareLock);
-		if (getExtensionOfObject(RelationRelationId, instances_oid) !=
-			durable_oid)
-			tp_durable_not_initialized(
-					"df.instances changed during admission");
-		objects->instances_relation = quote_qualified_identifier(
-				durable_schema, get_rel_name(instances_oid));
-	}
+	submitted_by_attnum =
+			get_attnum(objects->instances_relation_oid, "submitted_by");
+	if (submitted_by_attnum == InvalidAttrNumber ||
+		get_atttype(objects->instances_relation_oid, submitted_by_attnum) !=
+				REGROLEOID)
+		tp_durable_not_initialized(
+				"df.instances.submitted_by is not pg_catalog.regrole");
 
 	textsearch_oid = get_extension_oid("pg_textsearch", false);
 	tp_lock_extension(textsearch_oid);
@@ -526,6 +568,142 @@ tp_require_owner_superuser_policy(Oid owner_oid)
 						 "pg_durable.enable_superuser_instances is off.",
 						 owner_name)));
 	}
+}
+
+static void
+tp_owner_privilege_error(
+		Oid owner_oid, const char *privilege, const char *object_name)
+{
+	ereport(ERROR,
+			(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
+			 errmsg("index owner lacks required pg_durable privileges"),
+			 errdetail(
+					 "Role \"%s\" lacks %s privilege on %s.",
+					 GetUserNameFromId(owner_oid, false),
+					 privilege,
+					 object_name),
+			 errhint("Grant the role access with df.grant_usage().")));
+}
+
+static bool
+tp_owner_has_column_privilege(
+		Oid			relation_oid,
+		Oid			owner_oid,
+		AclMode		privilege,
+		const char *column_name)
+{
+	AttrNumber attnum;
+
+	if (pg_class_aclcheck(relation_oid, owner_oid, privilege) == ACLCHECK_OK)
+		return true;
+
+	attnum = get_attnum(relation_oid, column_name);
+	if (attnum == InvalidAttrNumber)
+		tp_durable_not_initialized(psprintf(
+				"required column %s.%s is missing",
+				get_rel_name(relation_oid),
+				column_name));
+
+	return pg_attribute_aclcheck(relation_oid, attnum, owner_oid, privilege) ==
+		   ACLCHECK_OK;
+}
+
+static void
+tp_require_owner_column_privileges(
+		Oid				   relation_oid,
+		Oid				   owner_oid,
+		AclMode			   privilege,
+		const char		  *privilege_name,
+		const char *const *columns,
+		Size			   ncolumns)
+{
+	for (Size i = 0; i < ncolumns; i++)
+	{
+		if (!tp_owner_has_column_privilege(
+					relation_oid, owner_oid, privilege, columns[i]))
+			tp_owner_privilege_error(
+					owner_oid,
+					privilege_name,
+					quote_qualified_identifier(
+							"df", get_rel_name(relation_oid)));
+	}
+}
+
+static void
+tp_require_owner_function_privilege(
+		Oid owner_oid, Oid function_oid, const char *function_name)
+{
+	if (object_aclcheck(
+				ProcedureRelationId, function_oid, owner_oid, ACL_EXECUTE) !=
+		ACLCHECK_OK)
+		tp_owner_privilege_error(owner_oid, "EXECUTE", function_name);
+}
+
+static void
+tp_require_owner_durable_privileges(
+		const TpCompactionJobObjects *objects, Oid owner_oid)
+{
+	static const char *const instance_select_columns[] =
+			{"id", "label", "status", "submitted_by", "created_at"};
+	static const char *const instance_insert_columns[] =
+			{"id", "label", "root_node", "submitted_by", "database"};
+	static const char *const node_insert_columns[] =
+			{"id",
+			 "instance_id",
+			 "node_type",
+			 "query",
+			 "result_name",
+			 "left_node",
+			 "right_node",
+			 "submitted_by",
+			 "database"};
+	static const char *const vars_select_columns[] =
+			{"name", "value", "owner"};
+
+	if (object_aclcheck(
+				NamespaceRelationId,
+				objects->durable_namespace_oid,
+				owner_oid,
+				ACL_USAGE) != ACLCHECK_OK)
+		tp_owner_privilege_error(owner_oid, "USAGE", "schema df");
+
+	tp_require_owner_function_privilege(
+			owner_oid, objects->start_function_oid, objects->start_function);
+	tp_require_owner_function_privilege(
+			owner_oid,
+			objects->explain_function_oid,
+			objects->explain_function);
+	tp_require_owner_function_privilege(
+			owner_oid, objects->signal_function_oid, objects->signal_function);
+
+	tp_require_owner_column_privileges(
+			objects->instances_relation_oid,
+			owner_oid,
+			ACL_SELECT,
+			"SELECT",
+			instance_select_columns,
+			lengthof(instance_select_columns));
+	tp_require_owner_column_privileges(
+			objects->instances_relation_oid,
+			owner_oid,
+			ACL_INSERT,
+			"INSERT",
+			instance_insert_columns,
+			lengthof(instance_insert_columns));
+	tp_require_owner_column_privileges(
+			objects->nodes_relation_oid,
+			owner_oid,
+			ACL_INSERT,
+			"INSERT",
+			node_insert_columns,
+			lengthof(node_insert_columns));
+	tp_require_owner_column_privileges(
+			objects->vars_relation_oid,
+			owner_oid,
+			ACL_SELECT,
+			"SELECT",
+			vars_select_columns,
+			lengthof(vars_select_columns));
 }
 
 static char *
@@ -904,14 +1082,16 @@ tp_copy_spi_text(
 static char *
 tp_find_exact_instance(
 		const TpCompactionJobObjects *objects,
+		const TpCompactionJobTarget	 *target,
 		const char					 *label,
 		MemoryContext				  result_context)
 {
 	StringInfoData sql;
-	Oid			   argtypes[1] = {TEXTOID};
-	Datum		   values[1]   = {CStringGetTextDatum(label)};
-	char		  *instance_id = NULL;
-	int			   rc;
+	Oid			   argtypes[2] = {TEXTOID, OIDOID};
+	Datum		   values[2] =
+			{CStringGetTextDatum(label), ObjectIdGetDatum(target->owner_oid)};
+	char *instance_id = NULL;
+	int	  rc;
 
 	initStringInfo(&sql);
 	appendStringInfo(
@@ -919,11 +1099,13 @@ tp_find_exact_instance(
 			"SELECT instance.id::pg_catalog.text "
 			"FROM %s AS instance "
 			"WHERE instance.label OPERATOR(pg_catalog.=) $1 "
+			"AND instance.submitted_by::pg_catalog.oid "
+			"OPERATOR(pg_catalog.=) $2 "
 			"AND instance.status OPERATOR(pg_catalog.=) "
 			"ANY (ARRAY['pending', 'running']::pg_catalog.text[]) "
 			"ORDER BY instance.created_at DESC, instance.id DESC",
 			objects->instances_relation);
-	rc = SPI_execute_with_args(sql.data, 1, argtypes, values, NULL, true, 0);
+	rc = SPI_execute_with_args(sql.data, 2, argtypes, values, NULL, true, 0);
 	pfree(sql.data);
 	if (rc != SPI_OK_SELECT)
 		elog(ERROR, "could not search pg_durable instances");
@@ -952,11 +1134,13 @@ tp_find_family_instance(
 		MemoryContext				  result_context)
 {
 	StringInfoData sql;
-	Oid			   argtypes[1] = {TEXTOID};
-	Datum		   values[1]   = {CStringGetTextDatum(target->family_prefix)};
-	char		  *instance_id = NULL;
-	uint64		   managed_count = 0;
-	int			   rc;
+	Oid			   argtypes[2] = {TEXTOID, OIDOID};
+	Datum		   values[2] =
+			{CStringGetTextDatum(target->family_prefix),
+			 ObjectIdGetDatum(target->owner_oid)};
+	char  *instance_id	 = NULL;
+	uint64 managed_count = 0;
+	int	   rc;
 
 	*schedule = NULL;
 	initStringInfo(&sql);
@@ -966,13 +1150,15 @@ tp_find_family_instance(
 			"FROM %s AS instance "
 			"WHERE instance.label OPERATOR(pg_catalog.~~) "
 			"($1 OPERATOR(pg_catalog.||) '%%') "
+			"AND instance.submitted_by::pg_catalog.oid "
+			"OPERATOR(pg_catalog.=) $2 "
 			"AND instance.status OPERATOR(pg_catalog.=) "
 			"ANY (ARRAY[%s]::pg_catalog.text[]) "
 			"ORDER BY instance.created_at DESC, instance.id DESC",
 			objects->instances_relation,
 			terminal ? "'completed', 'failed', 'cancelled'"
 					 : "'pending', 'running'");
-	rc = SPI_execute_with_args(sql.data, 1, argtypes, values, NULL, true, 0);
+	rc = SPI_execute_with_args(sql.data, 2, argtypes, values, NULL, true, 0);
 	pfree(sql.data);
 	if (rc != SPI_OK_SELECT)
 		elog(ERROR, "could not search pg_durable instance history");
@@ -1045,6 +1231,8 @@ tp_build_worker_queries(
 			"FROM %s AS instance "
 			"WHERE pg_catalog.left(instance.label, %zu) "
 			"OPERATOR(pg_catalog.=) %s "
+			"AND instance.submitted_by::pg_catalog.oid "
+			"OPERATOR(pg_catalog.=) %u::pg_catalog.oid "
 			"AND instance.status OPERATOR(pg_catalog.=) "
 			"ANY (ARRAY['pending', 'running']::pg_catalog.text[]) "
 			"ORDER BY instance.created_at DESC, instance.id DESC "
@@ -1057,7 +1245,8 @@ tp_build_worker_queries(
 			target->owner_oid,
 			objects->instances_relation,
 			strlen(target->family_prefix),
-			family_literal);
+			family_literal,
+			target->owner_oid);
 	pfree(family_literal);
 }
 
@@ -1271,8 +1460,9 @@ tp_reconcile_job(
 
 	if (refresh_default)
 	{
-		label		= tp_build_label(target, target->schedule);
-		instance_id = tp_find_exact_instance(objects, label, result_context);
+		label = tp_build_label(target, target->schedule);
+		instance_id =
+				tp_find_exact_instance(objects, target, label, result_context);
 		if (instance_id == NULL)
 			instance_id = tp_start_job(
 					objects, target, target->schedule, label, result_context);
@@ -1298,8 +1488,9 @@ tp_reconcile_job(
 						target->index_name)));
 
 	pfree(instance_id);
-	label		= tp_build_label(target, schedule);
-	instance_id = tp_find_exact_instance(objects, label, result_context);
+	label = tp_build_label(target, schedule);
+	instance_id =
+			tp_find_exact_instance(objects, target, label, result_context);
 	if (instance_id == NULL)
 		instance_id =
 				tp_start_job(objects, target, schedule, label, result_context);
@@ -1384,22 +1575,13 @@ tp_compaction_job_preflight(Oid owner_oid, const char *schedule)
 	tp_require_owner_login(owner_oid);
 	tp_discover_job_objects(&objects);
 	tp_require_owner_superuser_policy(owner_oid);
+	tp_require_owner_durable_privileges(&objects, owner_oid);
 
 	memset(&target, 0, sizeof(target));
 	target.database_oid	 = MyDatabaseId;
 	target.owner_oid	 = owner_oid;
 	target.schedule		 = pstrdup(schedule);
 	target.family_prefix = tp_build_family_prefix(&target);
-
-	if (object_aclcheck(
-				ProcedureRelationId,
-				objects.start_function_oid,
-				owner_oid,
-				ACL_EXECUTE) != ACLCHECK_OK)
-		ereport(ERROR,
-				(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
-				 errmsg("index owner lacks EXECUTE privilege on "
-						"pg_durable start API")));
 
 	tp_validate_graph_as_owner(&objects, &target);
 }
@@ -1414,6 +1596,7 @@ tp_compaction_job_activate(Oid indexoid, bool refresh_default)
 	tp_capture_target(indexoid, refresh_default, &target);
 	tp_discover_job_objects(&objects);
 	tp_require_owner_superuser_policy(target.owner_oid);
+	tp_require_owner_durable_privileges(&objects, target.owner_oid);
 	tp_pin_durable_dependency(&objects);
 	tp_grant_helper_access(&objects, target.owner_oid);
 	tp_take_admission_lock(&target);
