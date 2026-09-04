@@ -28,7 +28,8 @@
 #include "access/am.h"
 #include "index/compaction_request.h"
 
-char *tp_compaction_request_function = "";
+char *tp_background_compaction_schedule = NULL;
+char *tp_compaction_request_function	= "";
 
 /*
  * Pending requests live in TopTransactionContext, which PostgreSQL frees
@@ -71,6 +72,18 @@ tp_index_compaction_mode(Relation index_rel)
 		return TP_COMPACTION_INLINE;
 
 	return options->compaction;
+}
+
+/* Per-index schedule override.  No reloption means use the global schedule. */
+const char *
+tp_index_compaction_schedule(Relation index_rel)
+{
+	TpOptions *options = (TpOptions *)index_rel->rd_options;
+
+	if (options == NULL || options->compaction_schedule_offset == 0)
+		return NULL;
+
+	return (const char *)options + options->compaction_schedule_offset;
 }
 
 bool
