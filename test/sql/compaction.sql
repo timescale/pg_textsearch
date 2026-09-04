@@ -71,6 +71,31 @@ SELECT bm25_level_counts('compaction_step_idx'::regclass) =
        AND bm25_needs_compaction('compaction_step_idx'::regclass)
        AS step_starts_with_debt;
 
+SELECT d.oid AS db_oid,
+       c.oid AS index_oid,
+       coalesce(nullif(c.reltablespace, 0), d.dattablespace) AS spc_oid,
+       pg_relation_filenode(c.oid) AS relfilenumber,
+       c.relowner AS owner_oid
+FROM pg_class c
+JOIN pg_database d ON d.datname = current_database()
+WHERE c.oid = 'compaction_step_idx'::regclass
+\gset target_
+
+-- Stale physical identities are rejected without touching the live index.
+SELECT NOT bm25_compact_step_if_current(
+               :target_index_oid::oid, 0::oid, :target_spc_oid::oid,
+               :target_relfilenumber::oid, :target_owner_oid::oid)
+       AND NOT bm25_compact_step_if_current(
+               :target_index_oid::oid, :target_db_oid::oid, 0::oid,
+               :target_relfilenumber::oid, :target_owner_oid::oid)
+       AND NOT bm25_compact_step_if_current(
+               :target_index_oid::oid, :target_db_oid::oid,
+               :target_spc_oid::oid, 0::oid, :target_owner_oid::oid)
+       AND NOT bm25_compact_step_if_current(
+               :target_index_oid::oid, :target_db_oid::oid,
+               :target_spc_oid::oid, :target_relfilenumber::oid, 0::oid)
+       AS stale_step_targets_rejected;
+
 -- Permanent-index mutators reject read-only transactions.
 BEGIN READ ONLY;
 SELECT bm25_compact('compaction_step_idx'::regclass);
@@ -82,7 +107,10 @@ ROLLBACK;
 -- In this layout one pass happens to merge exactly one batch.  A pass is
 -- not limited to one batch in general; it may span several, and may pull
 -- in further batches to unblock a destination level.
-SELECT bm25_compact_step('compaction_step_idx'::regclass)
+SELECT bm25_compact_step_if_current(
+           :target_index_oid::oid, :target_db_oid::oid,
+           :target_spc_oid::oid, :target_relfilenumber::oid,
+           :target_owner_oid::oid)
        AS one_batch_ran;
 SELECT bm25_level_counts('compaction_step_idx'::regclass) =
            ARRAY[2, 1, 0, 0, 0, 0, 0, 0]
@@ -132,6 +160,33 @@ FROM (
     ORDER BY body <@> to_bm25query('filler', 'compaction_full_idx')
 ) ranked;
 
+-- Background workers validate mode and physical identity without writing.
+CREATE TABLE compaction_background_target (id integer, body text);
+CREATE INDEX compaction_background_target_idx
+    ON compaction_background_target USING bm25(body)
+    WITH (text_config = 'english', compaction = 'background');
+SELECT d.oid AS db_oid,
+       c.oid AS index_oid,
+       coalesce(nullif(c.reltablespace, 0), d.dattablespace) AS spc_oid,
+       pg_relation_filenode(c.oid) AS relfilenumber,
+       c.relowner AS owner_oid
+FROM pg_class c
+JOIN pg_database d ON d.datname = current_database()
+WHERE c.oid = 'compaction_background_target_idx'::regclass
+\gset background_
+SELECT bm25_background_target_is_current(
+           :background_index_oid::oid, :background_db_oid::oid,
+           :background_spc_oid::oid, :background_relfilenumber::oid,
+           :background_owner_oid::oid)
+       AS background_target_is_current;
+ALTER INDEX compaction_background_target_idx
+    SET (compaction = 'manual');
+SELECT NOT bm25_background_target_is_current(
+               :background_index_oid::oid, :background_db_oid::oid,
+               :background_spc_oid::oid, :background_relfilenumber::oid,
+               :background_owner_oid::oid)
+       AS manual_target_is_not_current;
+
 -- Inspection is public, but only the index owner may mutate it.
 DO $$
 BEGIN
@@ -152,9 +207,18 @@ SELECT bm25_needs_compaction('compaction_step_idx'::regclass)
        AS nonowner_can_check;
 SELECT bm25_compact('compaction_step_idx'::regclass);
 SELECT bm25_compact_step('compaction_step_idx'::regclass);
+SELECT bm25_compact_step_if_current(
+           :target_index_oid::oid, :target_db_oid::oid,
+           :target_spc_oid::oid, :target_relfilenumber::oid,
+           :target_owner_oid::oid);
+SELECT bm25_background_target_is_current(
+           :background_index_oid::oid, :background_db_oid::oid,
+           :background_spc_oid::oid, :background_relfilenumber::oid,
+           :background_owner_oid::oid);
 RESET ROLE;
 DROP OWNED BY compaction_user CASCADE;
 DROP ROLE compaction_user;
+DROP TABLE compaction_background_target CASCADE;
 
 -- Local temporary indexes remain mutable in read-only transactions.
 SET pg_textsearch.segments_per_level = 64;
@@ -673,4 +737,9 @@ RESET pg_textsearch.segments_per_level;
 DROP TABLE compaction_partitioned CASCADE;
 DROP TABLE compaction_full CASCADE;
 DROP TABLE compaction_step CASCADE;
+SELECT NOT bm25_compact_step_if_current(
+               :target_index_oid::oid, :target_db_oid::oid,
+               :target_spc_oid::oid, :target_relfilenumber::oid,
+               :target_owner_oid::oid)
+       AS dropped_step_target_rejected;
 DROP EXTENSION pg_textsearch CASCADE;
