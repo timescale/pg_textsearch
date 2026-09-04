@@ -196,6 +196,7 @@ CREATE OPERATOR @extschema@.= (
 -- need to register the bm25query operator and support function here.
 CREATE OPERATOR CLASS @extschema@.text_bm25_ops
 DEFAULT FOR TYPE text USING bm25 AS
+    OPERATOR    1   pg_catalog.@@ (text, pg_catalog.tsquery),
     OPERATOR    1   @extschema@.<@> (text, @extschema@.bm25query) FOR ORDER BY float_ops,
     FUNCTION    8   (text, @extschema@.bm25query)   @extschema@.bm25_text_bm25query_score(text, @extschema@.bm25query);
 

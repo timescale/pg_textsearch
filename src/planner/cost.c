@@ -7,9 +7,14 @@
 #include <postgres.h>
 
 #include <access/genam.h>
+#include <catalog/pg_type_d.h>
 #include <math.h>
 #include <nodes/pathnodes.h>
+#include <nodes/primnodes.h>
 #include <optimizer/optimizer.h>
+#include <tsearch/ts_cache.h>
+#include <tsearch/ts_type.h>
+#include <tsearch/ts_utils.h>
 #include <utils/float.h>
 #include <utils/rel.h>
 #include <utils/selfuncs.h>
@@ -18,6 +23,54 @@
 #include "index/limit.h"
 #include "index/metapage.h"
 #include "planner/cost.h"
+
+static bool
+tp_boolean_query_requires_full_scan(IndexPath *path)
+{
+	IndexClause *index_clause;
+	OpExpr		*clause;
+	Node		*query_node;
+	Const		*query_const;
+	TSQuery		 query;
+	QueryItem	*items;
+
+	index_clause = linitial_node(IndexClause, path->indexclauses);
+	if (index_clause->rinfo == NULL ||
+		!IsA(index_clause->rinfo->clause, OpExpr))
+		return true;
+
+	clause = castNode(OpExpr, index_clause->rinfo->clause);
+	if (list_length(clause->args) != 2)
+		return true;
+
+	query_node = lsecond(clause->args);
+	while (query_node != NULL && IsA(query_node, RelabelType))
+		query_node = (Node *)castNode(RelabelType, query_node)->arg;
+
+	if (query_node == NULL || !IsA(query_node, Const))
+		return true;
+
+	query_const = castNode(Const, query_node);
+	if (query_const->constisnull || query_const->consttype != TSQUERYOID)
+		return true;
+
+	query = DatumGetTSQuery(query_const->constvalue);
+	if (query->size == 0)
+		return false;
+
+	if (!tsquery_requires_match(GETQUERY(query)))
+		return true;
+
+	items = GETQUERY(query);
+	for (int i = 0; i < query->size; i++)
+	{
+		if (items[i].type == QI_VAL &&
+			(items[i].qoperand.prefix || items[i].qoperand.weight != 0))
+			return true;
+	}
+
+	return false;
+}
 
 /*
  * Seed the pushed-down internal top-K from the estimated selectivity of
@@ -95,18 +148,29 @@ tp_costestimate(
 {
 	GenericCosts	costs;
 	TpIndexMetaPage metap;
-	double			num_tuples = TP_DEFAULT_TUPLE_ESTIMATE;
+	double			num_tuples		  = TP_DEFAULT_TUPLE_ESTIMATE;
+	bool			has_orderby		  = path->indexorderbys != NIL;
+	bool			has_boolean		  = path->indexclauses != NIL;
+	bool			boolean_full_scan = false;
 
-	/* Never use index without ORDER BY clause */
-	if (!path->indexorderbys || list_length(path->indexorderbys) == 0)
+	/*
+	 * Boolean filtering and ranked scans are separate execution modes.
+	 * Multiple Boolean keys and combined filtering/ranking are follow-ups.
+	 */
+	if ((!has_orderby && !has_boolean) || (has_orderby && has_boolean) ||
+		(has_boolean && list_length(path->indexclauses) != 1))
 	{
 		*indexStartupCost = get_float8_infinity();
 		*indexTotalCost	  = get_float8_infinity();
 		return;
 	}
 
+	if (has_boolean)
+		boolean_full_scan = tp_boolean_query_requires_full_scan(path);
+
 	/* Check for LIMIT clause and verify it can be safely pushed down */
-	if (root && root->limit_tuples > 0 && root->limit_tuples < INT_MAX)
+	if (has_orderby && root && root->limit_tuples > 0 &&
+		root->limit_tuples < INT_MAX)
 	{
 		int limit = (int)root->limit_tuples;
 
@@ -141,6 +205,16 @@ tp_costestimate(
 		if (index_rel)
 		{
 			metap = tp_get_metapage(index_rel);
+			if (has_boolean &&
+				metap->text_config_oid != getTSCurrentConfig(true))
+			{
+				pfree(metap);
+				index_close(index_rel, AccessShareLock);
+				*indexStartupCost = get_float8_infinity();
+				*indexTotalCost	  = get_float8_infinity();
+				return;
+			}
+
 			if (metap && metap->total_docs > 0)
 				num_tuples = (double)metap->total_docs;
 
@@ -157,14 +231,22 @@ tp_costestimate(
 	genericcostestimate(root, path, loop_count, &costs);
 
 	/* Override with BM25-specific estimates */
-	*indexStartupCost = costs.indexStartupCost + 0.01; /* Small startup cost */
-	*indexTotalCost	  = costs.indexTotalCost * TP_INDEX_SCAN_COST_FACTOR;
+	*indexStartupCost = costs.indexStartupCost + 0.01;
+	*indexTotalCost	  = boolean_full_scan
+							  ? costs.indexTotalCost +
+										cpu_operator_cost * num_tuples
+							  : costs.indexTotalCost * TP_INDEX_SCAN_COST_FACTOR;
 
 	/*
 	 * Calculate selectivity based on LIMIT if available, otherwise default
 	 */
-	if (root && root->limit_tuples > 0 && root->limit_tuples < INT_MAX &&
-		num_tuples > 0)
+	if (boolean_full_scan)
+	{
+		*indexSelectivity = 1.0;
+	}
+	else if (
+			root && root->limit_tuples > 0 && root->limit_tuples < INT_MAX &&
+			num_tuples > 0)
 	{
 		/* Use LIMIT as upper bound for selectivity calculation */
 		double limit_selectivity = Min(1.0, root->limit_tuples / num_tuples);

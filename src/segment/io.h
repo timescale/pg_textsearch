@@ -46,6 +46,19 @@ typedef struct TpSegmentReader
 	OffsetNumber *cached_ctid_offsets; /* Tuple offsets (2 bytes/doc) */
 	uint32		  cached_num_docs;	   /* Number of docs cached */
 
+	/* Bounded window for repeated ordered CTID lookups. */
+	BlockNumber	 *lookup_ctid_pages;
+	OffsetNumber *lookup_ctid_offsets;
+	uint32		  lookup_ctid_start;
+	uint32		  lookup_ctid_count;
+	uint32		  lookup_ctid_capacity;
+
+	/* Independent page pins for sparse lookups in the split CTID arrays. */
+	Buffer ctid_pages_buffer;
+	uint32 ctid_pages_logical_page;
+	Buffer ctid_offsets_buffer;
+	uint32 ctid_offsets_logical_page;
+
 	/* BufFile-backed reading (for temp file segments, NULL for normal) */
 	BufFile *buffile;
 	uint64	 buffile_base; /* Base byte offset of segment in BufFile */
@@ -106,6 +119,7 @@ extern void tp_segment_close(TpSegmentReader *reader);
 /* Lazy CTID lookup for deferred resolution */
 extern void tp_segment_lookup_ctid(
 		TpSegmentReader *reader, uint32 doc_id, ItemPointerData *ctid_out);
+extern void tp_segment_enable_ctid_lookup_cache(TpSegmentReader *reader);
 
 /* Zero-copy reader functions */
 typedef struct TpSegmentDirectAccess
@@ -166,6 +180,7 @@ typedef struct TpSegmentPostingIterator
 	/* Zero-copy block access (preferred path) */
 	TpSegmentDirectAccess block_access;
 	bool				  has_block_access;
+	bool force_copy; /* Avoid retained pins across many iterators */
 
 	/* Block postings pointer - points to either direct data or fallback buf */
 	TpBlockPosting *block_postings;
@@ -186,11 +201,25 @@ typedef struct TpSegmentPostingIterator
 	TpSegmentPosting output_posting;
 } TpSegmentPostingIterator;
 
+typedef struct TpSegmentPrefixCandidates
+{
+	TpSegmentPostingIterator *iterators;
+	uint8					 *doc_bitmap;
+	uint32					  iterator_count;
+	uint64					  estimate;
+} TpSegmentPrefixCandidates;
+
 /* Segment posting iterator functions */
 extern bool tp_segment_posting_iterator_init(
 		TpSegmentPostingIterator *iter,
 		TpSegmentReader			 *reader,
 		const char				 *term);
+extern void tp_segment_prefix_candidates_init(
+		TpSegmentReader			  *reader,
+		const char				  *prefix,
+		int						   prefix_length,
+		uint32					   max_iterators,
+		TpSegmentPrefixCandidates *candidates);
 extern bool
 tp_segment_posting_iterator_load_block(TpSegmentPostingIterator *iter);
 extern bool tp_segment_posting_iterator_next(

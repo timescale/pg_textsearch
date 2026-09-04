@@ -611,18 +611,10 @@ tp_vacuum_rebuild_segment(
 
 		MemoryContextSwitchTo(old_ctx);
 
-		if (term_count > 0)
-		{
-			tp_build_context_add_document(
-					build_ctx,
-					terms,
-					frequencies,
-					term_count,
-					doc_length,
-					&ctid);
-			docs_added++;
-			len_added += doc_length;
-		}
+		tp_build_context_add_document(
+				build_ctx, terms, frequencies, term_count, doc_length, &ctid);
+		docs_added++;
+		len_added += doc_length;
 
 		MemoryContextReset(per_doc_ctx);
 		ExecClearTuple(eval_slot);
