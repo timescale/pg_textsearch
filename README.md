@@ -170,6 +170,11 @@ CREATE INDEX ON documents USING bm25(content) WITH (text_config='english');
 - `text_config` - PostgreSQL text search configuration to use (required)
 - `k1` - term frequency saturation parameter (1.2 by default)
 - `b` - length normalization parameter (0.75 by default)
+- `compaction` - spill-time compaction policy: `inline` (default) compacts
+  synchronously in the spilling transaction, `background` hands the work to
+  `pg_textsearch.compaction_request_function` at pre-commit, and `off`
+  leaves it to an explicit caller. See
+  [No Background Compaction Worker](#no-background-compaction-worker).
 
 ```sql
 CREATE INDEX ON documents USING bm25(content) WITH (text_config='english', k1=1.5, b=0.8);
@@ -472,6 +477,7 @@ Setting | Default | Description
 `pg_textsearch.compress_segments` | on | Compress posting blocks in new segments
 `pg_textsearch.segments_per_level` | 8 | Segments per level before automatic compaction (2-64)
 `pg_textsearch.max_segment_size` | 4095MB | Conservative size budget for newly merged multi-source segments (1-4095MB)
+`pg_textsearch.compaction_request_function` | (empty) | Schema-qualified name of a function taking one `regclass`, invoked for indexes set to `compaction = 'background'`
 `pg_textsearch.bulk_load_threshold` | 100000 | Terms per transaction before auto-spill (0 = disable)
 `pg_textsearch.memtable_pages_threshold` | 64 | Chain pages before auto-spill (0 = disable)
 
@@ -607,14 +613,44 @@ sustained write-heavy workloads are not yet fully optimized. For initial
 data loading, creating the index after loading data is faster than
 incremental inserts. This is an active area of development.
 
-### No Background Compaction
+### No Background Compaction Worker
 
-Segment compaction runs synchronously during memtable spill operations, so
-write-heavy workloads may observe compaction latency during spills. No
-background worker compacts on its own; `bm25_compact()` and
-`bm25_compact_step()` let an external job drive it on a schedule of your
-choosing. See [Compacting an index](#compacting-an-index). A built-in
-background scheduler is planned for a future release.
+Segment compaction runs synchronously during memtable spill operations by
+default, so write-heavy workloads may observe compaction latency during
+spills. pg_textsearch ships no background worker that compacts on its own.
+
+Two ways to move that work off the writing transaction:
+
+- Create the index `WITH (compaction = 'background')` and point
+  `pg_textsearch.compaction_request_function` at a function taking one
+  `regclass`. A spill that leaves a level at the threshold then records a
+  request and calls that function at pre-commit instead of compacting.
+  pg_textsearch does not supply the scheduler; you provide the callback and
+  whatever runs the work. Note that the callback executes inside an internal
+  subtransaction that is rolled back afterward, so it must hand the request
+  to something that survives a subtransaction abort — a plain `INSERT` into a
+  queue table will not persist.
+- Create the index `WITH (compaction = 'off')` and drive `bm25_compact()` or
+  `bm25_compact_step()` from an external job on a schedule of your choosing.
+  With `off` and no such job, segments accumulate until a level reaches the
+  per-level cap of 65535, after which spills fail with `bm25 segment count
+  limit reached`. Query performance degrades well before that point.
+
+The policy is per index, so one index can hand compaction to a scheduler
+while another keeps compacting inline. Change it with
+`ALTER INDEX ... SET (compaction = ...)`; the setting is read after each
+spill, and the statement does not block concurrent readers or writers.
+
+`background` compacts inline where a request could not be handed off: on
+temporary indexes, during autovacuum, for a spill caused by the callback
+itself, and during `CREATE INDEX`. `off` is honored in all of these.
+
+Two-phase transactions hand off nothing, because pending requests live in
+transaction-local memory that `PREPARE TRANSACTION` frees. The debt is left
+for the next ordinary spill or for the scheduler's own sweep.
+
+See [Compacting an index](#compacting-an-index). A built-in background
+scheduler is planned for a future release.
 
 ### Partitioned Tables
 

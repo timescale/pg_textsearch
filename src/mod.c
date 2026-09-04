@@ -25,6 +25,7 @@
 
 #include "access/am.h"
 #include "constants.h"
+#include "index/compaction_request.h"
 #include "index/metapage.h"
 #include "index/registry.h"
 #include "index/state.h"
@@ -66,6 +67,12 @@ int tp_segments_per_level = TP_DEFAULT_SEGMENTS_PER_LEVEL;
 
 /* Conservative size budget for newly merged multi-source segments. */
 int tp_max_segment_size_mb = TP_DEFAULT_SEGMENT_SIZE_MB;
+
+static const relopt_enum_elt_def compaction_mode_options[] =
+		{{"inline", TP_COMPACTION_INLINE},
+		 {"background", TP_COMPACTION_BACKGROUND},
+		 {"off", TP_COMPACTION_OFF},
+		 {(const char *)NULL, 0}};
 
 /* Global variable for segment compression (on by default - benchmarks show
  * compression improves both size and query performance)
@@ -299,6 +306,21 @@ _PG_init(void)
 			NULL,
 			NULL);
 
+	DefineCustomStringVariable(
+			"pg_textsearch.compaction_request_function",
+			"Function called for background compaction requests",
+			"Names a schema-qualified function taking a single regclass "
+			"argument. For indexes built WITH (compaction='background'), "
+			"pg_textsearch calls this function at transaction pre-commit "
+			"for each index that needs compaction.",
+			&tp_compaction_request_function,
+			"",
+			PGC_SUSET,
+			0,
+			tp_check_compaction_request_function,
+			NULL,
+			NULL);
+
 	DefineCustomBoolVariable(
 			"pg_textsearch.compress_segments",
 			"Enable compression for new segment blocks",
@@ -468,6 +490,19 @@ _PG_init(void)
 			NoLock);
 
 	/*
+	 * ShareUpdateExclusiveLock: the value is read after a spill and
+	 * changes no on-disk structure, so ALTER INDEX need not block.
+	 */
+	add_enum_reloption(
+			tp_relopt_kind,
+			"compaction",
+			"Spill-time segment compaction policy",
+			(relopt_enum_elt_def *)compaction_mode_options,
+			TP_COMPACTION_INLINE,
+			"Valid values are \"inline\", \"background\" and \"off\".",
+			ShareUpdateExclusiveLock);
+
+	/*
 	 * Install shared memory hooks (needed for registry)
 	 */
 	prev_shmem_request_hook = shmem_request_hook;
@@ -560,8 +595,14 @@ tp_shmem_startup(void)
 }
 
 /*
- * Transaction callback - release index locks at transaction end
- * and check for bulk load auto-spill at pre-commit
+ * Transaction callback - release index locks at transaction end, check
+ * for bulk load auto-spill at pre-commit, and dispatch any compaction
+ * requests those spills registered.
+ *
+ * The spill check runs first: a spill can register a request, so
+ * flushing afterwards is what lets that request reach the callback in
+ * the same transaction.  Parallel workers deliberately do not flush;
+ * dispatch runs subtransactions and SPI, which a worker must not do.
  */
 static void
 tp_xact_callback(XactEvent event, void *arg pg_attribute_unused())
@@ -569,12 +610,16 @@ tp_xact_callback(XactEvent event, void *arg pg_attribute_unused())
 	switch (event)
 	{
 	case XACT_EVENT_PRE_COMMIT:
-	case XACT_EVENT_PARALLEL_PRE_COMMIT:
 		/*
 		 * Check for bulk load auto-spill before commit.
 		 * If any index had a large number of terms added this transaction,
 		 * spill to disk to prevent unbounded memory growth.
 		 */
+		tp_bulk_load_spill_check();
+		tp_compaction_flush_requests();
+		break;
+
+	case XACT_EVENT_PARALLEL_PRE_COMMIT:
 		tp_bulk_load_spill_check();
 		break;
 

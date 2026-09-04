@@ -61,6 +61,7 @@ OBJS = \
 	src/types/array.o \
 	src/types/vector.o \
 	src/types/query.o \
+	src/index/compaction_request.o \
 	src/index/state.o \
 	src/index/registry.o \
 	src/index/metapage.o \
@@ -88,7 +89,7 @@ PG_CPPFLAGS += -Wno-unknown-warning-option -Wno-clobbered -Wno-packed-not-aligne
 # PG_CPPFLAGS += -DDEBUG_DUMP_INDEX
 
 # Test configuration
-REGRESS = abort aerodocs basic binary_io bmw bmw_skip_advance boolean_queries bulk_load cache_apply cache_memory_cap cache_source cache_spill catalog_stats chain_source compaction compression concurrent_build coverage deletion vacuum vacuum_bitmap vacuum_extended vacuum_rebuild dropped empty explicit_index expression_index filtered_seed force_merge implicit index inheritance large_documents limits lock manyterms memory memtable_append memtable_page memtable_spill memtable_spill_dead memtable_reclaim merge mixed parallel_build parallel_bmw partitioned partitioned_many partial_index pgstats queries quoted_identifiers rescan schema scoring1 scoring2 scoring3 scoring4 scoring5 scoring6 security security_acl segment segment_integrity segment_reclaim tombstone_reuse tombstone_recover strings temp_table text_array text_config unsupported updates vector vector_v1_rejected unlogged_index wand
+REGRESS = abort aerodocs basic binary_io bmw bmw_skip_advance boolean_queries bulk_load cache_apply cache_memory_cap cache_source cache_spill catalog_stats chain_source compaction compaction_request compression concurrent_build coverage deletion vacuum vacuum_bitmap vacuum_extended vacuum_rebuild dropped empty explicit_index expression_index filtered_seed force_merge implicit index inheritance large_documents limits lock manyterms memory memtable_append memtable_page memtable_spill memtable_spill_dead memtable_reclaim merge mixed parallel_build parallel_bmw partitioned partitioned_many partial_index pgstats queries quoted_identifiers rescan schema scoring1 scoring2 scoring3 scoring4 scoring5 scoring6 security security_acl segment segment_integrity segment_reclaim tombstone_reuse tombstone_recover strings temp_table text_array text_config unsupported updates vector vector_v1_rejected unlogged_index wand
 REGRESS_OPTS = --inputdir=test --outputdir=test
 
 PG_CONFIG ?= pg_config
@@ -96,12 +97,20 @@ PGXS := $(shell $(PG_CONFIG) --pgxs)
 include $(PGXS)
 
 # SQL regression tests
-test: test-compaction-ownercheck
+test: test-compaction-ownercheck test-compaction-request-source
 	@echo "Running SQL regression tests..."
 	@$(pg_regress_installcheck) $(REGRESS_OPTS) $(REGRESS)
 
 test-compaction-ownercheck:
 	@./test/scripts/compaction_ownercheck_source.sh
+
+test-compaction-request-source:
+	@./test/scripts/compaction_request_source.sh
+
+# These guards cover invariants the SQL suite cannot observe, so they must
+# gate every way the suite is run, not just `make test`.
+installcheck: test-compaction-ownercheck test-compaction-request-source
+test-local: test-compaction-ownercheck test-compaction-request-source
 
 # Custom local test target with dedicated PostgreSQL instance
 test-local: install
@@ -385,4 +394,4 @@ help:
 	@echo "  make test-all"
 	@echo "  make format"
 
-.PHONY: test test-compaction-ownercheck clean-test-dirs installcheck test-concurrency test-recovery test-segment test-stress test-cic test-chinese test-replication test-replication-extended test-logical-replication test-multi-index test-reindex test-shell test-all expected lint-format format format-check format-diff format-single coverage coverage-build coverage-clean coverage-report help
+.PHONY: test test-compaction-ownercheck test-compaction-request-source clean-test-dirs installcheck test-concurrency test-recovery test-segment test-stress test-cic test-chinese test-replication test-replication-extended test-logical-replication test-multi-index test-reindex test-shell test-all expected lint-format format format-check format-diff format-single coverage coverage-build coverage-clean coverage-report help

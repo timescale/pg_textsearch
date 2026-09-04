@@ -10,10 +10,16 @@ struct TpLocalIndexState;
 typedef struct RelationData *Relation;
 
 extern uint64 tp_max_segment_size_bytes(void);
-extern void	  tp_maybe_compact_level(
-		  struct TpLocalIndexState *index_state,
-		  Relation					index,
-		  uint32					first_level);
+
+/*
+ * Report whether any level holds at least segments_per_level segments.
+ * Advisory only; see the comment on the definition.
+ */
+extern bool tp_compaction_needed(Relation index);
+extern void tp_maybe_compact_level(
+		struct TpLocalIndexState *index_state,
+		Relation				  index,
+		uint32					  first_level);
 
 /*
  * Run at most one bounded compaction pass and report whether one ran.

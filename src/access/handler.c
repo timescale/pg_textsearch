@@ -139,7 +139,10 @@ tp_options(Datum reloptions, bool validate)
 			  .offset  = offsetof(TpOptions, k1)},
 			 {.optname = "b",
 			  .opttype = RELOPT_TYPE_REAL,
-			  .offset  = offsetof(TpOptions, b)}};
+			  .offset  = offsetof(TpOptions, b)},
+			 {.optname = "compaction",
+			  .opttype = RELOPT_TYPE_ENUM,
+			  .offset  = offsetof(TpOptions, compaction)}};
 
 	return (bytea *)build_reloptions(
 			reloptions,
