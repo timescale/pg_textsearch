@@ -24,9 +24,11 @@ FROM pg_class WHERE oid = 'relopt_docs_idx'::regclass;
 
 -- Managed background mode requires pg_durable, but temporary indexes are
 -- rejected before admission is attempted.
-CREATE INDEX relopt_background_idx ON relopt_docs
+CREATE INDEX CONCURRENTLY relopt_background_idx ON relopt_docs
     USING bm25(body)
     WITH (text_config = 'english', compaction = 'background');
+SELECT pg_catalog.to_regclass('relopt_background_idx') IS NULL
+       AS rejected_cic_left_no_relation;
 CREATE TEMP TABLE relopt_temp_docs (id integer, body text);
 CREATE INDEX relopt_temp_background_idx ON relopt_temp_docs
     USING bm25(body)

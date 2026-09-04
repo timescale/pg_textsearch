@@ -8,5 +8,6 @@
 
 #include <postgres.h>
 
+extern void tp_compaction_job_preflight(Oid owner_oid, const char *schedule);
 extern void tp_compaction_job_activate(Oid indexoid, bool refresh_default);
 extern void tp_compaction_job_signal(Oid indexoid);

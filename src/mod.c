@@ -13,6 +13,7 @@
 #include <catalog/namespace.h>
 #include <catalog/objectaccess.h>
 #include <catalog/pg_class_d.h>
+#include <commands/defrem.h>
 #include <fmgr.h>
 #include <limits.h>
 #include <miscadmin.h>
@@ -22,8 +23,10 @@
 #include <storage/ipc.h>
 #include <storage/shmem.h>
 #include <tcop/utility.h>
+#include <utils/acl.h>
 #include <utils/guc.h>
 #include <utils/inval.h>
+#include <utils/lsyscache.h>
 #include <utils/relcache.h>
 
 #include "access/am.h"
@@ -692,6 +695,42 @@ tp_subxact_callback(
 	}
 }
 
+static const char *
+tp_index_stmt_option(IndexStmt *stmt, const char *option_name)
+{
+	ListCell *lc;
+
+	foreach (lc, stmt->options)
+	{
+		DefElem *option = lfirst_node(DefElem, lc);
+
+		if (strcmp(option->defname, option_name) == 0)
+			return defGetString(option);
+	}
+
+	return NULL;
+}
+
+static bool
+tp_background_cic_needs_preflight(IndexStmt *stmt, Relation heap_rel)
+{
+	const char *mode;
+
+	if (!stmt->concurrent)
+		return false;
+
+	mode = tp_index_stmt_option(stmt, "compaction");
+	if (mode == NULL || strcmp(mode, "background") != 0)
+		return false;
+
+	if (stmt->if_not_exists && stmt->idxname != NULL &&
+		OidIsValid(get_relname_relid(
+				stmt->idxname, RelationGetNamespace(heap_rel))))
+		return false;
+
+	return true;
+}
+
 /*
  * ProcessUtility hook - detect CREATE INDEX USING bm25 and wrap
  * with build progress tracking. This collapses per-partition
@@ -724,7 +763,26 @@ tp_process_utility(
 			ListCell *lc;
 
 			heapoid = RangeVarGetRelid(stmt->relation, AccessShareLock, false);
-			heap_rel	   = relation_open(heapoid, NoLock);
+			heap_rel = relation_open(heapoid, NoLock);
+
+			/*
+			 * CIC commits its catalog shell before returning to this hook.
+			 * Once PostgreSQL's ownership check is known to succeed, validate
+			 * deterministic owner admission and workflow construction before
+			 * those irreversible phases.
+			 */
+			if (tp_background_cic_needs_preflight(stmt, heap_rel) &&
+				object_ownercheck(RelationRelationId, heapoid, GetUserId()))
+			{
+				const char *schedule =
+						tp_index_stmt_option(stmt, "compaction_schedule");
+
+				if (schedule == NULL)
+					schedule = tp_background_compaction_schedule;
+				tp_compaction_job_preflight(
+						heap_rel->rd_rel->relowner, schedule);
+			}
+
 			indexes_before = list_copy(RelationGetIndexList(heap_rel));
 			relation_close(heap_rel, NoLock);
 
