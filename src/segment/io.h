@@ -46,6 +46,13 @@ typedef struct TpSegmentReader
 	OffsetNumber *cached_ctid_offsets; /* Tuple offsets (2 bytes/doc) */
 	uint32		  cached_num_docs;	   /* Number of docs cached */
 
+	/* Bounded window for repeated ordered CTID lookups. */
+	BlockNumber	 *lookup_ctid_pages;
+	OffsetNumber *lookup_ctid_offsets;
+	uint32		  lookup_ctid_start;
+	uint32		  lookup_ctid_count;
+	uint32		  lookup_ctid_capacity;
+
 	/* BufFile-backed reading (for temp file segments, NULL for normal) */
 	BufFile *buffile;
 	uint64	 buffile_base; /* Base byte offset of segment in BufFile */
@@ -106,6 +113,7 @@ extern void tp_segment_close(TpSegmentReader *reader);
 /* Lazy CTID lookup for deferred resolution */
 extern void tp_segment_lookup_ctid(
 		TpSegmentReader *reader, uint32 doc_id, ItemPointerData *ctid_out);
+extern void tp_segment_enable_ctid_lookup_cache(TpSegmentReader *reader);
 
 /* Zero-copy reader functions */
 typedef struct TpSegmentDirectAccess

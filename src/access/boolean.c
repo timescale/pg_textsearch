@@ -547,7 +547,12 @@ tp_boolean_write_segment(
 			writer->query, reader, GETQUERY(writer->query->query));
 	TpBooleanTermCursor *cursors = palloc0(
 			writer->query->term_count * sizeof(*cursors));
+	uint32 cache_threshold = reader->header->num_docs / 100 +
+							 (reader->header->num_docs % 100 != 0);
 	uint32 doc_id;
+
+	if (stream->estimate >= cache_threshold)
+		tp_segment_enable_ctid_lookup_cache(reader);
 
 	for (int i = 0; i < writer->query->term_count; i++)
 		cursors[i].initialized = tp_segment_posting_iterator_init(

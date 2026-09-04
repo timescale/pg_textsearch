@@ -463,6 +463,27 @@ tp_segment_open_from_buffile(BufFile *file, uint64 base_offset)
 	return reader;
 }
 
+void
+tp_segment_enable_ctid_lookup_cache(TpSegmentReader *reader)
+{
+	uint32 capacity;
+
+	Assert(reader != NULL);
+
+	if (reader->cached_ctid_pages != NULL ||
+		reader->lookup_ctid_pages != NULL || reader->header->num_docs == 0)
+		return;
+
+	/* Keep both arrays within roughly one PostgreSQL block. */
+	capacity =
+			Min(reader->header->num_docs,
+				(uint32)(BLCKSZ /
+						 (sizeof(BlockNumber) + sizeof(OffsetNumber))));
+	reader->lookup_ctid_pages	 = palloc(capacity * sizeof(BlockNumber));
+	reader->lookup_ctid_offsets	 = palloc(capacity * sizeof(OffsetNumber));
+	reader->lookup_ctid_capacity = capacity;
+}
+
 /*
  * Look up a single CTID by doc_id.
  * Used for deferred CTID resolution when CTIDs weren't preloaded.
@@ -490,6 +511,39 @@ tp_segment_lookup_ctid(
 				ctid_out,
 				reader->cached_ctid_pages[doc_id],
 				reader->cached_ctid_offsets[doc_id]);
+		return;
+	}
+
+	if (reader->lookup_ctid_pages != NULL)
+	{
+		if (reader->lookup_ctid_count == 0 ||
+			doc_id < reader->lookup_ctid_start ||
+			doc_id >= reader->lookup_ctid_start + reader->lookup_ctid_count)
+		{
+			reader->lookup_ctid_start = doc_id;
+			reader->lookup_ctid_count =
+					Min(reader->lookup_ctid_capacity,
+						reader->header->num_docs - doc_id);
+
+			tp_segment_read(
+					reader,
+					reader->header->ctid_pages_offset +
+							(uint64)doc_id * sizeof(BlockNumber),
+					reader->lookup_ctid_pages,
+					reader->lookup_ctid_count * sizeof(BlockNumber));
+			tp_segment_read(
+					reader,
+					reader->header->ctid_offsets_offset +
+							(uint64)doc_id * sizeof(OffsetNumber),
+					reader->lookup_ctid_offsets,
+					reader->lookup_ctid_count * sizeof(OffsetNumber));
+		}
+
+		doc_id -= reader->lookup_ctid_start;
+		ItemPointerSet(
+				ctid_out,
+				reader->lookup_ctid_pages[doc_id],
+				reader->lookup_ctid_offsets[doc_id]);
 		return;
 	}
 
@@ -541,6 +595,10 @@ tp_segment_close(TpSegmentReader *reader)
 		pfree(reader->cached_ctid_pages);
 	if (reader->cached_ctid_offsets)
 		pfree(reader->cached_ctid_offsets);
+	if (reader->lookup_ctid_pages)
+		pfree(reader->lookup_ctid_pages);
+	if (reader->lookup_ctid_offsets)
+		pfree(reader->lookup_ctid_offsets);
 
 	pfree(reader);
 }
