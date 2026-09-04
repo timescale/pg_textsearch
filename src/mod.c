@@ -71,7 +71,7 @@ int tp_max_segment_size_mb = TP_DEFAULT_SEGMENT_SIZE_MB;
 static const relopt_enum_elt_def compaction_mode_options[] =
 		{{"inline", TP_COMPACTION_INLINE},
 		 {"background", TP_COMPACTION_BACKGROUND},
-		 {"off", TP_COMPACTION_OFF},
+		 {"manual", TP_COMPACTION_MANUAL},
 		 {(const char *)NULL, 0}};
 
 /* Global variable for segment compression (on by default - benchmarks show
@@ -307,17 +307,14 @@ _PG_init(void)
 			NULL);
 
 	DefineCustomStringVariable(
-			"pg_textsearch.compaction_request_function",
-			"Function called for background compaction requests",
-			"Names a schema-qualified function taking a single regclass "
-			"argument. For indexes built WITH (compaction='background'), "
-			"pg_textsearch calls this function at transaction pre-commit "
-			"for each index that needs compaction.",
-			&tp_compaction_request_function,
-			"",
+			"pg_textsearch.background_compaction_schedule",
+			"Default schedule for managed background compaction.",
+			NULL,
+			&tp_background_compaction_schedule,
+			"*/5 * * * *",
 			PGC_SUSET,
 			0,
-			tp_check_compaction_request_function,
+			NULL,
 			NULL,
 			NULL);
 
@@ -499,7 +496,14 @@ _PG_init(void)
 			"Spill-time segment compaction policy",
 			(relopt_enum_elt_def *)compaction_mode_options,
 			TP_COMPACTION_INLINE,
-			"Valid values are \"inline\", \"background\" and \"off\".",
+			"Valid values are \"inline\", \"background\" and \"manual\".",
+			ShareUpdateExclusiveLock);
+	add_string_reloption(
+			tp_relopt_kind,
+			"compaction_schedule",
+			"Managed background compaction schedule",
+			NULL,
+			NULL,
 			ShareUpdateExclusiveLock);
 
 	/*

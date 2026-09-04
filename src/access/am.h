@@ -54,7 +54,8 @@ typedef struct TpOptions
 	int32  text_config_offset; /* offset to text config string */
 	double k1;				   /* BM25 k1 parameter */
 	double b;				   /* BM25 b parameter */
-	int	   compaction;		   /* TpCompactionMode for this index */
+	int32  compaction_schedule_offset;
+	int	   compaction; /* TpCompactionMode for this index */
 } TpOptions;
 
 /* Tapir-specific build phases for progress reporting */
