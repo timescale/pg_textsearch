@@ -480,17 +480,25 @@ Setting | Default | Description
 `pg_textsearch.compaction_request_function` | (empty) | Schema-qualified name of a function taking one `regclass`, invoked for indexes set to `compaction = 'background'`
 `pg_textsearch.bulk_load_threshold` | 100000 | Terms per transaction before auto-spill (0 = disable)
 `pg_textsearch.memtable_pages_threshold` | 64 | Chain pages before auto-spill (0 = disable)
+`pg_textsearch.memtable_cache_enabled` | on | Serve query reads from the shared-memory memtable cache instead of walking the on-disk chain
+`pg_textsearch.memory_limit` | 2GB | Shared memory budget for memtable caches across all indexes (0 = no limit)
 
 #### Memtable architecture
 
 Starting in 1.3.0, the L0 memtable lives in the index relation itself
 as a chain of doc-record pages, mutated under standard buffer locks
-and WAL-logged via `GenericXLog`. There is no shared-memory memtable,
-no custom WAL resource manager, and no docid-page recovery scaffold.
-PostgreSQL's stock WAL replay (including the single-page reconstruction
-helper used by online-page-fix tooling) reconstructs every page without
-needing to load `pg_textsearch.so`. See
+and WAL-logged via `GenericXLog`. The chain is the source of truth:
+there is no custom WAL resource manager and no docid-page recovery
+scaffold. PostgreSQL's stock WAL replay (including the single-page
+reconstruction helper used by online-page-fix tooling) reconstructs
+every page without needing to load `pg_textsearch.so`. See
 [`docs/memtable_v2.md`](docs/memtable_v2.md) for the spec.
+
+A shared-memory cache of the chain is maintained to keep query cost
+proportional to the query's terms rather than to the chain's length.
+It is derived state, rebuilt from the chain whenever it is missing or
+stale, so losing it is harmless; standby queries always read the chain
+directly. See [`docs/memtable_cache.md`](docs/memtable_cache.md).
 
 Auto-spill is governed by two complementary triggers:
 
