@@ -18,9 +18,28 @@ PG_CONFIG_BIN="${PG_CONFIG:-pg_config}"
 PGBINDIR="$("${PG_CONFIG_BIN}" --bindir)"
 PKGLIBDIR="$("${PG_CONFIG_BIN}" --pkglibdir)"
 SHAREDIR="$("${PG_CONFIG_BIN}" --sharedir)"
+PG_DURABLE_VERSION="${PG_DURABLE_VERSION:-0.2.7}"
+PG_DURABLE_PACKAGE_DIR="${PG_DURABLE_PACKAGE_DIR:-}"
+PACKAGE_BACKUP_DIR="${REPO_ROOT}/test/tmp_durable_package_backup"
+DURABLE_PACKAGE_LIBDIR=
+STAGED_SHARE_FILES=()
 
 log() { printf '[durable] %s\n' "$1"; }
 error() { printf '[durable] ERROR: %s\n' "$1" >&2; exit 1; }
+
+restore_durable_package() {
+    local staged source
+
+    for staged in "${STAGED_SHARE_FILES[@]}"; do
+        rm -f "${staged}"
+    done
+    if [ -d "${PACKAGE_BACKUP_DIR}" ]; then
+        while IFS= read -r source; do
+            cp -p "${source}" "${SHAREDIR}/extension/"
+        done < <(find "${PACKAGE_BACKUP_DIR}" -maxdepth 1 -type f -print)
+        rm -rf "${PACKAGE_BACKUP_DIR}"
+    fi
+}
 
 cleanup() {
     local exit_code=$?
@@ -36,6 +55,7 @@ cleanup() {
         cp "${LOGFILE}" "${KEEP_DIR}/" 2>/dev/null || true
     fi
     rm -rf "${DATA_DIR}"
+    restore_durable_package
     exit "${exit_code}"
 }
 
@@ -59,6 +79,223 @@ assert_eq() {
         error "${description}: expected '${expected}', got '${actual}'"
     fi
     log "PASS: ${description}"
+}
+
+test_cic_owner_privilege_preflight() {
+    local create_error jobs_before
+
+    assert_eq "usage-only owner can resolve df.start" "t" \
+        "$(sql_super -c "SELECT pg_catalog.has_function_privilege(
+            'durable_usage_only', procedure.oid, 'EXECUTE')
+          FROM pg_catalog.pg_proc AS procedure
+          JOIN pg_catalog.pg_namespace AS namespace
+            ON namespace.oid = procedure.pronamespace
+          JOIN pg_catalog.pg_depend AS dependency
+            ON dependency.classid = 'pg_catalog.pg_proc'::regclass
+           AND dependency.objid = procedure.oid
+           AND dependency.deptype = 'e'
+          JOIN pg_catalog.pg_extension AS extension
+            ON extension.oid = dependency.refobjid
+          WHERE namespace.nspname = 'df'
+            AND procedure.proname = 'start'
+            AND extension.extname = 'pg_durable';")"
+    assert_eq "usage-only owner can resolve df.explain" "t" \
+        "$(sql_super -c "SELECT pg_catalog.has_function_privilege(
+            'durable_usage_only', 'df.explain(text)', 'EXECUTE');")"
+    assert_eq "usage-only owner cannot read df.instances" "f" \
+        "$(sql_super -c "SELECT pg_catalog.has_table_privilege(
+            'durable_usage_only', 'df.instances', 'SELECT');")"
+
+    jobs_before="$(managed_job_count)"
+    sql_super -c "CREATE TABLE usage_only_docs (body text);
+                   ALTER TABLE usage_only_docs OWNER TO durable_usage_only;"
+    if create_error="$(sql_as durable_usage_only -c "
+        CREATE INDEX CONCURRENTLY usage_only_docs_idx
+          ON usage_only_docs USING bm25(body)
+          WITH (text_config = 'english', compaction = 'background');" \
+        2>&1)"; then
+        error "background CIC accepted an owner without durable table access"
+    fi
+    assert_eq "rejected usage-only CIC leaves no relation" "t" \
+        "$(sql_super -c "SELECT
+            pg_catalog.to_regclass('usage_only_docs_idx') IS NULL;")"
+    if ! grep -Fq "index owner lacks required pg_durable privileges" \
+        <<<"${create_error}"; then
+        error "usage-only owner did not fail deterministic CIC preflight: \
+${create_error}"
+    fi
+    assert_eq "usage-only CIC creates no probe workflow" "${jobs_before}" \
+        "$(managed_job_count)"
+    sql_super -c "DROP TABLE usage_only_docs;"
+
+    assert_eq "read-only owner cannot insert df.instances" "f" \
+        "$(sql_super -c "SELECT pg_catalog.has_table_privilege(
+            'durable_read_only', 'df.instances', 'INSERT');")"
+    jobs_before="$(managed_job_count)"
+    sql_super -c "CREATE TABLE read_only_docs (body text);
+                   ALTER TABLE read_only_docs OWNER TO durable_read_only;"
+    if create_error="$(sql_as durable_read_only -c "
+        CREATE INDEX CONCURRENTLY read_only_docs_idx
+          ON read_only_docs USING bm25(body)
+          WITH (text_config = 'english', compaction = 'background');" \
+        2>&1)"; then
+        error "background CIC accepted an owner without durable INSERT"
+    fi
+    assert_eq "rejected read-only CIC leaves no relation" "t" \
+        "$(sql_super -c "SELECT
+            pg_catalog.to_regclass('read_only_docs_idx') IS NULL;")"
+    if ! grep -Fq "index owner lacks required pg_durable privileges" \
+        <<<"${create_error}"; then
+        error "read-only owner did not fail deterministic CIC preflight: \
+${create_error}"
+    fi
+    assert_eq "read-only CIC creates no probe workflow" "${jobs_before}" \
+        "$(managed_job_count)"
+    sql_super -c "DROP TABLE read_only_docs;"
+}
+
+test_defaulted_start_arity() {
+    local create_output index_oid instance_id start_shape
+    local shimmed=false
+
+    start_shape="$(sql_super -c "SELECT
+        procedure.pronargs || ':' || procedure.pronargdefaults
+      FROM pg_catalog.pg_proc AS procedure
+      JOIN pg_catalog.pg_namespace AS namespace
+        ON namespace.oid = procedure.pronamespace
+      JOIN pg_catalog.pg_depend AS dependency
+        ON dependency.classid = 'pg_catalog.pg_proc'::regclass
+       AND dependency.objid = procedure.oid
+       AND dependency.deptype = 'e'
+      JOIN pg_catalog.pg_extension AS extension
+        ON extension.oid = dependency.refobjid
+      WHERE namespace.nspname = 'df'
+        AND procedure.proname = 'start'
+        AND extension.extname = 'pg_durable';")"
+
+    case "${start_shape}" in
+        4:*)
+            sql_super <<'SQL' >/dev/null
+ALTER FUNCTION df.start(text, text, text, text) RENAME TO start_v027;
+CREATE FUNCTION df.start(
+    fut text,
+    label text,
+    database text,
+    transaction_mode text,
+    max_attempts integer DEFAULT 1,
+    max_backoff interval DEFAULT interval '16 seconds',
+    on_failure text DEFAULT 'fail')
+RETURNS text
+LANGUAGE sql
+SET search_path = pg_catalog, pg_temp
+AS $body$
+    SELECT df.start_v027(fut, label, database, transaction_mode)
+$body$;
+ALTER EXTENSION pg_durable ADD FUNCTION
+    df.start(text, text, text, text, integer, interval, text);
+SQL
+            shimmed=true
+            ;;
+        7:*)
+            ;;
+        *)
+            error "unexpected extension-owned df.start shape: ${start_shape}"
+            ;;
+    esac
+
+    assert_eq "defaulted start probe is callable with four arguments" \
+        "7:true" \
+        "$(sql_super -c "SELECT pronargs || ':' ||
+                                (pronargdefaults >= pronargs - 4)
+          FROM pg_catalog.pg_proc
+          WHERE oid = 'df.start(text,text,text,text,integer,interval,text)'
+                      ::pg_catalog.regprocedure;")"
+
+    sql_super -c "CREATE TABLE arity_docs (body text);
+                   ALTER TABLE arity_docs OWNER TO durable_owner;"
+    if ! create_output="$(sql_as durable_owner -c "
+        CREATE INDEX CONCURRENTLY arity_docs_idx
+          ON arity_docs USING bm25(body)
+          WITH (text_config = 'english', compaction = 'background');" \
+        2>&1)"; then
+        error "four-argument call rejected defaulted df.start: \
+${create_output}"
+    fi
+    index_oid="$(sql_super -c "SELECT 'arity_docs_idx'::regclass::oid;")"
+    instance_id="$(active_job_id_for_owner \
+        "${index_oid}" durable_owner)"
+    [ -n "${instance_id}" ] ||
+        error "defaulted df.start probe created no owner workflow"
+    sql_as durable_owner -c \
+        "SELECT df.cancel('${instance_id}', 'arity probe complete');" \
+        >/dev/null
+    wait_for_terminal "${instance_id}" 30
+    sql_super -c "DROP TABLE arity_docs;"
+    if "${shimmed}"; then
+        sql_super -c "ALTER EXTENSION pg_durable DROP FUNCTION
+                     df.start(text, text, text, text, integer, interval, text);
+                   DROP FUNCTION
+                     df.start(text, text, text, text, integer, interval, text);
+                   ALTER FUNCTION df.start_v027(text, text, text, text)
+                     RENAME TO start;"
+    fi
+    log "PASS: four-argument adapter accepts trailing defaulted arguments"
+}
+
+stage_durable_package() {
+    local package_library package_control package_sql source destination
+    local -a package_libraries package_controls package_sql_files
+
+    if [ -z "${PG_DURABLE_PACKAGE_DIR}" ]; then
+        error "PG_DURABLE_PACKAGE_DIR must name one pg_durable package"
+    fi
+
+    mapfile -t package_libraries < <(
+        find "${PG_DURABLE_PACKAGE_DIR}" -type f -name pg_durable.so -print
+    )
+    mapfile -t package_controls < <(
+        find "${PG_DURABLE_PACKAGE_DIR}" -type f \
+            -name pg_durable.control -print
+    )
+    mapfile -t package_sql_files < <(
+        find "${PG_DURABLE_PACKAGE_DIR}" -type f \
+            -name "pg_durable--${PG_DURABLE_VERSION}.sql" -print
+    )
+
+    [ "${#package_libraries[@]}" -eq 1 ] ||
+        error "package must contain exactly one pg_durable.so"
+    [ "${#package_controls[@]}" -eq 1 ] ||
+        error "package must contain exactly one pg_durable.control"
+    [ "${#package_sql_files[@]}" -eq 1 ] ||
+        error "package must contain exactly one pg_durable version SQL file"
+
+    package_library="${package_libraries[0]}"
+    package_control="${package_controls[0]}"
+    package_sql="${package_sql_files[0]}"
+    if ! grep -Eq \
+        "^default_version[[:space:]]*=[[:space:]]*'${PG_DURABLE_VERSION}'" \
+        "${package_control}"; then
+        error "pg_durable package control/version SQL do not match"
+    fi
+    DURABLE_PACKAGE_LIBDIR="$(dirname "${package_library}")"
+
+    rm -rf "${PACKAGE_BACKUP_DIR}"
+    mkdir -p "${PACKAGE_BACKUP_DIR}"
+    for source in "${package_control}" "${package_sql}"; do
+        destination="${SHAREDIR}/extension/$(basename "${source}")"
+        if [ -f "${destination}" ]; then
+            cp -p "${destination}" "${PACKAGE_BACKUP_DIR}/"
+        fi
+        cp -p "${source}" "${destination}"
+        STAGED_SHARE_FILES+=("${destination}")
+        cmp -s "${source}" "${destination}" ||
+            error "failed to stage matching pg_durable package SQL"
+    done
+
+    log "Using pg_durable ${PG_DURABLE_VERSION} package library: \
+$(sha256sum "${package_library}" | cut -d' ' -f1)"
+    log "Using pg_durable ${PG_DURABLE_VERSION} package SQL: \
+$(sha256sum "${package_sql}" | cut -d' ' -f1)"
 }
 
 active_jobs_for_index() {
@@ -147,10 +384,29 @@ wait_for_durable_worker() {
 }
 
 initialize_database() {
-    sql_super -c "CREATE EXTENSION pg_durable VERSION '0.2.7';"
+    sql_super -c \
+        "CREATE EXTENSION pg_durable VERSION '${PG_DURABLE_VERSION}';"
+    assert_eq "loaded pg_durable package version" "${PG_DURABLE_VERSION}" \
+        "$(sql_super -c "SELECT extversion
+                          FROM pg_catalog.pg_extension
+                          WHERE extname = 'pg_durable';")"
+    assert_eq "df.instances submitted_by type" "regrole" \
+        "$(sql_super -c "SELECT pg_catalog.format_type(
+                              attribute.atttypid, attribute.atttypmod)
+                          FROM pg_catalog.pg_attribute AS attribute
+                          WHERE attribute.attrelid = 'df.instances'::regclass
+                            AND attribute.attname = 'submitted_by'
+                            AND NOT attribute.attisdropped;")"
     sql_super -c "CREATE EXTENSION pg_textsearch;"
-    sql_super -c "GRANT CREATE ON SCHEMA public TO durable_owner;"
+    sql_super -c "GRANT CREATE ON SCHEMA public
+                   TO durable_owner, durable_usage_only, durable_read_only,
+                      durable_bypass;"
     sql_super -c "SELECT df.grant_usage('durable_owner');" >/dev/null
+    sql_super -c "SELECT df.grant_usage('durable_bypass');" >/dev/null
+    sql_super -c "GRANT USAGE ON SCHEMA df
+                   TO durable_usage_only, durable_read_only;
+                   GRANT SELECT ON df.instances, df.vars
+                   TO durable_read_only;"
     sql_super -c "CREATE SCHEMA owner_shadow AUTHORIZATION durable_owner;"
     sql_as durable_owner <<'SQL'
 CREATE FUNCTION owner_shadow.reject_text_equality(left_value text,
@@ -228,6 +484,23 @@ active_job_id() {
       LIMIT 1;"
 }
 
+active_job_id_for_owner() {
+    local index_oid=$1 owner=$2
+
+    sql_super -c "SELECT id
+      FROM df.instances
+      WHERE label LIKE 'pg_textsearch:bg:v1:%:${index_oid}:%'
+        AND submitted_by = '${owner}'::regrole
+        AND status IN ('pending', 'running')
+      ORDER BY created_at DESC, id DESC
+      LIMIT 1;"
+}
+
+managed_job_count() {
+    sql_super -c "SELECT count(*) FROM df.instances
+      WHERE label LIKE 'pg_textsearch:bg:v1:%';"
+}
+
 create_compaction_debt() {
     sql_as durable_owner <<'SQL' >/dev/null
 BEGIN;
@@ -246,11 +519,29 @@ COMMIT;
 SQL
 }
 
+create_bypass_compaction_debt() {
+    sql_as durable_bypass <<'SQL' >/dev/null
+BEGIN;
+DO $body$
+BEGIN
+    FOR n IN 1..2 LOOP
+        INSERT INTO bypass_documents (id, body)
+        SELECT 10000 + n * 100 + i,
+               format('bypass round %s document %s filler', n, i)
+        FROM generate_series(1, 20) AS i;
+        PERFORM bm25_spill_index('bypass_documents_idx');
+    END LOOP;
+END
+$body$;
+COMMIT;
+SQL
+}
+
 setup_cluster() {
     for required in \
-        "${PKGLIBDIR}/pg_durable.so" \
         "${PKGLIBDIR}/pg_textsearch.so" \
-        "${SHAREDIR}/extension/pg_durable--0.2.7.sql"; do
+        "${DURABLE_PACKAGE_LIBDIR}/pg_durable.so" \
+        "${SHAREDIR}/extension/pg_durable--${PG_DURABLE_VERSION}.sql"; do
         [ -f "${required}" ] ||
             error "required install artifact missing: ${required}"
     done
@@ -263,10 +554,8 @@ setup_cluster() {
         printf "port = %s\n" "${TEST_PORT}"
         printf "unix_socket_directories = '%s'\n" "${SOCKET_DIR}"
         printf "listen_addresses = ''\n"
-        if [ -n "${PG_DURABLE_LIBDIR:-}" ]; then
-            printf "dynamic_library_path = '%s:\$libdir'\n" \
-                "${PG_DURABLE_LIBDIR}"
-        fi
+        printf "dynamic_library_path = '%s:\$libdir'\n" \
+            "${DURABLE_PACKAGE_LIBDIR}"
         printf "shared_preload_libraries = 'pg_durable,pg_textsearch'\n"
         printf "logging_collector = on\n"
         printf "log_directory = '.'\n"
@@ -283,6 +572,9 @@ setup_cluster() {
         -U postgres "${TEST_DB}"
     sql_super -c "CREATE ROLE durable_owner LOGIN;"
     sql_super -c "CREATE ROLE durable_nologin NOLOGIN;"
+    sql_super -c "CREATE ROLE durable_usage_only LOGIN;"
+    sql_super -c "CREATE ROLE durable_read_only LOGIN;"
+    sql_super -c "CREATE ROLE durable_bypass LOGIN BYPASSRLS;"
 }
 
 test_missing_durable_cic() {
@@ -431,6 +723,72 @@ ${create_output}"
         "$(active_jobs_for_index "${index_oid}")"
 }
 
+test_bypassrls_owner_isolation() {
+    local index_oid label owner_instance foreign_instance replacement_instance
+
+    sql_super -c "CREATE TABLE bypass_documents (id integer, body text);
+                   ALTER TABLE bypass_documents OWNER TO durable_bypass;"
+    sql_as durable_bypass -c "INSERT INTO bypass_documents
+        SELECT i, 'bypass document ' || i || ' filler filler filler'
+        FROM generate_series(1, 10000) AS i;"
+    sql_as durable_bypass -c "
+        CREATE INDEX CONCURRENTLY bypass_documents_idx
+          ON bypass_documents USING bm25(body)
+          WITH (text_config = 'english', compaction = 'background');" \
+        >/dev/null 2>&1
+
+    index_oid="$(sql_super -c \
+        "SELECT 'bypass_documents_idx'::regclass::oid;")"
+    owner_instance="$(active_job_id_for_owner \
+        "${index_oid}" durable_bypass)"
+    [ -n "${owner_instance}" ] ||
+        error "BYPASSRLS index owner has no managed workflow"
+    wait_for_signal_node "${owner_instance}" 30
+    label="$(sql_super -c "SELECT label FROM df.instances
+                            WHERE id = '${owner_instance}';")"
+
+    foreign_instance="$(sql_as durable_owner -c "
+        SELECT df.start(
+            df.wait_for_signal('compact', 300),
+            '${label}',
+            current_database(),
+            'caller');")"
+    wait_for_signal_node "${foreign_instance}" 30
+    assert_eq "lookalike workflow has a foreign submitter" \
+        "durable_owner" \
+        "$(sql_super -c "SELECT submitted_by::text FROM df.instances
+                          WHERE id = '${foreign_instance}';")"
+
+    sql_as durable_bypass -c \
+        "SELECT df.signal('${owner_instance}', 'compact', '{}');" \
+        >/dev/null
+    wait_for_signal_node "${owner_instance}" 30
+    assert_eq "foreign lookalike cannot retire the owner workflow" \
+        "${owner_instance}" \
+        "$(active_job_id_for_owner "${index_oid}" durable_bypass)"
+
+    sql_as durable_bypass -c \
+        "SELECT df.cancel('${owner_instance}', 'owner isolation recovery');" \
+        >/dev/null
+    wait_for_terminal "${owner_instance}" 30
+    create_bypass_compaction_debt
+    wait_for_no_debt bypass_documents_idx 30
+    replacement_instance="$(active_job_id_for_owner \
+        "${index_oid}" durable_bypass)"
+    if [ -z "${replacement_instance}" ] ||
+        [ "${replacement_instance}" = "${owner_instance}" ]; then
+        error "owner workflow was not recovered past a foreign lookalike"
+    fi
+    assert_eq "foreign lookalike cannot be selected or signaled" "t" \
+        "$(sql_super -c "SELECT status IN ('pending', 'running')
+                          FROM df.instances
+                          WHERE id = '${foreign_instance}';")"
+    assert_eq "recovered workflow retains the index owner" \
+        "durable_bypass" \
+        "$(sql_super -c "SELECT submitted_by::text FROM df.instances
+                          WHERE id = '${replacement_instance}';")"
+}
+
 test_rollback_in_fresh_database() {
     local nologin_error
 
@@ -504,11 +862,15 @@ test_sticky_dependency() {
                               WHERE extname = 'pg_textsearch';")"
 }
 
+stage_durable_package
 setup_cluster
 test_missing_durable_cic
 initialize_database
 test_cic_preflight_rejections
+test_cic_owner_privilege_preflight
+test_defaulted_start_arity
 test_create_activation
+test_bypassrls_owner_isolation
 test_sticky_dependency
 test_rollback_in_fresh_database
 log "Managed pg_durable CREATE activation tests passed"
