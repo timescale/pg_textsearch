@@ -22,6 +22,16 @@ ALTER INDEX relopt_docs_idx
 SELECT reloptions @> ARRAY['compaction_schedule=17 * * * *']
 FROM pg_class WHERE oid = 'relopt_docs_idx'::regclass;
 
+-- Managed background mode requires pg_durable, but temporary indexes are
+-- rejected before admission is attempted.
+CREATE INDEX relopt_background_idx ON relopt_docs
+    USING bm25(body)
+    WITH (text_config = 'english', compaction = 'background');
+CREATE TEMP TABLE relopt_temp_docs (id integer, body text);
+CREATE INDEX relopt_temp_background_idx ON relopt_temp_docs
+    USING bm25(body)
+    WITH (text_config = 'english', compaction = 'background');
+
 -- Manual mode leaves spill-time compaction debt in place.
 CREATE TABLE manual_docs (id serial PRIMARY KEY, body text);
 CREATE INDEX manual_docs_idx ON manual_docs

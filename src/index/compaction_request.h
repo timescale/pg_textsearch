@@ -8,7 +8,6 @@
 
 #include <postgres.h>
 
-#include <utils/guc.h>
 #include <utils/rel.h>
 
 typedef enum TpCompactionMode
@@ -19,12 +18,9 @@ typedef enum TpCompactionMode
 } TpCompactionMode;
 
 extern char *tp_background_compaction_schedule;
-extern char *tp_compaction_request_function;
 
 extern int		   tp_index_compaction_mode(Relation index_rel);
 extern const char *tp_index_compaction_schedule(Relation index_rel);
 extern bool		   tp_compaction_dispatch_possible(void);
-extern bool		   tp_check_compaction_request_function(
-			   char **newval, void **extra, GucSource source);
-extern void tp_compaction_request(Oid indexoid);
-extern void tp_compaction_flush_requests(void);
+extern void		   tp_compaction_request(Oid indexoid);
+extern void		   tp_compaction_flush_requests(void);

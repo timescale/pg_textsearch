@@ -11,6 +11,32 @@ REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 REQUEST_SOURCE="${REPO_ROOT}/src/index/compaction_request.c"
 MODULE_SOURCE="${REPO_ROOT}/src/mod.c"
 STATE_SOURCE="${REPO_ROOT}/src/index/state.c"
+JOB_SOURCE="${REPO_ROOT}/src/index/compaction_job.c"
+FRESH_SQL="${REPO_ROOT}/sql/pg_textsearch--1.5.0-dev.sql"
+UPGRADE_SQL="${REPO_ROOT}/sql/pg_textsearch--1.4.0--1.5.0-dev.sql"
+
+for required in \
+    "df.wait_for_signal" \
+    "df.wait_for_schedule" \
+    "bm25_compact_step_if_current" \
+    "{sys_instance_id}" \
+    "DEPENDENCY_NORMAL" \
+    "AccessMethodRelationId"; do
+    if ! grep -Fq "${required}" "${JOB_SOURCE}"; then
+        echo "managed compaction source is missing ${required}" >&2
+        exit 1
+    fi
+done
+
+if grep -Fq "bm25_compact_pending" "${FRESH_SQL}" "${UPGRADE_SQL}"; then
+    echo "database-wide background compaction sweep remains installed" >&2
+    exit 1
+fi
+
+if grep -Eq '#include[[:space:]]*[<"].*pg_durable' "${JOB_SOURCE}"; then
+    echo "managed compaction has a build-time pg_durable header dependency" >&2
+    exit 1
+fi
 
 if grep -Fq "tp_compaction_drop_request(objectId)" "${MODULE_SOURCE}"; then
     echo "DROP removes pending requests before subtransaction outcome" >&2
@@ -56,18 +82,11 @@ if grep -Fq "tp_compaction_flush_requests" <<<"${preprepare_body}"; then
     exit 1
 fi
 
-# A one-part callback name would resolve through the committing backend's
-# search_path and run as that backend's user.
-if ! grep -Fq "list_length(names) == 2" "${REQUEST_SOURCE}"; then
-    echo "callback GUC does not require a schema-qualified name" >&2
-    exit 1
-fi
-
-# A spill caused by the callback must compact inline: its request would
-# land in a list the running dispatch has already stopped reading.
+# A spill caused during dispatch must compact inline: its request would land
+# in a list the running dispatch has already stopped reading.
 if ! grep -Fq "tp_dispatch_active = true" "${REQUEST_SOURCE}" ||
     ! grep -Fq "tp_dispatch_active" "${REQUEST_SOURCE}"; then
-    echo "callback re-entry is not routed to inline compaction" >&2
+    echo "managed dispatch re-entry is not routed to inline compaction" >&2
     exit 1
 fi
 
@@ -76,12 +95,12 @@ flush_body="$(
 )"
 revalidate_line="$(grep -n "SearchSysCacheExists1" <<<"${flush_body}" |
     cut -d: -f1)"
-lookup_line="$(grep -n "function = tp_lookup_request_function" \
+signal_line="$(grep -n "tp_run_request(indexoid)" \
     <<<"${flush_body}" | cut -d: -f1)"
 
-if [[ -z "${revalidate_line}" || -z "${lookup_line}" ||
-      "${revalidate_line}" -ge "${lookup_line}" ]]; then
-    echo "callback lookup is not lazy on the first live request" >&2
+if [[ -z "${revalidate_line}" || -z "${signal_line}" ||
+      "${revalidate_line}" -ge "${signal_line}" ]]; then
+    echo "pending requests are not revalidated before signaling" >&2
     exit 1
 fi
 

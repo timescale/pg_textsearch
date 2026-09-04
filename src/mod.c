@@ -14,6 +14,7 @@
 #include <access/xact.h>
 #include <catalog/dependency.h>
 #include <catalog/indexing.h>
+#include <catalog/namespace.h>
 #include <catalog/objectaccess.h>
 #include <catalog/pg_class_d.h>
 #include <catalog/pg_extension_d.h>
@@ -23,6 +24,7 @@
 #include <limits.h>
 #include <miscadmin.h>
 #include <nodes/parsenodes.h>
+#include <nodes/pg_list.h>
 #include <pg_config.h>
 #include <storage/ipc.h>
 #include <storage/lock.h>
@@ -32,10 +34,12 @@
 #include <utils/guc.h>
 #include <utils/inval.h>
 #include <utils/snapmgr.h>
+#include <utils/relcache.h>
 
 #include "access/am.h"
 #include "access/rls.h"
 #include "constants.h"
+#include "index/compaction_job.h"
 #include "index/compaction_request.h"
 #include "index/metapage.h"
 #include "index/registry.h"
@@ -1061,6 +1065,93 @@ call_next_process_utility(
 		DestReceiver		 *dest,
 		QueryCompletion		 *qc)
 {
+	Node *parsetree = pstmt->utilityStmt;
+
+	if (IsA(parsetree, IndexStmt))
+	{
+		IndexStmt *stmt = (IndexStmt *)parsetree;
+
+		if (stmt->accessMethod && strcmp(stmt->accessMethod, "bm25") == 0)
+		{
+			Oid		  heapoid;
+			Relation  heap_rel;
+			List	 *indexes_before;
+			List	 *indexes_after;
+			List	 *created_indexes;
+			ListCell *lc;
+
+			heapoid = RangeVarGetRelid(stmt->relation, AccessShareLock, false);
+			heap_rel	   = relation_open(heapoid, NoLock);
+			indexes_before = list_copy(RelationGetIndexList(heap_rel));
+			relation_close(heap_rel, NoLock);
+
+			tp_build_progress_begin();
+
+			if (prev_process_utility_hook)
+				prev_process_utility_hook(
+						pstmt,
+						queryString,
+						readOnlyTree,
+						context,
+						params,
+						queryEnv,
+						dest,
+						qc);
+			else
+				standard_ProcessUtility(
+						pstmt,
+						queryString,
+						readOnlyTree,
+						context,
+						params,
+						queryEnv,
+						dest,
+						qc);
+
+			tp_build_progress_end();
+
+			/*
+			 * CREATE INDEX CONCURRENTLY may cross transaction boundaries
+			 * inside standard_ProcessUtility, so reacquire the heap lock
+			 * before consulting its post-command relcache state.
+			 */
+			heap_rel	  = relation_open(heapoid, AccessShareLock);
+			indexes_after = list_copy(RelationGetIndexList(heap_rel));
+			relation_close(heap_rel, AccessShareLock);
+			created_indexes =
+					list_difference_oid(indexes_after, indexes_before);
+
+			foreach (lc, created_indexes)
+			{
+				Oid		 indexoid  = lfirst_oid(lc);
+				Relation index_rel = try_index_open(indexoid, AccessShareLock);
+				bool	 activate;
+
+				if (index_rel == NULL)
+					continue;
+				activate = index_rel->rd_rel->relkind == RELKIND_INDEX &&
+						   index_rel->rd_indam != NULL &&
+						   index_rel->rd_indam->ambuild == tp_build &&
+						   index_rel->rd_index != NULL &&
+						   index_rel->rd_index->indisvalid &&
+						   index_rel->rd_index->indisready &&
+						   index_rel->rd_index->indislive &&
+						   tp_index_compaction_mode(index_rel) ==
+								   TP_COMPACTION_BACKGROUND;
+				index_close(index_rel, AccessShareLock);
+
+				if (activate)
+					tp_compaction_job_activate(indexoid, true);
+			}
+
+			list_free(created_indexes);
+			list_free(indexes_after);
+			list_free(indexes_before);
+			return;
+		}
+	}
+	/* Not a bm25 CREATE INDEX - pass through */
+	/* Not a bm25 CREATE INDEX - pass through */
 	if (prev_process_utility_hook)
 		prev_process_utility_hook(
 				pstmt,
