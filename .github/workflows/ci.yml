@@ -11,6 +11,7 @@ on:
       - 'pg_textsearch.control'
       - '.clang-format'
       - '.github/workflows/ci.yml'
+      - 'scripts/msvc-build.ps1'
   pull_request:
     branches: [ main ]
     paths:
@@ -21,6 +22,7 @@ on:
       - 'pg_textsearch.control'
       - '.clang-format'
       - '.github/workflows/ci.yml'
+      - 'scripts/msvc-build.ps1'
   workflow_dispatch:
 
 jobs:
@@ -289,6 +291,79 @@ jobs:
         make clean
         # Build with -Werror via PG_CFLAGS (CFLAGS is overridden by pgxs)
         make PG_CFLAGS="-Werror -Wno-error=unused-parameter"
+
+  build-msvc:
+    name: PG${{ matrix.pg_version }} MSVC Build
+    runs-on: windows-2022
+    timeout-minutes: 20
+    strategy:
+      # Do not cancel the remaining leg when one fails: comparing both logs
+      # shows whether a /WX failure comes from the toolset or from headers.
+      fail-fast: false
+      matrix:
+        include:
+          - pg_version: 17
+            url: 'https://get.enterprisedb.com/postgresql/postgresql-17.11-1-windows-x64-binaries.zip'
+            sha256: '6eabdf00d2893713b75db4336a23c3fdf505f056e217ec6e2e95d901750cfea3'
+          - pg_version: 18
+            url: 'https://get.enterprisedb.com/postgresql/postgresql-18.6-1-windows-x64-binaries.zip'
+            sha256: 'fbe23da234ee31547bf8a36d29dfd81e82b849df2d2b78d2eecb43d360252f8c'
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Download PostgreSQL ${{ matrix.pg_version }} binaries
+      shell: pwsh
+      run: |
+        $ErrorActionPreference = 'Stop'
+        $ProgressPreference = 'SilentlyContinue'
+        $zip = Join-Path $env:RUNNER_TEMP 'pgsql.zip'
+        $dest = Join-Path $env:RUNNER_TEMP 'pg'
+        $expected = '${{ matrix.sha256 }}'
+
+        # The retry covers transport errors and hash mismatches alike: a
+        # truncated download of a ~340 MB archive gives a wrong hash. This
+        # job is a required check.
+        $verified = $false
+        for ($attempt = 1; $attempt -le 2; $attempt++) {
+          if (Test-Path -LiteralPath $zip) { Remove-Item -LiteralPath $zip -Force }
+          try {
+            Invoke-WebRequest -Uri '${{ matrix.url }}' -OutFile $zip -UseBasicParsing -TimeoutSec 300
+            $actual = (Get-FileHash -LiteralPath $zip -Algorithm SHA256).Hash.ToLowerInvariant()
+            if ($actual -eq $expected) { $verified = $true; break }
+            Write-Host "attempt ${attempt}: SHA256 is $actual, expected $expected"
+          }
+          catch {
+            Write-Host "attempt ${attempt}: download failed: $($_.Exception.Message)"
+          }
+          if ($attempt -lt 2) { Start-Sleep -Seconds 15 }
+        }
+        if (-not $verified) {
+          throw "Could not fetch ${{ matrix.url }} with SHA256 $expected in 2 attempts."
+        }
+        Write-Host "SHA256 verified: $expected"
+
+        if (Test-Path -LiteralPath $dest) { Remove-Item -LiteralPath $dest -Recurse -Force }
+        New-Item -ItemType Directory -Path $dest -Force | Out-Null
+        # tar is bsdtar here and unpacks this zip far faster than Expand-Archive.
+        tar -xf $zip -C $dest
+        if ($LASTEXITCODE -ne 0) { throw "tar -xf failed with exit code $LASTEXITCODE" }
+
+        # EDB zips unpack into a single pgsql/ directory. A different root
+        # means the archive changed and the pin must be updated.
+        $pgRoot = Join-Path $dest 'pgsql'
+        foreach ($required in @('include\server', 'lib\postgres.lib')) {
+          $path = Join-Path $pgRoot $required
+          if (-not (Test-Path -LiteralPath $path)) { throw "Extracted tree is missing $path" }
+        }
+        # A plain $env: assignment would not survive this step.
+        "PGROOT=$pgRoot" >> $env:GITHUB_ENV
+
+    - name: Build with MSVC
+      shell: pwsh
+      run: |
+        $ErrorActionPreference = 'Stop'
+        ./scripts/msvc-build.ps1 -PgRoot $env:PGROOT -ExpectedMajor ${{ matrix.pg_version }}
 
   performance-test:
     runs-on: ubuntu-latest
@@ -1063,7 +1138,7 @@ jobs:
   # Umbrella job for branch protection rules
   all-tests-passed:
     runs-on: ubuntu-latest
-    needs: [test, build-test-multiple-configs, performance-test, format-check, sanitizer, coverage, pgspot]
+    needs: [test, build-test-multiple-configs, build-msvc, performance-test, format-check, sanitizer, coverage, pgspot]
     if: always()
     steps:
       - name: Check all jobs succeeded
