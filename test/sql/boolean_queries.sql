@@ -257,4 +257,104 @@ WHERE body @@ to_tsquery('english', 'alpha <-> beta');
 
 RESET enable_seqscan;
 DROP TABLE boolean_segment_docs;
+
+CREATE TABLE boolean_prefix_docs (
+    id integer PRIMARY KEY,
+    body text NOT NULL
+);
+
+INSERT INTO boolean_prefix_docs VALUES
+    (1, 'cat'),
+    (2, 'cater'),
+    (3, 'dog');
+
+SET client_min_messages = WARNING;
+SET pg_textsearch.compress_segments = off;
+CREATE INDEX boolean_prefix_docs_body_idx
+    ON boolean_prefix_docs USING bm25(body)
+    WITH (text_config = 'simple');
+RESET client_min_messages;
+
+INSERT INTO boolean_prefix_docs VALUES
+    (4, 'cattle'),
+    (5, 'catalog'),
+    (6, 'catch');
+
+\pset format unaligned
+SELECT bm25_spill_index('boolean_prefix_docs_body_idx') IS NOT NULL
+    AS spilled_prefix_docs;
+RESET pg_textsearch.compress_segments;
+
+INSERT INTO boolean_prefix_docs VALUES
+    (7, 'catfish'),
+    (8, 'category'),
+    (9, 'bird'),
+    (10, 'cat cater');
+
+SET enable_seqscan = off;
+
+SELECT array_agg(id ORDER BY id) AS prefix_matches
+FROM boolean_prefix_docs
+WHERE body @@ to_tsquery('simple', 'cat:*');
+\pset format aligned
+
+RESET enable_seqscan;
+DROP TABLE boolean_prefix_docs;
+
+CREATE TABLE boolean_broad_prefix_docs (
+    id integer PRIMARY KEY,
+    body text NOT NULL
+);
+
+INSERT INTO boolean_broad_prefix_docs
+SELECT id,
+       CASE WHEN id <= 257
+           THEN format('broadprefix%s', lpad(id::text, 4, '0'))
+           ELSE 'unrelated'
+       END
+FROM generate_series(1, 258) AS id;
+
+SET client_min_messages = WARNING;
+CREATE INDEX boolean_broad_prefix_docs_body_idx
+    ON boolean_broad_prefix_docs USING bm25(body)
+    WITH (text_config = 'simple');
+RESET client_min_messages;
+
+SET enable_seqscan = off;
+
+SELECT count(*) AS broad_prefix_matches
+FROM boolean_broad_prefix_docs
+WHERE body @@ to_tsquery('simple', 'broadprefix:*');
+
+RESET enable_seqscan;
+DROP TABLE boolean_broad_prefix_docs;
+
+CREATE TABLE boolean_seek_docs (
+    id integer PRIMARY KEY,
+    body text NOT NULL
+);
+
+INSERT INTO boolean_seek_docs
+SELECT id,
+       concat_ws(' ',
+           CASE WHEN id % 2 = 0 THEN 'common' END,
+           CASE WHEN id % 997 = 0 OR id = 5001 THEN 'anchor' END)
+FROM generate_series(1, 5001) AS id;
+
+SET client_min_messages = WARNING;
+CREATE INDEX boolean_seek_docs_body_idx
+    ON boolean_seek_docs USING bm25(body)
+    WITH (text_config = 'english');
+RESET client_min_messages;
+
+SET enable_seqscan = off;
+
+\pset format unaligned
+SELECT array_agg(id ORDER BY id) AS galloping_seek_matches
+FROM boolean_seek_docs
+WHERE body @@ to_tsquery('english', 'anchor & common');
+\pset format aligned
+
+RESET enable_seqscan;
+DROP TABLE boolean_seek_docs;
 DROP EXTENSION pg_textsearch;

@@ -125,11 +125,15 @@ tp_segment_open_ex(Relation index, BlockNumber root_block, bool load_ctids)
 		return NULL;
 
 	/* Allocate reader structure */
-	reader						 = palloc0(sizeof(TpSegmentReader));
-	reader->index				 = index;
-	reader->root_block			 = root_block;
-	reader->current_buffer		 = InvalidBuffer;
-	reader->current_logical_page = UINT32_MAX;
+	reader							  = palloc0(sizeof(TpSegmentReader));
+	reader->index					  = index;
+	reader->root_block				  = root_block;
+	reader->current_buffer			  = InvalidBuffer;
+	reader->current_logical_page	  = UINT32_MAX;
+	reader->ctid_pages_buffer		  = InvalidBuffer;
+	reader->ctid_pages_logical_page	  = UINT32_MAX;
+	reader->ctid_offsets_buffer		  = InvalidBuffer;
+	reader->ctid_offsets_logical_page = UINT32_MAX;
 
 	/* Read header from root block */
 	header_buf = ReadBuffer(index, root_block);
@@ -416,15 +420,19 @@ tp_segment_open_from_buffile(BufFile *file, uint64 base_offset)
 	TpSegmentReader *reader;
 	TpSegmentHeader *header;
 
-	reader						 = palloc0(sizeof(TpSegmentReader));
-	reader->index				 = NULL;
-	reader->root_block			 = InvalidBlockNumber;
-	reader->current_buffer		 = InvalidBuffer;
-	reader->current_logical_page = UINT32_MAX;
-	reader->header_buffer		 = InvalidBuffer;
-	reader->page_map			 = NULL;
-	reader->num_pages			 = 0;
-	reader->nblocks				 = 0;
+	reader							  = palloc0(sizeof(TpSegmentReader));
+	reader->index					  = NULL;
+	reader->root_block				  = InvalidBlockNumber;
+	reader->current_buffer			  = InvalidBuffer;
+	reader->current_logical_page	  = UINT32_MAX;
+	reader->ctid_pages_buffer		  = InvalidBuffer;
+	reader->ctid_pages_logical_page	  = UINT32_MAX;
+	reader->ctid_offsets_buffer		  = InvalidBuffer;
+	reader->ctid_offsets_logical_page = UINT32_MAX;
+	reader->header_buffer			  = InvalidBuffer;
+	reader->page_map				  = NULL;
+	reader->num_pages				  = 0;
+	reader->nblocks					  = 0;
 
 	/* Set BufFile fields */
 	reader->buffile		 = file;
@@ -482,6 +490,60 @@ tp_segment_enable_ctid_lookup_cache(TpSegmentReader *reader)
 	reader->lookup_ctid_pages	 = palloc(capacity * sizeof(BlockNumber));
 	reader->lookup_ctid_offsets	 = palloc(capacity * sizeof(OffsetNumber));
 	reader->lookup_ctid_capacity = capacity;
+}
+
+static void
+tp_segment_read_cached_page(
+		TpSegmentReader *reader,
+		uint64			 logical_offset,
+		void			*dest,
+		uint32			 len,
+		Buffer			*cached_buffer,
+		uint32			*cached_logical_page)
+{
+	uint32 logical_page = (uint32)(logical_offset / SEGMENT_DATA_PER_PAGE);
+	uint32 page_offset	= (uint32)(logical_offset % SEGMENT_DATA_PER_PAGE);
+	Page   page;
+
+	if (reader->buffile != NULL || page_offset + len > SEGMENT_DATA_PER_PAGE)
+	{
+		tp_segment_read(reader, logical_offset, dest, len);
+		return;
+	}
+
+	if (*cached_logical_page != logical_page)
+	{
+		BlockNumber physical;
+
+		if (BufferIsValid(*cached_buffer))
+		{
+			ReleaseBuffer(*cached_buffer);
+			*cached_buffer = InvalidBuffer;
+		}
+
+		if (logical_page >= reader->num_pages)
+			elog(ERROR,
+				 "Invalid logical page %u (max %u), logical_offset=%" PRIu64,
+				 logical_page,
+				 reader->num_pages > 0 ? reader->num_pages - 1 : 0,
+				 logical_offset);
+
+		physical = reader->page_map[logical_page];
+		if (physical >= reader->nblocks)
+			elog(ERROR,
+				 "Invalid physical block %u for logical page %u (nblocks=%u)",
+				 physical,
+				 logical_page,
+				 reader->nblocks);
+
+		*cached_buffer		 = ReadBuffer(reader->index, physical);
+		*cached_logical_page = logical_page;
+	}
+
+	LockBuffer(*cached_buffer, BUFFER_LOCK_SHARE);
+	page = BufferGetPage(*cached_buffer);
+	memcpy(dest, (char *)page + SizeOfPageHeaderData + page_offset, len);
+	LockBuffer(*cached_buffer, BUFFER_LOCK_UNLOCK);
 }
 
 /*
@@ -548,19 +610,23 @@ tp_segment_lookup_ctid(
 	}
 
 	/* Read page number (4 bytes) from ctid_pages array */
-	tp_segment_read(
+	tp_segment_read_cached_page(
 			reader,
 			reader->header->ctid_pages_offset + doc_id * sizeof(BlockNumber),
 			&page,
-			sizeof(BlockNumber));
+			sizeof(BlockNumber),
+			&reader->ctid_pages_buffer,
+			&reader->ctid_pages_logical_page);
 
 	/* Read offset (2 bytes) from ctid_offsets array */
-	tp_segment_read(
+	tp_segment_read_cached_page(
 			reader,
 			reader->header->ctid_offsets_offset +
 					doc_id * sizeof(OffsetNumber),
 			&offset,
-			sizeof(OffsetNumber));
+			sizeof(OffsetNumber),
+			&reader->ctid_offsets_buffer,
+			&reader->ctid_offsets_logical_page);
 
 	ItemPointerSet(ctid_out, page, offset);
 }
@@ -579,6 +645,12 @@ tp_segment_close(TpSegmentReader *reader)
 	{
 		if (BufferIsValid(reader->current_buffer))
 			ReleaseBuffer(reader->current_buffer);
+
+		if (BufferIsValid(reader->ctid_pages_buffer))
+			ReleaseBuffer(reader->ctid_pages_buffer);
+
+		if (BufferIsValid(reader->ctid_offsets_buffer))
+			ReleaseBuffer(reader->ctid_offsets_buffer);
 
 		if (BufferIsValid(reader->header_buffer))
 			ReleaseBuffer(reader->header_buffer);

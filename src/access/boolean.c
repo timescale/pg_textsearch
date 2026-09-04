@@ -21,6 +21,8 @@
 #include "segment/alive_bitset.h"
 #include "segment/io.h"
 
+#define TP_BOOLEAN_MAX_PREFIX_ITERATORS 256
+
 typedef struct TpBooleanTerm
 {
 	char *lexeme;
@@ -42,7 +44,15 @@ typedef enum TpBooleanCandidateKind
 	TP_BOOLEAN_CANDIDATE_ALL,
 	TP_BOOLEAN_CANDIDATE_TERM,
 	TP_BOOLEAN_CANDIDATE_UNION,
+	TP_BOOLEAN_CANDIDATE_PREFIX,
+	TP_BOOLEAN_CANDIDATE_PREFIX_BITMAP,
 } TpBooleanCandidateKind;
+
+typedef struct TpBooleanPrefixHeapNode
+{
+	uint32 iterator_index;
+	uint32 doc_id;
+} TpBooleanPrefixHeapNode;
 
 typedef struct TpBooleanCandidateStream
 {
@@ -74,6 +84,22 @@ typedef struct TpBooleanCandidateStream
 			bool							 left_valid;
 			bool							 right_valid;
 		} union_stream;
+
+		struct
+		{
+			TpSegmentPostingIterator *iterators;
+			TpBooleanPrefixHeapNode	 *heap;
+			uint32					  iterator_count;
+			uint32					  heap_size;
+			bool					  initialized;
+		} prefix;
+
+		struct
+		{
+			uint8 *bits;
+			uint32 next_doc_id;
+			uint32 num_docs;
+		} prefix_bitmap;
 	} state;
 } TpBooleanCandidateStream;
 
@@ -176,9 +202,9 @@ tp_boolean_extract_terms(TSQuery query)
 			TpBooleanTerm *term;
 
 			/*
-			 * Postings do not retain lexeme weights and the index cannot
-			 * enumerate dictionary prefixes yet.  Treat these operands as
-			 * unknown over an all-document candidate set and let the heap
+			 * Postings do not retain lexeme weights, and the memtable source
+			 * cannot enumerate prefixes. Treat these operands as unknown
+			 * over an all-document memtable candidate set and let the heap
 			 * recheck evaluate their exact semantics.
 			 */
 			if (operand->prefix || operand->weight != 0)
@@ -297,6 +323,136 @@ tp_boolean_create_all_stream(TpSegmentReader *reader)
 static void tp_boolean_free_candidate_stream(TpBooleanCandidateStream *stream);
 
 static TpBooleanCandidateStream *
+tp_boolean_create_union_stream(
+		TpSegmentReader			 *reader,
+		TpBooleanCandidateStream *left,
+		TpBooleanCandidateStream *right)
+{
+	TpBooleanCandidateStream *stream = palloc0(sizeof(*stream));
+
+	stream->kind = TP_BOOLEAN_CANDIDATE_UNION;
+	stream->estimate =
+			Min((uint64)reader->header->num_docs,
+				left->estimate + right->estimate);
+	stream->state.union_stream.left	 = left;
+	stream->state.union_stream.right = right;
+	return stream;
+}
+
+static bool
+tp_boolean_prefix_heap_less(
+		const TpBooleanPrefixHeapNode *left,
+		const TpBooleanPrefixHeapNode *right)
+{
+	return left->doc_id < right->doc_id ||
+		   (left->doc_id == right->doc_id &&
+			left->iterator_index < right->iterator_index);
+}
+
+static void
+tp_boolean_prefix_heap_sift_down(
+		TpBooleanPrefixHeapNode *heap, uint32 heap_size, uint32 parent)
+{
+	TpBooleanPrefixHeapNode node = heap[parent];
+
+	while (parent < heap_size / 2)
+	{
+		uint32 child = parent * 2 + 1;
+
+		if (child + 1 < heap_size &&
+			tp_boolean_prefix_heap_less(&heap[child + 1], &heap[child]))
+			child++;
+		if (!tp_boolean_prefix_heap_less(&heap[child], &node))
+			break;
+		heap[parent] = heap[child];
+		parent		 = child;
+	}
+
+	heap[parent] = node;
+}
+
+static void
+tp_boolean_prefix_stream_init(TpBooleanCandidateStream *stream)
+{
+	for (uint32 i = 0; i < stream->state.prefix.iterator_count; i++)
+	{
+		TpSegmentPosting *posting;
+
+		if (tp_segment_posting_iterator_next(
+					&stream->state.prefix.iterators[i], &posting))
+			stream->state.prefix.heap[stream->state.prefix.heap_size++] =
+					(TpBooleanPrefixHeapNode){
+							.iterator_index = i,
+							.doc_id			= posting->doc_id,
+					};
+	}
+
+	for (uint32 i = stream->state.prefix.heap_size / 2; i > 0; i--)
+		tp_boolean_prefix_heap_sift_down(
+				stream->state.prefix.heap,
+				stream->state.prefix.heap_size,
+				i - 1);
+
+	stream->state.prefix.initialized = true;
+}
+
+static void
+tp_boolean_prefix_stream_advance_root(TpBooleanCandidateStream *stream)
+{
+	TpBooleanPrefixHeapNode *heap = stream->state.prefix.heap;
+	TpSegmentPosting		*posting;
+	uint32					 iterator_index = heap[0].iterator_index;
+
+	if (tp_segment_posting_iterator_next(
+				&stream->state.prefix.iterators[iterator_index], &posting))
+		heap[0].doc_id = posting->doc_id;
+	else
+		heap[0] = heap[--stream->state.prefix.heap_size];
+
+	if (stream->state.prefix.heap_size > 0)
+		tp_boolean_prefix_heap_sift_down(
+				heap, stream->state.prefix.heap_size, 0);
+}
+
+static TpBooleanCandidateStream *
+tp_boolean_create_prefix_stream(
+		TpSegmentReader *reader, const char *prefix, int prefix_length)
+{
+	TpSegmentPrefixCandidates candidates;
+	TpBooleanCandidateStream *stream = palloc0(sizeof(*stream));
+
+	tp_segment_prefix_candidates_init(
+			reader,
+			prefix,
+			prefix_length,
+			TP_BOOLEAN_MAX_PREFIX_ITERATORS,
+			&candidates);
+	stream->estimate = candidates.estimate;
+
+	if (candidates.doc_bitmap != NULL)
+	{
+		stream->kind					 = TP_BOOLEAN_CANDIDATE_PREFIX_BITMAP;
+		stream->state.prefix_bitmap.bits = candidates.doc_bitmap;
+		stream->state.prefix_bitmap.num_docs = reader->header->num_docs;
+		return stream;
+	}
+
+	if (candidates.iterator_count == 0)
+	{
+		stream->kind = TP_BOOLEAN_CANDIDATE_TERM;
+		return stream;
+	}
+
+	stream->kind						= TP_BOOLEAN_CANDIDATE_PREFIX;
+	stream->estimate					= candidates.estimate;
+	stream->state.prefix.iterators		= candidates.iterators;
+	stream->state.prefix.iterator_count = candidates.iterator_count;
+	stream->state.prefix.heap =
+			palloc_array(TpBooleanPrefixHeapNode, candidates.iterator_count);
+	return stream;
+}
+
+static TpBooleanCandidateStream *
 tp_boolean_create_candidate_stream(
 		TpBooleanEvalState *state, TpSegmentReader *reader, QueryItem *item)
 {
@@ -307,7 +463,11 @@ tp_boolean_create_candidate_stream(
 		QueryOperand *operand = &item->qoperand;
 		const char	 *lexeme  = GETOPERAND(state->query) + operand->distance;
 
-		if (operand->prefix || operand->weight != 0)
+		if (operand->prefix)
+			return tp_boolean_create_prefix_stream(
+					reader, lexeme, operand->length);
+
+		if (operand->weight != 0)
 			return tp_boolean_create_all_stream(reader);
 
 		stream						   = palloc0(sizeof(*stream));
@@ -353,14 +513,7 @@ tp_boolean_create_candidate_stream(
 					(errcode(ERRCODE_DATA_CORRUPTED),
 					 errmsg("invalid operator in BM25 Boolean query")));
 
-		stream		 = palloc0(sizeof(*stream));
-		stream->kind = TP_BOOLEAN_CANDIDATE_UNION;
-		stream->estimate =
-				Min((uint64)reader->header->num_docs,
-					left->estimate + right->estimate);
-		stream->state.union_stream.left	 = left;
-		stream->state.union_stream.right = right;
-		return stream;
+		return tp_boolean_create_union_stream(reader, left, right);
 	}
 }
 
@@ -428,6 +581,42 @@ tp_boolean_candidate_stream_next(
 			stream->state.union_stream.right_loaded = false;
 		return true;
 	}
+
+	case TP_BOOLEAN_CANDIDATE_PREFIX:
+		if (!stream->state.prefix.initialized)
+			tp_boolean_prefix_stream_init(stream);
+		if (stream->state.prefix.heap_size == 0)
+			return false;
+
+		*doc_id = stream->state.prefix.heap[0].doc_id;
+		do
+		{
+			tp_boolean_prefix_stream_advance_root(stream);
+		} while (stream->state.prefix.heap_size > 0 &&
+				 stream->state.prefix.heap[0].doc_id == *doc_id);
+		return true;
+
+	case TP_BOOLEAN_CANDIDATE_PREFIX_BITMAP:
+		while (stream->state.prefix_bitmap.next_doc_id <
+			   stream->state.prefix_bitmap.num_docs)
+		{
+			uint32 candidate = stream->state.prefix_bitmap.next_doc_id;
+			uint8  byte = stream->state.prefix_bitmap.bits[candidate >> 3];
+
+			if ((candidate & 7) == 0 && byte == 0)
+			{
+				stream->state.prefix_bitmap.next_doc_id += 8;
+				continue;
+			}
+
+			stream->state.prefix_bitmap.next_doc_id++;
+			if (byte & (1 << (candidate & 7)))
+			{
+				*doc_id = candidate;
+				return true;
+			}
+		}
+		return false;
 	}
 
 	pg_unreachable();
@@ -447,6 +636,16 @@ tp_boolean_free_candidate_stream(TpBooleanCandidateStream *stream)
 		tp_boolean_free_candidate_stream(stream->state.union_stream.left);
 		tp_boolean_free_candidate_stream(stream->state.union_stream.right);
 	}
+	else if (stream->kind == TP_BOOLEAN_CANDIDATE_PREFIX)
+	{
+		for (uint32 i = 0; i < stream->state.prefix.iterator_count; i++)
+			tp_segment_posting_iterator_free(
+					&stream->state.prefix.iterators[i]);
+		pfree(stream->state.prefix.iterators);
+		pfree(stream->state.prefix.heap);
+	}
+	else if (stream->kind == TP_BOOLEAN_CANDIDATE_PREFIX_BITMAP)
+		pfree(stream->state.prefix_bitmap.bits);
 
 	pfree(stream);
 }
