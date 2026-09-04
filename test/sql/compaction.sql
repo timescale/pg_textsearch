@@ -429,7 +429,7 @@ SET pg_textsearch.segments_per_level = 64;
 CREATE TABLE compaction_sweep_background (id serial, body text);
 CREATE UNLOGGED TABLE compaction_sweep_unlogged (id serial, body text);
 CREATE TABLE compaction_sweep_inline (id serial, body text);
-CREATE TABLE compaction_sweep_off (id serial, body text);
+CREATE TABLE compaction_sweep_manual (id serial, body text);
 CREATE INDEX compaction_sweep_background_idx
     ON compaction_sweep_background USING bm25(body)
     WITH (text_config = 'english', compaction = 'background');
@@ -439,9 +439,9 @@ CREATE INDEX compaction_sweep_unlogged_idx
 CREATE INDEX compaction_sweep_inline_idx
     ON compaction_sweep_inline USING bm25(body)
     WITH (text_config = 'english', compaction = 'inline');
-CREATE INDEX compaction_sweep_off_idx
-    ON compaction_sweep_off USING bm25(body)
-    WITH (text_config = 'english', compaction = 'off');
+CREATE INDEX compaction_sweep_manual_idx
+    ON compaction_sweep_manual USING bm25(body)
+    WITH (text_config = 'english', compaction = 'manual');
 DO $$
 DECLARE
     n integer;
@@ -453,12 +453,12 @@ BEGIN
         VALUES (format('unlogged sweep document %s', n));
         INSERT INTO compaction_sweep_inline (body)
         VALUES (format('inline sweep document %s', n));
-        INSERT INTO compaction_sweep_off (body)
-        VALUES (format('off sweep document %s', n));
+        INSERT INTO compaction_sweep_manual (body)
+        VALUES (format('manual sweep document %s', n));
         PERFORM bm25_spill_index('compaction_sweep_background_idx');
         PERFORM bm25_spill_index('compaction_sweep_unlogged_idx');
         PERFORM bm25_spill_index('compaction_sweep_inline_idx');
-        PERFORM bm25_spill_index('compaction_sweep_off_idx');
+        PERFORM bm25_spill_index('compaction_sweep_manual_idx');
     END LOOP;
 END
 $$;
@@ -474,14 +474,14 @@ SELECT bm25_level_counts(
        AS unlogged_background_is_eligible;
 SELECT bm25_level_counts('compaction_sweep_inline_idx'::regclass) =
            ARRAY[2, 0, 0, 0, 0, 0, 0, 0]
-       AND bm25_level_counts('compaction_sweep_off_idx'::regclass) =
+       AND bm25_level_counts('compaction_sweep_manual_idx'::regclass) =
            ARRAY[2, 0, 0, 0, 0, 0, 0, 0]
        AS non_background_indexes_untouched;
 SELECT bm25_compact_pending() AS no_reducible_passes;
 DROP TABLE compaction_sweep_background CASCADE;
 DROP TABLE compaction_sweep_unlogged CASCADE;
 DROP TABLE compaction_sweep_inline CASCADE;
-DROP TABLE compaction_sweep_off CASCADE;
+DROP TABLE compaction_sweep_manual CASCADE;
 
 -- Every catalog predicate is required before an index reaches the step.
 CREATE TABLE compaction_sweep_catalog (id integer, body text);
