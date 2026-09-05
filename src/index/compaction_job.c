@@ -1591,7 +1591,7 @@ tp_compaction_job_activate(Oid indexoid, bool refresh_default)
 {
 	TpCompactionJobTarget  target;
 	TpCompactionJobObjects objects;
-	char				  *instance_id;
+	char *instance_id	   PG_USED_FOR_ASSERTS_ONLY;
 
 	tp_capture_target(indexoid, refresh_default, &target);
 	tp_discover_job_objects(&objects);
@@ -1618,7 +1618,7 @@ tp_compaction_job_signal(Oid indexoid)
 {
 	TpCompactionJobTarget  target;
 	TpCompactionJobObjects objects;
-	char				  *instance_id;
+	char *instance_id	   PG_USED_FOR_ASSERTS_ONLY;
 
 	tp_capture_target(indexoid, false, &target);
 	tp_discover_job_objects(&objects);
