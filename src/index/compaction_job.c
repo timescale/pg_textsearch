@@ -324,29 +324,74 @@ tp_qualified_function_name(Oid function_oid)
 	return quote_qualified_identifier(schema_name, function_name);
 }
 
+/*
+ * Read the owner and version of a pg_extension row by OID.
+ *
+ * The EXTENSIONOID syscache was added in a later minor release, so scan the
+ * catalog directly to stay portable across supported servers.  Returns false
+ * when no row exists.  A requested version is palloc'd, or NULL when the
+ * column is null.
+ */
+static bool
+tp_extension_lookup(Oid extension_oid, Oid *owner_out, char **version_out)
+{
+	Relation	rel;
+	SysScanDesc scan;
+	ScanKeyData entry[1];
+	HeapTuple	tuple;
+	bool		found = false;
+
+	rel = table_open(ExtensionRelationId, AccessShareLock);
+	ScanKeyInit(
+			&entry[0],
+			Anum_pg_extension_oid,
+			BTEqualStrategyNumber,
+			F_OIDEQ,
+			ObjectIdGetDatum(extension_oid));
+	scan = systable_beginscan(rel, ExtensionOidIndexId, true, NULL, 1, entry);
+
+	tuple = systable_getnext(scan);
+	if (HeapTupleIsValid(tuple))
+	{
+		found = true;
+
+		if (owner_out != NULL)
+			*owner_out = ((Form_pg_extension)GETSTRUCT(tuple))->extowner;
+
+		if (version_out != NULL)
+		{
+			Datum datum;
+			bool  isnull;
+
+			datum = heap_getattr(
+					tuple,
+					Anum_pg_extension_extversion,
+					RelationGetDescr(rel),
+					&isnull);
+			*version_out = isnull ? NULL : TextDatumGetCString(datum);
+		}
+	}
+
+	systable_endscan(scan);
+	table_close(rel, AccessShareLock);
+
+	return found;
+}
+
 static Oid
 tp_extension_owner(Oid extension_oid)
 {
-	HeapTuple		  tuple;
-	Form_pg_extension extension;
-	Oid				  owner_oid;
+	Oid owner_oid = InvalidOid;
 
-	tuple = SearchSysCache1(EXTENSIONOID, ObjectIdGetDatum(extension_oid));
-	if (!HeapTupleIsValid(tuple))
+	if (!tp_extension_lookup(extension_oid, &owner_oid, NULL))
 		tp_durable_not_initialized("an extension catalog row disappeared");
 
-	extension = (Form_pg_extension)GETSTRUCT(tuple);
-	owner_oid = extension->extowner;
-	ReleaseSysCache(tuple);
 	return owner_oid;
 }
 
 static void
 tp_discover_job_objects(TpCompactionJobObjects *objects)
 {
-	HeapTuple	extension_tuple;
-	Datum		version_datum;
-	bool		isnull;
 	char	   *version;
 	Oid			durable_oid;
 	Oid			rechecked_oid;
@@ -377,22 +422,10 @@ tp_discover_job_objects(TpCompactionJobObjects *objects)
 	if (rechecked_oid != durable_oid)
 		tp_durable_required();
 
-	extension_tuple =
-			SearchSysCache1(EXTENSIONOID, ObjectIdGetDatum(durable_oid));
-	if (!HeapTupleIsValid(extension_tuple))
+	if (!tp_extension_lookup(durable_oid, NULL, &version))
 		tp_durable_required();
-	version_datum = SysCacheGetAttr(
-			EXTENSIONOID,
-			extension_tuple,
-			Anum_pg_extension_extversion,
-			&isnull);
-	if (isnull)
-	{
-		ReleaseSysCache(extension_tuple);
+	if (version == NULL)
 		tp_durable_required();
-	}
-	version = TextDatumGetCString(version_datum);
-	ReleaseSysCache(extension_tuple);
 	if (!tp_version_at_least_0_2_7(version))
 	{
 		pfree(version);
