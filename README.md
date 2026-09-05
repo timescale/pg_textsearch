@@ -171,9 +171,10 @@ CREATE INDEX ON documents USING bm25(content) WITH (text_config='english');
 - `k1` - term frequency saturation parameter (1.2 by default)
 - `b` - length normalization parameter (0.75 by default)
 - `compaction` - spill-time compaction policy: `inline` (default) compacts
-  synchronously in the spilling transaction, `background` hands the work to
-  `pg_textsearch.compaction_request_function` at pre-commit, and `off`
-  leaves it to an explicit caller. See
+  synchronously in the spilling transaction, `background` makes the index
+  eligible for periodic sweeps and hands spill requests to
+  `pg_textsearch.compaction_request_function` at pre-commit, and `off` leaves
+  it to an explicit caller. See
   [No Background Compaction Worker](#no-background-compaction-worker).
 
 ```sql
@@ -619,7 +620,22 @@ Segment compaction runs synchronously during memtable spill operations by
 default, so write-heavy workloads may observe compaction latency during
 spills. pg_textsearch ships no background worker that compacts on its own.
 
-Two ways to move that work off the writing transaction:
+For a periodic sweep, set the target indexes to `compaction = 'background'`
+and schedule the scheduler-neutral `bm25_compact_pending()` function. For
+example, with pg_cron:
+
+```sql
+SELECT cron.schedule(
+    'pg_textsearch-compaction', '*/5 * * * *',
+    $$SELECT public.bm25_compact_pending()$$
+);
+```
+
+The scheduling role must own each target index or be a member of its owner
+role. Each call tries one compaction pass per eligible index and returns the
+number of passes that ran.
+
+Other ways to move the work off the writing transaction are:
 
 - Create the index `WITH (compaction = 'background')` and point
   `pg_textsearch.compaction_request_function` at a function taking one
@@ -891,11 +907,12 @@ above applies the same `n,v,a,i,e,l` zhparser mapping to a chunked
 ### Compaction Functions
 
 Compaction runs automatically during memtable spills. These functions let an
-administrator or a maintenance job drive it explicitly. All four take a
-`regclass`, so an index can be named as `'docs_idx'::regclass` or by OID. The
-mutating functions require ownership of the index; the inspection functions do
-not. See [Compacting an index](#compacting-an-index) for the caveats that
-matter when scripting them.
+administrator or a maintenance job drive it explicitly. The four per-index
+functions take a `regclass`, so an index can be named as
+`'docs_idx'::regclass` or by OID. The mutating functions require ownership of
+the index; the inspection functions do not. See
+[Compacting an index](#compacting-an-index) for the caveats that matter when
+scripting them.
 
 Function | Description
 --- | ---
@@ -903,6 +920,7 @@ bm25_level_counts(index) → int4[] | Segments held at each of the eight LSM lev
 bm25_needs_compaction(index) → bool | Whether any level holds at least `segments_per_level` segments; advisory only, and not safe as a loop condition on its own
 bm25_compact(index) → void | Run compaction passes to completion under one per-index exclusive lock
 bm25_compact_step(index) → bool | Run at most one pass and report whether one ran, letting a caller spread a cascade over several transactions
+bm25_compact_pending() → int4 | Run one pass per eligible background index
 
 ### Development Functions
 

@@ -10,21 +10,28 @@
 #include <access/reloptions.h>
 #include <access/xact.h>
 #include <catalog/dependency.h>
+#include <catalog/namespace.h>
 #include <catalog/objectaccess.h>
 #include <catalog/pg_class_d.h>
+#include <commands/defrem.h>
 #include <fmgr.h>
 #include <limits.h>
 #include <miscadmin.h>
 #include <nodes/parsenodes.h>
+#include <nodes/pg_list.h>
 #include <pg_config.h>
 #include <storage/ipc.h>
 #include <storage/shmem.h>
 #include <tcop/utility.h>
+#include <utils/acl.h>
 #include <utils/guc.h>
 #include <utils/inval.h>
+#include <utils/lsyscache.h>
+#include <utils/relcache.h>
 
 #include "access/am.h"
 #include "constants.h"
+#include "index/compaction_job.h"
 #include "index/compaction_request.h"
 #include "index/metapage.h"
 #include "index/registry.h"
@@ -71,7 +78,7 @@ int tp_max_segment_size_mb = TP_DEFAULT_SEGMENT_SIZE_MB;
 static const relopt_enum_elt_def compaction_mode_options[] =
 		{{"inline", TP_COMPACTION_INLINE},
 		 {"background", TP_COMPACTION_BACKGROUND},
-		 {"off", TP_COMPACTION_OFF},
+		 {"manual", TP_COMPACTION_MANUAL},
 		 {(const char *)NULL, 0}};
 
 /* Global variable for segment compression (on by default - benchmarks show
@@ -307,17 +314,14 @@ _PG_init(void)
 			NULL);
 
 	DefineCustomStringVariable(
-			"pg_textsearch.compaction_request_function",
-			"Function called for background compaction requests",
-			"Names a schema-qualified function taking a single regclass "
-			"argument. For indexes built WITH (compaction='background'), "
-			"pg_textsearch calls this function at transaction pre-commit "
-			"for each index that needs compaction.",
-			&tp_compaction_request_function,
-			"",
+			"pg_textsearch.background_compaction_schedule",
+			"Default schedule for managed background compaction.",
+			NULL,
+			&tp_background_compaction_schedule,
+			"*/5 * * * *",
 			PGC_SUSET,
 			0,
-			tp_check_compaction_request_function,
+			NULL,
 			NULL,
 			NULL);
 
@@ -499,7 +503,14 @@ _PG_init(void)
 			"Spill-time segment compaction policy",
 			(relopt_enum_elt_def *)compaction_mode_options,
 			TP_COMPACTION_INLINE,
-			"Valid values are \"inline\", \"background\" and \"off\".",
+			"Valid values are \"inline\", \"background\" and \"manual\".",
+			ShareUpdateExclusiveLock);
+	add_string_reloption(
+			tp_relopt_kind,
+			"compaction_schedule",
+			"Managed background compaction schedule",
+			NULL,
+			NULL,
 			ShareUpdateExclusiveLock);
 
 	/*
@@ -684,6 +695,42 @@ tp_subxact_callback(
 	}
 }
 
+static const char *
+tp_index_stmt_option(IndexStmt *stmt, const char *option_name)
+{
+	ListCell *lc;
+
+	foreach (lc, stmt->options)
+	{
+		DefElem *option = lfirst_node(DefElem, lc);
+
+		if (strcmp(option->defname, option_name) == 0)
+			return defGetString(option);
+	}
+
+	return NULL;
+}
+
+static bool
+tp_background_cic_needs_preflight(IndexStmt *stmt, Relation heap_rel)
+{
+	const char *mode;
+
+	if (!stmt->concurrent)
+		return false;
+
+	mode = tp_index_stmt_option(stmt, "compaction");
+	if (mode == NULL || strcmp(mode, "background") != 0)
+		return false;
+
+	if (stmt->if_not_exists && stmt->idxname != NULL &&
+		OidIsValid(get_relname_relid(
+				stmt->idxname, RelationGetNamespace(heap_rel))))
+		return false;
+
+	return true;
+}
+
 /*
  * ProcessUtility hook - detect CREATE INDEX USING bm25 and wrap
  * with build progress tracking. This collapses per-partition
@@ -708,6 +755,37 @@ tp_process_utility(
 
 		if (stmt->accessMethod && strcmp(stmt->accessMethod, "bm25") == 0)
 		{
+			Oid		  heapoid;
+			Relation  heap_rel;
+			List	 *indexes_before;
+			List	 *indexes_after;
+			List	 *created_indexes;
+			ListCell *lc;
+
+			heapoid = RangeVarGetRelid(stmt->relation, AccessShareLock, false);
+			heap_rel = relation_open(heapoid, NoLock);
+
+			/*
+			 * CIC commits its catalog shell before returning to this hook.
+			 * Once PostgreSQL's ownership check is known to succeed, validate
+			 * deterministic owner admission and workflow construction before
+			 * those irreversible phases.
+			 */
+			if (tp_background_cic_needs_preflight(stmt, heap_rel) &&
+				object_ownercheck(RelationRelationId, heapoid, GetUserId()))
+			{
+				const char *schedule =
+						tp_index_stmt_option(stmt, "compaction_schedule");
+
+				if (schedule == NULL)
+					schedule = tp_background_compaction_schedule;
+				tp_compaction_job_preflight(
+						heap_rel->rd_rel->relowner, schedule);
+			}
+
+			indexes_before = list_copy(RelationGetIndexList(heap_rel));
+			relation_close(heap_rel, NoLock);
+
 			tp_build_progress_begin();
 
 			if (prev_process_utility_hook)
@@ -732,6 +810,44 @@ tp_process_utility(
 						qc);
 
 			tp_build_progress_end();
+
+			/*
+			 * CREATE INDEX CONCURRENTLY may cross transaction boundaries
+			 * inside standard_ProcessUtility, so reacquire the heap lock
+			 * before consulting its post-command relcache state.
+			 */
+			heap_rel	  = relation_open(heapoid, AccessShareLock);
+			indexes_after = list_copy(RelationGetIndexList(heap_rel));
+			relation_close(heap_rel, AccessShareLock);
+			created_indexes =
+					list_difference_oid(indexes_after, indexes_before);
+
+			foreach (lc, created_indexes)
+			{
+				Oid		 indexoid  = lfirst_oid(lc);
+				Relation index_rel = try_index_open(indexoid, AccessShareLock);
+				bool	 activate;
+
+				if (index_rel == NULL)
+					continue;
+				activate = index_rel->rd_rel->relkind == RELKIND_INDEX &&
+						   index_rel->rd_indam != NULL &&
+						   index_rel->rd_indam->ambuild == tp_build &&
+						   index_rel->rd_index != NULL &&
+						   index_rel->rd_index->indisvalid &&
+						   index_rel->rd_index->indisready &&
+						   index_rel->rd_index->indislive &&
+						   tp_index_compaction_mode(index_rel) ==
+								   TP_COMPACTION_BACKGROUND;
+				index_close(index_rel, AccessShareLock);
+
+				if (activate)
+					tp_compaction_job_activate(indexoid, true);
+			}
+
+			list_free(created_indexes);
+			list_free(indexes_after);
+			list_free(indexes_before);
 			return;
 		}
 	}
