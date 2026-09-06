@@ -645,6 +645,12 @@ jobs:
   coverage:
     runs-on: ubuntu-latest
 
+    env:
+      # Managed background compaction is only exercisable against a live
+      # pg_durable; src/index/compaction_job.c is otherwise unreachable.
+      PG_DURABLE_VERSION: 0.2.7
+      PGRX_VERSION: 0.16.1
+
     steps:
     - uses: actions/checkout@v4
 
@@ -728,6 +734,36 @@ jobs:
       run: |
         export PATH="/usr/lib/postgresql/17/bin:$PATH"
         pg_ctl stop -D tmp_check_shared/data -l tmp_check_shared/data/logfile || true
+
+    - name: Cache pg_durable package
+      id: durable-cache
+      uses: actions/cache@v4
+      with:
+        path: pg_durable_src/target/release/pg_durable-pg17
+        key: pg-durable-${{ env.PG_DURABLE_VERSION }}-pg17-${{ runner.os }}
+
+    - name: Build pg_durable
+      if: steps.durable-cache.outputs.cache-hit != 'true'
+      run: |
+        export PATH="/usr/lib/postgresql/17/bin:$PATH"
+        git clone --depth 1 --branch "v${PG_DURABLE_VERSION}" \
+          https://github.com/microsoft/pg_durable.git pg_durable_src
+        cargo install cargo-pgrx --version "$PGRX_VERSION" --locked
+        cargo pgrx init --pg17 /usr/lib/postgresql/17/bin/pg_config
+        make -C pg_durable_src package \
+          PG_CONFIG=/usr/lib/postgresql/17/bin/pg_config
+
+    - name: Run managed pg_durable compaction test
+      timeout-minutes: 15
+      run: |
+        export PATH="/usr/lib/postgresql/17/bin:$PATH"
+        # durable_compaction.sh stages the pg_durable package into the
+        # PostgreSQL sharedir, which is root-owned on the runner image.
+        sudo chown -R "$(id -u):$(id -g)" \
+          /usr/share/postgresql/17/extension
+        export PG_DURABLE_PACKAGE_DIR="$PWD/pg_durable_src/target/release/pg_durable-pg17"
+        make test-durable \
+          PG_CONFIG=/usr/lib/postgresql/17/bin/pg_config
 
     - name: Run hypertable tests (exercises CustomScan code paths)
       timeout-minutes: 5
