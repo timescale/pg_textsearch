@@ -37,12 +37,27 @@ Available for Linux and macOS (amd64 and arm64), PostgreSQL 17 and 18.
 
 ### Build from Source
 
+#### Linux and Mac
+
 ```sh
 cd /tmp
 git clone https://github.com/timescale/pg_textsearch
 cd pg_textsearch
 make
 make install # may need sudo
+```
+
+#### Windows
+
+Ensure you have a working MSVC environment on your path (`cl.exe` and `nmake`).
+
+```cmd
+set "PGROOT=C:\Program Files\PostgreSQL\18"
+cd %TEMP%
+git clone https://github.com/timescale/pg_textsearch
+cd pgvector
+nmake /F Makefile.win
+nmake /F Makefile.win install
 ```
 
 ## Getting Started
