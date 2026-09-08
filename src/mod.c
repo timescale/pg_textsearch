@@ -731,6 +731,37 @@ tp_background_cic_needs_preflight(IndexStmt *stmt, Relation heap_rel)
 	return true;
 }
 
+static bool
+tp_alter_index_refreshes_background(AlterTableStmt *stmt)
+{
+	ListCell *lc;
+
+	if (stmt->objtype != OBJECT_INDEX)
+		return false;
+
+	foreach (lc, stmt->cmds)
+	{
+		AlterTableCmd *cmd = lfirst_node(AlterTableCmd, lc);
+		ListCell	  *option_lc;
+
+		if (cmd->subtype != AT_SetRelOptions &&
+			cmd->subtype != AT_ResetRelOptions &&
+			cmd->subtype != AT_ReplaceRelOptions)
+			continue;
+
+		foreach (option_lc, castNode(List, cmd->def))
+		{
+			DefElem *option = lfirst_node(DefElem, option_lc);
+
+			if (strcmp(option->defname, "compaction") == 0 ||
+				strcmp(option->defname, "compaction_schedule") == 0)
+				return true;
+		}
+	}
+
+	return false;
+}
+
 /*
  * ProcessUtility hook - detect CREATE INDEX USING bm25 and wrap
  * with build progress tracking. This collapses per-partition
@@ -748,6 +779,62 @@ tp_process_utility(
 		QueryCompletion		 *qc)
 {
 	Node *parsetree = pstmt->utilityStmt;
+
+	if (IsA(parsetree, AlterTableStmt))
+	{
+		AlterTableStmt *stmt = (AlterTableStmt *)parsetree;
+
+		if (tp_alter_index_refreshes_background(stmt))
+		{
+			Oid		 indexoid;
+			Relation index_rel;
+			bool	 activate;
+
+			if (prev_process_utility_hook)
+				prev_process_utility_hook(
+						pstmt,
+						queryString,
+						readOnlyTree,
+						context,
+						params,
+						queryEnv,
+						dest,
+						qc);
+			else
+				standard_ProcessUtility(
+						pstmt,
+						queryString,
+						readOnlyTree,
+						context,
+						params,
+						queryEnv,
+						dest,
+						qc);
+
+			indexoid = RangeVarGetRelid(
+					stmt->relation, AccessShareLock, stmt->missing_ok);
+			if (!OidIsValid(indexoid))
+				return;
+
+			index_rel = try_index_open(indexoid, NoLock);
+			activate  = index_rel != NULL &&
+					   index_rel->rd_rel->relkind == RELKIND_INDEX &&
+					   index_rel->rd_indam != NULL &&
+					   index_rel->rd_indam->ambuild == tp_build &&
+					   index_rel->rd_index != NULL &&
+					   index_rel->rd_index->indisvalid &&
+					   index_rel->rd_index->indisready &&
+					   index_rel->rd_index->indislive &&
+					   tp_index_compaction_mode(index_rel) ==
+							   TP_COMPACTION_BACKGROUND;
+			if (index_rel != NULL)
+				index_close(index_rel, AccessShareLock);
+
+			if (activate)
+				tp_compaction_job_activate(indexoid, true);
+			return;
+		}
+	}
 
 	if (IsA(parsetree, IndexStmt))
 	{

@@ -171,11 +171,11 @@ CREATE INDEX ON documents USING bm25(content) WITH (text_config='english');
 - `k1` - term frequency saturation parameter (1.2 by default)
 - `b` - length normalization parameter (0.75 by default)
 - `compaction` - spill-time compaction policy: `inline` (default) compacts
-  synchronously in the spilling transaction, `background` makes the index
-  eligible for periodic sweeps and hands spill requests to
-  `pg_textsearch.compaction_request_function` at pre-commit, and `off` leaves
-  it to an explicit caller. See
-  [No Background Compaction Worker](#no-background-compaction-worker).
+  synchronously, `background` manages a pg_durable workflow for the physical
+  index, and `manual` leaves compaction to an explicit caller.
+- `compaction_schedule` - optional cron schedule captured when the index enters
+  background mode. The default is
+  `pg_textsearch.background_compaction_schedule`.
 
 ```sql
 CREATE INDEX ON documents USING bm25(content) WITH (text_config='english', k1=1.5, b=0.8);
@@ -478,7 +478,7 @@ Setting | Default | Description
 `pg_textsearch.compress_segments` | on | Compress posting blocks in new segments
 `pg_textsearch.segments_per_level` | 8 | Segments per level before automatic compaction (2-64)
 `pg_textsearch.max_segment_size` | 4095MB | Conservative size budget for newly merged multi-source segments (1-4095MB)
-`pg_textsearch.compaction_request_function` | (empty) | Schema-qualified name of a function taking one `regclass`, invoked for indexes set to `compaction = 'background'`
+`pg_textsearch.background_compaction_schedule` | `*/5 * * * *` | Default cron schedule captured by indexes entering managed background mode
 `pg_textsearch.bulk_load_threshold` | 100000 | Terms per transaction before auto-spill (0 = disable)
 `pg_textsearch.memtable_pages_threshold` | 64 | Chain pages before auto-spill (0 = disable)
 
@@ -614,59 +614,48 @@ sustained write-heavy workloads are not yet fully optimized. For initial
 data loading, creating the index after loading data is faster than
 incremental inserts. This is an active area of development.
 
-### No Background Compaction Worker
+### Background Compaction
 
 Segment compaction runs synchronously during memtable spill operations by
-default, so write-heavy workloads may observe compaction latency during
-spills. pg_textsearch ships no background worker that compacts on its own.
-
-For a periodic sweep, set the target indexes to `compaction = 'background'`
-and schedule the scheduler-neutral `bm25_compact_pending()` function. For
-example, with pg_cron:
+default. Managed background mode uses
+[pg_durable](https://github.com/microsoft/pg_durable) 0.2.8 or newer rather
+than a worker built into pg_textsearch. pg_durable must be installed, listed in
+`shared_preload_libraries`, initialized for the current database, and granted
+to the index owner.
 
 ```sql
-SELECT cron.schedule(
-    'pg_textsearch-compaction', '*/5 * * * *',
-    $$SELECT public.bm25_compact_pending()$$
+CREATE INDEX documents_bm25 ON documents USING bm25(content)
+WITH (
+    text_config = 'english',
+    compaction = 'background',
+    compaction_schedule = '*/5 * * * *'
 );
 ```
 
-The scheduling role must own each target index or be a member of its owner
-role. Each call tries one compaction pass per eligible index and returns the
-number of passes that ran.
+Each physical index gets one owner-scoped workflow. It runs an immediate
+stepped cascade, then waits for either a spill signal or the captured schedule.
+Each merge batch runs in its own transaction. Transient SQL failures are
+recorded without terminating the workflow; the same workflow retries the
+startup cascade or handles a later signal or schedule tick.
 
-Other ways to move the work off the writing transaction are:
+Use `manual` when pg_durable is not desired and invoke `bm25_compact()` or
+`bm25_compact_step()` from an external scheduler. Background mode is rejected
+for temporary indexes because another backend cannot open them.
 
-- Create the index `WITH (compaction = 'background')` and point
-  `pg_textsearch.compaction_request_function` at a function taking one
-  `regclass`. A spill that leaves a level at the threshold then records a
-  request and calls that function at pre-commit instead of compacting.
-  pg_textsearch does not supply the scheduler; you provide the callback and
-  whatever runs the work. Note that the callback executes inside an internal
-  subtransaction that is rolled back afterward, so it must hand the request
-  to something that survives a subtransaction abort — a plain `INSERT` into a
-  queue table will not persist.
-- Create the index `WITH (compaction = 'off')` and drive `bm25_compact()` or
-  `bm25_compact_step()` from an external job on a schedule of your choosing.
-  With `off` and no such job, segments accumulate until a level reaches the
-  per-level cap of 65535, after which spills fail with `bm25 segment count
-  limit reached`. Query performance degrades well before that point.
+Change modes or refresh the captured default schedule with `ALTER INDEX`:
 
-The policy is per index, so one index can hand compaction to a scheduler
-while another keeps compacting inline. Change it with
-`ALTER INDEX ... SET (compaction = ...)`; the setting is read after each
-spill, and the statement does not block concurrent readers or writers.
+```sql
+ALTER INDEX documents_bm25 SET (compaction = 'background');
+ALTER INDEX documents_bm25 RESET (compaction_schedule);
+ALTER INDEX documents_bm25 SET (compaction = 'manual');
+```
 
-`background` compacts inline where a request could not be handed off: on
-temporary indexes, during autovacuum, for a spill caused by the callback
-itself, and during `CREATE INDEX`. `off` is honored in all of these.
+Reapplying background mode captures the current global default only when the
+index has no explicit `compaction_schedule`; reset that reloption to return to
+the default.
 
-Two-phase transactions hand off nothing, because pending requests live in
-transaction-local memory that `PREPARE TRANSACTION` frees. The debt is left
-for the next ordinary spill or for the scheduler's own sweep.
-
-See [Compacting an index](#compacting-an-index). A built-in background
-scheduler is planned for a future release.
+See [Compacting an index](#compacting-an-index) for locking and batching
+details.
 
 ### Partitioned Tables
 
@@ -920,7 +909,6 @@ bm25_level_counts(index) → int4[] | Segments held at each of the eight LSM lev
 bm25_needs_compaction(index) → bool | Whether any level holds at least `segments_per_level` segments; advisory only, and not safe as a loop condition on its own
 bm25_compact(index) → void | Run compaction passes to completion under one per-index exclusive lock
 bm25_compact_step(index) → bool | Run at most one pass and report whether one ran, letting a caller spread a cascade over several transactions
-bm25_compact_pending() → int4 | Run one pass per eligible background index
 
 ### Development Functions
 

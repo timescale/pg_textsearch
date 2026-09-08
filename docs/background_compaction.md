@@ -159,77 +159,99 @@ the default, not of the design: at `segments_per_level = 2` the L6 ceiling is
 existing segment larger than the current setting stays a valid uncombinable
 singleton, so a segment at any level may exceed it.
 
-## Periodic sweep
+## Compaction modes
 
-`bm25_compact_pending()` is a scheduler-neutral sweep over non-temporary,
-valid, ready, live BM25 indexes with the exact `compaction=background`
-reloption. It calls `bm25_compact_step()` once per eligible index and returns
-the number of passes that ran. An ordinary error on one index raises a warning
-and does not stop later indexes; cancellation and shutdown errors are rethrown.
+The `compaction` index option controls spill-time behavior:
 
-For example, pg_cron can run the sweep every five minutes:
+- `inline` (the default) runs the complete eligible cascade synchronously.
+- `background` manages one pg_durable workflow for the physical index.
+- `manual` leaves debt for `bm25_compact()` or `bm25_compact_step()`.
+
+The policy travels with the index and is alterable with `ALTER INDEX`.
+Background mode is rejected for temporary indexes because another backend
+cannot open them. Unlogged indexes may use it.
+
+## Managed pg_durable integration
+
+Background mode requires pg_durable 0.2.8 or newer. pg_durable must be
+installed, present in `shared_preload_libraries`, initialized for the current
+database, and usable by the index owner. The owner must have `LOGIN`; a
+superuser owner also requires
+`pg_durable.enable_superuser_instances = on`.
+
+pg_textsearch discovers pg_durable through extension metadata and resolves
+only objects owned by that extension. It has no build-time or link-time
+dependency on pg_durable.
+
+The first successful activation records a normal PostgreSQL dependency from
+the `bm25` access method to pg_durable. After that, `DROP EXTENSION
+pg_durable` is rejected while pg_textsearch remains installed, and `DROP
+EXTENSION pg_durable CASCADE` also drops pg_textsearch. A rolled-back or failed
+activation leaves no dependency.
+
+Create or adopt a managed index with:
 
 ```sql
+CREATE INDEX documents_bm25 ON documents USING bm25(body)
+WITH (
+    text_config = 'english',
+    compaction = 'background',
+    compaction_schedule = '*/5 * * * *'
+);
+
+ALTER INDEX existing_bm25 SET (compaction = 'background');
+```
+
+`pg_textsearch.background_compaction_schedule` supplies the global default,
+`*/5 * * * *`. The optional `compaction_schedule` reloption overrides it.
+The effective schedule is captured when the index enters background mode.
+Reapplying background mode adopts the current default only when the index has
+no explicit override. Use `ALTER INDEX ... RESET (compaction_schedule)` to
+remove an override and capture the current default. Later GUC changes do not
+silently change existing workflows.
+
+## Workflow behavior
+
+Each physical background index has one owner-scoped workflow identified by
+its database, index OID, tablespace, relfilenumber, owner, schedule, and
+protocol version.
+
+The workflow first runs a stepped cascade immediately. It then waits for
+either a spill signal or its cron schedule and runs another cascade. Every
+step executes the private physical-target helper in a separate pg_durable SQL
+node and transaction, so each published merge batch releases PostgreSQL locks
+before the next batch.
+
+The startup wrapper and scheduled loop both use pg_durable's
+`continue_on_failure` policy. A SQL activity failure is recorded, the workflow
+remains live, and the same generation retries or handles a later wake. Graph,
+protocol, runtime, and infrastructure failures remain fatal. A later spill
+recovers a terminal workflow for a previously managed generation.
+
+The private helper validates the captured physical identity while holding the
+relation lock. Dropped, replaced, reindexed, re-owned, or reconfigured targets
+return false without touching a different relation. Old workflows therefore
+retire safely after DDL changes.
+
+Spill requests are transaction-local and deduplicated by index. At pre-commit,
+after the compaction lock is released, pg_textsearch revalidates the target,
+finds or recovers its managed workflow, and signals that exact instance.
+Ordinary signaling failures warn without aborting the writer. Cancellation
+and shutdown errors retain PostgreSQL's normal behavior. A signal lost during
+a loop transition is repaired by the periodic schedule.
+
+## External scheduling
+
+Use `manual` when pg_durable is not desired:
+
+```sql
+ALTER INDEX documents_bm25 SET (compaction = 'manual');
+
 SELECT cron.schedule(
-    'pg_textsearch-compaction', '*/5 * * * *',
-    $$SELECT public.bm25_compact_pending()$$
+    'documents-bm25-compaction',
+    '*/5 * * * *',
+    $$SELECT bm25_compact('documents_bm25'::regclass)$$
 );
 ```
 
-The scheduling role must own each target index or be a member of its owner
-role.
-
-## Spill-time dispatch
-
-The `compaction` index option controls what happens when a spill leaves a
-level at the compaction threshold:
-
-- `inline` (the default) preserves synchronous compaction.
-- `background` records one request per affected index and invokes the
-  configured callback at transaction pre-commit.
-- `off` leaves compaction debt for an explicit caller.
-
-The policy is per index, so it travels with the index rather than with the
-writing session. `ALTER INDEX ... SET (compaction = ...)` changes it under
-`ShareUpdateExclusiveLock`; the value is read after each spill.
-
-Set `pg_textsearch.compaction_request_function` to a *schema-qualified*
-function name taking one `regclass`; its return type is ignored. A one-part
-name would resolve through the committing backend's search_path, and the
-callback runs as that backend's user. Existence is not checked at `SET` time,
-so a scheduler can be installed independently. The name is resolved at each
-dispatch rather than cached, so replacing the function behind it takes effect
-without re-setting the GUC.
-
-Requests are backend-local, deduplicated by index, and held in
-`TopTransactionContext`, so PostgreSQL frees them at commit, prepare, and
-abort alike. Pending OIDs are revalidated against the transaction's final
-catalog state. Aborting the top-level transaction dispatches nothing; a
-rolled-back savepoint still dispatches, because the spill it performed
-survives the rollback, and because that context outlives subtransactions.
-
-Two-phase transactions therefore dispatch nothing without any special case:
-`PREPARE TRANSACTION` frees the pending list along with the rest of the
-transaction's memory. This is also why no callback runs at `PRE_PREPARE`,
-which matters — callback SQL there could set transaction-global state that
-PostgreSQL validates immediately afterward, such as
-`XACT_FLAGS_ACCESSEDTEMPNAMESPACE` from reading a temporary object, failing
-an otherwise valid `PREPARE`.
-
-`background` compacts inline wherever the request could not be handed off,
-since the alternative is to record one and discard it:
-
-- **Temporary indexes**, which no other backend can open.
-- **Autovacuum**, which must not execute arbitrary user SQL.
-- **A spill caused by the callback itself**, whose request would land in a
-  list the running dispatch has stopped reading.
-- **`CREATE INDEX`**, until the build commits.
-
-`off` is honored in all of these.
-
-Each callback runs in a protected internal subtransaction whose local effects
-are rolled back, so it must hand work to a facility that survives that
-rollback. Ordinary lookup or callback errors produce a warning and do not
-abort the writer. Cancellation and shutdown errors are rethrown, so a callback
-that cancels the backend fails the commit it was invoked from.
-This interface is scheduler-neutral and has no pg_durable dependency.
+The scheduling role must own the index or be a member of its owner role.

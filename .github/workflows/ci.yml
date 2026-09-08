@@ -648,7 +648,8 @@ jobs:
     env:
       # Managed background compaction is only exercisable against a live
       # pg_durable; src/index/compaction_job.c is otherwise unreachable.
-      PG_DURABLE_VERSION: 0.2.7
+      PG_DURABLE_VERSION: 0.2.8
+      PG_DURABLE_REF: 53b49896a92e0e6b60267d170f897f2468997a3c
       PGRX_VERSION: 0.16.1
 
     steps:
@@ -740,14 +741,18 @@ jobs:
       uses: actions/cache@v4
       with:
         path: pg_durable_src/target/release/pg_durable-pg17
-        key: pg-durable-${{ env.PG_DURABLE_VERSION }}-pg17-${{ runner.os }}
+        key: pg-durable-${{ env.PG_DURABLE_REF }}-pg17-${{ runner.os }}
 
     - name: Build pg_durable
       if: steps.durable-cache.outputs.cache-hit != 'true'
       run: |
         export PATH="/usr/lib/postgresql/17/bin:$PATH"
-        git clone --depth 1 --branch "v${PG_DURABLE_VERSION}" \
-          https://github.com/microsoft/pg_durable.git pg_durable_src
+        git init pg_durable_src
+        git -C pg_durable_src remote add origin \
+          https://github.com/microsoft/pg_durable.git
+        git -C pg_durable_src fetch --depth 1 origin "$PG_DURABLE_REF"
+        git -C pg_durable_src checkout --detach FETCH_HEAD
+        test "$(git -C pg_durable_src rev-parse HEAD)" = "$PG_DURABLE_REF"
         cargo install cargo-pgrx --version "$PGRX_VERSION" --locked
         cargo pgrx init --pg17 /usr/lib/postgresql/17/bin/pg_config
         make -C pg_durable_src package \
