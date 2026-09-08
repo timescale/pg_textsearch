@@ -505,17 +505,18 @@ dependency_count() {
         AND dep.deptype = 'n';"
 }
 
-remote_dependency_count() {
-    sql_remote_super -c "SELECT count(*)
+remote_dependency_snapshot() {
+    sql_remote_super -c "SELECT COALESCE(
+        pg_catalog.string_agg(
+            dep.refobjid::pg_catalog.text, ','
+            ORDER BY dep.refobjid),
+        '')
       FROM pg_catalog.pg_depend AS dep
       JOIN pg_catalog.pg_am AS am
         ON dep.classid = 'pg_catalog.pg_am'::regclass
        AND dep.objid = am.oid
-      JOIN pg_catalog.pg_extension AS ext
-        ON dep.refclassid = 'pg_catalog.pg_extension'::regclass
-       AND dep.refobjid = ext.oid
       WHERE am.amname = 'bm25'
-        AND ext.extname = 'pg_durable'
+        AND dep.refclassid = 'pg_catalog.pg_extension'::regclass
         AND dep.deptype = 'n';"
 }
 
@@ -989,7 +990,7 @@ test_bypassrls_owner_isolation() {
 }
 
 test_remote_database_rejection() {
-    local alter_error create_error jobs_before
+    local alter_error create_error dependency_snapshot jobs_before
 
     sql_super -c "CREATE DATABASE ${REMOTE_DB};"
     sql_remote_super -c "CREATE EXTENSION pg_textsearch;
@@ -1006,6 +1007,7 @@ test_remote_database_rejection() {
             SELECT 1 FROM pg_catalog.pg_extension
             WHERE extname = 'pg_durable');")"
 
+    dependency_snapshot="$(remote_dependency_snapshot)"
     jobs_before="$(managed_job_count)"
     sql_remote_super -c "CREATE TABLE remote_cic_docs (body text);
         ALTER TABLE remote_cic_docs OWNER TO durable_owner;"
@@ -1030,6 +1032,8 @@ ${create_error}"
             pg_catalog.to_regclass('remote_cic_docs_idx') IS NULL;")"
     assert_eq "remote CIC creates no control workflow" "${jobs_before}" \
         "$(managed_job_count)"
+    assert_eq "remote CIC preserves extension dependency snapshot" \
+        "${dependency_snapshot}" "$(remote_dependency_snapshot)"
 
     sql_remote_super -c "
         CREATE TABLE remote_manual_docs (id integer, body text);
@@ -1075,8 +1079,8 @@ ${alter_error}"
         "$(managed_job_count)"
     assert_eq "remote ALTER creates no helper grant" "f" \
         "$(remote_helper_grant)"
-    assert_eq "remote ALTER creates no dependency" "0" \
-        "$(remote_dependency_count)"
+    assert_eq "remote ALTER preserves extension dependency snapshot" \
+        "${dependency_snapshot}" "$(remote_dependency_snapshot)"
 
     sql_remote_as durable_owner -c \
         "SELECT bm25_compact('remote_manual_docs_idx'::regclass);" \
