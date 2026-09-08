@@ -179,6 +179,12 @@ database, and usable by the index owner. The owner must have `LOGIN`; a
 superuser owner also requires
 `pg_durable.enable_superuser_instances = on`.
 
+The pg_durable extension and pg_textsearch index must be in the same database.
+pg_durable's `database` argument routes SQL activities after submission; it
+does not expose `df.start`, `df.signal`, or workflow metadata in another
+database. pg_textsearch therefore rejects background mode when
+`pg_durable.database` names a different database. Use `manual` mode there.
+
 pg_textsearch discovers pg_durable through extension metadata and resolves
 only objects owned by that extension. It has no build-time or link-time
 dependency on pg_durable.

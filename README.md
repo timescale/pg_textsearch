@@ -623,6 +623,12 @@ than a worker built into pg_textsearch. pg_durable must be installed, listed in
 `shared_preload_libraries`, initialized for the current database, and granted
 to the index owner.
 
+pg_durable must be installed in the same database as the BM25 index.
+pg_durable can execute a workflow's SQL in another target database, but its
+submission and control APIs exist only in the configured database.
+pg_textsearch does not use dblink or postgres_fdw to bridge that boundary.
+Use `manual` compaction for indexes in other databases.
+
 ```sql
 CREATE INDEX documents_bm25 ON documents USING bm25(content)
 WITH (
