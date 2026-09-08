@@ -51,7 +51,7 @@
 #define TP_JOB_LABEL_PREFIX "pg_textsearch:bg:v1:"
 
 /*
- * Required v0.2.7 entry points include df.wait_for_signal,
+ * Required v0.2.8 entry points include df.wait_for_signal,
  * df.wait_for_schedule, and df.explain.  Their catalog identities are resolved
  * below rather than trusting search_path.
  */
@@ -99,7 +99,7 @@ tp_durable_required(void)
 {
 	ereport(ERROR,
 			(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
-			 errmsg("background compaction requires pg_durable 0.2.7 or "
+			 errmsg("background compaction requires pg_durable 0.2.8 or "
 					"newer")));
 }
 
@@ -118,7 +118,7 @@ tp_durable_not_initialized(const char *detail)
 }
 
 static bool
-tp_version_at_least_0_2_7(const char *version)
+tp_version_at_least_0_2_8(const char *version)
 {
 	unsigned int major;
 	unsigned int minor;
@@ -132,7 +132,7 @@ tp_version_at_least_0_2_7(const char *version)
 		return major > 0;
 	if (minor != 2)
 		return minor > 2;
-	return patch >= 7;
+	return patch >= 8;
 }
 
 static bool
@@ -407,6 +407,7 @@ tp_discover_job_objects(TpCompactionJobObjects *objects)
 	char	   *operator_schema;
 	AttrNumber	submitted_by_attnum;
 	Oid			text_args[2]		= {TEXTOID, TEXTOID};
+	Oid			loop_args[3]		= {TEXTOID, TEXTOID, BOOLOID};
 	Oid			signal_args[3]		= {TEXTOID, TEXTOID, TEXTOID};
 	Oid			wait_signal_args[2] = {TEXTOID, INT4OID};
 	Oid			oid_args[5]			= {OIDOID, OIDOID, OIDOID, OIDOID, OIDOID};
@@ -426,7 +427,7 @@ tp_discover_job_objects(TpCompactionJobObjects *objects)
 		tp_durable_required();
 	if (version == NULL)
 		tp_durable_required();
-	if (!tp_version_at_least_0_2_7(version))
+	if (!tp_version_at_least_0_2_8(version))
 	{
 		pfree(version);
 		tp_durable_required();
@@ -480,7 +481,7 @@ tp_discover_job_objects(TpCompactionJobObjects *objects)
 					text_args));
 	objects->loop_function = tp_qualified_function_name(
 			tp_resolve_extension_function(
-					durable_oid, durable_schema, "loop", 2, text_args));
+					durable_oid, durable_schema, "loop", 3, loop_args));
 	objects->break_function = tp_qualified_function_name(
 			tp_resolve_extension_function(
 					durable_oid, durable_schema, "break", 1, text_args));
@@ -1308,7 +1309,7 @@ tp_append_cascade(StringInfo sql, const TpCompactionJobObjects *objects)
 			"OPERATOR(%s.~>) "
 			"('SELECT $step.ran' OPERATOR(%s.?>) 'SELECT true' "
 			"OPERATOR(%s.!>) %s('false'::pg_catalog.text))), "
-			"NULL::pg_catalog.text)",
+			"NULL::pg_catalog.text, false)",
 			objects->loop_function,
 			quote_identifier(objects->operator_schema),
 			quote_identifier(objects->operator_schema),
@@ -1344,9 +1345,9 @@ tp_append_job_graph(StringInfo sql, const TpCompactionJobObjects *objects)
 	tp_append_cascade(sql, objects);
 	appendStringInfo(
 			sql,
-			"), NULL::pg_catalog.text) "
+			"), NULL::pg_catalog.text, true) "
 			"OPERATOR(%s.~>) %s('stale'::pg_catalog.text)), "
-			"NULL::pg_catalog.text)",
+			"NULL::pg_catalog.text, true)",
 			operator_schema,
 			objects->break_function);
 }
@@ -1639,11 +1640,7 @@ tp_compaction_job_activate(Oid indexoid, bool refresh_default)
 
 	ereport(WARNING,
 			(errmsg("pg_textsearch background compaction is a preview "
-					"feature"),
-			 errdetail(
-					 "pg_durable v0.2.7 jobs fail permanently on a node "
-					 "error, receive no autonomous idle recovery, and stop "
-					 "after 100,000 loop iterations.")));
+					"feature")));
 }
 
 void

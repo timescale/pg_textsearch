@@ -28,12 +28,17 @@ FROM pg_class WHERE oid = 'relopt_docs_idx'::regclass;
 ?column?
 t
 (1 row)
+-- The post-ALTER activation hook preserves IF EXISTS no-op semantics.
+ALTER INDEX IF EXISTS missing_background_idx
+    SET (compaction = 'background');
+ALTER INDEX IF EXISTS missing_background_idx
+    RESET (compaction_schedule);
 -- Managed background mode requires pg_durable, but temporary indexes are
 -- rejected before admission is attempted.
 CREATE INDEX CONCURRENTLY relopt_background_idx ON relopt_docs
     USING bm25(body)
     WITH (text_config = 'english', compaction = 'background');
-ERROR:  background compaction requires pg_durable 0.2.7 or newer
+ERROR:  background compaction requires pg_durable 0.2.8 or newer
 SELECT pg_catalog.to_regclass('relopt_background_idx') IS NULL
        AS rejected_cic_left_no_relation;
 rejected_cic_left_no_relation

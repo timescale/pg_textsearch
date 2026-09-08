@@ -191,7 +191,8 @@ Option | Default | Description
 [`text_config`](https://www.postgresql.org/docs/current/textsearch-configuration.html) | required | PostgreSQL text search configuration
 `k1` | 1.2 | Term frequency saturation (0.1-10.0)
 `b` | 0.75 | Length normalization (0.0-1.0)
-`compaction` | inline | Spill-time compaction: `inline`, `background`, or `off`; see [Background Compaction](#background-compaction)
+`compaction` | inline | Spill-time compaction: `inline`, `background`, or `manual`; see [Background Compaction](#background-compaction)
+`compaction_schedule` | `pg_textsearch.background_compaction_schedule` | Optional cron schedule captured when the index enters background mode
 
 ```sql
 CREATE INDEX ON documents USING bm25(content) WITH (text_config='english', k1=1.5, b=0.8);
@@ -396,7 +397,7 @@ Setting | Default | Description
 `pg_textsearch.compress_segments` | on | Compress posting blocks in new segments
 `pg_textsearch.segments_per_level` | 8 | Segments per level before automatic compaction (2-64)
 `pg_textsearch.max_segment_size` | 4095MB | Conservative size budget for newly merged multi-source segments (1-4095MB)
-`pg_textsearch.compaction_request_function` | (empty) | Schema-qualified name of a function taking one `regclass`, invoked for indexes set to `compaction = 'background'`
+`pg_textsearch.background_compaction_schedule` | `*/5 * * * *` | Default cron schedule captured by indexes entering managed background mode
 `pg_textsearch.bulk_load_threshold` | 100000 | Terms per transaction before auto-spill (0 = disable)
 `pg_textsearch.memtable_pages_threshold` | 64 | Chain pages before auto-spill (0 = disable)
 `pg_textsearch.allow_rls` | on | Allow BM25 indexes on RLS-protected tables; superuser-only
@@ -475,27 +476,46 @@ LIMIT 10;
 
 ### Background Compaction
 
-pg_textsearch does not include a background worker. `background` dispatches
-threshold debt at pre-commit, while `off` performs no automatic compaction:
+Segment compaction runs synchronously during memtable spill operations by
+default. Managed background mode uses
+[pg_durable](https://github.com/microsoft/pg_durable) 0.2.8 or newer rather
+than a worker built into pg_textsearch. pg_durable must be installed, listed in
+`shared_preload_libraries`, initialized for the current database, and granted
+to the index owner.
 
-Guidance for scheduling background compaction with `pg_durable` will be added
-in a future update.
+```sql
+CREATE INDEX documents_bm25 ON documents USING bm25(content)
+WITH (
+    text_config = 'english',
+    compaction = 'background',
+    compaction_schedule = '*/5 * * * *'
+);
+```
 
-- `background` calls `pg_textsearch.compaction_request_function` at
-  pre-commit. The callback must hand work to something that survives its
-  rolled-back internal subtransaction; a plain table insert does not.
-- `off` requires an external job to call `bm25_compact()` or
-  `bm25_compact_step()`; without one, segments accumulate and spills
-  eventually fail.
+Each physical index gets one owner-scoped workflow. It runs an immediate
+stepped cascade, then waits for either a spill signal or the captured schedule.
+Each merge batch runs in its own transaction. Transient SQL failures are
+recorded without terminating the workflow; the same workflow retries the
+startup cascade or handles a later signal or schedule tick.
 
-Change the policy with `ALTER INDEX ... SET (compaction = ...)`.
-`background` falls back to inline compaction for temporary indexes,
-autovacuum, callback-triggered spills, and `CREATE INDEX`. Prepared
-transactions do not flush queued requests. Unconfigured, unresolvable, or
-failed callbacks do not fall back inline; the compaction debt remains for a
-later spill or explicit maintenance.
+Use `manual` when pg_durable is not desired and invoke `bm25_compact()` or
+`bm25_compact_step()` from an external scheduler. Background mode is rejected
+for temporary indexes because another backend cannot open them.
 
-See [ARCHITECTURE.md](ARCHITECTURE.md#spill-and-compaction).
+Change modes or refresh the captured default schedule with `ALTER INDEX`:
+
+```sql
+ALTER INDEX documents_bm25 SET (compaction = 'background');
+ALTER INDEX documents_bm25 RESET (compaction_schedule);
+ALTER INDEX documents_bm25 SET (compaction = 'manual');
+```
+
+Reapplying background mode captures the current global default only when the
+index has no explicit `compaction_schedule`; reset that reloption to return to
+the default.
+See [Compacting an index](#compacting-an-index) for locking and batching
+details.
+details.
 
 ### Partitioned Tables
 

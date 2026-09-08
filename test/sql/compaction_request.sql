@@ -22,6 +22,12 @@ ALTER INDEX relopt_docs_idx
 SELECT reloptions @> ARRAY['compaction_schedule=17 * * * *']
 FROM pg_class WHERE oid = 'relopt_docs_idx'::regclass;
 
+-- The post-ALTER activation hook preserves IF EXISTS no-op semantics.
+ALTER INDEX IF EXISTS missing_background_idx
+    SET (compaction = 'background');
+ALTER INDEX IF EXISTS missing_background_idx
+    RESET (compaction_schedule);
+
 -- Managed background mode requires pg_durable, but temporary indexes are
 -- rejected before admission is attempted.
 CREATE INDEX CONCURRENTLY relopt_background_idx ON relopt_docs

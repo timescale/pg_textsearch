@@ -18,7 +18,7 @@ PG_CONFIG_BIN="${PG_CONFIG:-pg_config}"
 PGBINDIR="$("${PG_CONFIG_BIN}" --bindir)"
 PKGLIBDIR="$("${PG_CONFIG_BIN}" --pkglibdir)"
 SHAREDIR="$("${PG_CONFIG_BIN}" --sharedir)"
-PG_DURABLE_VERSION="${PG_DURABLE_VERSION:-0.2.7}"
+PG_DURABLE_VERSION="${PG_DURABLE_VERSION:-0.2.8}"
 PG_DURABLE_PACKAGE_DIR="${PG_DURABLE_PACKAGE_DIR:-}"
 PACKAGE_BACKUP_DIR="${REPO_ROOT}/test/tmp_durable_package_backup"
 DURABLE_PACKAGE_LIBDIR=
@@ -356,6 +356,20 @@ wait_for_signal_node() {
     error "instance ${instance_id} did not begin waiting for a signal"
 }
 
+wait_for_log_message() {
+    local message=$1 timeout=$2
+    local waited=0
+
+    while [ "${waited}" -lt "${timeout}" ]; do
+        if grep -Fq "${message}" "${LOGFILE}"; then
+            return 0
+        fi
+        sleep 1
+        waited=$((waited + 1))
+    done
+    error "server log did not contain: ${message}"
+}
+
 wait_for_durable_worker() {
     local attempt id status
 
@@ -484,6 +498,16 @@ active_job_id() {
       LIMIT 1;"
 }
 
+latest_job_id() {
+    local index_oid=$1
+
+    sql_super -c "SELECT id
+      FROM df.instances
+      WHERE label LIKE 'pg_textsearch:bg:v1:%:${index_oid}:%'
+      ORDER BY created_at DESC, id DESC
+      LIMIT 1;"
+}
+
 active_job_id_for_owner() {
     local index_oid=$1 owner=$2
 
@@ -590,7 +614,7 @@ test_missing_durable_cic() {
         error "background CIC succeeded without pg_durable"
     fi
     if ! grep -Fq \
-        "background compaction requires pg_durable 0.2.7 or newer" \
+        "background compaction requires pg_durable 0.2.8 or newer" \
         <<<"${create_error}"; then
         error "missing-pg_durable CIC did not use the stable admission message"
     fi
@@ -721,6 +745,137 @@ ${create_output}"
     fi
     assert_eq "recovery admits one replacement owner workflow" "1" \
         "$(active_jobs_for_index "${index_oid}")"
+}
+
+test_scheduled_failure_continuation() {
+    local index_oid instance_id failure_message
+
+    index_oid="$(sql_super -c \
+        "SELECT 'documents_idx'::regclass::oid;")"
+    instance_id="$(active_job_id "${index_oid}")"
+    [ -n "${instance_id}" ] ||
+        error "failure-continuation test found no managed workflow"
+    wait_for_signal_node "${instance_id}" 30
+
+    assert_eq "scheduled loop continues after body failures" "t" \
+        "$(sql_super -c "SELECT df.explain('${instance_id}')
+                          LIKE '%LOOP (infinite, continue on failure)%';")"
+
+    failure_message="pg_textsearch transient compaction test failure"
+    sql_super <<'SQL'
+CREATE OR REPLACE FUNCTION bm25_compact_step_if_current(
+    index_oid oid, database_oid oid, tablespace_oid oid,
+    relfilenumber oid, owner_oid oid)
+RETURNS boolean
+LANGUAGE plpgsql
+VOLATILE
+STRICT
+AS $body$
+BEGIN
+    RAISE EXCEPTION 'pg_textsearch transient compaction test failure';
+END
+$body$;
+SQL
+
+    create_compaction_debt
+    wait_for_log_message "${failure_message}" 30
+    assert_eq "failed scheduled iteration leaves workflow running" "running" \
+        "$(sql_super -c "SELECT status FROM df.instances
+                          WHERE id = '${instance_id}';")"
+    assert_eq "failed scheduled iteration preserves compaction debt" "t" \
+        "$(sql_super -c "SELECT bm25_needs_compaction(
+                              'documents_idx'::regclass);")"
+    wait_for_signal_node "${instance_id}" 30
+
+    sql_super <<'SQL'
+CREATE OR REPLACE FUNCTION bm25_compact_step_if_current(
+    index_oid oid, database_oid oid, tablespace_oid oid,
+    relfilenumber oid, owner_oid oid)
+RETURNS boolean
+AS '$libdir/pg_textsearch', 'tp_compact_index_step_if_current'
+LANGUAGE C VOLATILE STRICT;
+SQL
+
+    sql_as durable_owner -c \
+        "SELECT df.signal('${instance_id}', 'compact', '{}');" >/dev/null
+    wait_for_no_debt documents_idx 30
+    assert_eq "same workflow recovers after the transient failure" \
+        "${instance_id}" "$(active_job_id "${index_oid}")"
+}
+
+test_initial_failure_continuation() {
+    local index_oid instance_id failure_message
+
+    sql_super -c "CREATE TABLE initial_failure_docs
+                      (id integer, body text);
+                   ALTER TABLE initial_failure_docs OWNER TO durable_owner;"
+    sql_as durable_owner -c "
+        CREATE INDEX initial_failure_docs_idx
+          ON initial_failure_docs USING bm25(body)
+          WITH (text_config = 'english', compaction = 'manual');"
+    sql_as durable_owner <<'SQL' >/dev/null
+DO $body$
+BEGIN
+    FOR n IN 1..2 LOOP
+        INSERT INTO initial_failure_docs (id, body)
+        SELECT n * 100 + i,
+               format('initial failure round %s document %s', n, i)
+        FROM generate_series(1, 20) AS i;
+        PERFORM bm25_spill_index('initial_failure_docs_idx');
+    END LOOP;
+END
+$body$;
+SQL
+    assert_eq "manual index has startup compaction debt" "t" \
+        "$(sql_super -c "SELECT bm25_needs_compaction(
+                              'initial_failure_docs_idx'::regclass);")"
+
+    failure_message="pg_textsearch initial compaction test failure"
+    sql_super <<'SQL'
+CREATE OR REPLACE FUNCTION bm25_compact_step_if_current(
+    index_oid oid, database_oid oid, tablespace_oid oid,
+    relfilenumber oid, owner_oid oid)
+RETURNS boolean
+LANGUAGE plpgsql
+VOLATILE
+STRICT
+AS $body$
+BEGIN
+    RAISE EXCEPTION 'pg_textsearch initial compaction test failure';
+END
+$body$;
+SQL
+
+    sql_as durable_owner -c "
+        ALTER INDEX initial_failure_docs_idx
+          SET (compaction = 'background');" >/dev/null 2>&1
+    index_oid="$(sql_super -c \
+        "SELECT 'initial_failure_docs_idx'::regclass::oid;")"
+    instance_id="$(latest_job_id "${index_oid}")"
+    [ -n "${instance_id}" ] ||
+        error "startup failure test found no managed workflow"
+    wait_for_log_message "${failure_message}" 30
+    assert_eq "failed startup cascade leaves workflow running" "running" \
+        "$(sql_super -c "SELECT status FROM df.instances
+                          WHERE id = '${instance_id}';")"
+
+    sql_super <<'SQL'
+CREATE OR REPLACE FUNCTION bm25_compact_step_if_current(
+    index_oid oid, database_oid oid, tablespace_oid oid,
+    relfilenumber oid, owner_oid oid)
+RETURNS boolean
+AS '$libdir/pg_textsearch', 'tp_compact_index_step_if_current'
+LANGUAGE C VOLATILE STRICT;
+SQL
+
+    wait_for_no_debt initial_failure_docs_idx 30
+    assert_eq "same workflow recovers its startup cascade" \
+        "${instance_id}" "$(active_job_id "${index_oid}")"
+    sql_as durable_owner -c \
+        "SELECT df.cancel('${instance_id}', 'startup test complete');" \
+        >/dev/null
+    wait_for_terminal "${instance_id}" 30
+    sql_super -c "DROP TABLE initial_failure_docs;"
 }
 
 test_bypassrls_owner_isolation() {
@@ -870,6 +1025,8 @@ test_cic_preflight_rejections
 test_cic_owner_privilege_preflight
 test_defaulted_start_arity
 test_create_activation
+test_scheduled_failure_continuation
+test_initial_failure_continuation
 test_bypassrls_owner_isolation
 test_sticky_dependency
 test_rollback_in_fresh_database
