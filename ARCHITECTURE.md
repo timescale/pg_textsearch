@@ -71,7 +71,9 @@ combines adjacent immutable segments within `pg_textsearch.max_segment_size`.
 The `compaction` index option controls spill-time behavior:
 
 - `inline` compacts threshold debt during the spill;
-- `background` requests external compaction at pre-commit;
+- `background` dispatches a pre-commit request when possible; temporary
+  indexes, `CREATE INDEX`, autovacuum, callback re-entry, and other
+  no-dispatch contexts compact inline;
 - `off` leaves debt for explicit maintenance.
 
 `bm25_compact()` drives reducible debt to completion under one per-index lock.
