@@ -9,7 +9,9 @@ useful to contributors.
 ## Scope
 
 - Remove the Project History section from `README.md`.
-- Rewrite `CONTRIBUTING.md` as the developer entry point.
+- Rewrite `CONTRIBUTING.md` as the contributor workflow guide.
+- Add a top-level `ARCHITECTURE.md` for implementation structure and
+  invariants.
 - Replace `test/README.md` with a short guide based on current Makefile
   targets.
 - Delete `docs/background_compaction.md`, `docs/memtable_cache.md`, and
@@ -25,11 +27,16 @@ useful to contributors.
 
 - development setup and core build/test commands;
 - PostgreSQL code style and include conventions;
-- the source-layer overview;
 - pull request and issue-reporting essentials;
 - a one-sentence note that pg_textsearch was originally named Tapir.
 
-It will also consolidate these durable implementation invariants:
+It will link to `ARCHITECTURE.md` and `test/README.md` rather than duplicating
+their content.
+
+## Architecture Guide
+
+`ARCHITECTURE.md` will describe the source layers and consolidate these
+durable implementation invariants:
 
 - The WAL-logged on-disk memtable chain is the source of truth; the
   shared-memory cache is derived and disposable.
@@ -42,8 +49,10 @@ It will also consolidate these durable implementation invariants:
 - Deferred page reclaim must respect the oldest non-removable transaction
   horizon; query-serving standbys require `hot_standby_feedback = on`.
 
-Detailed page layouts, historical migration designs, benchmark snapshots, and
-superseded implementation proposals will not be retained.
+It will explain the write, read, spill, merge, and reclaim flow only as far as
+needed to make those invariants understandable. Detailed page layouts,
+historical migration designs, benchmark snapshots, and superseded
+implementation proposals will not be retained.
 
 ## Test Guide
 
@@ -60,9 +69,9 @@ performance estimates, or duplicated CI descriptions.
 ## Reference Cleanup
 
 References in source comments, SQL comments, expected output, `CLAUDE.md`, and
-the README will point to the relevant `CONTRIBUTING.md` section or become
-self-contained. No tracked file may retain a `docs/` reference after the
-directory is removed.
+the README will point to the relevant `ARCHITECTURE.md` or
+`CONTRIBUTING.md` section, or become self-contained. No tracked file may retain
+a live link or source comment pointing into the deleted directory.
 
 ## Validation
 
