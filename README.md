@@ -512,16 +512,11 @@ same IDs can cause incorrect wait-event names in `pg_stat_activity`. If you
 encounter a conflict,
 [open an issue](https://github.com/timescale/pg_textsearch/issues).
 
-## Project History
-
-pg_textsearch was originally named Tapir (Textual Analysis for Postgres
-Information Retrieval), which remains the project mascot and appears in some
-source names.
-
 ## Contributing
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for development setup, code style, and
-how to submit pull requests.
+See [CONTRIBUTING.md](CONTRIBUTING.md) for development setup and contribution
+guidelines. See [ARCHITECTURE.md](ARCHITECTURE.md) for implementation details
+and storage invariants.
 
 - **Bug Reports**: [Create an issue](https://github.com/timescale/pg_textsearch/issues/new?labels=bug&template=bug_report.md)
 - **Feature Requests**: [Request a feature](https://github.com/timescale/pg_textsearch/issues/new?labels=enhancement&template=feature_request.md)
