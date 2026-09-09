@@ -46,9 +46,12 @@ drop it without affecting correctness. Standbys read the on-disk chain.
 
 `pg_textsearch.memory_limit` has three tiers:
 
-- per-index soft cap (`limit / 8`): stop applying and read from the chain;
-- global soft cap (`limit / 2`): evict the largest non-caller cache;
-- global hard cap (`limit`): refuse new cache builds.
+- per-index soft cap (`limit / 8`): stop cache apply or cold build and fall
+  back to the chain;
+- global soft cap (`limit / 2`): attempt best-effort eviction of the largest
+  non-caller cache; eviction may find nothing or a busy target;
+- global hard cap (`limit`): block catch-up and cold builds, causing chain
+  fallback.
 
 `0` disables the limit. The setting is applied on SIGHUP.
 
