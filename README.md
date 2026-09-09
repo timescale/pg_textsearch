@@ -480,51 +480,26 @@ Setting | Default | Description
 `pg_textsearch.compaction_request_function` | (empty) | Schema-qualified name of a function taking one `regclass`, invoked for indexes set to `compaction = 'background'`
 `pg_textsearch.bulk_load_threshold` | 100000 | Terms per transaction before auto-spill (0 = disable)
 `pg_textsearch.memtable_pages_threshold` | 64 | Chain pages before auto-spill (0 = disable)
-`pg_textsearch.memtable_cache_enabled` | on | Serve query reads from the shared-memory memtable cache instead of walking the on-disk chain
-`pg_textsearch.memory_limit` | 2GB | Shared memory budget for memtable caches across all indexes (0 = no limit)
+`pg_textsearch.memtable_cache_enabled` | on | Cache memtable data in shared memory for faster queries
+`pg_textsearch.memory_limit` | 2GB | Shared memory limit for memtable caches across all indexes (0 = no limit)
 
 #### Memtable architecture
 
-Starting in 1.3.0, the L0 memtable lives in the index relation itself
-as a chain of doc-record pages, mutated under standard buffer locks
-and WAL-logged via `GenericXLog`. The chain is the source of truth:
-there is no custom WAL resource manager and no docid-page recovery
-scaffold. PostgreSQL's stock WAL replay (including the single-page
-reconstruction helper used by online-page-fix tooling) reconstructs
-every page without needing to load `pg_textsearch.so`. See
-[`docs/memtable_v2.md`](docs/memtable_v2.md) for the spec.
+The L0 memtable is stored in the index as a WAL-logged chain of pages. It is
+the durable source of truth and can be restored by PostgreSQL without loading
+`pg_textsearch.so`. See [`docs/memtable_v2.md`](docs/memtable_v2.md).
 
-A shared-memory cache of the chain is maintained to keep query cost
-proportional to the query's terms rather than to the chain's length.
-It is derived state, rebuilt from the chain whenever it is missing or
-stale, so losing it is harmless; standby queries always read the chain
-directly. See [`docs/memtable_cache.md`](docs/memtable_cache.md).
+Queries use a shared-memory cache when enabled. The cache is rebuilt from the
+chain when missing or stale, while standbys read the chain directly. See
+[`docs/memtable_cache.md`](docs/memtable_cache.md).
 
-Auto-spill is governed by two complementary triggers:
-
-- `memtable_pages_threshold` — fires after each insert when the chain
-  has grown past the configured page count. Default 64 pages
-  (~512 KB at 8 KB blocks) keeps query latency bounded since the
-  chain stays small.
-- `bulk_load_threshold` — fires at COMMIT when a single transaction
-  accumulates many terms in the memtable; useful for COPY / bulk
-  INSERT to bound chain-page growth.
+Memtables spill automatically based on `memtable_pages_threshold` and
+`bulk_load_threshold`, and during VACUUM.
 
 ```sql
--- Manual spill (forces the current chain to a new L0 segment)
+-- Manual spill
 SELECT bm25_spill_index('docs_idx');
 ```
-
-VACUUM (including autovacuum's insert-threshold path) also spills the
-memtable when it runs, so the amount of un-spilled state between
-`CREATE INDEX` and the next server restart stays bounded.
-
-**Crash recovery**: The on-disk memtable chain is itself the durable
-record. After a crash, stock PostgreSQL replay restores every page;
-no rebuild is needed at first backend open.
-
-**Streaming replication**: All page mutations are replicated via the
-standard WAL stream. Standbys reconstruct every page natively.
 
 ## Monitoring
 
