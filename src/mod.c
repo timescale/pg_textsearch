@@ -441,8 +441,9 @@ _PG_init(void)
 			"protocol so the read falls back to the on-disk "
 			"chain; global soft cap (limit/2) evicts the "
 			"largest non-caller cache via tp_cache_evict_largest; "
-			"global hard cap (limit) refuses cache builds "
-			"entirely.  A value of 0 means no limit.",
+			"global hard cap (limit) blocks incremental catch-up "
+			"and cold builds, causing on-disk-chain fallback.  "
+			"A value of 0 means no limit.",
 			&tp_memory_limit_kb,
 			TP_DEFAULT_MEMORY_LIMIT_KB,
 			0,

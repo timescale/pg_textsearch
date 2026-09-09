@@ -5,7 +5,7 @@
 
 set -e
 
-echo "=== Tapir Cranfield Collection Benchmark ==="
+echo "=== pg_textsearch Cranfield Collection Benchmark ==="
 echo "Standard Information Retrieval benchmark with 1400 aerodynamics abstracts"
 echo "Starting at: $(date)"
 echo ""

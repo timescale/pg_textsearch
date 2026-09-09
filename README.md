@@ -336,9 +336,9 @@ the durable source of truth and can be restored by PostgreSQL without loading
 
 Queries use a shared-memory cache when enabled. An index falls back to the
 chain at `memory_limit / 8`; global pressure triggers eviction at
-`memory_limit / 2`, and new cache builds are refused at `memory_limit`. The
-cache is rebuilt from the chain when missing or stale, while standbys always
-read the chain directly.
+`memory_limit / 2`, and incremental cache catch-up and cold builds are blocked
+at `memory_limit`, causing on-disk-chain fallback. The cache is rebuilt from
+the chain when missing or stale, while standbys always read the chain directly.
 
 Memtables spill automatically based on `memtable_pages_threshold` and
 `bulk_load_threshold`, and during VACUUM.

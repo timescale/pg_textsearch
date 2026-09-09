@@ -421,7 +421,8 @@ LANGUAGE C STRICT;
 
 -- Cache memory-cap scaffolds.  Same INTERNAL-ONLY disclaimer as
 -- above.  The per-index soft cap is limit/8, the global soft cap
--- is limit/2, and the global hard cap refuses builds at limit.
+-- is limit/2, and the global hard cap blocks incremental catch-up
+-- and cold builds at limit, causing on-disk-chain fallback.
 CREATE FUNCTION @extschema@.bm25_cache_global_estimated_bytes()
 RETURNS bigint
 AS 'MODULE_PATHNAME', 'bm25_cache_global_estimated_bytes'

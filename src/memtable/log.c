@@ -891,9 +891,9 @@ tp_memtable_mark_continuation_chain_dead(
 
 /*
  * Mark every page in the spilled memtable chain DEAD (outer walk +
- * fragment continuation sub-chains).  This is spill step 4 in
- * ARCHITECTURE.md, "Storage and WAL".  Does not free blocks;
- * amvacuumcleanup recycles later.
+ * fragment continuation sub-chains) after spill publication.  Does
+ * not free blocks; amvacuumcleanup recycles them later.  See
+ * ARCHITECTURE.md, "Spill and Compaction".
  */
 void
 tp_memtable_mark_chain_dead(
@@ -1665,7 +1665,8 @@ bm25_memtable_chain(PG_FUNCTION_ARGS)
 
 /*
  * Dead-orphan SRF.  Scans index blocks after the metapage and
- * returns one row per memtable page stamped DEAD by spill (step 4).
+ * returns one row per memtable page stamped DEAD after spill
+ * publication.
  */
 PG_FUNCTION_INFO_V1(bm25_memtable_dead_pages);
 
