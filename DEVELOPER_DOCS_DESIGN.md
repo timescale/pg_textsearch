@@ -60,6 +60,8 @@ implementation proposals will not be retained.
 
 - SQL regression, shell, replication, stress, and optional test categories;
 - the current Makefile targets for running those categories;
+- sanitizer coverage in CI, including ASan/UBSan builds for PostgreSQL 17 and
+  18 and leak-enabled nightly stress testing;
 - how to add a SQL regression test and update expected output;
 - concise failure-diagnosis steps.
 
@@ -79,4 +81,6 @@ a live link or source comment pointing into the deleted directory.
 - Check Markdown links, anchors, and code fences.
 - Keep SQL comments and expected output synchronized.
 - Run formatting checks, source guards, and the build.
-- Review the final diff for accuracy, concision, and duplicated guidance.
+- Review `README.md`, `CONTRIBUTING.md`, `ARCHITECTURE.md`, and
+  `test/README.md` against the source, Makefile, and CI workflows for
+  accuracy, concision, and duplicated guidance.
