@@ -16,24 +16,15 @@ Modern ranked text search for Postgres.
 - Supports partitioned tables
 - Best in class performance and scalability
 
-🚀 **Status**: v1.5.0-dev - Production ready.
-
-## Historical note
-
-The original name of the project was Tapir - **T**extual **A**nalysis for **P**ostgres **I**nformation **R**etrieval.  We still use the tapir as our
-mascot and the name occurs in various places in the source code.
-
-## PostgreSQL Version Compatibility
+## Installation
 
 pg_textsearch supports PostgreSQL 17 and 18.
-
-## Installation
 
 ### Pre-built Binaries
 
 Download pre-built binaries from the
 [Releases page](https://github.com/timescale/pg_textsearch/releases).
-Available for Linux and macOS (amd64 and arm64), PostgreSQL 17 and 18.
+Available for Linux and macOS (amd64 and arm64).
 
 ### Build from Source
 
@@ -167,14 +158,12 @@ CREATE INDEX ON documents USING bm25(content) WITH (text_config='english');
 
 ### Index Options
 
-- `text_config` - PostgreSQL text search configuration to use (required)
-- `k1` - term frequency saturation parameter (1.2 by default)
-- `b` - length normalization parameter (0.75 by default)
-- `compaction` - spill-time compaction policy: `inline` (default) compacts
-  synchronously in the spilling transaction, `background` hands the work to
-  `pg_textsearch.compaction_request_function` at pre-commit, and `off`
-  leaves it to an explicit caller. See
-  [No Background Compaction Worker](#no-background-compaction-worker).
+Option | Default | Description
+--- | --- | ---
+`text_config` | required | PostgreSQL text search configuration
+`k1` | 1.2 | Term frequency saturation
+`b` | 0.75 | Length normalization
+`compaction` | inline | Spill-time compaction: `inline`, `background`, or `off`; see [No Background Compaction Worker](#no-background-compaction-worker)
 
 ```sql
 CREATE INDEX ON documents USING bm25(content) WITH (text_config='english', k1=1.5, b=0.8);
@@ -510,38 +499,6 @@ FROM pg_stat_user_indexes
 WHERE indexrelid::regclass::text ~ 'pg_textsearch';
 ```
 
-## Examples
-
-### Basic Search
-
-```sql
-CREATE TABLE articles (id serial PRIMARY KEY, title text, content text);
-CREATE INDEX articles_idx ON articles USING bm25(content) WITH (text_config='english');
-
-INSERT INTO articles (title, content) VALUES
-    ('Database Systems', 'PostgreSQL is a powerful relational database system'),
-    ('Search Technology', 'Full text search enables finding relevant documents quickly'),
-    ('Information Retrieval', 'BM25 is a ranking function used in search engines');
-
--- Find relevant documents
-SELECT title, content <@> 'database search' as score
-FROM articles
-ORDER BY score;
-```
-
-Also supports different languages and custom parameters:
-
-```sql
--- Different languages
-CREATE INDEX fr_idx ON french_articles USING bm25(content) WITH (text_config='french');
-CREATE INDEX de_idx ON german_articles USING bm25(content) WITH (text_config='german');
-
--- Custom parameters
-CREATE INDEX custom_idx ON documents USING bm25(content)
-    WITH (text_config='english', k1=2.0, b=0.9);
-```
-
-
 ## Limitations
 
 ### No Phrase Queries
@@ -777,14 +734,6 @@ sudo apt install postgresql-server-dev-18  # for PostgreSQL 18
 
 ## Reference
 
-### Index Options
-
-Option | Type | Default | Description
---- | --- | --- | ---
-text_config | string | required | PostgreSQL text search configuration to use
-k1 | real | 1.2 | Term frequency saturation parameter (0.1 to 10.0)
-b | real | 0.75 | Length normalization parameter (0.0 to 1.0)
-
 ### Text Search Configurations
 
 Available configurations depend on your Postgres installation:
@@ -927,6 +876,12 @@ another Postgres extension that also registers fixed tranche IDs in this range,
 wait event names in `pg_stat_activity` may be incorrect. Core Postgres tranches
 use IDs below 100. If you encounter a conflict, please
 [open an issue](https://github.com/timescale/pg_textsearch/issues).
+
+## Project history
+
+pg_textsearch was originally named Tapir (Textual Analysis for Postgres
+Information Retrieval), which remains the project mascot and appears in some
+source names.
 
 ## Contributing
 
