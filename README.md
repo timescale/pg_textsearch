@@ -260,9 +260,10 @@ separately.
 
 ### Query Performance
 
-Use `ORDER BY ... LIMIT n` to enable Block-Max WAND. Without a pushed-down SQL
-`LIMIT`, `pg_textsearch.default_limit` sets the initial scoring batch, which
-can grow as more rows are requested.
+`ORDER BY` uses the BM25 index and Block-Max WAND. `LIMIT n` sets the initial
+top-k depth; without a pushed-down SQL `LIMIT`,
+`pg_textsearch.default_limit` sets the initial scoring batch, which can grow
+as more rows are requested.
 
 ```sql
 SELECT * FROM documents ORDER BY content <@> 'search terms' LIMIT 10;
