@@ -154,12 +154,6 @@ Option | Default | Description
 CREATE INDEX ON documents USING bm25(content) WITH (text_config='english', k1=1.5, b=0.8);
 ```
 
-Use any installed PostgreSQL text search configuration:
-
-```sql
-CREATE INDEX docs_en_idx ON documents USING bm25(content) WITH (text_config='english');
-```
-
 ### Expression Indexes
 
 Index expressions for JSONB fields, multiple columns, or text transformations:
@@ -186,13 +180,13 @@ Queries must repeat the same expression in the `ORDER BY` clause.
 Add a `WHERE` clause to index a subset of rows:
 
 ```sql
-CREATE INDEX docs_content_idx ON documents USING bm25 (content)
+CREATE INDEX documents_category_bm25_idx ON documents USING bm25 (content)
     WITH (text_config='english')
-    WHERE status = 'published';
+    WHERE category_id = 1;
 
 SELECT * FROM documents
-WHERE status = 'published'
-ORDER BY content <@> to_bm25query('search terms', 'docs_content_idx')
+WHERE category_id = 1
+ORDER BY content <@> to_bm25query('search terms', 'documents_category_bm25_idx')
 LIMIT 10;
 ```
 
@@ -510,13 +504,9 @@ bm25_pending_free_pages(index_name) † → int8 | Count pages awaiting standby-
 bm25_dump_index(index_name) † → text | Dump internal index structure (truncated)
 bm25_summarize_index(index_name) † → text | Show index statistics without content
 
-Additional file-writing debug functions (`bm25_dump_index(text, text)` and
-`bm25_debug_pageviz`) are available in debug builds only (compile with
-`-DDEBUG_DUMP_INDEX`).
-
 ## Extension Compatibility
 
-pg_textsearch uses LWLock tranche IDs 1001-1008. Another extension using the
+pg_textsearch uses LWLock tranche IDs 1001-1012. Another extension using the
 same IDs can cause incorrect wait-event names in `pg_stat_activity`. If you
 encounter a conflict,
 [open an issue](https://github.com/timescale/pg_textsearch/issues).
