@@ -16,18 +16,21 @@ spills into immutable segments that are compacted across levels.
 - `src/segment/` — immutable segments, compression, merge, and deferred reclaim
 - `src/debug/` — optional diagnostic functions
 
-Upper layers may depend on lower layers; storage code must not depend on the
-PostgreSQL interface layer. Project includes use paths relative to `src/`.
+These directories are an organizational model, not a strictly enforced
+dependency graph. Some storage coordination crosses layers; for example,
+segment compaction uses reclaim-horizon logic from the access layer. Project
+includes use paths relative to `src/`.
 
 ## Storage and WAL
 
 Block 0 is the metapage. It points to the on-disk memtable chain, immutable
 segment chains for each LSM level, and the deferred-free tombstone chain.
 
-Writes append document records to the memtable chain under buffer locks. Every
-page mutation is WAL-logged with `GenericXLog`; pg_textsearch has no custom WAL
-resource manager. The on-disk chain is authoritative through crash recovery and
-physical replication.
+Writes append document records to the memtable chain under buffer locks.
+In-place and multi-page publication mutations use `GenericXLog`. Newly written
+segment pages use `log_newpage_buffer()` when `RelationNeedsWAL()` is true.
+pg_textsearch has no custom WAL resource manager. The on-disk chain is
+authoritative through crash recovery and physical replication.
 
 Queries compose postings from the memtable and all published segments. Each
 live heap TID occurs in at most one published segment. Segment-local numeric
