@@ -813,6 +813,28 @@ tp_compaction_candidate(
 	return TP_MAX_LEVELS;
 }
 
+/*
+ * Advisory: does any level sit at the compaction threshold?
+ *
+ * Shares tp_compaction_candidate() with the planner so this stays in
+ * step with bm25_needs_compaction(), and carries the same caveat: a
+ * level whose segments are all over budget reports true even though no
+ * pass can reduce it.  Callers must not use this alone as a retry
+ * condition.
+ */
+bool
+tp_compaction_needed(Relation index)
+{
+	TpIndexMetaPageData *metap;
+	bool				 needed;
+
+	metap  = tp_get_metapage(index);
+	needed = tp_compaction_candidate(metap->level_counts, 0) < TP_MAX_LEVELS;
+	pfree(metap);
+
+	return needed;
+}
+
 static void
 tp_initialize_ordinary_plan(
 		Relation index, const TpIndexMetaPage snapshot, TpCompactionPlan *plan)

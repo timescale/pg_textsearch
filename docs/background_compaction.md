@@ -158,3 +158,58 @@ the default, not of the design: at `segments_per_level = 2` the L6 ceiling is
 `max_segment_size` also bounds only the segments a pass *combines*. An
 existing segment larger than the current setting stays a valid uncombinable
 singleton, so a segment at any level may exceed it.
+
+## Spill-time dispatch
+
+The `compaction` index option controls what happens when a spill leaves a
+level at the compaction threshold:
+
+- `inline` (the default) preserves synchronous compaction.
+- `background` records one request per affected index and invokes the
+  configured callback at transaction pre-commit.
+- `off` leaves compaction debt for an explicit caller.
+
+The policy is per index, so it travels with the index rather than with the
+writing session. `ALTER INDEX ... SET (compaction = ...)` changes it under
+`ShareUpdateExclusiveLock`; the value is read after each spill.
+
+Set `pg_textsearch.compaction_request_function` to a *schema-qualified*
+function name taking one `regclass`; its return type is ignored. A one-part
+name would resolve through the committing backend's search_path, and the
+callback runs as that backend's user. Existence is not checked at `SET` time,
+so a scheduler can be installed independently. The name is resolved at each
+dispatch rather than cached, so replacing the function behind it takes effect
+without re-setting the GUC.
+
+Requests are backend-local, deduplicated by index, and held in
+`TopTransactionContext`, so PostgreSQL frees them at commit, prepare, and
+abort alike. Pending OIDs are revalidated against the transaction's final
+catalog state. Aborting the top-level transaction dispatches nothing; a
+rolled-back savepoint still dispatches, because the spill it performed
+survives the rollback, and because that context outlives subtransactions.
+
+Two-phase transactions therefore dispatch nothing without any special case:
+`PREPARE TRANSACTION` frees the pending list along with the rest of the
+transaction's memory. This is also why no callback runs at `PRE_PREPARE`,
+which matters — callback SQL there could set transaction-global state that
+PostgreSQL validates immediately afterward, such as
+`XACT_FLAGS_ACCESSEDTEMPNAMESPACE` from reading a temporary object, failing
+an otherwise valid `PREPARE`.
+
+`background` compacts inline wherever the request could not be handed off,
+since the alternative is to record one and discard it:
+
+- **Temporary indexes**, which no other backend can open.
+- **Autovacuum**, which must not execute arbitrary user SQL.
+- **A spill caused by the callback itself**, whose request would land in a
+  list the running dispatch has stopped reading.
+- **`CREATE INDEX`**, until the build commits.
+
+`off` is honored in all of these.
+
+Each callback runs in a protected internal subtransaction whose local effects
+are rolled back, so it must hand work to a facility that survives that
+rollback. Ordinary lookup or callback errors produce a warning and do not
+abort the writer. Cancellation and shutdown errors are rethrown, so a callback
+that cancels the backend fails the commit it was invoked from.
+This interface is scheduler-neutral and has no pg_durable dependency.

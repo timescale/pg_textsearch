@@ -217,21 +217,12 @@ tp_get_local_index_state(Oid index_oid)
 		Relation index_rel;
 		bool	 index_exists = false;
 
-		PG_TRY();
+		index_rel = try_index_open(index_oid, AccessShareLock);
+		if (index_rel != NULL)
 		{
-			index_rel = index_open(index_oid, AccessShareLock);
-			if (index_rel != NULL)
-			{
-				index_exists = true;
-				index_close(index_rel, AccessShareLock);
-			}
+			index_exists = true;
+			index_close(index_rel, AccessShareLock);
 		}
-		PG_CATCH();
-		{
-			/* Index doesn't exist - that's fine */
-			FlushErrorState();
-		}
-		PG_END_TRY();
 
 		if (index_exists)
 		{
@@ -1348,7 +1339,6 @@ tp_bulk_load_spill_check(void)
 	{
 		TpLocalIndexState *local_state = entry->local_state;
 		Relation		   index_rel;
-		bool			   index_open_failed = false;
 
 		if (!local_state || !local_state->shared)
 			continue;
@@ -1358,37 +1348,23 @@ tp_bulk_load_spill_check(void)
 			continue;
 
 		/*
-		 * Acquire exclusive lock — no lock is held at
-		 * PRE_COMMIT since per-operation locking releases
-		 * after each insert.
+		 * Open the relation before taking the per-index LWLock: relation
+		 * and catalog access can block, and must stay outside the
+		 * per-index lock ordering domain.  No per-index lock is held on
+		 * entry because per-operation locking releases after each insert.
 		 */
-		tp_acquire_index_lock(local_state, LW_EXCLUSIVE);
-
-		/* Open the index relation */
-		PG_TRY();
-		{
-			index_rel = index_open(
-					local_state->shared->index_oid, RowExclusiveLock);
-		}
-		PG_CATCH();
-		{
-			/* Index might have been dropped */
-			FlushErrorState();
-			index_open_failed = true;
-		}
-		PG_END_TRY();
-
-		if (index_open_failed)
-		{
-			tp_release_index_lock(local_state);
+		index_rel = try_index_open(
+				local_state->shared->index_oid, RowExclusiveLock);
+		if (index_rel == NULL)
 			continue;
-		}
+
+		tp_acquire_index_lock(local_state, LW_EXCLUSIVE);
 
 		/* Unified spill path. */
 		(void)tp_do_spill(local_state, index_rel, NULL);
 
-		index_close(index_rel, RowExclusiveLock);
 		tp_release_index_lock(local_state);
+		index_close(index_rel, RowExclusiveLock);
 	}
 }
 
