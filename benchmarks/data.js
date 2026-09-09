@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1788937174572,
+  "lastUpdate": 1788937178510,
   "repoUrl": "https://github.com/timescale/pg_textsearch",
   "entries": {
     "cranfield Benchmarks": [
@@ -93741,6 +93741,43 @@ window.BENCHMARK_DATA = {
           {
             "name": "msmarco_gin_insert - Insert Time",
             "value": 711741.103,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco_gin_insert - Index Size",
+            "value": 972.11,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "nikitatsym",
+            "username": "nikitatsym",
+            "email": "131807271+nikitatsym@users.noreply.github.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "8dabad51ecdc6d0357b5aee1a3da95b7c2c38c95",
+          "message": "Add a Windows MSVC build job to CI (#463)\n\nThis follows #439, where [tjgreen42 requested an MSVC CI\njob](https://github.com/timescale/pg_textsearch/pull/439#pullrequestreview-4963637797).\n\n- `scripts/msvc-build.ps1` is the Windows build recipe. PGXS cannot\ndrive MSVC and nmake cannot reuse the GNU Makefile, so instead of a\nsecond hand-maintained source list the script reads `OBJS` and `DATA`\nstraight out of the `Makefile`.\n- `ci.yml` adds a `build-msvc` matrix for PostgreSQL 17 and 18 on\n`windows-2022`, the same VS 2022 toolchain used to develop #439; EDB\nbinary zips are pinned by URL and SHA-256. Like\n`build-test-multiple-configs`, the job compiles and links only, with no\ntests and no artifacts.\n- A `scripts/README.md` entry documents the script and the pin-refresh\nprocedure.\n\nThe job adds two checks beyond compilation:\n\n- *Layout:* `src/layout_check.c`, introduced in #439 and already listed\nin `OBJS`, checks every packed or aligned on-disk struct against the\nreference GCC x86-64 layout, so MSVC layout drift fails at compile time.\n- *Exports:* every symbol bound through `MODULE_PATHNAME` in a `DATA`\nSQL file must appear in the DLL export table. On Windows, a missing\n`PGDLLEXPORT` would otherwise surface only when the relevant SQL runs\nduring extension creation or upgrade. Symbol names are compared\ncase-sensitively, and the scan fails closed on any `MODULE_PATHNAME`\noccurrence it cannot parse as an explicit symbol reference.\n\n`/W3 /WX` mirrors the Unix `-Werror`. The only suppressions are three\nconversion warnings (C4244, C4267, C4305) that `-Wextra` does not\nenable; any other warning fails the build.\n\nVerified locally on Windows against the PostgreSQL 17 and 18 EDB trees:\nboth build clean under `/WX` and pass the layout and export gates. [CI\nrun\n32907936088](https://github.com/nikitatsym/pg_textsearch/actions/runs/32907936088)\npassed all jobs, including both MSVC legs.\n\n`build-msvc` sits in `all-tests-passed.needs`, gating merges like the\nother build jobs.\n\nOut of scope: running the test suite on Windows (needs an installed tree\nand a running server) and official Windows binaries or packaging.",
+          "timestamp": "2026-09-09T00:37:25Z",
+          "url": "https://github.com/timescale/pg_textsearch/commit/8dabad51ecdc6d0357b5aee1a3da95b7c2c38c95"
+        },
+        "date": 1788937177608,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "msmarco_gin_insert - Index Build Time",
+            "value": 0.477,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco_gin_insert - Insert Time",
+            "value": 704956.739,
             "unit": "ms"
           },
           {
