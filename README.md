@@ -7,14 +7,11 @@
 Modern ranked text search for Postgres.
 
 - Simple syntax: `ORDER BY content <@> 'search terms'`
-- BM25 ranking with configurable parameters (k1, b)
-- Works with Postgres text search configurations (english, french, german, etc.)
-- Expression indexes for JSONB fields, multi-column search, and text transformations
-- Partial indexes for scoped search and multilingual tables
-- Fast top-k queries via Block-Max WAND optimization
+- BM25 ranking with configurable `k1` and `b`
+- PostgreSQL text search configurations
+- Expression, partial, and partitioned indexes
+- Fast top-k queries with Block-Max WAND
 - Parallel index builds for large tables
-- Supports partitioned tables
-- Best in class performance and scalability
 
 ## Installation
 
@@ -38,14 +35,14 @@ make install # may need sudo
 
 ## Getting Started
 
-pg_textsearch must be loaded via `shared_preload_libraries`. Add the following
-to `postgresql.conf` and restart the server:
+Add pg_textsearch to `shared_preload_libraries` in `postgresql.conf`, then
+restart the server:
 
 ```
 shared_preload_libraries = 'pg_textsearch'  # add to existing list if needed
 ```
 
-Then enable the extension (once per database):
+Enable the extension in each database:
 
 ```sql
 CREATE EXTENSION pg_textsearch;
@@ -69,7 +66,7 @@ CREATE INDEX docs_idx ON documents USING bm25(content) WITH (text_config='englis
 
 ## Querying
 
-Get the most relevant documents using the `<@>` operator
+Get the most relevant documents
 
 ```sql
 SELECT * FROM documents
@@ -77,54 +74,50 @@ ORDER BY content <@> 'database system'
 LIMIT 5;
 ```
 
-Note: `<@>` returns the negative BM25 score since Postgres only supports `ASC` order index scans on operators. Lower scores indicate better matches.
+`<@>` returns negative BM25 scores for ascending index scans, so lower scores
+rank first.
 
-The index is automatically detected from the column. For explicit index specification:
+The index is detected from the column. Specify it explicitly when needed:
+
 ```sql
 SELECT * FROM documents
 ORDER BY content <@> to_bm25query('database system', 'docs_idx')
 LIMIT 5;
 ```
 
-Supported operations:
-- `text <@> 'query'` - Score text against a query (index auto-detected)
-- `text <@> bm25query` - Score text with explicit index specification
-
 ### Verifying Index Usage
 
-Check query plan with EXPLAIN:
 ```sql
 EXPLAIN SELECT * FROM documents
 ORDER BY content <@> 'database system'
 LIMIT 5;
 ```
 
-For small datasets, PostgreSQL may prefer sequential scans. Force index usage:
+PostgreSQL may prefer a sequential scan for small tables. To test the index
+plan:
+
 ```sql
 SET enable_seqscan = off;
 ```
 
-Note: Even if EXPLAIN shows a sequential scan, `<@>` and `to_bm25query` always use the index for corpus statistics (document counts, average length) required for BM25 scoring.
+Standalone scoring still uses index corpus statistics even when the table is
+read sequentially.
 
 ### Filtering with WHERE Clauses
 
-There are two ways filtering interacts with BM25 index scans:
+PostgreSQL can use a separate index to filter rows before BM25 scoring:
 
-**Pre-filtering** uses a separate index (B-tree, etc.) to reduce rows before scoring:
 ```sql
--- Create index on filter column
 CREATE INDEX ON documents (category_id);
 
--- Query filters first, then scores matching rows
 SELECT * FROM documents
 WHERE category_id = 123
 ORDER BY content <@> 'search terms'
 LIMIT 10;
 ```
 
-**Post-filtering** applies the BM25 index scan first, then filters
-results. Columns without their own index are filtered after the BM25
-scan:
+Conditions without a usable index are applied after the BM25 scan:
+
 ```sql
 SELECT * FROM documents
 WHERE length(content) > 100
@@ -132,25 +125,12 @@ ORDER BY content <@> 'search terms'
 LIMIT 10;
 ```
 
-**Performance considerations**:
-
-- **Pre-filtering tradeoff**: If the filter matches many rows (e.g., 100K+), scoring
-  all of them can be expensive. The BM25 index is most efficient when it can use
-  top-k optimization (ORDER BY + LIMIT) to avoid scoring every matching document.
-
-- **Post-filtering tradeoff**: The index returns top-k results *before* filtering.
-  If your WHERE clause eliminates most results, you may get fewer rows than
-  requested. Increase LIMIT to compensate, then re-limit in application code.
-
-- **Best case**: Pre-filter with a selective condition (matches <10% of rows), then
-  let BM25 score the reduced set with ORDER BY + LIMIT.
-
-This is similar to the [filtering behavior in pgvector](https://github.com/pgvector/pgvector?tab=readme-ov-file#filtering),
-where approximate indexes also apply filtering after the index scan.
+Post-filtering can return fewer rows than the requested `LIMIT`. Over-fetch
+and re-limit when the condition removes many results.
 
 ## Indexing
 
-Create a BM25 index on your text columns:
+Create a BM25 index on a text column:
 
 ```sql
 CREATE INDEX ON documents USING bm25(content) WITH (text_config='english');
@@ -163,34 +143,25 @@ Option | Default | Description
 `text_config` | required | PostgreSQL text search configuration
 `k1` | 1.2 | Term frequency saturation
 `b` | 0.75 | Length normalization
-`compaction` | inline | Spill-time compaction: `inline`, `background`, or `off`; see [No Background Compaction Worker](#no-background-compaction-worker)
+`compaction` | inline | Spill-time compaction: `inline`, `background`, or `off`; see [Background Compaction](#background-compaction)
 
 ```sql
 CREATE INDEX ON documents USING bm25(content) WITH (text_config='english', k1=1.5, b=0.8);
 ```
 
-Also supports different text search configurations:
+Use any installed PostgreSQL text search configuration:
 
 ```sql
--- English documents with stemming
 CREATE INDEX docs_en_idx ON documents USING bm25(content) WITH (text_config='english');
-
--- Simple text processing without stemming
-CREATE INDEX docs_simple_idx ON documents USING bm25(content) WITH (text_config='simple');
-
--- Language-specific configurations
-CREATE INDEX docs_fr_idx ON french_docs USING bm25(content) WITH (text_config='french');
-CREATE INDEX docs_de_idx ON german_docs USING bm25(content) WITH (text_config='german');
 ```
 
 ### Expression Indexes
 
-Index expressions instead of plain columns — useful for JSONB fields,
-multi-column concatenation, and text transformations:
+Index expressions for JSONB fields, multiple columns, or text transformations:
 
 ```sql
 -- JSONB field extraction
-CREATE INDEX ON events USING bm25 ((data->>'description'))
+CREATE INDEX events_expr_idx ON events USING bm25 ((data->>'description'))
     WITH (text_config='english');
 
 SELECT * FROM events
@@ -200,10 +171,6 @@ LIMIT 10;
 -- Multi-column search
 CREATE INDEX ON articles USING bm25 ((coalesce(title, '') || ' ' || coalesce(body, '')))
     WITH (text_config='english');
-
--- Text transformation
-CREATE INDEX ON docs USING bm25 ((lower(content)))
-    WITH (text_config='simple');
 ```
 
 The expression must evaluate to `text` and use only IMMUTABLE functions.
@@ -211,11 +178,10 @@ Queries must repeat the same expression in the `ORDER BY` clause.
 
 ### Partial Indexes
 
-Index a subset of rows by adding a `WHERE` clause. Partial indexes are
-smaller and faster when queries always target a specific subset:
+Add a `WHERE` clause to index a subset of rows:
 
 ```sql
-CREATE INDEX ON docs USING bm25 (content)
+CREATE INDEX docs_content_idx ON docs USING bm25 (content)
     WITH (text_config='english')
     WHERE status = 'published';
 
@@ -228,18 +194,9 @@ LIMIT 10;
 Partial indexes require explicit index naming via `to_bm25query()` — the
 implicit `text <@> 'query'` syntax skips them.
 
-Expression and partial indexes can be combined:
-
-```sql
-CREATE INDEX ON events USING bm25 ((data->>'message'))
-    WITH (text_config='english')
-    WHERE (data->>'severity') = 'error';
-```
-
 ### Multilingual Tables
 
-For tables with documents in multiple languages, create one partial index
-per language, each with the appropriate text search configuration:
+Create one partial index per language:
 
 ```sql
 ALTER TABLE docs ADD COLUMN lang CHAR(2) NOT NULL DEFAULT 'en';
@@ -252,8 +209,7 @@ CREATE INDEX docs_fr_idx ON docs USING bm25 (content)
     WITH (text_config='french')  WHERE lang = 'fr';
 ```
 
-Each index applies language-appropriate stemming and stop words. Query
-with the matching predicate and index name:
+Query with the matching predicate and index name:
 
 ```sql
 SELECT * FROM docs
@@ -262,36 +218,21 @@ ORDER BY content <@> to_bm25query('databases', 'docs_en_idx')
 LIMIT 10;
 ```
 
-## Data Types
+## Explicit Queries
 
-### bm25query
-
-The `bm25query` type represents queries for BM25 scoring with optional index context:
+`bm25query` can carry an explicit index name:
 
 ```sql
--- Create a bm25query with index name (required for WHERE clause and standalone scoring)
 SELECT to_bm25query('search query text', 'docs_idx');
--- Returns: docs_idx:search query text
 
--- Embedded index name syntax (alternative form using cast)
 SELECT 'docs_idx:search query text'::bm25query;
--- Returns: docs_idx:search query text
-
--- Create a bm25query without index name (only works in ORDER BY with index scan)
-SELECT to_bm25query('search query text');
--- Returns: search query text
 ```
 
-**Note**: Standalone scoring (`text <@> to_bm25query(text, index_name)`)
-requires the invoking role to hold `SELECT` on the indexed table, or on the
-indexed column(s). This matches the privileges required to read the same data
-through an ordinary index scan.
+Explicit index names are required for partial indexes, PL/pgSQL, and
+standalone scoring. Standalone scoring requires `SELECT` on the indexed table
+or columns.
 
-**Note**: In PostgreSQL 18, the embedded index name syntax using single colon (`:`) allows the
-query planner to determine the index name even when evaluating SELECT clause expressions early.
-This ensures compatibility across different query evaluation strategies.
-
-#### bm25query Functions
+### Functions
 
 Function | Description
 --- | ---
@@ -302,163 +243,71 @@ bm25query = bm25query → boolean | Equality comparison
 
 ## Performance
 
-pg_textsearch indexes use an on-disk paged memtable (the L0 of an LSM)
-for efficient writes. The memtable is mutated under standard buffer
-locks and WAL-logged via `GenericXLog`. Like other index types, it is
-faster to create an index after loading your data.
-
-```sql
--- Load data first
-INSERT INTO documents (content) VALUES (...);
-
--- Then create index
-CREATE INDEX docs_idx ON documents USING bm25(content) WITH (text_config='english');
-```
+For initial loads, create the index after loading data.
 
 ### Parallel Index Builds
 
-pg_textsearch supports parallel index builds for faster indexing of large tables.
-Postgres automatically uses parallel workers based on table size and configuration.
+PostgreSQL uses parallel workers automatically for sufficiently large tables.
 
 ```sql
--- Configure parallel workers (optional, uses server defaults otherwise)
 SET max_parallel_maintenance_workers = 4;
-SET maintenance_work_mem = '256MB';  -- At least 64MB required for parallel builds
-
--- Create index (parallel workers used automatically for large tables)
-CREATE INDEX docs_idx ON documents USING bm25(content) WITH (text_config='english');
+SET maintenance_work_mem = '256MB';
 ```
 
-**Note:** The planner requires `maintenance_work_mem >= 64MB` to enable parallel index
-builds. With insufficient memory, builds fall back to serial mode silently.
+Parallel builds require at least 64MB of `maintenance_work_mem`; otherwise they
+fall back to serial builds. Partitioned tables build each partition separately.
 
-You'll see a notice when parallel build is used:
-```
-NOTICE:  parallel index build: launched 4 of 4 requested workers
-```
+### Query Performance
 
-For partitioned tables, each partition builds its index independently with parallel
-workers if the partition is large enough. This allows efficient indexing of very
-large partitioned datasets.
-
-### Performance Tuning
-
-#### Force-merging segments
-
-The index stores data in multiple segments across levels (similar to an LSM
-tree). After bulk loads or sustained incremental inserts, multiple segments
-may accumulate. Force merge performs one copy-on-write compaction pass into
-the fewest segments that fit a conservative size estimate, reducing the
-number of segments scanned:
+Use `ORDER BY ... LIMIT n` to enable Block-Max WAND. Without `LIMIT`, the index
+scores up to `pg_textsearch.default_limit` matching documents.
 
 ```sql
-SELECT bm25_force_merge('docs_idx');
-```
-
-Published source segments remain immutable while replacement segments are
-built. Existing segments that already exceed the configured size budget
-remain uncombinable singletons. Pages displaced by publication enter deferred
-reclaim rather than becoming immediately reusable. Best used after large
-batch inserts, not during ongoing write traffic.
-
-#### Compacting an index
-
-`bm25_force_merge()` collapses an index into as few segments as it can. When
-you instead want to work off only the levels that have accumulated segments,
-use the threshold-driven controls:
-
-```sql
--- Is any level at pg_textsearch.segments_per_level segments?
-SELECT bm25_needs_compaction('docs_idx'::regclass);
-
--- Segments held at each of the eight LSM levels
-SELECT bm25_level_counts('docs_idx'::regclass);
-
--- Compact until no level is over threshold
-SELECT bm25_compact('docs_idx'::regclass);
-
--- Or run a single pass, reporting whether one ran
-SELECT bm25_compact_step('docs_idx'::regclass);
-```
-
-A *pass* is the unit of work and of publication: every segment a pass produces
-becomes visible in one metapage update, so a pass that fails leaves the layout
-it started from. `bm25_compact()` runs passes until none is due, all under one
-per-index exclusive lock. `bm25_compact_step()` runs at most one, so a
-maintenance job can spread a cascade over several transactions and release the
-lock in between.
-
-Three properties matter when scripting these:
-
-- **A published pass is not undone by `ROLLBACK`.** It is a physical change,
-  so a cascade that errors partway leaves its earlier passes applied.
-- **Neither mutating function is cancellable while a pass runs**, and a pass
-  is not a bounded amount of work. Holding the lock also holds off interrupts.
-- **`bm25_needs_compaction()` is advisory and must not be used on its own as
-  a loop condition.** It answers "is any level at the threshold", not "is
-  there work to do": a level whose segments all exceed
-  `pg_textsearch.max_segment_size` cannot be reduced but still counts as
-  full, so `WHILE bm25_needs_compaction(...) DO bm25_compact_step(...)` never
-  terminates on such an index. Drive the loop from `bm25_compact_step()`'s
-  return value instead, and stop when it returns false.
-
-The mutating functions require ownership of the index. They are rejected on
-partitioned parent indexes, which have no storage of their own — compact each
-partition's index instead — and during recovery. A session can compact its own
-temporary index in a read-only transaction; permanent and unlogged indexes it
-cannot.
-
-See [docs/background_compaction.md](docs/background_compaction.md) for the
-engine's level, sizing, and page-reclaim rules.
-
-#### Index fragmentation on update-heavy workloads
-
-Sustained INSERT/DELETE/UPDATE traffic can cause index pages to become
-physically scattered across the relation file, reducing sequential-read
-efficiency. If cold-cache query latency degrades over time, a periodic
-`REINDEX` rebuilds the index with contiguous page layout:
-
-```sql
-REINDEX INDEX docs_idx;
-```
-
-This is the same as `DROP INDEX` + `CREATE INDEX` but keeps the index
-name. Schedule it during low-traffic windows since it takes an
-exclusive lock.
-
-#### Use LIMIT with ORDER BY
-
-Top-k queries (`ORDER BY ... LIMIT n`) enable Block-Max WAND optimization,
-which skips blocks of postings that cannot contribute to the top results.
-Without a LIMIT clause, the index falls back to scoring all matching
-documents up to `pg_textsearch.default_limit`.
-
-```sql
--- Fast: BMW skips non-competitive blocks
 SELECT * FROM documents ORDER BY content <@> 'search terms' LIMIT 10;
-
--- Slower: scores up to default_limit documents
-SELECT * FROM documents ORDER BY content <@> 'search terms';
 ```
 
-#### Segment compression
-
-Compression is on by default and generally improves both index size and query
-performance (fewer pages to read). Disable only if you observe that
-decompression overhead is a bottleneck for your workload:
+Segment compression is enabled by default. Disable it only when decompression
+is a measured bottleneck:
 
 ```sql
 SET pg_textsearch.compress_segments = off;
 ```
 
-#### Postgres settings that affect index builds
+Update-heavy workloads can fragment index pages. Use `REINDEX` during a
+low-traffic window if cold-cache latency degrades:
 
-Setting | Effect
---- | ---
-`max_parallel_maintenance_workers` | Number of parallel workers for CREATE INDEX (default 2)
-`maintenance_work_mem` | Memory per worker; must be >= 64MB for parallel builds
+```sql
+REINDEX INDEX docs_idx;
+```
 
-#### pg_textsearch GUCs
+### Compaction
+
+Compaction runs automatically during memtable spills. These functions provide
+manual and scheduled control:
+
+```sql
+SELECT bm25_force_merge('docs_idx');
+SELECT bm25_compact('docs_idx'::regclass);
+SELECT bm25_compact_step('docs_idx'::regclass);
+SELECT bm25_needs_compaction('docs_idx'::regclass);
+SELECT bm25_level_counts('docs_idx'::regclass);
+```
+
+`bm25_force_merge()` reduces the index to the fewest segments allowed by
+`pg_textsearch.max_segment_size`. `bm25_compact()` processes all eligible
+levels; `bm25_compact_step()` processes at most one pass.
+
+- Published passes are not undone by `ROLLBACK`.
+- Mutating compaction functions are not cancellable while a pass runs.
+- Drive maintenance loops from `bm25_compact_step()`'s return value, not
+  `bm25_needs_compaction()`, which is advisory.
+- Mutating functions require index ownership and do not operate on partitioned
+  parent indexes or during recovery.
+
+See [docs/background_compaction.md](docs/background_compaction.md) for sizing,
+publication, locking, and page-reclaim details.
+
+### Settings
 
 Setting | Default | Description
 --- | --- | ---
@@ -472,7 +321,7 @@ Setting | Default | Description
 `pg_textsearch.memtable_cache_enabled` | on | Cache memtable data in shared memory for faster queries
 `pg_textsearch.memory_limit` | 2GB | Shared memory limit for memtable caches across all indexes (0 = no limit)
 
-#### Memtable architecture
+### Memtable Architecture
 
 The L0 memtable is stored in the index as a WAL-logged chain of pages. It is
 the durable source of truth and can be restored by PostgreSQL without loading
@@ -501,15 +350,13 @@ WHERE indexrelid::regclass::text ~ 'pg_textsearch';
 
 ## Limitations
 
-### No Phrase Queries
+### Phrase Queries
 
 The BM25 index stores term frequencies but not term positions, so it cannot
-natively evaluate phrase queries like `"database system"`. You can emulate
-phrase matching by combining BM25 ranking with a post-filter:
+evaluate phrases directly. Over-fetch ranked candidates and apply a
+post-filter:
 
 ```sql
--- BM25 ranks candidates; subquery over-fetches to account for
--- post-filter eliminating non-phrase matches
 SELECT * FROM (
     SELECT *, content <@> 'database system' AS score
     FROM documents
@@ -521,332 +368,124 @@ ORDER BY score
 LIMIT 10;
 ```
 
-Because the post-filter eliminates some results, the inner LIMIT should
-be larger than the desired result count.
+### Background Compaction
 
-### No Built-in Faceted Search
+pg_textsearch does not include a background worker. Compaction defaults to
+`inline`; two per-index alternatives are available:
 
-pg_textsearch does not provide dedicated faceting operators, but standard
-Postgres query machinery handles common faceting patterns:
+- `background` calls `pg_textsearch.compaction_request_function` at
+  pre-commit. The callback must hand work to something that survives its
+  rolled-back internal subtransaction; a plain table insert does not.
+- `off` requires an external job to call `bm25_compact()` or
+  `bm25_compact_step()`; without one, segments accumulate and spills
+  eventually fail.
 
-```sql
--- Filter by category (assumes a B-tree index on category)
-SELECT * FROM documents
-WHERE category = 'engineering'
-ORDER BY content <@> 'search terms'
-LIMIT 10;
+Change the policy with `ALTER INDEX ... SET (compaction = ...)`.
+`background` falls back to inline compaction for temporary indexes,
+autovacuum, callback-triggered spills, and `CREATE INDEX`. Prepared
+transactions do not dispatch requests.
 
--- Compute facet counts over top search results
-SELECT category, count(*)
-FROM (
-    SELECT category FROM documents
-    ORDER BY content <@> 'search terms'
-    LIMIT 100
-) matches
-GROUP BY category;
-```
-
-### Insert/Update Performance
-
-The memtable architecture is designed to support efficient writes, but
-sustained write-heavy workloads are not yet fully optimized. For initial
-data loading, creating the index after loading data is faster than
-incremental inserts. This is an active area of development.
-
-### No Background Compaction Worker
-
-Segment compaction runs synchronously during memtable spill operations by
-default, so write-heavy workloads may observe compaction latency during
-spills. pg_textsearch ships no background worker that compacts on its own.
-
-Two ways to move that work off the writing transaction:
-
-- Create the index `WITH (compaction = 'background')` and point
-  `pg_textsearch.compaction_request_function` at a function taking one
-  `regclass`. A spill that leaves a level at the threshold then records a
-  request and calls that function at pre-commit instead of compacting.
-  pg_textsearch does not supply the scheduler; you provide the callback and
-  whatever runs the work. Note that the callback executes inside an internal
-  subtransaction that is rolled back afterward, so it must hand the request
-  to something that survives a subtransaction abort — a plain `INSERT` into a
-  queue table will not persist.
-- Create the index `WITH (compaction = 'off')` and drive `bm25_compact()` or
-  `bm25_compact_step()` from an external job on a schedule of your choosing.
-  With `off` and no such job, segments accumulate until a level reaches the
-  per-level cap of 65535, after which spills fail with `bm25 segment count
-  limit reached`. Query performance degrades well before that point.
-
-The policy is per index, so one index can hand compaction to a scheduler
-while another keeps compacting inline. Change it with
-`ALTER INDEX ... SET (compaction = ...)`; the setting is read after each
-spill, and the statement does not block concurrent readers or writers.
-
-`background` compacts inline where a request could not be handed off: on
-temporary indexes, during autovacuum, for a spill caused by the callback
-itself, and during `CREATE INDEX`. `off` is honored in all of these.
-
-Two-phase transactions hand off nothing, because pending requests live in
-transaction-local memory that `PREPARE TRANSACTION` frees. The debt is left
-for the next ordinary spill or for the scheduler's own sweep.
-
-See [Compacting an index](#compacting-an-index). A built-in background
-scheduler is planned for a future release.
+See [docs/background_compaction.md](docs/background_compaction.md).
 
 ### Partitioned Tables
 
-BM25 indexes on partitioned tables use **partition-local statistics**. Each
-partition maintains its own:
-- Document count (`total_docs`)
-- Average document length (`avg_doc_len`)
-- Per-term document frequencies for IDF calculation
+BM25 statistics are local to each partition. Scores are comparable within a
+partition but may use different IDF scales across partitions. Query individual
+partitions when cross-row score comparability matters.
 
-This means:
-- Queries targeting a single partition compute accurate BM25 scores using that
-  partition's statistics
-- Queries spanning multiple partitions return scores computed independently per
-  partition, which may not be directly comparable across partitions
+### Token and Document Limits
 
-**Example**: If partition A has 1000 documents and partition B has 10 documents,
-the term "database" would have different IDF values in each partition. Results
-from both partitions would have scores on different scales.
+PostgreSQL ignores tokens beyond its 2047-character text-search limit. This
+mainly affects base64 data, long URLs, and concatenated identifiers.
 
-**Recommendations**:
-- For time-partitioned data, query individual partitions when score comparability
-  matters
-- Use partitioning schemes where queries naturally target single partitions
-- Consider this behavior when designing partition strategies for search workloads
-
-```sql
--- Query single partition (scores are accurate within partition)
-SELECT * FROM docs
-WHERE created_at >= '2024-01-01' AND created_at < '2025-01-01'
-ORDER BY content <@> 'search terms'
-LIMIT 10;
-
--- Cross-partition query (scores computed per-partition)
-SELECT * FROM docs
-ORDER BY content <@> 'search terms'
-LIMIT 10;
-```
-
-### Word Length Limit
-
-pg_textsearch inherits PostgreSQL's tsvector word length limit of 2047 characters.
-Words exceeding this limit are ignored during tokenization (with an INFO message).
-This is defined by `MAXSTRLEN` in PostgreSQL's text search implementation.
-
-For typical natural language text, this limit is never encountered. It may affect
-documents containing very long tokens such as base64-encoded data, long URLs, or
-concatenated identifiers.
-
-This behavior is similar to other search engines:
-- Elasticsearch: Truncates tokens (configurable via `truncate` filter, default 10 chars)
-- Tantivy: Truncates to 255 bytes by default
-
-### Large Documents and Chunked Tokenization
-
-pg_textsearch calls Postgres's `to_tsvector` to tokenize document text.
-Postgres caps a single `tsvector`'s lexeme dictionary at 1 MB
-(`MAXSTRPOS`). Documents whose unique-token volume would exceed that cap
-are split into chunks (currently 256 KB) before tokenization, then the
-per-chunk term frequencies are merged.
-
-Chunk boundaries are chosen at the last ASCII whitespace inside each
-window. This is correct for whitespace-delimited scripts (Latin,
-Cyrillic, Greek, Arabic, etc.). For non-whitespace-delimited scripts
-(CJK, Thai, Lao, Khmer), oversize documents are still indexed, but the
-chunk boundary may fall in the middle of what a language-aware tokenizer
-would treat as a word. In practice this is acceptable because Postgres's
-default text-search parser does not emit per-word tokens for those
-scripts anyway. If you use a custom text search configuration with a
-parser that produces word-level tokens for one of these scripts, very
-large documents may produce slightly different lexeme counts than a
-single-shot tokenization would.
-
-**Workaround for large CJK (or other non-whitespace-delimited)
-documents:** split the document into smaller pieces in the application
-layer and index a `text[]` column instead of `text`. pg_textsearch
-indexes arrays element-by-element and BM25 scores match what you'd get
-from concatenating the elements into a single `text` value, so you keep
-ranking quality while controlling where chunk boundaries fall. Pair
-this with a CJK-aware text search configuration from an extension such
-as [zhparser](https://github.com/amutu/zhparser) (Chinese) so that each
-chunk gets word-level tokenization:
-
-```sql
-CREATE EXTENSION zhparser;
-CREATE TEXT SEARCH CONFIGURATION public.chinese_zh (PARSER = zhparser);
-ALTER TEXT SEARCH CONFIGURATION public.chinese_zh
-    ADD MAPPING FOR n,v,a,i,e,l WITH simple;
-
-CREATE TABLE docs (id bigserial PRIMARY KEY, content text[]);
-CREATE INDEX docs_bm25 ON docs USING bm25(content)
-    WITH (text_config='public.chinese_zh');
-```
+Documents that exceed PostgreSQL's 1MB `tsvector` lexeme limit are tokenized
+in 256KB chunks. For large non-whitespace-delimited documents, use a `text[]`
+column to control chunk boundaries and a language-aware text search
+configuration such as [zhparser](https://github.com/amutu/zhparser).
 
 ### PL/pgSQL and Stored Procedures
 
-The implicit `text <@> 'query'` syntax relies on planner hooks to automatically
-detect the BM25 index. These hooks don't run inside PL/pgSQL DO blocks, functions,
-or stored procedures.
-
-**Inside PL/pgSQL**, use explicit index names with `to_bm25query()`:
+Planner hooks do not resolve the implicit query syntax inside PL/pgSQL. Use an
+explicit index name:
 
 ```sql
--- This won't work in PL/pgSQL:
--- SELECT * FROM docs ORDER BY content <@> 'search terms' LIMIT 10;
-
--- Use explicit index name instead:
 SELECT * FROM docs
 ORDER BY content <@> to_bm25query('search terms', 'docs_idx')
 LIMIT 10;
 ```
 
-Regular SQL queries (outside PL/pgSQL) support both forms.
-
 ## Troubleshooting
 
-```sql
--- List available text search configurations
-SELECT cfgname FROM pg_ts_config;
+List installed text search configurations:
 
--- List BM25 indexes
+```sql
+SELECT cfgname FROM pg_ts_config;
+```
+
+List BM25 indexes:
+
+```sql
 SELECT indexname FROM pg_indexes WHERE indexdef LIKE '%USING bm25%';
 ```
 
-
-## Installation Notes
-
-If your machine has multiple Postgres installations, specify the path to `pg_config`:
+For multiple PostgreSQL installations, set `PG_CONFIG` before building:
 
 ```sh
 export PG_CONFIG=/Library/PostgreSQL/18/bin/pg_config  # or 17
 make clean && make && make install
 ```
 
-If you get compilation errors, install Postgres development files:
+Compilation requires PostgreSQL development files:
 
 ```sh
-# Ubuntu/Debian
-sudo apt install postgresql-server-dev-17  # for PostgreSQL 17
-sudo apt install postgresql-server-dev-18  # for PostgreSQL 18
+sudo apt install postgresql-server-dev-18  # use 17 for PostgreSQL 17
 ```
 
 ## Reference
 
-### Text Search Configurations
+### Chinese Full-Text Search
 
-Available configurations depend on your Postgres installation:
-```
-# SELECT cfgname FROM pg_ts_config;
-  cfgname
-------------
- simple
- arabic
- armenian
- basque
- catalan
- danish
- dutch
- english
- finnish
- french
- german
- greek
- hindi
- hungarian
- indonesian
- irish
- italian
- lithuanian
- nepali
- norwegian
- portuguese
- romanian
- russian
- serbian
- spanish
- swedish
- tamil
- turkish
- yiddish
-(29 rows)
-```
-Further language support is available via extensions — see
-[Chinese full-text search](#chinese-full-text-search) below.
-
-### Chinese full-text search
-
-pg_textsearch tokenizes both documents and queries through the index's
-`text_config` (a standard PostgreSQL text search configuration), so
-Chinese support is a matter of choosing a Chinese-aware configuration;
-pg_textsearch itself needs no language-specific code. PostgreSQL's
-built-in parser does not split Chinese text into words, so pair
-pg_textsearch with a Chinese word segmenter such as
-[zhparser](https://github.com/amutu/zhparser), which builds on the SCWS
-segmentation library. On a managed platform the extension must be
-allow-listed (for example, zhparser is not on the Azure Database for
-PostgreSQL Flexible Server allow-list).
-
-zhparser is packaged as a text search parser, so a configuration built on
-it plugs directly into a `bm25` index. `CREATE EXTENSION zhparser` also
-registers the parser; map the token types you want to index and reference
-the configuration by a schema-qualified name.
+Use a Chinese-aware PostgreSQL text search configuration such as
+[zhparser](https://github.com/amutu/zhparser). The same `text_config` tokenizes
+documents and queries.
 
 ```sql
 CREATE EXTENSION zhparser;
 
--- Map zhparser's content token types (nouns, verbs, adjectives, idioms,
--- interjections, set phrases). Schema-qualify the configuration so the
--- bm25 index build can resolve it by name.
 CREATE TEXT SEARCH CONFIGURATION public.chinese (PARSER = zhparser);
 ALTER TEXT SEARCH CONFIGURATION public.chinese
     ADD MAPPING FOR n, v, a, i, e, l WITH simple;
 
-CREATE TABLE docs (id bigserial PRIMARY KEY, content text);
 CREATE INDEX docs_bm25 ON docs USING bm25 (content)
     WITH (text_config='public.chinese');
 
--- The query string is tokenized with the same configuration:
 SELECT id FROM docs
 ORDER BY content <@> to_bm25query('机器学习', 'docs_bm25')
 LIMIT 10;
 ```
 
-An end-to-end regression test for this setup lives in
-`test/sql/chinese.sql` and runs via `make test-chinese` (see the
-`Chinese CI` workflow). For large Chinese documents, the
-[large-document workaround](#large-documents-and-chunked-tokenization)
-above applies the same `n,v,a,i,e,l` zhparser mapping to a chunked
-`text[]` column.
-
 ### Compaction Functions
 
-Compaction runs automatically during memtable spills. These functions let an
-administrator or a maintenance job drive it explicitly. All four take a
-`regclass`, so an index can be named as `'docs_idx'::regclass` or by OID. The
-mutating functions require ownership of the index; the inspection functions do
-not. See [Compacting an index](#compacting-an-index) for the caveats that
-matter when scripting them.
+These functions take an index `regclass`. Mutating functions require index
+ownership. See [Compaction](#compaction) before scripting them.
 
 Function | Description
 --- | ---
 bm25_level_counts(index) → int4[] | Segments held at each of the eight LSM levels
-bm25_needs_compaction(index) → bool | Whether any level holds at least `segments_per_level` segments; advisory only, and not safe as a loop condition on its own
-bm25_compact(index) → void | Run compaction passes to completion under one per-index exclusive lock
-bm25_compact_step(index) → bool | Run at most one pass and report whether one ran, letting a caller spread a cascade over several transactions
+bm25_needs_compaction(index) → bool | Whether any level reached `segments_per_level` (advisory)
+bm25_compact(index) → void | Run eligible compaction passes
+bm25_compact_step(index) → bool | Run at most one pass
 
 ### Development Functions
 
-These functions are for debugging and development use only. Their interface may
-change in future releases without notice. Functions marked with † require
+These interfaces may change without notice. Functions marked with † require
 superuser privileges.
 
 Function | Description
 --- | ---
-bm25_force_merge(index_name) → void | Run one-shot copy-on-write compaction into the fewest conservatively size-bounded segments; over-budget singletons remain uncombinable and displaced pages enter deferred reclaim
+bm25_force_merge(index_name) → void | Merge into the fewest size-bounded segments
 bm25_spill_index(index_name) → int4 | Force memtable spill to disk segment
-bm25_pending_free_pages(index_name) † → int8 | Count displaced segment pages parked in the deferred-free chain, awaiting standby-safe reclaim
+bm25_pending_free_pages(index_name) † → int8 | Count pages awaiting standby-safe reclaim
 bm25_dump_index(index_name) † → text | Dump internal index structure (truncated)
 bm25_summarize_index(index_name) † → text | Show index statistics without content
 
@@ -854,30 +493,14 @@ Additional file-writing debug functions (`bm25_dump_index(text, text)` and
 `bm25_debug_pageviz`) are available in debug builds only (compile with
 `-DDEBUG_DUMP_INDEX`).
 
-```sql
--- Compact once into the fewest conservatively size-bounded segments
-SELECT bm25_force_merge('docs_idx');
-
--- Force spill to disk (returns number of entries spilled)
-SELECT bm25_spill_index('docs_idx');
-
--- Quick overview of index statistics
-SELECT bm25_summarize_index('docs_idx');
-
--- Detailed dump for debugging (truncated output)
-SELECT bm25_dump_index('docs_idx');
-```
-
 ## Extension Compatibility
 
-pg_textsearch uses fixed LWLock tranche IDs 1001-1008 to support large numbers
-of indexes (e.g., partitioned tables with hundreds of partitions). If you use
-another Postgres extension that also registers fixed tranche IDs in this range,
-wait event names in `pg_stat_activity` may be incorrect. Core Postgres tranches
-use IDs below 100. If you encounter a conflict, please
+pg_textsearch uses LWLock tranche IDs 1001-1008. Another extension using the
+same IDs can cause incorrect wait-event names in `pg_stat_activity`. If you
+encounter a conflict,
 [open an issue](https://github.com/timescale/pg_textsearch/issues).
 
-## Project history
+## Project History
 
 pg_textsearch was originally named Tapir (Textual Analysis for Postgres
 Information Retrieval), which remains the project mascot and appears in some
