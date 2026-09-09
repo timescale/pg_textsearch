@@ -1,4 +1,4 @@
--- Memory stress benchmark for Tapir extension
+-- Memory stress benchmark for pg_textsearch
 -- Tests behavior when shared memory is exhausted with large document dataset
 --
 -- This benchmark:

@@ -1,4 +1,4 @@
--- Micro memory stress benchmark for Tapir extension
+-- Micro memory stress benchmark for pg_textsearch
 -- Tests with a very small dataset to demonstrate functionality
 -- and establish baseline performance characteristics
 --

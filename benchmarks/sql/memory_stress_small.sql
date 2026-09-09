@@ -1,4 +1,4 @@
--- Smaller memory stress benchmark for Tapir extension
+-- Smaller memory stress benchmark for pg_textsearch
 -- Tests behavior with a more manageable dataset size
 --
 -- This benchmark:

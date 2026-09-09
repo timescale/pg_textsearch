@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# Memory stress benchmark runner for Tapir extension
+# Memory stress benchmark runner for pg_textsearch
 # This script runs the memory stress test and captures output
 
 set -e
@@ -16,13 +16,13 @@ export PGUSER=${PGUSER:-$(whoami)}
 export PGDATABASE=${PGDATABASE:-postgres}
 
 # Check if pg_textsearch extension is available
-echo "Checking Tapir extension availability..."
+echo "Checking pg_textsearch extension availability..."
 psql -c "CREATE EXTENSION IF NOT EXISTS pg_textsearch;" || {
-    echo "ERROR: Tapir extension not available. Please install it first with 'make install'"
+    echo "ERROR: pg_textsearch extension not available. Please install it first with 'make install'"
     exit 1
 }
 
-echo "Tapir extension loaded successfully."
+echo "pg_textsearch extension loaded successfully."
 echo ""
 
 # Show initial configuration (skip if parameters not available)

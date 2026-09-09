@@ -175,7 +175,7 @@
 #define TP_TRANCHE_POSTING_LOCK 1009
 
 /*
- * In-memory memtable cache LWLocks (see docs/memtable_cache.md).
+ * In-memory memtable cache LWLocks.
  * apply_lock serializes cache mutators (reader catchup, cold build,
  * spill catchup, tp_cache_clear).  lock is the cache lifetime lock,
  * held SHARED for the lifetime of a served TpDataSource and EXCL only
@@ -185,12 +185,11 @@
 #define TP_TRANCHE_CACHE_LOCK		1011
 
 /*
- * Global eviction mutex tranche (see docs/memtable_cache.md
- * §"Memory cap (3 tiers)").  Serializes cache evictions across
- * backends.  Acquired EXCL by evict_largest and by index cleanup
- * (DROP INDEX path) to prevent races between an in-flight victim
- * inspection and a concurrent dsa_free of the victim's shared
- * state.
+ * Global eviction mutex tranche.  Serializes cache evictions
+ * across backends.  Acquired EXCL by evict_largest and by index
+ * cleanup (DROP INDEX path) to prevent races between an in-flight
+ * victim inspection and a concurrent dsa_free of the victim's
+ * shared state.
  */
 #define TP_TRANCHE_EVICTION_MUTEX 1012
 

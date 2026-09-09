@@ -436,8 +436,7 @@ _PG_init(void)
 	DefineCustomIntVariable(
 			"pg_textsearch.memory_limit",
 			"Maximum shared memory used by the in-memory memtable cache.",
-			"Applied as a three-tier budget (see "
-			"docs/memtable_cache.md): per-index soft cap "
+			"Applied as a three-tier budget: per-index soft cap "
 			"(limit/8) returns BUDGET_EXCEEDED to the apply "
 			"protocol so the read falls back to the on-disk "
 			"chain; global soft cap (limit/2) evicts the "

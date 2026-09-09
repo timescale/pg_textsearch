@@ -6,8 +6,8 @@
  *
  * Appends document records to the on-disk memtable page chain
  * rooted at the metapage's (memtable_head_blkno,
- * memtable_tail_blkno) fields.  See issue #374 and
- * docs/memtable_v2.md for the design.
+ * memtable_tail_blkno) fields.  See ARCHITECTURE.md, "Storage
+ * and WAL", for the design.
  *
  * Concurrency contract:
  *

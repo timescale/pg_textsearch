@@ -420,7 +420,8 @@ AS 'MODULE_PATHNAME', 'bm25_cache_bump_spill_generation'
 LANGUAGE C STRICT;
 
 -- Cache memory-cap scaffolds.  Same INTERNAL-ONLY disclaimer as
--- above.  See docs/memtable_cache.md §"Memory cap (3 tiers)".
+-- above.  The per-index soft cap is limit/8, the global soft cap
+-- is limit/2, and the global hard cap refuses builds at limit.
 CREATE FUNCTION @extschema@.bm25_cache_global_estimated_bytes()
 RETURNS bigint
 AS 'MODULE_PATHNAME', 'bm25_cache_global_estimated_bytes'

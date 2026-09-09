@@ -308,7 +308,7 @@ processes at most one pass.
 - Mutating functions require index ownership and do not operate on partitioned
   parent indexes or during recovery.
 
-See [docs/background_compaction.md](docs/background_compaction.md) for sizing,
+See [ARCHITECTURE.md](ARCHITECTURE.md#spill-and-compaction) for sizing,
 publication, locking, and page-reclaim details.
 
 Hot standbys serving queries must set `hot_standby_feedback = on` so active
@@ -332,7 +332,7 @@ Setting | Default | Description
 
 The L0 memtable is stored in the index as a WAL-logged chain of pages. It is
 the durable source of truth and can be restored by PostgreSQL without loading
-`pg_textsearch.so`. See [`docs/memtable_v2.md`](docs/memtable_v2.md).
+`pg_textsearch.so`. See [ARCHITECTURE.md](ARCHITECTURE.md#storage-and-wal).
 
 Queries use a shared-memory cache when enabled. An index falls back to the
 chain at `memory_limit / 8`; global pressure triggers eviction at
@@ -398,7 +398,7 @@ Change the policy with `ALTER INDEX ... SET (compaction = ...)`.
 autovacuum, callback-triggered spills, and `CREATE INDEX`. Prepared
 transactions do not dispatch requests.
 
-See [docs/background_compaction.md](docs/background_compaction.md).
+See [ARCHITECTURE.md](ARCHITECTURE.md#spill-and-compaction).
 
 ### Partitioned Tables
 

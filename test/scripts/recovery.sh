@@ -1,6 +1,6 @@
 #!/bin/bash
 #
-# Crash recovery test script for Tapir extension
+# Crash recovery test script for pg_textsearch
 # This script simulates actual crashes and verifies recovery functionality
 #
 
