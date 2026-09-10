@@ -36,7 +36,7 @@
  * dropped (apply_to_tail) or the build is rejected (cold_build's
  * RETRY).
  *
- * Lock order (see docs/memtable_cache.md "Lock order"):
+ * Lock order:
  *   per-index LWLock (SHARED for read, EXCL for spill)
  *     -> cache.apply_lock (EXCL only)
  *       -> cache.lock (SHARED for readers, EXCL for drop/build)
@@ -133,7 +133,6 @@ extern uint64 tp_cache_per_index_soft_cap_bytes(void);
  * Global soft and hard memory caps, in BYTES (the GUC is in kB).
  * Global soft cap = memory_limit / 2; hard cap = memory_limit.
  * Both return 0 to mean "unlimited" when the GUC is disabled.
- * See docs/memtable_cache.md §"Memory cap (3 tiers)".
  */
 extern uint64 tp_cache_global_soft_cap_bytes(void);
 extern uint64 tp_cache_global_hard_cap_bytes(void);
@@ -174,7 +173,6 @@ typedef enum TpCacheEvictResult
  * (clear its dshash tables, subtract its bytes from the global
  * counter).  Caller MUST hold its own per-index LWLock SHARED
  * (the read path's natural state); MUST NOT hold any cache lock.
- * See docs/memtable_cache.md §"Memory cap (3 tiers)".
  */
 extern TpCacheEvictResult tp_cache_evict_largest(Oid caller_oid);
 
@@ -211,6 +209,6 @@ extern void tp_cache_account_bytes_drain(TpMemtable *memtable);
  * subxact-abort teardown path runs while no other backend can be
  * reading the cache (AccessExclusiveLock on the index, or
  * shared-state already unregistered); no cache.lock acquisition
- * is needed there.  See docs/memtable_cache.md.
+ * is needed there.
  */
 extern void tp_cache_clear(dsa_area *dsa, TpMemtable *memtable);

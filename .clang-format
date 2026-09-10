@@ -1,5 +1,5 @@
 ---
-# PostgreSQL-style C formatting for Tapir extension
+# PostgreSQL-style C formatting for pg_textsearch
 # Optimized for 79-character line limit with proper alignment
 BasedOnStyle: LLVM
 

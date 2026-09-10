@@ -1,6 +1,6 @@
 #!/bin/bash
 #
-# Crash recovery test script for Tapir extension
+# Crash recovery test script for pg_textsearch
 # This script simulates actual crashes and verifies recovery functionality
 #
 
@@ -331,7 +331,7 @@ test_empty_index_rebuild() {
 }
 
 main() {
-    log "Starting Tapir crash recovery test..."
+    log "Starting pg_textsearch crash recovery test..."
 
     # Check if we have necessary tools
     command -v pg_ctl >/dev/null 2>&1 || error "pg_ctl not found in PATH"
