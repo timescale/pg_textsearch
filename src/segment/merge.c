@@ -1061,13 +1061,16 @@ write_merged_segment_to_sink(
 	string_pos = 0;
 	for (i = 0; i < num_terms; i++)
 	{
+		uint64 entry_size = tp_string_pool_entry_size(terms[i].term_len);
+
 		/*
 		 * String-pool offsets are stored as uint32 in the segment
-		 * format.  Fail loudly before writing rather than silently
-		 * wrapping and producing a segment that reads from the wrong
-		 * place (issue #432).
+		 * format.  Guard both the current offset and the increment so
+		 * the final term cannot push the pool past the representable
+		 * limit without raising an error, which would silently produce
+		 * a segment that reads from the wrong place (issue #432).
 		 */
-		if (string_pos > PG_UINT32_MAX)
+		if (tp_string_pool_offset_overflows(string_pos, entry_size))
 			ereport(ERROR,
 					(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
 					 errmsg("pg_textsearch: merged segment string pool "
@@ -1077,8 +1080,7 @@ write_merged_segment_to_sink(
 							 "single segment.")));
 
 		string_offsets[i] = (uint32)string_pos;
-		string_pos += (uint64)sizeof(uint32) + terms[i].term_len +
-					  sizeof(uint32);
+		string_pos += entry_size;
 	}
 
 	/* Write string offsets array */
@@ -1170,10 +1172,13 @@ write_merged_segment_to_sink(
                                                                                 \
 		if (skip_entries_count >= skip_entries_capacity)                        \
 		{                                                                       \
-			skip_entries_capacity *= 2;                                         \
+			skip_entries_capacity = tp_grow_capacity(                           \
+					skip_entries_capacity, 1024, "posting blocks");             \
 			all_skip_entries = repalloc_huge(                                   \
 					all_skip_entries,                                           \
-					skip_entries_capacity * sizeof(TpSkipEntry));               \
+					mul_size(                                                   \
+							(Size)skip_entries_capacity,                        \
+							sizeof(TpSkipEntry)));                              \
 		}                                                                       \
 		all_skip_entries[skip_entries_count++] = skip_;                         \
 		(num_blocks)++;                                                         \
@@ -1505,15 +1510,15 @@ tp_merge_segment_batch(
 		min_term = sources[min_idx].current_term;
 		if (num_merged_terms >= merged_capacity)
 		{
-			merged_capacity = merged_capacity == 0 ? 1024
-												   : merged_capacity * 2;
+			merged_capacity = tp_grow_capacity(merged_capacity, 1024, "terms");
 			if (merged_terms == NULL)
 				merged_terms = palloc_extended(
-						merged_capacity * sizeof(TpMergedTerm),
+						mul_size((Size)merged_capacity, sizeof(TpMergedTerm)),
 						MCXT_ALLOC_HUGE);
 			else
 				merged_terms = repalloc_huge(
-						merged_terms, merged_capacity * sizeof(TpMergedTerm));
+						merged_terms,
+						mul_size((Size)merged_capacity, sizeof(TpMergedTerm)));
 		}
 
 		current_merged					 = &merged_terms[num_merged_terms];
