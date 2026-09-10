@@ -512,6 +512,35 @@ same IDs can cause incorrect wait-event names in `pg_stat_activity`. If you
 encounter a conflict,
 [open an issue](https://github.com/timescale/pg_textsearch/issues).
 
+## Version History
+
+Version | Highlights
+--- | ---
+[`v1.4.0`](https://github.com/timescale/pg_textsearch/releases/tag/v1.4.0) | Faster filtered top-k queries, Chinese search, and large-corpus improvements
+[`v1.3.1`](https://github.com/timescale/pg_textsearch/releases/tag/v1.3.1) | Standby-safe page reclaim and concurrency, VACUUM, and parallel-build fixes
+[`v1.3.0`](https://github.com/timescale/pg_textsearch/releases/tag/v1.3.0) | On-disk memtable with a shared-memory read cache and stateless WAL replay
+[`v1.2.0`](https://github.com/timescale/pg_textsearch/releases/tag/v1.2.0) | Physical replication and update-heavy workload correctness
+[`v1.1.0`](https://github.com/timescale/pg_textsearch/releases/tag/v1.1.0) | Concurrent writes, alive-bitset VACUUM, memory controls, arrays, expression indexes, and partial indexes
+[`v1.0.0`](https://github.com/timescale/pg_textsearch/releases/tag/v1.0.0) | First generally available release
+[`v0.6.1`](https://github.com/timescale/pg_textsearch/releases/tag/v0.6.1) | Transaction-abort, VACUUM, large-posting, and BMW stability
+[`v0.6.0`](https://github.com/timescale/pg_textsearch/releases/tag/v0.6.0) | Large-scale performance, lower memory use, and required shared preloading
+[`v0.5.1`](https://github.com/timescale/pg_textsearch/releases/tag/v0.5.1) | Concurrent index builds, iterative scans, progress reporting, and scan statistics
+[`v0.5.0`](https://github.com/timescale/pg_textsearch/releases/tag/v0.5.0) | Parallel index builds and improved hypertable support
+[`v0.4.2`](https://github.com/timescale/pg_textsearch/releases/tag/v0.4.2) | Hypertable scoring fix
+[`v0.4.1`](https://github.com/timescale/pg_textsearch/releases/tag/v0.4.1) | Hypertable scan locking fix
+[`v0.4.0`](https://github.com/timescale/pg_textsearch/releases/tag/v0.4.0) | Compressed posting lists, ordered-scan planner support, and partitioned-table fixes
+[`v0.3.0`](https://github.com/timescale/pg_textsearch/releases/tag/v0.3.0) | Block-Max WAND, bounded memtable growth, and expanded performance testing
+[`v0.2.0`](https://github.com/timescale/pg_textsearch/releases/tag/v0.2.0) | Public benchmarks, block-based segment storage, and a dynamic index registry
+[`v0.1.0`](https://github.com/timescale/pg_textsearch/releases/tag/v0.1.0) | First open-source release, simpler query syntax, and partitioned tables
+[`v0.0.5`](https://github.com/timescale/pg_textsearch/releases/tag/v0.0.5) | Pre-release
+[`v0.0.4`](https://github.com/timescale/pg_textsearch/releases/tag/v0.0.4) | BM25 indexing, PostgreSQL 17/18 support, crash recovery, and memory budgets
+[`v0.0.3`](https://github.com/timescale/pg_textsearch/releases/tag/v0.0.3) | PostgreSQL 18 support
+[`v0.0.2`](https://github.com/timescale/pg_textsearch/releases/tag/v0.0.2) | Schema insertion fixes and an inheritance safety check
+[`v0.0.1`](https://github.com/timescale/pg_textsearch/releases/tag/v0.0.1) | Initial release
+
+See [GitHub Releases](https://github.com/timescale/pg_textsearch/releases) for
+complete release notes.
+
 ## Contributing
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for development setup and contribution
