@@ -93,6 +93,39 @@ permanently above its advisory threshold.
 A compaction pass publishes its replacement layout in one metapage update.
 Published physical changes are not undone by transaction rollback.
 
+## Managed Background Compaction
+
+Background mode requires pg_durable 0.2.8 or newer. pg_durable must be
+preloaded, installed and initialized in the current database, and usable by
+the index owner. The owner must have `LOGIN`; a superuser owner also requires
+`pg_durable.enable_superuser_instances = on`. pg_textsearch discovers the SQL
+API through extension metadata and records a normal extension dependency
+after the first successful activation.
+
+Each physical background index has one owner-scoped workflow identified by
+its database, physical relation identity, owner, schedule, and protocol
+version. The workflow runs a stepped cascade immediately, then waits for a
+spill signal or its cron schedule. Every step calls the private
+physical-target helper in a separate SQL node and transaction, releasing
+PostgreSQL locks between published passes.
+
+The startup wrapper and scheduled loop continue after SQL activity failures,
+so the same workflow can retry or handle a later wake. Graph, protocol,
+runtime, and infrastructure failures remain terminal. A later spill recovers
+a terminal workflow for the current managed generation.
+
+The helper revalidates the captured physical identity while holding the
+relation lock. Dropped, replaced, reindexed, re-owned, or reconfigured targets
+return false without touching another relation. Utility hooks reconcile
+workflows after relevant `CREATE INDEX` and `ALTER INDEX` operations.
+
+Spill requests are transaction-local and deduplicated by index. At pre-commit,
+after the compaction lock is released, pg_textsearch revalidates the target,
+finds or recovers its workflow, and signals that exact instance. Ordinary
+signaling failures warn without aborting the writer; cancellation and shutdown
+errors retain PostgreSQL's normal behavior. The periodic schedule repairs a
+signal lost during a loop transition.
+
 ## Deferred Reclaim
 
 Spill and compaction unlink old pages before they can be safely reused. Dead
