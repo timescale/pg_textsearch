@@ -13,6 +13,10 @@ make test-all        # SQL regression plus the standard shell suite
 The extension must be built for the selected PostgreSQL installation. Shell
 targets assume it is already installed.
 
+`make test-local` runs `make install` before `initdb`, so the invoking user
+must be non-root and able to write to the selected PostgreSQL installation
+prefix.
+
 ## Test Targets
 
 The Makefile defines these entry points:
@@ -50,11 +54,12 @@ reclaim, and shutdown-spill recovery tests; multi-backend segment tests;
 segment-reclaim coverage.
 
 The nightly stress workflow enables leak detection. There is no local
-`make sanitizer` target; [.github/workflows/ci.yml](../.github/workflows/ci.yml)
+`make sanitizer` target;
+[`.github/workflows/ci.yml`](https://github.com/timescale/pg_textsearch/blob/main/.github/workflows/ci.yml)
 is the canonical reproduction recipe. The standalone
-[`sanitizer-build-and-test.yml`](../.github/workflows/sanitizer-build-and-test.yml)
-workflow runs on `main`; pull-request sanitizer coverage is consolidated in
-`ci.yml`.
+[`sanitizer-build-and-test.yml`](https://github.com/timescale/pg_textsearch/blob/main/.github/workflows/sanitizer-build-and-test.yml)
+workflow runs on `main`; pull-request sanitizer coverage is consolidated
+there.
 
 ## Adding SQL Tests
 

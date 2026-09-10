@@ -31,13 +31,13 @@ consider a dedicated `pg_textsearch` schema for cleaner namespace management.
   and running the same test. Even if it does reproduce on main, it
   still needs to be investigated and fixed, not ignored.
 
-- **Physical replication**: All page mutations are WAL-logged via
-  `GenericXLog` records. There is no custom resource manager;
-  pg_textsearch does not register an rmgr. Stock PostgreSQL replay
-  reconstructs every page on a streaming standby or during crash
-  recovery — including the on-disk memtable chain pages, segment
-  pages, and the metapage. This is what lets PostgreSQL's
-  single-page WAL-redo helper (and any other no-extension-load
+- **Physical replication**: In-place and publication mutations are WAL-logged
+  via `GenericXLog`; newly written segment pages use `log_newpage_buffer()`
+  when WAL is required. There is no custom resource manager; pg_textsearch
+  does not register an rmgr. Stock PostgreSQL replay reconstructs every page
+  on a streaming standby or during crash recovery — including the on-disk
+  memtable chain pages, segment pages, and the metapage. This is what lets
+  PostgreSQL's single-page WAL-redo helper (and any other no-extension-load
   replay context) work without loading `pg_textsearch.so`.
   **Read [ARCHITECTURE.md](ARCHITECTURE.md#storage-and-wal) before
   changing the write/read/spill flow.** Closes #345, #349, #350,
@@ -159,7 +159,7 @@ make format-single FILE=path/to/file.c  # format specific file
 | `pg_textsearch.debug_panic_after_spill_finalize` | Trigger PANIC after spill finalize (testing only, superuser-only) | false |
 | `pg_textsearch.memtable_cache_enabled` | Serve query reads from the in-memory memtable cache instead of the on-disk chain (chain remains source of truth; standbys always use the chain) | true |
 | `pg_textsearch.log_cache_state` | Log in-memory cache apply outcomes (OK / BUDGET_EXCEEDED / cold_build / RETRY / ABORT / fall back to chain) | false |
-| `pg_textsearch.memory_limit` | Max shared memory (KB, `PGC_SIGHUP`) for the in-memory memtable cache. Three-tier budget: per-index soft cap (`limit/8`) → BUDGET_EXCEEDED + chain fallback; global soft cap (`limit/2`) → evict largest non-caller cache; global hard cap (`limit`) → block incremental catch-up and cold builds, causing on-disk-chain fallback. `0` = no limit. | 2 GB |
+| `pg_textsearch.memory_limit` | Approximate shared-memory budget (KB, `PGC_SIGHUP`) for the in-memory memtable cache. Three tiers: per-index per-record growth guard (`limit/8`) → BUDGET_EXCEEDED + chain fallback before a record crosses it; global soft cap (`limit/2`) → best-effort eviction of the largest non-caller cache; the global `limit` is an approximate admission threshold → catch-up or cold-build fallback when the entry-time estimate is already at the limit. Admitted or concurrent work may increase estimated usage past the limit. `0` = unlimited. | 2 GB |
 
 
 ### Index Options

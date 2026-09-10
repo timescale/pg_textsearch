@@ -357,7 +357,7 @@ Setting | Default | Description
 `pg_textsearch.bulk_load_threshold` | 100000 | Terms per transaction before auto-spill (0 = disable)
 `pg_textsearch.memtable_pages_threshold` | 64 | Chain pages before auto-spill (0 = disable)
 `pg_textsearch.memtable_cache_enabled` | on | Cache memtable data in shared memory for faster queries
-`pg_textsearch.memory_limit` | 2GB | Shared-memory budget for the memtable cache across all indexes; changes take effect after a configuration reload without a restart (0 = no limit)
+`pg_textsearch.memory_limit` | 2GB | Approximate shared-memory budget for the memtable cache across all indexes; changes take effect after a configuration reload without a restart (0 = no limit)
 
 ### Memtable Architecture
 
@@ -366,10 +366,13 @@ the durable source of truth and can be restored by PostgreSQL without loading
 `pg_textsearch.so`. See [ARCHITECTURE.md](ARCHITECTURE.md#storage-and-wal).
 
 Queries use a shared-memory cache when enabled. An index falls back to the
-chain at `memory_limit / 8`; global pressure triggers eviction at
-`memory_limit / 2`, and incremental cache catch-up and cold builds are blocked
-at `memory_limit`, causing on-disk-chain fallback. The cache is rebuilt from
-the chain when missing or stale, while standbys always read the chain directly.
+chain when the next record's estimated growth would cross
+`memory_limit / 8`; global pressure triggers best-effort eviction at
+`memory_limit / 2`. The global `memory_limit` is an approximate admission
+threshold: incremental catch-up and cold builds fall back when the entry-time
+estimate is already at the limit, but admitted or concurrent work may take
+estimated usage above it. The cache is rebuilt from the chain when missing or
+stale, while standbys always read the chain directly.
 
 Memtables spill automatically based on `memtable_pages_threshold` and
 `bulk_load_threshold`, and during VACUUM.
@@ -432,7 +435,9 @@ in a future update.
 Change the policy with `ALTER INDEX ... SET (compaction = ...)`.
 `background` falls back to inline compaction for temporary indexes,
 autovacuum, callback-triggered spills, and `CREATE INDEX`. Prepared
-transactions do not dispatch requests.
+transactions do not flush queued requests. Unconfigured, unresolvable, or
+failed callbacks do not fall back inline; the compaction debt remains for a
+later spill or explicit maintenance.
 
 See [ARCHITECTURE.md](ARCHITECTURE.md#spill-and-compaction).
 

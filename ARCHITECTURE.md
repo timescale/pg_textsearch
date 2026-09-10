@@ -44,14 +44,15 @@ disposable. Writes update only the on-disk chain. Readers lazily build or catch
 up the cache; generation mismatches, spills, eviction, or memory pressure can
 drop it without affecting correctness. Standbys read the on-disk chain.
 
-`pg_textsearch.memory_limit` has three tiers:
+`pg_textsearch.memory_limit` has three budget tiers:
 
-- per-index soft cap (`limit / 8`): stop cache apply or cold build and fall
-  back to the chain;
+- per-index per-record growth guard (`limit / 8`): reject a record whose
+  estimated growth would cross the guard and fall back to the chain;
 - global soft cap (`limit / 2`): attempt best-effort eviction of the largest
   non-caller cache; eviction may find nothing or a busy target;
-- global hard cap (`limit`): block catch-up and cold builds, causing chain
-  fallback.
+- global `limit` is an approximate admission threshold: catch-up or cold build
+  falls back when the entry-time estimate is already at the limit. Admitted or
+  concurrent work may increase estimated usage past it.
 
 `0` disables the limit. The setting is applied on SIGHUP.
 
@@ -78,6 +79,10 @@ The `compaction` index option controls spill-time behavior:
   indexes, `CREATE INDEX`, autovacuum, callback re-entry, and other
   no-dispatch contexts compact inline;
 - `off` leaves debt for explicit maintenance.
+
+Prepared transactions do not flush queued background requests. Unconfigured,
+unresolvable, or failed callbacks do not fall back inline; the compaction debt
+remains for a later spill or explicit maintenance.
 
 `bm25_compact()` drives reducible debt to completion under one per-index lock.
 `bm25_compact_step()` runs at most one pass. Drive repeated maintenance from
