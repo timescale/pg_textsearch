@@ -70,7 +70,7 @@ CREATE INDEX docs_idx ON documents USING bm25(content) WITH (text_config='englis
 
 ## Querying
 
-Get the most relevant documents
+Get the most relevant documents using the `<@>` operator
 
 ```sql
 SELECT * FROM documents
@@ -80,6 +80,9 @@ LIMIT 5;
 
 `<@>` returns negative BM25 scores for ascending index scans, so lower scores
 rank first.
+
+`<@>` can also score rows outside a BM25 index scan. This is standalone
+scoring; it still uses corpus statistics from the selected BM25 index.
 
 The index is detected from the column. Specify it explicitly when needed:
 
@@ -97,19 +100,17 @@ ORDER BY content <@> 'database system'
 LIMIT 5;
 ```
 
-PostgreSQL may prefer a sequential scan for small tables. To test the index
-plan:
+PostgreSQL may prefer standalone scoring with a sequential scan for small
+tables. To test the index plan:
 
 ```sql
 SET enable_seqscan = off;
 ```
 
-Standalone scoring still uses index corpus statistics even when the table is
-read sequentially.
+### Pre-filtering and Post-filtering
 
-### Filtering with WHERE Clauses
-
-PostgreSQL can use a separate index to filter rows before BM25 scoring:
+With a separate usable index, PostgreSQL applies pre-filtering before BM25
+scoring:
 
 ```sql
 CREATE INDEX ON documents (category_id);
@@ -120,7 +121,8 @@ ORDER BY content <@> 'search terms'
 LIMIT 10;
 ```
 
-Conditions without a usable index are applied after the BM25 scan:
+Without a usable filter index, PostgreSQL applies post-filtering after the BM25
+scan:
 
 ```sql
 SELECT * FROM documents
@@ -145,7 +147,7 @@ CREATE INDEX ON documents USING bm25(content) WITH (text_config='english');
 
 Option | Default | Description
 --- | --- | ---
-`text_config` | required | PostgreSQL text search configuration
+[`text_config`](https://www.postgresql.org/docs/current/textsearch-configuration.html) | required | PostgreSQL text search configuration
 `k1` | 1.2 | Term frequency saturation (0.1-10.0)
 `b` | 0.75 | Length normalization (0.0-1.0)
 `compaction` | inline | Spill-time compaction: `inline`, `background`, or `off`; see [Background Compaction](#background-compaction)
@@ -166,6 +168,10 @@ CREATE INDEX events_expr_idx ON events USING bm25 ((data->>'description'))
 SELECT * FROM events
 ORDER BY (data->>'description') <@> to_bm25query('network error', 'events_expr_idx')
 LIMIT 10;
+
+-- Text transformation
+CREATE INDEX ON documents USING bm25 ((lower(content)))
+    WITH (text_config='simple');
 
 -- Multi-column search
 CREATE INDEX ON articles USING bm25 ((coalesce(title, '') || ' ' || coalesce(body, '')))
@@ -217,6 +223,30 @@ ORDER BY content <@> to_bm25query('databases', 'docs_en_idx')
 LIMIT 10;
 ```
 
+#### Chinese Full-Text Search
+
+Use a Chinese-aware PostgreSQL text search configuration such as
+[zhparser](https://github.com/amutu/zhparser). The same `text_config` tokenizes
+documents and queries.
+
+```sql
+CREATE EXTENSION zhparser;
+
+CREATE TEXT SEARCH CONFIGURATION public.chinese (PARSER = zhparser);
+ALTER TEXT SEARCH CONFIGURATION public.chinese
+    ADD MAPPING FOR n, v, a, i, e, l WITH simple;
+
+CREATE TABLE chinese_documents (id bigserial PRIMARY KEY, content text);
+INSERT INTO chinese_documents (content) VALUES ('机器学习');
+
+CREATE INDEX chinese_documents_bm25 ON chinese_documents USING bm25 (content)
+    WITH (text_config='public.chinese');
+
+SELECT id FROM chinese_documents
+ORDER BY content <@> to_bm25query('机器学习', 'chinese_documents_bm25')
+LIMIT 10;
+```
+
 ## Explicit Queries
 
 `bm25query` can carry an explicit index name:
@@ -261,9 +291,10 @@ separately.
 ### Query Performance
 
 When PostgreSQL chooses a BM25 index scan for `ORDER BY`, scoring uses
-Block-Max WAND. `LIMIT n` sets the initial top-k depth; without a pushed-down
-SQL `LIMIT`, `pg_textsearch.default_limit` sets the initial scoring batch,
-which can grow as more rows are requested.
+[Block-Max WAND](https://research.engineering.nyu.edu/~suel/papers/bmw.pdf).
+`LIMIT n` sets the initial top-k depth; without a pushed-down SQL `LIMIT`,
+`pg_textsearch.default_limit` sets the initial scoring batch, which can grow as
+more rows are requested.
 
 ```sql
 SELECT * FROM documents ORDER BY content <@> 'search terms' LIMIT 10;
@@ -326,7 +357,7 @@ Setting | Default | Description
 `pg_textsearch.bulk_load_threshold` | 100000 | Terms per transaction before auto-spill (0 = disable)
 `pg_textsearch.memtable_pages_threshold` | 64 | Chain pages before auto-spill (0 = disable)
 `pg_textsearch.memtable_cache_enabled` | on | Cache memtable data in shared memory for faster queries
-`pg_textsearch.memory_limit` | 2GB | Three-tier cache budget across all indexes (SIGHUP; 0 = no limit)
+`pg_textsearch.memory_limit` | 2GB | Shared-memory budget for the memtable cache across all indexes; changes take effect after a configuration reload (0 = no limit)
 
 ### Memtable Architecture
 
@@ -365,6 +396,8 @@ WHERE am.amname = 'bm25';
 
 ### Phrase Queries
 
+<!-- TODO: Revisit this workaround after https://github.com/timescale/pg_textsearch/pull/480 merges. -->
+
 The BM25 index stores term frequencies but not term positions, so it cannot
 evaluate phrases directly. Over-fetch ranked candidates and apply a
 post-filter:
@@ -385,6 +418,10 @@ LIMIT 10;
 
 pg_textsearch does not include a background worker. `background` dispatches
 threshold debt at pre-commit, while `off` performs no automatic compaction:
+
+Guidance for scheduling background compaction with
+[pg_durable](https://github.com/timescale/pg_durable) will be added in a future
+update.
 
 - `background` calls `pg_textsearch.compaction_request_function` at
   pre-commit. The callback must hand work to something that survives its
@@ -455,30 +492,6 @@ sudo apt install postgresql-server-dev-18  # use 17 for PostgreSQL 17
 ```
 
 ## Reference
-
-### Chinese Full-Text Search
-
-Use a Chinese-aware PostgreSQL text search configuration such as
-[zhparser](https://github.com/amutu/zhparser). The same `text_config` tokenizes
-documents and queries.
-
-```sql
-CREATE EXTENSION zhparser;
-
-CREATE TEXT SEARCH CONFIGURATION public.chinese (PARSER = zhparser);
-ALTER TEXT SEARCH CONFIGURATION public.chinese
-    ADD MAPPING FOR n, v, a, i, e, l WITH simple;
-
-CREATE TABLE chinese_documents (id bigserial PRIMARY KEY, content text);
-INSERT INTO chinese_documents (content) VALUES ('机器学习');
-
-CREATE INDEX chinese_documents_bm25 ON chinese_documents USING bm25 (content)
-    WITH (text_config='public.chinese');
-
-SELECT id FROM chinese_documents
-ORDER BY content <@> to_bm25query('机器学习', 'chinese_documents_bm25')
-LIMIT 10;
-```
 
 ### Compaction Functions
 
