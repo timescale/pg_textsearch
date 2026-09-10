@@ -3,12 +3,12 @@
 --
 -- This benchmark:
 -- 1. Creates a moderately large table (25K documents)
--- 2. Creates a Tapir index to demonstrate current performance
+-- 2. Creates a pg_textsearch index to demonstrate current performance
 -- 3. Tests various queries to show system behavior
 -- 4. Provides timing information
 
 \timing on
-\echo 'Starting Tapir memory stress benchmark (small version)...'
+\echo 'Starting pg_textsearch memory stress benchmark (small version)...'
 
 -- Create a table for stress testing
 DROP TABLE IF EXISTS stress_docs_small CASCADE;
@@ -65,7 +65,7 @@ FROM stress_docs_small;
 
 
 \echo ''
-\echo 'Creating Tapir index on content column...'
+\echo 'Creating pg_textsearch index on content column...'
 
 CREATE INDEX stress_content_small_idx
 ON stress_docs_small
