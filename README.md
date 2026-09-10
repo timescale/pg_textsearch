@@ -427,7 +427,8 @@ Managed `background` mode uses
 [pg_durable](https://github.com/microsoft/pg_durable) 0.2.8 or newer rather
 than a worker built into pg_textsearch. pg_durable must be installed, listed
 in `shared_preload_libraries`, initialized for the current database, and
-granted to the index owner.
+granted to the index owner. The owner must have `LOGIN`; a superuser owner
+also requires `pg_durable.enable_superuser_instances = on`.
 
 ```sql
 CREATE INDEX documents_bm25 ON documents USING bm25(content)

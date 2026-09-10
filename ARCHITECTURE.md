@@ -91,9 +91,10 @@ Published physical changes are not undone by transaction rollback.
 
 Background mode requires pg_durable 0.2.8 or newer. pg_durable must be
 preloaded, installed and initialized in the current database, and usable by
-the index owner. pg_textsearch discovers its SQL API through extension
-metadata and records a normal extension dependency after the first successful
-activation.
+the index owner. The owner must have `LOGIN`; a superuser owner also requires
+`pg_durable.enable_superuser_instances = on`. pg_textsearch discovers the SQL
+API through extension metadata and records a normal extension dependency
+after the first successful activation.
 
 Each physical background index has one owner-scoped workflow identified by
 its database, physical relation identity, owner, schedule, and protocol
@@ -110,8 +111,7 @@ a terminal workflow for the current managed generation.
 The helper revalidates the captured physical identity while holding the
 relation lock. Dropped, replaced, reindexed, re-owned, or reconfigured targets
 return false without touching another relation. Utility hooks reconcile
-workflows after relevant `CREATE INDEX`, `REINDEX`, and `ALTER INDEX`
-operations.
+workflows after relevant `CREATE INDEX` and `ALTER INDEX` operations.
 
 Spill requests are transaction-local and deduplicated by index. At pre-commit,
 after the compaction lock is released, pg_textsearch revalidates the target,
