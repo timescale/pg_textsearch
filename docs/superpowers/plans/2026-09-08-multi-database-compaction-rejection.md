@@ -5,6 +5,11 @@
 > superpowers:executing-plans to implement this plan task-by-task. Steps use
 > checkbox (`- [ ]`) syntax for tracking.
 
+> **Historical note:** This plan records implementation against the
+> pre-#483 documentation tree. References to `docs/background_compaction.md`
+> are historical; current documentation lives in `README.md` and
+> `ARCHITECTURE.md`.
+
 **Goal:** Add live multi-database coverage proving that background compaction
 is rejected safely when pg_durable is installed in a different database, while
 manual compaction remains usable.
