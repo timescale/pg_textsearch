@@ -312,6 +312,16 @@ CREATE FUNCTION @extschema@.bm25_pending_free_pages(index_name text)
     AS 'MODULE_PATHNAME', 'tp_pending_free_pages'
     LANGUAGE C STRICT STABLE;
 
+-- Session-local count of BM25 scoring passes.  Scan depth is invisible
+-- in query results (Filter + Limit + backoff produce the exact top-k
+-- either way), so this is the signal that a filtered top-k scan was
+-- seeded from its own filter rather than another scan's (issue #435).
+CREATE FUNCTION @extschema@.bm25_debug_scoring_passes(
+    reset boolean DEFAULT false)
+    RETURNS bigint
+    AS 'MODULE_PATHNAME', 'tp_debug_scoring_passes'
+    LANGUAGE C VOLATILE STRICT;
+
 -- INTERNAL-ONLY test scaffold (issues #426, #427): return the live
 -- head tombstone page to the index FSM so the next allocator can pick
 -- it up, reproducing the stale-FSM / non-atomic-claim page-reuse

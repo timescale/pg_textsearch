@@ -70,6 +70,7 @@ OBJS = \
 	src/index/source.o \
 	src/planner/hooks.o \
 	src/planner/cost.o \
+	src/planner/seed.o \
 	src/debug/dump.o
 
 # Shared library target

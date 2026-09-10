@@ -11,6 +11,7 @@
 #include <access/sdir.h>
 #include <access/table.h>
 #include <catalog/namespace.h>
+#include <fmgr.h>
 #include <pgstat.h>
 #include <storage/bufmgr.h>
 #include <utils/builtins.h>
@@ -22,11 +23,11 @@
 
 #include "access/am.h"
 #include "constants.h"
-#include "index/limit.h"
 #include "index/metapage.h"
 #include "index/resolve.h"
 #include "index/state.h"
 #include "memtable/scan.h"
+#include "planner/seed.h"
 #include "types/query.h"
 #include "types/vector.h"
 
@@ -43,6 +44,32 @@ float8
 tp_get_cached_score(void)
 {
 	return tp_cached_score;
+}
+
+/*
+ * Session-local count of BM25 scoring passes.
+ *
+ * Scan depth is invisible in query results -- the executor's Filter,
+ * Limit and backoff re-drives produce the exact top-k regardless of how
+ * deep the internal top-K was seeded -- so this counter is the only
+ * regression-stable signal that a scan was seeded for its own filter
+ * rather than someone else's (issue #435).  A well-seeded scan costs
+ * exactly one pass; each backoff re-drive adds another.
+ */
+static uint64 tp_scoring_passes = 0;
+
+PG_FUNCTION_INFO_V1(tp_debug_scoring_passes);
+
+Datum
+tp_debug_scoring_passes(PG_FUNCTION_ARGS)
+{
+	bool   reset  = PG_GETARG_BOOL(0);
+	uint64 result = tp_scoring_passes;
+
+	if (reset)
+		tp_scoring_passes = 0;
+
+	PG_RETURN_INT64((int64)result);
 }
 
 /* Track CTIDs already emitted by this scan. */
@@ -268,10 +295,20 @@ tp_rescan(
 	if (!so)
 		return;
 
-	/* Retrieve query LIMIT, if available */
+	/*
+	 * Pull the seed bound to this scan at executor start.  The
+	 * orderbys pointer is this scan node's own ORDER BY ScanKey array,
+	 * which is what identifies it; a miss leaves -1, so scoring uses
+	 * tp_default_limit and the backoff below finds the top-k.
+	 */
 	{
-		int query_limit = tp_get_query_limit(scan->indexRelation);
-		so->limit		= (query_limit > 0) ? query_limit : -1;
+		int seed = -1;
+
+		if (norderbys > 0 && orderbys != NULL)
+			seed = tp_seed_lookup(
+					orderbys, RelationGetRelid(scan->indexRelation));
+
+		so->limit = (seed > 0) ? seed : -1;
 	}
 
 	/* Reset scan state */
@@ -349,6 +386,8 @@ tp_execute_scoring_query(IndexScanDesc scan)
 
 	if (!so || !so->query_text)
 		return false;
+
+	tp_scoring_passes++;
 
 	Assert(so->scan_context != NULL);
 

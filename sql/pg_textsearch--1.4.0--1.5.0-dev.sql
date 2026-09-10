@@ -61,3 +61,13 @@ $$;
 
 COMMENT ON FUNCTION @extschema@.bm25_needs_compaction(regclass) IS
     'Report whether any level holds at least segments_per_level segments. Advisory only: a level whose segments are all over budget is reported as full even though bm25_compact_step has no way to reduce it, so this must not be used on its own as a retry condition.';
+
+-- Session-local count of BM25 scoring passes.  Scan depth is invisible
+-- in query results (Filter + Limit + backoff produce the exact top-k
+-- either way), so this is the signal that a filtered top-k scan was
+-- seeded from its own filter rather than another scan's (issue #435).
+CREATE FUNCTION @extschema@.bm25_debug_scoring_passes(
+    reset boolean DEFAULT false)
+    RETURNS bigint
+    AS 'MODULE_PATHNAME', 'tp_debug_scoring_passes'
+    LANGUAGE C VOLATILE STRICT;

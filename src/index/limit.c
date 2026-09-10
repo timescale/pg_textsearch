@@ -6,20 +6,15 @@
  *
  * Implements LIMIT pushdown for BM25 queries. When queries have LIMIT
  * clauses with ORDER BY BM25 scores, we compute only the top N results.
+ * This module is the seed formula and the default limit; the seed is
+ * bound to a particular scan in planner/seed.c.
  */
 #include <postgres.h>
 
-#include <access/xact.h>
-#include <nodes/pathnodes.h>
+#include <math.h>
 #include <utils/guc.h>
 
 #include "index/limit.h"
-
-/*
- * Per-backend structure for current query limit - stores LIMIT value
- * extracted during query planning for use during query execution
- */
-static TpCurrentLimit tp_current_limit = {InvalidOid, -1, false};
 
 /*
  * Default limit when no LIMIT clause is detected - prevents
@@ -28,116 +23,46 @@ static TpCurrentLimit tp_current_limit = {InvalidOid, -1, false};
 int tp_default_limit = TP_DEFAULT_QUERY_LIMIT;
 
 /*
- * Store a query limit for a specific index and backend
+ * Seed the internal top-K from the estimated selectivity of the filter
+ * ("facet") that the executor applies as a Filter above the BM25 index
+ * scan.
  *
- * This is called during query planning (tp_costestimate) when we detect
- * a safe LIMIT pushdown opportunity. The stored limit is later retrieved
- * during query execution.
- */
-void
-tp_store_query_limit(Oid index_oid, int limit)
-{
-	/* Safety check - warn if we're overwriting a different index's limit */
-	if (tp_current_limit.is_valid && tp_current_limit.index_oid != index_oid)
-	{
-	}
-
-	/* Store the limit in our simple structure */
-	tp_current_limit.index_oid = index_oid;
-	tp_current_limit.limit	   = limit;
-	tp_current_limit.is_valid  = true;
-}
-
-/*
- * Get the query limit for a specific index and current backend
+ * A filtered top-k query (WHERE <filter> ORDER BY <score> LIMIT k) is
+ * planned as a BM25 top-k scan with <filter> applied above it.  If the
+ * scan only produces its top k rows by score, few may satisfy the
+ * Filter, forcing the executor to re-drive the scan with an
+ * exponentially growing internal limit (backoff) until k rows survive --
+ * and each re-drive re-scores from scratch.
  *
- * Returns the stored limit value, or -1 if no limit was stored.
- * This is called during query execution to check if LIMIT optimization
- * should be applied.
+ * To surface k Filter-matching rows we expect to score ~k/s, where s is
+ * the filter selectivity.  Seeding the internal top-K to
+ * ceil(margin * k / s) up front lets a single scoring pass usually
+ * suffice; the existing backoff remains the correctness safety net when
+ * the estimate under-shoots.  The seed only changes scan depth, never
+ * which rows win, so results are identical to the un-seeded plan.
+ *
+ * Returns the (possibly seeded) limit: always >= user_limit and capped
+ * at TP_MAX_QUERY_LIMIT.  With seeding disabled, no filter, or a
+ * degenerate selectivity estimate, returns user_limit unchanged.
  */
 int
-tp_get_query_limit(Relation index_rel)
+tp_seed_limit_for_filter(int user_limit, double selectivity)
 {
-	Oid index_oid;
-	int result = -1;
+	double seeded;
 
-	if (!RelationIsValid(index_rel))
-		return -1;
+	if (!tp_filtered_seed)
+		return user_limit;
 
-	/* Check if we have valid limit data */
-	if (!tp_current_limit.is_valid)
-		return -1;
+	/* Only seed for a genuinely selective, non-degenerate filter. */
+	if (selectivity <= 0.0 || selectivity >= 1.0)
+		return user_limit;
 
-	index_oid = RelationGetRelid(index_rel);
+	seeded = ceil(tp_filtered_seed_margin * (double)user_limit / selectivity);
+	if (seeded > (double)TP_MAX_QUERY_LIMIT)
+		seeded = (double)TP_MAX_QUERY_LIMIT;
 
-	/* Check if the stored limit applies to this index */
-	if (tp_current_limit.index_oid == index_oid)
-	{
-		result = tp_current_limit.limit;
+	if (seeded <= (double)user_limit)
+		return user_limit;
 
-		/* Clear the limit after retrieval to prevent stale data */
-		tp_current_limit.is_valid = false;
-	}
-
-	return result;
-}
-
-/*
- * Clean up query limit data (called at transaction end)
- *
- * This prevents stale limit entries from affecting subsequent queries
- * in the same backend process.
- */
-void
-tp_cleanup_query_limits(void)
-{
-	/* Additional safety check - ensure we're in a valid transaction state */
-	if (!IsTransactionState())
-		return;
-
-	/* Clear the current limit structure */
-	if (tp_current_limit.is_valid)
-	{
-		tp_current_limit.index_oid = InvalidOid;
-		tp_current_limit.limit	   = -1;
-		tp_current_limit.is_valid  = false;
-	}
-}
-
-/*
- * Analyze whether LIMIT pushdown is safe for the given query path
- *
- * LIMIT pushdown is only safe when:
- * 1. The index scan produces results in the same order as the query's ORDER BY
- * 2. There are no intervening operations that could reorder results
- * 3. We have exactly one ORDER BY clause (our BM25 score)
- * 4. No additional WHERE clauses that might interfere with ordering
- */
-bool
-tp_can_pushdown_limit(PlannerInfo *root, IndexPath *path, int limit)
-{
-	/* Basic validation */
-	if (!root || !path || limit <= 0)
-		return false;
-
-	/*
-	 * Must have exactly one ORDER BY clause - our BM25 score.
-	 * Multiple ORDER BY clauses could affect result ordering.
-	 */
-	if (!path->indexorderbys || list_length(path->indexorderbys) != 1)
-	{
-		return false;
-	}
-
-	/*
-	 * For now, be conservative: don't push down LIMIT if there are
-	 * additional WHERE clauses beyond the BM25 score ordering.
-	 * This could be relaxed later with more sophisticated analysis.
-	 */
-	if (path->indexclauses && list_length(path->indexclauses) > 0)
-	{
-		return false;
-	}
-
-	return true;
+	return (int)seeded;
 }

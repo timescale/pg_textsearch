@@ -230,6 +230,21 @@ get_bm25_oids(BM25OidCache *cache)
 }
 
 /*
+ * Oid of the bm25 access method, sharing the cache above.
+ * InvalidOid when the extension is not installed.
+ */
+Oid
+tp_get_bm25_am_oid(void)
+{
+	BM25OidCache oids;
+
+	if (!get_bm25_oids(&oids))
+		return InvalidOid;
+
+	return oids.bm25_am_oid;
+}
+
+/*
  * Check if an index is on a specific column of a table.
  * Returns true if the index is on the given table and column.
  */

@@ -8,41 +8,24 @@
 
 #include <postgres.h>
 
-#include <nodes/pathnodes.h>
-#include <utils/rel.h>
-
 #include "constants.h"
 
 /*
  * Query LIMIT Optimization
  *
- * This module handles query LIMIT pushdown optimization for Tapir indexes.
  * When a query has a LIMIT clause and uses ORDER BY with a BM25 score,
- * we can optimize by only computing the top N results instead of all results.
+ * only the top N results need to be computed.  This module holds the
+ * formula that turns a user LIMIT plus a filter selectivity into the
+ * scan's internal top-K, and the default used when no LIMIT is known.
+ *
+ * Which scan a given seed belongs to is decided in planner/seed.c, at
+ * executor start; nothing here is shared between statements.
  */
-
-/*
- * Simple per-backend structure to track the current query's limit
- * Replaces the hash table approach for better simplicity and performance
- */
-typedef struct TpCurrentLimit
-{
-	Oid	 index_oid; /* Index OID for which this limit applies */
-	int	 limit;		/* LIMIT value from query */
-	bool is_valid;	/* Whether this data is current and valid */
-} TpCurrentLimit;
 
 /* Default limit when none detected */
 extern int tp_default_limit;
 
 /*
- * Query limit tracking functions
+ * Selectivity-seeded top-K formula for filtered BM25 search.
  */
-void tp_store_query_limit(Oid index_oid, int limit);
-int	 tp_get_query_limit(Relation index_rel);
-void tp_cleanup_query_limits(void);
-
-/*
- * LIMIT pushdown analysis for cost estimation
- */
-bool tp_can_pushdown_limit(PlannerInfo *root, IndexPath *path, int limit);
+int tp_seed_limit_for_filter(int user_limit, double selectivity);

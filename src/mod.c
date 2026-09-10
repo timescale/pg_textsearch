@@ -30,6 +30,7 @@
 #include "index/registry.h"
 #include "index/state.h"
 #include "planner/hooks.h"
+#include "planner/seed.h"
 #include "scoring/bm25.h"
 
 #if PG_VERSION_NUM >= 180000
@@ -525,6 +526,9 @@ _PG_init(void)
 
 	/* Install planner hook for implicit index resolution */
 	tp_planner_hook_init();
+
+	/* Install executor hook that seeds each BM25 scan's top-K */
+	tp_seed_hook_init();
 
 	/* Install ProcessUtility hook for partitioned build tracking */
 	prev_process_utility_hook = ProcessUtility_hook;

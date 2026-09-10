@@ -154,7 +154,7 @@ make format-single FILE=path/to/file.c  # format specific file
 | `pg_textsearch.max_segment_size` | Conservative size budget for newly merged multi-source segments (1-4095MB) | 4095MB |
 | `pg_textsearch.compaction_request_function` | Schema-qualified function taking one `regclass`, invoked for indexes set to `compaction = 'background'` | (empty) |
 | `pg_textsearch.compress_segments` | Enable compression for new segment blocks | true |
-| `pg_textsearch.filtered_seed` | Seed the BM25 internal top-K from estimated filter selectivity so filtered top-k queries (`WHERE ... ORDER BY score LIMIT k`) avoid executor backoff re-drives. Results identical. | true |
+| `pg_textsearch.filtered_seed` | Seed the BM25 internal top-K from estimated filter selectivity so filtered top-k queries (`WHERE ... ORDER BY score LIMIT k`) avoid executor backoff re-drives. Results identical. The seed is bound per index scan at executor start, keyed by scan identity (the scan's ORDER BY ScanKey array), not via a per-`index_oid` slot, so several BM25 scans of one index in one statement each get their own seed (#435; see `docs/issue_435_filtered_seed_scan_identity.md`). | true |
 | `pg_textsearch.filtered_seed_margin` | Seed = `ceil(margin * LIMIT / selectivity)`. Higher captures the true top-k in one scoring pass more often, at the cost of scoring deeper. Range [1, 1000] | 3.0 |
 | `pg_textsearch.debug_panic_after_spill_finalize` | Trigger PANIC after spill finalize (testing only, superuser-only) | false |
 | `pg_textsearch.memtable_cache_enabled` | Serve query reads from the in-memory memtable cache instead of the on-disk chain (chain remains source of truth; standbys always use the chain) | true |
@@ -310,6 +310,11 @@ See [RELEASING.md](RELEASING.md) for release instructions.
   currently parked in the deferred-free tombstone chain (issue #380),
   awaiting standby-safe FSM reclaim
 - `bm25_debug_pageviz(index_name, file_path)` - Generate page layout visualization
+- `bm25_debug_scoring_passes([reset])` - Session-local count of BM25
+  scoring passes. A scan seeded for its own filter costs exactly one
+  pass; each executor backoff re-drive adds another. Scan depth is
+  invisible in query results, so this is how the per-scan seeding of
+  issue #435 is asserted. Pass `true` to return the count and reset it
 
 ## Parallel Index Build
 
