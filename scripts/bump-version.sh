@@ -10,7 +10,7 @@
 #   OLD=X.Y.Z-dev   NEW=X.Y.Z       →  release (same triple)
 #
 # Updates the SQL files, Makefile DATA list, control file, mod.c,
-# README, CLAUDE.md, test scripts, and the msmarco benchmark check.
+# CLAUDE.md, test scripts, and the msmarco benchmark check.
 # Does NOT edit the upgrade-tests matrix, author the upgrade SQL, run
 # tests, or open a PR — those are listed in the "next steps" output.
 
@@ -167,11 +167,6 @@ for f in "${common_files[@]}"; do
         perl -i -pe "s/\Q$OLD\E/$NEW/g" "$f"
     fi
 done
-
-# README: bump the version references. The banner image
-# (images/banner.png) is version-independent, so a plain literal
-# substitution never touches it.
-perl -i -pe "s/\Q$OLD\E/$NEW/g" README.md
 
 # --- straggler check -----------------------------------------------
 
