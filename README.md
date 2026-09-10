@@ -357,7 +357,7 @@ Setting | Default | Description
 `pg_textsearch.bulk_load_threshold` | 100000 | Terms per transaction before auto-spill (0 = disable)
 `pg_textsearch.memtable_pages_threshold` | 64 | Chain pages before auto-spill (0 = disable)
 `pg_textsearch.memtable_cache_enabled` | on | Cache memtable data in shared memory for faster queries
-`pg_textsearch.memory_limit` | 2GB | Shared-memory budget for the memtable cache across all indexes; changes take effect after a configuration reload (0 = no limit)
+`pg_textsearch.memory_limit` | 2GB | Shared-memory budget for the memtable cache across all indexes; changes take effect after a configuration reload without a restart (0 = no limit)
 
 ### Memtable Architecture
 
@@ -419,9 +419,8 @@ LIMIT 10;
 pg_textsearch does not include a background worker. `background` dispatches
 threshold debt at pre-commit, while `off` performs no automatic compaction:
 
-Guidance for scheduling background compaction with
-[pg_durable](https://github.com/timescale/pg_durable) will be added in a future
-update.
+Guidance for scheduling background compaction with `pg_durable` will be added
+in a future update.
 
 - `background` calls `pg_textsearch.compaction_request_function` at
   pre-commit. The callback must hand work to something that survives its
