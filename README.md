@@ -109,7 +109,7 @@ SET enable_seqscan = off;
 
 ### Pre-filtering and Post-filtering
 
-With a separate usable index, PostgreSQL applies pre-filtering before BM25
+PostgreSQL can use a separate index to pre-filter rows before standalone
 scoring:
 
 ```sql
@@ -121,8 +121,8 @@ ORDER BY content <@> 'search terms'
 LIMIT 10;
 ```
 
-Without a usable filter index, PostgreSQL applies post-filtering after the BM25
-scan:
+When PostgreSQL chooses the ordered BM25 index scan, other conditions are
+post-filters applied after BM25 scoring:
 
 ```sql
 SELECT * FROM documents
