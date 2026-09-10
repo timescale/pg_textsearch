@@ -292,9 +292,10 @@ separately.
 
 When PostgreSQL chooses a BM25 index scan for `ORDER BY`, scoring uses
 [Block-Max WAND](https://research.engineering.nyu.edu/~suel/papers/bmw.pdf).
-`LIMIT n` sets the initial top-k depth; without a pushed-down SQL `LIMIT`,
-`pg_textsearch.default_limit` sets the initial scoring batch, which can grow as
-more rows are requested.
+`LIMIT n` requests the top-k result count. For filtered queries, selectivity
+seeding may start with a deeper internal scoring batch. Without a pushed-down
+SQL `LIMIT`, `pg_textsearch.default_limit` sets the initial scoring batch,
+which can grow as more rows are requested.
 
 ```sql
 SELECT * FROM documents ORDER BY content <@> 'search terms' LIMIT 10;
@@ -316,8 +317,9 @@ REINDEX INDEX docs_idx;
 
 ### Compaction
 
-With the default `inline` policy, spills compact levels that reach the
-configured threshold. These functions provide manual and scheduled control:
+With the default `inline` policy, compaction of levels that reach the configured
+threshold occurs as part of the write transaction that triggers the spill.
+These functions provide manual and scheduled control:
 
 ```sql
 SELECT bm25_force_merge('docs_idx');
@@ -332,8 +334,8 @@ segments; oversized or otherwise uncombinable segments may remain.
 `bm25_compact()` processes all eligible levels, while `bm25_compact_step()`
 processes at most one pass.
 
-- Published passes are not undone by `ROLLBACK`.
-- Mutating compaction functions are not cancellable while a pass runs.
+- Long merge work checks for cancellation, but published replacements remain
+  physical and are not undone by `ROLLBACK`.
 - Drive maintenance loops from `bm25_compact_step()`'s return value, not
   `bm25_needs_compaction()`, which is advisory.
 - Mutating functions require index ownership and do not operate on partitioned

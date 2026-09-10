@@ -58,8 +58,8 @@ The nightly stress workflow enables leak detection. There is no local
 [`.github/workflows/ci.yml`](https://github.com/timescale/pg_textsearch/blob/main/.github/workflows/ci.yml)
 is the canonical reproduction recipe. The standalone
 [`sanitizer-build-and-test.yml`](https://github.com/timescale/pg_textsearch/blob/main/.github/workflows/sanitizer-build-and-test.yml)
-workflow runs on `main`; pull-request sanitizer coverage is consolidated
-there.
+workflow runs on `main`; pull-request sanitizer coverage is consolidated in
+`.github/workflows/ci.yml`.
 
 ## Adding SQL Tests
 
