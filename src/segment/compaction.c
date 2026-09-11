@@ -337,7 +337,7 @@ tp_metapage_matches_snapshot(Page page, const TpIndexMetaPage snapshot)
 		memtable_tail = current->memtable_tail_blkno;
 	}
 
-	pending_free_head = current->version < TP_METAPAGE_VERSION
+	pending_free_head = current->version < TP_METAPAGE_VERSION_V8
 							  ? InvalidBlockNumber
 							  : current->pending_free_head;
 
@@ -358,7 +358,10 @@ tp_metapage_matches_snapshot(Page page, const TpIndexMetaPage snapshot)
 				  sizeof(current->level_counts)) == 0 &&
 		   memtable_head == snapshot->memtable_head_blkno &&
 		   memtable_tail == snapshot->memtable_tail_blkno &&
-		   pending_free_head == snapshot->pending_free_head;
+		   pending_free_head == snapshot->pending_free_head &&
+		   (current->version < TP_METAPAGE_VERSION
+					? snapshot->capabilities == 0
+					: current->capabilities == snapshot->capabilities);
 }
 
 static void

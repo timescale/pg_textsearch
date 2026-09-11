@@ -48,11 +48,21 @@ tp_segment_read_term_at_index(
 		uint32			*string_offsets,
 		uint32			 index)
 {
+	uint32 string_offset_value;
 	uint64 string_offset;
 	uint32 length;
 	char  *term;
 
-	string_offset = header->strings_offset + string_offsets[index];
+	if (string_offsets != NULL)
+		string_offset_value = string_offsets[index];
+	else
+		tp_segment_read(
+				reader,
+				header->dictionary_offset + sizeof(uint32) +
+						(uint64)index * sizeof(uint32),
+				&string_offset_value,
+				sizeof(string_offset_value));
+	string_offset = header->strings_offset + string_offset_value;
 
 	/* Read string length */
 	tp_segment_read(reader, string_offset, &length, sizeof(uint32));

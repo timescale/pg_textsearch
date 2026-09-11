@@ -177,6 +177,20 @@ cache_get_doc_freq(TpDataSource *source, const char *term)
 }
 
 static void
+cache_foreach_document(
+		TpDataSource *source, TpDocumentCallback callback, void *arg)
+{
+	TpMemtableCacheSource *cs = (TpMemtableCacheSource *)source;
+	dshash_seq_status	   seq;
+	TpDocLengthEntry	  *entry;
+
+	dshash_seq_init(&seq, cs->doclength_table, false);
+	while ((entry = (TpDocLengthEntry *)dshash_seq_next(&seq)) != NULL)
+		callback(&entry->ctid, arg);
+	dshash_seq_term(&seq);
+}
+
+static void
 cache_close(TpDataSource *source)
 {
 	TpMemtableCacheSource *cs = (TpMemtableCacheSource *)source;
@@ -209,11 +223,12 @@ cache_close(TpDataSource *source)
 }
 
 static const TpDataSourceOps cache_source_ops = {
-		.get_postings	= cache_get_postings,
-		.free_postings	= cache_free_postings,
-		.get_doc_length = cache_get_doc_length,
-		.get_doc_freq	= cache_get_doc_freq,
-		.close			= cache_close,
+		.get_postings	  = cache_get_postings,
+		.free_postings	  = cache_free_postings,
+		.get_doc_length	  = cache_get_doc_length,
+		.get_doc_freq	  = cache_get_doc_freq,
+		.foreach_document = cache_foreach_document,
+		.close			  = cache_close,
 };
 
 /* ---------- helpers ---------- */

@@ -293,8 +293,6 @@ tp_write_segment_from_build_ctx(TpBuildContext *ctx, Relation index)
 
 	/* Get sorted terms */
 	terms = tp_build_context_get_sorted_terms(ctx, &num_terms);
-	if (num_terms == 0)
-		return InvalidBlockNumber;
 
 	/* Initialize writer */
 	tp_segment_writer_init(&writer, index);
@@ -720,10 +718,13 @@ tp_write_segment_from_build_ctx(TpBuildContext *ctx, Relation index)
 	FlushRelationBuffers(index);
 
 	/* Cleanup */
-	pfree(term_blocks);
+	if (term_blocks)
+		pfree(term_blocks);
 	pfree(all_skip_entries);
-	pfree(string_offsets);
-	pfree(terms);
+	if (string_offsets)
+		pfree(string_offsets);
+	if (terms)
+		pfree(terms);
 	if (writer.pages)
 		pfree(writer.pages);
 
@@ -779,8 +780,6 @@ tp_write_segment_to_buffile(TpBuildContext *ctx, BufFile *file)
 
 	/* Get sorted terms */
 	terms = tp_build_context_get_sorted_terms(ctx, &num_terms);
-	if (num_terms == 0)
-		return 0;
 
 	/* Record starting position for later seek-back */
 	BufFileTell(file, &base_fileno, &base_file_offset);
@@ -1063,7 +1062,8 @@ tp_write_segment_to_buffile(TpBuildContext *ctx, BufFile *file)
 			BufFileSeek(file, dict_fileno, dict_offset, SEEK_SET);
 		}
 		BufFileWrite(file, dict_entries, num_terms * sizeof(TpDictEntry));
-		pfree(dict_entries);
+		if (dict_entries)
+			pfree(dict_entries);
 
 		/* Seek back to header position */
 		BufFileSeek(file, base_fileno, base_file_offset, SEEK_SET);
@@ -1074,10 +1074,13 @@ tp_write_segment_to_buffile(TpBuildContext *ctx, BufFile *file)
 	}
 
 	/* Cleanup */
-	pfree(term_blocks);
+	if (term_blocks)
+		pfree(term_blocks);
 	pfree(all_skip_entries);
-	pfree(string_offsets);
-	pfree(terms);
+	if (string_offsets)
+		pfree(string_offsets);
+	if (terms)
+		pfree(terms);
 
 	return current_offset;
 }
@@ -1111,7 +1114,17 @@ tp_build_context_reset(TpBuildContext *ctx)
 				 HASH_ELEM | HASH_FUNCTION | HASH_COMPARE);
 	}
 
-	/* Reset document arrays (keep allocated memory) */
+	/* Reset document arrays and release capacity acquired by this batch */
+	if (ctx->docs_capacity > TP_BUILD_INITIAL_DOCS)
+	{
+		ctx->fieldnorms = repalloc_huge(
+				ctx->fieldnorms,
+				mul_size(TP_BUILD_INITIAL_DOCS, sizeof(*ctx->fieldnorms)));
+		ctx->ctids = repalloc_huge(
+				ctx->ctids,
+				mul_size(TP_BUILD_INITIAL_DOCS, sizeof(*ctx->ctids)));
+		ctx->docs_capacity = TP_BUILD_INITIAL_DOCS;
+	}
 	ctx->num_docs  = 0;
 	ctx->total_len = 0;
 }

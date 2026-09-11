@@ -58,8 +58,9 @@ STRICT_UNSPILLED="${STRICT_UNSPILLED:-0}"
 # Representative default matrix: one release per distinct on-disk
 # format combination.  0.5.0 = metapage v5 (legacy/REINDEX tier);
 # 0.5.1 = metapage v6 + segment v3; 1.0.0 = v6 + segment v4;
-# 1.2.0 = v6 + segment v5; 1.3.0 = metapage v7 (native on-disk L0).
-OLD_VERSIONS="${OLD_VERSIONS:-0.5.0 0.5.1 1.0.0 1.2.0 1.3.0}"
+# 1.2.0 = v6 + segment v5; 1.3.0 = metapage v7 (native on-disk L0);
+# 1.4.0 = metapage v8 before indexes recorded zero-lexeme documents.
+OLD_VERSIONS="${OLD_VERSIONS:-0.5.0 0.5.1 1.0.0 1.2.0 1.3.0 1.4.0}"
 if [ "$#" -gt 0 ]; then OLD_VERSIONS="$*"; fi
 
 # Cluster ops must not run as root.  When invoked as root (e.g. inside
@@ -267,6 +268,59 @@ run_legacy() { # $1=version
   [ "$reidx" = "$truth" ] || fail "$v(legacy): REINDEX did not restore recall ($reidx/$truth)"
 }
 
+run_boolean_completeness_upgrade() {
+  fresh_cluster || { fail "1.4.0/boolean: cluster init failed"; return; }
+  start_pg || { fail "1.4.0/boolean: old server failed to start"; return; }
+  createdb_upg
+  runsql "CREATE EXTENSION pg_textsearch;
+    CREATE TABLE d(id serial primary key, c text NOT NULL);
+    INSERT INTO d(c) VALUES ('alpha'), (''), ('the');
+    CREATE INDEX i ON d USING bm25(c) WITH (text_config='english');"
+  stop_pg
+
+  build_install_current || { fail "current build/install failed"; return; }
+  start_pg || { fail "1.4.0/boolean: NEW server failed to start"; return; }
+  runsql "ALTER EXTENSION pg_textsearch UPDATE TO '1.5.0-dev';"
+
+  local out err_f
+  out="$(mktemp)"; err_f="$(mktemp)"
+  run_capture "SET enable_seqscan=off;
+    SELECT count(*) FROM d
+    WHERE c @@ to_tsquery('english', '!missing');" "$out" "$err_f"
+  if grep -qi 'REINDEX' "$err_f" && [ "$(tr -d '[:space:]' <"$out")" = "1" ]; then
+    log "  [1.4.0/boolean] incomplete index warned and continued"
+  else
+    fail "1.4.0/boolean: expected warning and count 1, got stdout=[$(cat "$out")] stderr=[$(head -1 "$err_f")]"
+  fi
+  rm -f "$out" "$err_f"
+
+  out="$(mktemp)"; err_f="$(mktemp)"
+  run_capture "SET enable_seqscan=off;
+    SELECT count(*) FROM d
+    WHERE c @@ to_tsquery('english', 'alpha & !missing');" "$out" "$err_f"
+  if grep -qi 'REINDEX' "$err_f"; then
+    fail "1.4.0/boolean: positively anchored query emitted upgrade warning"
+  fi
+  [ "$(tr -d '[:space:]' <"$out")" = "1" ] ||
+    fail "1.4.0/boolean: anchored query count != 1"
+  rm -f "$out" "$err_f"
+
+  runsql "REINDEX INDEX i;"
+  out="$(mktemp)"; err_f="$(mktemp)"
+  run_capture "SET enable_seqscan=off;
+    SELECT count(*) FROM d
+    WHERE c @@ to_tsquery('english', '!missing');" "$out" "$err_f"
+  if grep -qi 'REINDEX' "$err_f"; then
+    fail "1.4.0/boolean: rebuilt index still emitted upgrade warning"
+  fi
+  local count
+  count="$(tr -d '[:space:]' <"$out")"
+  rm -f "$out" "$err_f"
+  stop_pg
+  log "  [1.4.0/boolean] post-REINDEX count=$count"
+  [ "$count" = "3" ] || fail "1.4.0/boolean: post-REINDEX count $count != 3"
+}
+
 # ------------------------------------------------------------------ #
 # Main
 # ------------------------------------------------------------------ #
@@ -281,6 +335,13 @@ for v in $OLD_VERSIONS; do
   if is_legacy "$v"; then
     run_legacy "$v"
   else
+    if [ "$v" = "1.4.0" ]; then
+      run_boolean_completeness_upgrade
+      build_install_old "$v" || {
+        fail "$v: could not reinstall old binary after Boolean upgrade test"
+        continue
+      }
+    fi
     shapes="single_seg two_seg multi_seg memtable_unspilled"
     last_shape="${shapes##* }"
     for st in $shapes; do

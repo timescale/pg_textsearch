@@ -378,6 +378,58 @@ ORDER BY content <@> to_bm25query('small', 'parallel_test_below_idx')) sub;
 (1 row)
 
 --------------------------------------------------------------------------------
+-- Test 11: Parallel build with documents that produce no lexemes
+--------------------------------------------------------------------------------
+CREATE TABLE parallel_test_empty (
+    id SERIAL PRIMARY KEY,
+    content TEXT NOT NULL
+);
+INSERT INTO parallel_test_empty (content)
+SELECT CASE WHEN i % 2 = 0 THEN '' ELSE 'the' END
+FROM generate_series(1, 100000) AS i;
+ANALYZE parallel_test_empty;
+CREATE INDEX parallel_test_empty_idx ON parallel_test_empty USING bm25(content)
+  WITH (text_config='english');
+NOTICE:  BM25 index build started for relation parallel_test_empty_idx
+NOTICE:  Using text search configuration: english
+NOTICE:  Using index options: k1=1.20, b=0.75
+NOTICE:  parallel index build: launched 2 of 2 requested workers
+NOTICE:  BM25 index build completed: 100000 documents, avg_length=0.00
+SELECT COUNT(*) AS empty_count
+FROM parallel_test_empty
+WHERE content @@ to_tsquery('english', '!missing');
+ empty_count 
+-------------
+      100000
+(1 row)
+
+--------------------------------------------------------------------------------
+-- Test 12: Zero-lexeme documents respect the serial build memory budget
+--------------------------------------------------------------------------------
+SET max_parallel_maintenance_workers = 0;
+SET maintenance_work_mem = '1MB';
+CREATE TABLE serial_test_empty (
+    id SERIAL PRIMARY KEY,
+    content TEXT NOT NULL
+);
+INSERT INTO serial_test_empty (content)
+SELECT ''
+FROM generate_series(1, 140000);
+CREATE INDEX serial_test_empty_idx ON serial_test_empty USING bm25(content)
+  WITH (text_config='english');
+NOTICE:  BM25 index build started for relation serial_test_empty_idx
+NOTICE:  Using text search configuration: english
+NOTICE:  Using index options: k1=1.20, b=0.75
+NOTICE:  BM25 index build completed: 140000 documents, avg_length=0.00
+SELECT bm25_summarize_index('serial_test_empty_idx')
+           ~ 'Total: 2 segments,.*0 terms, 140000 docs'
+    AS document_arrays_flushed;
+ document_arrays_flushed 
+-------------------------
+ t
+(1 row)
+
+--------------------------------------------------------------------------------
 -- Cleanup
 --------------------------------------------------------------------------------
 DROP TABLE parallel_test_serial CASCADE;
@@ -389,4 +441,6 @@ DROP TABLE parallel_test_dupes CASCADE;
 DROP TABLE parallel_test_nulls CASCADE;
 DROP TABLE parallel_test_custom CASCADE;
 DROP TABLE parallel_test_below_threshold CASCADE;
+DROP TABLE parallel_test_empty CASCADE;
+DROP TABLE serial_test_empty CASCADE;
 DROP EXTENSION pg_textsearch CASCADE;

@@ -21,6 +21,7 @@
 #include <utils/rel.h>
 
 #include "access/am.h"
+#include "access/boolean.h"
 #include "constants.h"
 #include "index/limit.h"
 #include "index/metapage.h"
@@ -113,6 +114,12 @@ tp_rescan_cleanup_results(TpScanOpaque so)
 		pfree(so->result_scores);
 		so->result_scores = NULL;
 		MemoryContextSwitchTo(oldcontext);
+	}
+
+	if (so->boolean_results)
+	{
+		BufFileClose(so->boolean_results);
+		so->boolean_results = NULL;
 	}
 }
 
@@ -230,6 +237,10 @@ tp_beginscan(Relation index, int nkeys, int norderbys)
 			CurrentMemoryContext,
 			"Tapir Scan Context",
 			ALLOCSET_DEFAULT_SIZES);
+	so->boolean_context = AllocSetContextCreate(
+			so->scan_context,
+			"Tapir Boolean Scan Context",
+			ALLOCSET_DEFAULT_SIZES);
 	so->limit			 = -1; /* Initialize limit to -1 (no limit) */
 	so->max_results_used = 0;
 	scan->opaque		 = so;
@@ -254,8 +265,8 @@ tp_beginscan(Relation index, int nkeys, int norderbys)
 void
 tp_rescan(
 		IndexScanDesc scan,
-		ScanKey keys  pg_attribute_unused(),
-		int nkeys	  pg_attribute_unused(),
+		ScanKey		  keys,
+		int			  nkeys,
 		ScanKey		  orderbys,
 		int			  norderbys)
 {
@@ -264,6 +275,12 @@ tp_rescan(
 
 	Assert(scan != NULL);
 	Assert(scan->opaque != NULL);
+
+	if (nkeys > 0 && norderbys > 0)
+		ereport(ERROR,
+				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+				 errmsg("pg_textsearch does not support Boolean filtering "
+						"and BM25 ordering in the same index scan")));
 
 	if (!so)
 		return;
@@ -280,14 +297,40 @@ tp_rescan(
 		/* Clean up any previous results */
 		tp_rescan_cleanup_results(so);
 
+		/* Release scratch allocations from the previous Boolean execution. */
+		MemoryContextReset(so->boolean_context);
+
 		/* Drop the emitted-CTID dedup set from any prior scan */
 		tp_returned_ctids_reset(so);
 
 		/* Reset scan position and state */
-		so->current_pos	 = 0;
-		so->result_count = 0;
-		so->eof_reached	 = false;
-		so->query_vector = NULL;
+		so->current_pos		= 0;
+		so->result_count	= 0;
+		so->eof_reached		= false;
+		so->query_vector	= NULL;
+
+		/*
+		 * NULL keys restart the scan with its previous keys.  Only discard
+		 * the copied Boolean query when PostgreSQL supplies replacements.
+		 */
+		if (keys != NULL)
+		{
+			if (so->boolean_query != NULL)
+			{
+				pfree(so->boolean_query);
+				so->boolean_query = NULL;
+			}
+			so->is_boolean_scan = false;
+			so->boolean_recheck = false;
+		}
+	}
+
+	if (nkeys > 0 && keys && so)
+	{
+		if (!metap)
+			metap = tp_get_metapage(scan->indexRelation);
+
+		tp_boolean_rescan(scan, keys, nkeys, metap);
 	}
 
 	/* Process ORDER BY scan keys for <@> operator */
@@ -298,10 +341,10 @@ tp_rescan(
 			metap = tp_get_metapage(scan->indexRelation);
 
 		tp_rescan_process_orderby(scan, orderbys, norderbys, metap);
-
-		if (metap)
-			pfree(metap);
 	}
+
+	if (metap)
+		pfree(metap);
 }
 
 /*
@@ -314,6 +357,8 @@ tp_endscan(IndexScanDesc scan)
 
 	if (so)
 	{
+		tp_rescan_cleanup_results(so);
+
 		if (so->scan_context)
 			MemoryContextDelete(so->scan_context);
 
@@ -465,10 +510,11 @@ tp_gettuple(IndexScanDesc scan, ScanDirection dir)
 
 	Assert(scan != NULL);
 	Assert(so != NULL);
-	Assert(so->query_text != NULL);
+	Assert(so->is_boolean_scan || so->query_text != NULL);
 
 	/* Execute scoring query if we haven't done so yet */
-	if (so->result_ctids == NULL && !so->eof_reached)
+	if (so->result_ctids == NULL && so->boolean_results == NULL &&
+		!so->eof_reached)
 	{
 		/* Count index scan for pg_stat_user_indexes */
 		pgstat_count_index_scan(scan->indexRelation);
@@ -477,17 +523,46 @@ tp_gettuple(IndexScanDesc scan, ScanDirection dir)
 			scan->instrument->nsearches++;
 #endif
 
-		if (!tp_execute_scoring_query(scan))
+		if (so->is_boolean_scan)
+		{
+			TpLocalIndexState *index_state = tp_get_local_index_state(
+					RelationGetRelid(scan->indexRelation));
+
+			if (!index_state)
+				ereport(ERROR,
+						(errcode(ERRCODE_INTERNAL_ERROR),
+						 errmsg("could not get index state for BM25 "
+								"Boolean search")));
+
+			if (!tp_boolean_execute(scan, index_state))
+			{
+				so->eof_reached = true;
+				return false;
+			}
+		}
+		else if (!tp_execute_scoring_query(scan))
 		{
 			so->eof_reached = true;
 			return false;
 		}
-		/* Scoring query must have allocated result_ctids on success */
-		if (so->result_ctids == NULL)
+		if (so->result_ctids == NULL && so->boolean_results == NULL)
 		{
 			so->eof_reached = true;
 			return false;
 		}
+	}
+
+	if (so->boolean_results != NULL)
+	{
+		if (!tp_boolean_next(scan))
+		{
+			so->eof_reached = true;
+			return false;
+		}
+
+		scan->xs_recheck		= so->boolean_recheck;
+		scan->xs_recheckorderby = false;
+		return true;
 	}
 
 	/* Advance, growing the scoring batch if needed. */
@@ -500,7 +575,8 @@ tp_gettuple(IndexScanDesc scan, ScanDirection dir)
 			 * more documents.  Double the limit and re-execute the
 			 * scoring query.
 			 */
-			if (!so->eof_reached && so->result_count > 0 &&
+			if (!so->is_boolean_scan && !so->eof_reached &&
+				so->result_count > 0 &&
 				so->result_count >= so->max_results_used &&
 				so->max_results_used < TP_MAX_QUERY_LIMIT)
 			{
@@ -557,7 +633,7 @@ tp_gettuple(IndexScanDesc scan, ScanDirection dir)
 	}
 
 	scan->xs_heaptid		= so->result_ctids[so->current_pos];
-	scan->xs_recheck		= false;
+	scan->xs_recheck		= so->boolean_recheck;
 	scan->xs_recheckorderby = false;
 
 	/* Set ORDER BY distance value */

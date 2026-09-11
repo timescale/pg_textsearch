@@ -298,6 +298,49 @@ SELECT COUNT(*) AS small_count FROM (SELECT 1 FROM parallel_test_below_threshold
 ORDER BY content <@> to_bm25query('small', 'parallel_test_below_idx')) sub;
 
 --------------------------------------------------------------------------------
+-- Test 11: Parallel build with documents that produce no lexemes
+--------------------------------------------------------------------------------
+CREATE TABLE parallel_test_empty (
+    id SERIAL PRIMARY KEY,
+    content TEXT NOT NULL
+);
+
+INSERT INTO parallel_test_empty (content)
+SELECT CASE WHEN i % 2 = 0 THEN '' ELSE 'the' END
+FROM generate_series(1, 100000) AS i;
+
+ANALYZE parallel_test_empty;
+
+CREATE INDEX parallel_test_empty_idx ON parallel_test_empty USING bm25(content)
+  WITH (text_config='english');
+
+SELECT COUNT(*) AS empty_count
+FROM parallel_test_empty
+WHERE content @@ to_tsquery('english', '!missing');
+
+--------------------------------------------------------------------------------
+-- Test 12: Zero-lexeme documents respect the serial build memory budget
+--------------------------------------------------------------------------------
+SET max_parallel_maintenance_workers = 0;
+SET maintenance_work_mem = '1MB';
+
+CREATE TABLE serial_test_empty (
+    id SERIAL PRIMARY KEY,
+    content TEXT NOT NULL
+);
+
+INSERT INTO serial_test_empty (content)
+SELECT ''
+FROM generate_series(1, 140000);
+
+CREATE INDEX serial_test_empty_idx ON serial_test_empty USING bm25(content)
+  WITH (text_config='english');
+
+SELECT bm25_summarize_index('serial_test_empty_idx')
+           ~ 'Total: 2 segments,.*0 terms, 140000 docs'
+    AS document_arrays_flushed;
+
+--------------------------------------------------------------------------------
 -- Cleanup
 --------------------------------------------------------------------------------
 DROP TABLE parallel_test_serial CASCADE;
@@ -309,4 +352,6 @@ DROP TABLE parallel_test_dupes CASCADE;
 DROP TABLE parallel_test_nulls CASCADE;
 DROP TABLE parallel_test_custom CASCADE;
 DROP TABLE parallel_test_below_threshold CASCADE;
+DROP TABLE parallel_test_empty CASCADE;
+DROP TABLE serial_test_empty CASCADE;
 DROP EXTENSION pg_textsearch CASCADE;

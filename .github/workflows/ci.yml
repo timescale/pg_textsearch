@@ -886,7 +886,7 @@ jobs:
         # fields, and lazily upgrades to the current version on the
         # first metapage write.  This step exercises the read path, the
         # ALTER EXTENSION UPDATE, an INSERT that triggers the in-place
-        # v6→v8 upgrade via memtable_bootstrap_and_append, and finally
+        # v6-to-v9 upgrade via memtable_bootstrap_and_append, and finally
         # a REINDEX (still supported as the fallback recovery path)
         # plus VACUUM and force_merge.
         psql -h $PWD/tmp_upgrade_cov -p 55435 -d upgrade_cov << 'SQL'
@@ -929,7 +929,7 @@ jobs:
 
         -- INSERT triggers memtable_bootstrap_and_append, which
         -- runs tp_metapage_upgrade_to_current() inside its
-        -- GenericXLog record.  Validates that the v6→v8 in-place
+        -- GenericXLog record.  Validates that the v6-to-v9 in-place
         -- upgrade landed on disk.
         INSERT INTO docs (content) VALUES
           ('compat upgrade insert one'),
@@ -939,12 +939,12 @@ jobs:
         DECLARE dump_text text;
         BEGIN
           dump_text := bm25_dump_index('idx');
-          IF dump_text NOT LIKE '%version: 8' || E'\n' || '%' THEN
+          IF dump_text NOT LIKE '%version: 9' || E'\n' || '%' THEN
             RAISE EXCEPTION
-              'FAIL: metapage not upgraded to v8 after INSERT; '
+              'FAIL: metapage not upgraded to v9 after INSERT; '
               'dump excerpt: %', substr(dump_text, 1, 400);
           END IF;
-          RAISE NOTICE 'PASS: in-place v6→v8 upgrade after first write';
+          RAISE NOTICE 'PASS: in-place v6-to-v9 upgrade after first write';
         END $$;
 
         -- REINDEX is still supported as the operator fallback;
