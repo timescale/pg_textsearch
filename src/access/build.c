@@ -268,7 +268,7 @@ tp_finish_spill(
 	 * concurrent insert can have bumped this since the
 	 * pre-spill chain extension was published.
 	 */
-	pg_atomic_write_u32(&index_state->shared->chain_page_count, 0);
+	tp_set_chain_page_count_for_relation(index_state, index_rel, 0);
 
 	if (post_action == TP_SPILL_POST_NONE)
 		return;
@@ -367,6 +367,8 @@ tp_auto_spill_if_needed(TpLocalIndexState *index_state, Relation index_rel)
 	threshold = (uint32)tp_memtable_pages_threshold;
 	if (threshold == 0)
 		return; /* auto-spill disabled */
+
+	tp_reseed_chain_page_count_if_needed(index_state, index_rel);
 
 	if (pg_atomic_read_u32(&index_state->shared->chain_page_count) < threshold)
 		return;
@@ -1390,6 +1392,8 @@ tp_build(Relation heap, Relation index, IndexInfo *indexInfo)
 	uint64			   total_docs = 0;
 	uint64			   total_len  = 0;
 	TpLocalIndexState *index_state;
+	TpLocalIndexState *build_state;
+	SubTransactionId   index_create_subid;
 	bool			   is_text_array;
 
 	/* Show "started" for first partition only (suppresses duplicates) */
@@ -1435,6 +1439,10 @@ tp_build(Relation heap, Relation index, IndexInfo *indexInfo)
 				 text_config_name);
 		elog(NOTICE, "Using index options: k1=%.2f, b=%.2f", k1, b);
 	}
+
+	index_create_subid = index->rd_createSubid;
+	build_state		   = tp_create_build_index_state(
+			   index->rd_id, heap->rd_id, index_create_subid);
 
 	/* Initialize metapage */
 	tp_build_init_metapage(index, text_config_oid, k1, b);
@@ -1516,31 +1524,16 @@ tp_build(Relation heap, Relation index, IndexInfo *indexInfo)
 					nworkers);
 
 			/*
-			 * Create shared index state for runtime queries.
-			 *
-			 * The parallel build writes segments and updates
-			 * the metapage, but does not create the in-memory
-			 * shared state that INSERT and SELECT need.
-			 * Without this, the first post-build access falls
-			 * through to tp_rebuild_index_from_disk() (the
-			 * first-access bootstrap path), which can race
-			 * with concurrent backends touching the same
-			 * index and re-creating its registry entry.
-			 *
-			 * By creating the state here — the same backend
-			 * that ran the build — we ensure the registry
-			 * entry and local cache are ready before the
-			 * CREATE INDEX transaction commits.
+			 * Parallel workers kept all build data in DSM/BufFiles.
+			 * Invalidate the stable runtime cache only after the new
+			 * index relfilenode is complete.
 			 */
 			{
 				Buffer			metabuf;
 				Page			mpage;
 				TpIndexMetaPage metap;
 
-				(void)tp_create_shared_index_state(
-						RelationGetRelid(index),
-						RelationGetRelid(heap),
-						/* reuse_if_exists */ false);
+				tp_finalize_build_mode(build_state);
 
 				if (build_progress.active)
 				{
@@ -1592,14 +1585,7 @@ tp_build(Relation heap, Relation index, IndexInfo *indexInfo)
 		Size				 budget;
 		double				 reltuples;
 
-		/*
-		 * Still create build index state for:
-		 * - Per-index LWLock infrastructure
-		 * - Post-build transition to runtime mode
-		 * - Shared state initialization for runtime queries
-		 */
-		index_state = tp_create_build_index_state(
-				RelationGetRelid(index), RelationGetRelid(heap));
+		index_state = build_state;
 		tp_acquire_index_lock(index_state, LW_EXCLUSIVE);
 
 		/* Budget: maintenance_work_mem (in KB) -> bytes */
@@ -1723,8 +1709,8 @@ tp_build(Relation heap, Relation index, IndexInfo *indexInfo)
 		tp_release_index_lock(index_state);
 
 		/*
-		 * Finalize build mode: destroy private DSA and
-		 * transition to global DSA for runtime operation.
+		 * The build output is complete; invalidate the derived runtime
+		 * cache in place without replacing its stable allocation.
 		 */
 		tp_finalize_build_mode(index_state);
 

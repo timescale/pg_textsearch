@@ -171,6 +171,55 @@ init_local_state_cache(void)
 	}
 }
 
+static void
+init_memtable(TpMemtable *memtable)
+{
+	memtable->string_hash_handle = DSHASH_HANDLE_INVALID;
+	memtable->doc_lengths_handle = DSHASH_HANDLE_INVALID;
+	LWLockInitialize(&memtable->apply_lock, TP_TRANCHE_CACHE_APPLY_LOCK);
+	LWLockInitialize(&memtable->lock, TP_TRANCHE_CACHE_LOCK);
+	memtable->cursor_gen_spill_count = 0;
+	memtable->cursor_next_blkno		 = InvalidBlockNumber;
+	memtable->cursor_next_off		 = 0;
+	memset(&memtable->cursor_locator, 0, sizeof(memtable->cursor_locator));
+	memtable->cursor_locator_valid = false;
+	pg_atomic_init_u64(&memtable->cursor_seq, 0);
+	pg_atomic_init_u64(&memtable->estimated_bytes, 0);
+}
+
+static dsa_pointer
+allocate_memtable(dsa_area *dsa)
+{
+	dsa_pointer memtable_dp = dsa_allocate(dsa, sizeof(TpMemtable));
+	TpMemtable *memtable;
+
+	if (!DsaPointerIsValid(memtable_dp))
+		elog(ERROR, "Failed to allocate memtable in DSA");
+
+	memtable = (TpMemtable *)dsa_get_address(dsa, memtable_dp);
+	init_memtable(memtable);
+
+	return memtable_dp;
+}
+
+static void
+init_local_state(
+		TpLocalIndexState  *local_state,
+		TpSharedIndexState *shared_state,
+		dsa_pointer			shared_dp,
+		dsa_area		   *dsa)
+{
+	local_state->shared						= shared_state;
+	local_state->shared_dp					= shared_dp;
+	local_state->dsa						= dsa;
+	local_state->build_created_shared_state = false;
+	local_state->lock_held					= false;
+	local_state->lock_mode					= 0;
+	local_state->terms_added_this_xact		= 0;
+	local_state->docs_since_global_check	= 0;
+	local_state->created_in_subxact			= InvalidSubTransactionId;
+}
+
 /*
  * Get or create a local index state for the given index OID
  *
@@ -200,7 +249,8 @@ tp_get_local_index_state(Oid index_oid)
 		return entry->local_state;
 
 	/* Look up shared state in registry */
-	shared_state = tp_registry_lookup(index_oid);
+	shared_state = tp_registry_lookup(
+			tp_registry_key(MyDatabaseId, index_oid));
 
 	if (shared_state == NULL)
 	{
@@ -238,16 +288,7 @@ tp_get_local_index_state(Oid index_oid)
 			 */
 			local_state = tp_rebuild_index_from_disk(index_oid);
 			if (local_state != NULL)
-			{
-				/*
-				 * Rebuilt from disk = pre-existing index.
-				 * Override the subtransaction ID so rollback
-				 * of an enclosing savepoint won't destroy the
-				 * shared state used by all backends.
-				 */
-				local_state->created_in_subxact = InvalidSubTransactionId;
 				return local_state;
-			}
 
 			/* Recovery failed - index might be corrupted or stale */
 		}
@@ -274,15 +315,7 @@ tp_get_local_index_state(Oid index_oid)
 		/* Allocate local state */
 		local_state = (TpLocalIndexState *)MemoryContextAlloc(
 				TopMemoryContext, sizeof(TpLocalIndexState));
-		local_state->shared					 = shared_state;
-		local_state->dsa					 = dsa;
-		local_state->is_build_mode			 = false; /* Runtime mode */
-		local_state->lock_held				 = false;
-		local_state->lock_mode				 = 0;
-		local_state->terms_added_this_xact	 = 0;
-		local_state->docs_since_global_check = 0;
-		local_state->created_in_subxact =
-				InvalidSubTransactionId; /* pre-existing index */
+		init_local_state(local_state, shared_state, shared_dp, dsa);
 
 		/* Cache the local state */
 		entry = (LocalStateCacheEntry *)
@@ -294,399 +327,193 @@ tp_get_local_index_state(Oid index_oid)
 }
 
 /*
- * Create a new shared index state and return local state.
- *
- * If `reuse_if_exists` is true and a registry entry for this OID
- * already exists when we go to insert, the just-allocated DSA is
- * freed and we attach to the existing entry instead. This is the
- * mode the cold-start bootstrap path uses, so concurrent rebuilds
- * resolve to the same shared state instead of racing each other.
- *
- * If false, an existing entry is unregistered and replaced — used
- * by the parallel-build completion path on the assumption that any
- * pre-existing entry would be stale (e.g. left behind by a crashed
- * earlier CREATE INDEX with the same OID).
+ * Register a fresh runtime state or attach to the existing state for the
+ * same database-qualified index identity.  REINDEX must never replace the
+ * shared allocation because wrappers retained by other backends keep its
+ * address.  The calling backend's wrapper is replaced below.
  */
-TpLocalIndexState *
-tp_create_shared_index_state(Oid index_oid, Oid heap_oid, bool reuse_if_exists)
+static TpLocalIndexState *
+create_or_attach_index_state(
+		Oid index_oid, Oid heap_oid, SubTransactionId index_create_subid)
 {
+	TpRegistryKey		  key = tp_registry_key(MyDatabaseId, index_oid);
 	TpSharedIndexState	 *shared_state;
 	TpLocalIndexState	 *local_state;
-	TpMemtable			 *memtable;
+	TpLocalIndexState	 *old_local_state = NULL;
 	dsa_area			 *dsa;
 	dsa_pointer			  shared_dp;
 	dsa_pointer			  memtable_dp;
+	dsa_pointer			  existing_dp = InvalidDsaPointer;
 	LocalStateCacheEntry *entry;
 	bool				  found;
 
-	/* Get the shared DSA area */
 	dsa = tp_registry_get_dsa();
 
-	/*
-	 * Allocate shared state in DSA.
-	 * Use dsa_allocate directly (not tp_dsa_allocate) because shared_state
-	 * contains the memory_usage tracker itself. This allocation is not
-	 * counted against the index memory limit.
-	 */
 	shared_dp = dsa_allocate(dsa, sizeof(TpSharedIndexState));
-	if (shared_dp == InvalidDsaPointer)
-	{
+	if (!DsaPointerIsValid(shared_dp))
 		elog(ERROR,
 			 "Failed to allocate DSA memory for shared state (index OID: %u, "
 			 "size: %zu)",
 			 index_oid,
 			 sizeof(TpSharedIndexState));
-	}
-	shared_state = (TpSharedIndexState *)dsa_get_address(dsa, shared_dp);
 
-	/* Initialize shared state */
+	shared_state = (TpSharedIndexState *)dsa_get_address(dsa, shared_dp);
 	shared_state->index_oid = index_oid;
 	shared_state->heap_oid	= heap_oid;
 	pg_atomic_init_u64(&shared_state->estimated_bytes, 0);
 	pg_atomic_init_u32(&shared_state->chain_page_count, 0);
-	shared_state->is_build_mode = false; /* runtime-mode publication */
-	/*
-	 * Initialize per-index LWLock + spill_generation in the
-	 * freshly DSA-allocated shared_state.  dsa_allocate does
-	 * NOT zero memory (reused chunks can hold garbage), so any
-	 * field that requires a known initial value must be set
-	 * explicitly.  Without these inits a future
-	 * LWLockAcquire(&shared->lock) can hang on a stuck spinlock
-	 * (PANIC: stuck spinlock detected at LWLockWaitListLock).
-	 * Same tranche choices as tp_create_build_index_state for
-	 * consistency.
-	 */
+	pg_atomic_init_u32(&shared_state->chain_page_count_needs_reseed, 0);
+	pg_atomic_init_u32(&shared_state->chain_page_count_spc_oid, InvalidOid);
+	pg_atomic_init_u32(&shared_state->chain_page_count_db_oid, InvalidOid);
+	pg_atomic_init_u32(
+			&shared_state->chain_page_count_rel_number, InvalidRelFileNumber);
 	LWLockInitialize(&shared_state->lock, TP_TRANCHE_INDEX_LOCK);
 	pg_atomic_init_u64(&shared_state->spill_generation, 0);
-	memtable_dp = dsa_allocate(dsa, sizeof(TpMemtable));
-	if (!DsaPointerIsValid(memtable_dp))
-		elog(ERROR, "Failed to allocate memtable in DSA");
-
-	memtable = (TpMemtable *)dsa_get_address(dsa, memtable_dp);
-	memtable->string_hash_handle = DSHASH_HANDLE_INVALID;
-	memtable->doc_lengths_handle = DSHASH_HANDLE_INVALID;
-	LWLockInitialize(&memtable->apply_lock, TP_TRANCHE_CACHE_APPLY_LOCK);
-	LWLockInitialize(&memtable->lock, TP_TRANCHE_CACHE_LOCK);
-	memtable->cursor_gen_spill_count = 0;
-	memtable->cursor_next_blkno		 = InvalidBlockNumber;
-	memtable->cursor_next_off		 = 0;
-	pg_atomic_init_u64(&memtable->cursor_seq, 0);
-	pg_atomic_init_u64(&memtable->estimated_bytes, 0);
-
+	memtable_dp				  = allocate_memtable(dsa);
 	shared_state->memtable_dp = memtable_dp;
 
-	if (reuse_if_exists)
+	if (!tp_registry_register_if_absent(key, shared_dp, &existing_dp))
 	{
-		/*
-		 * Atomic register-or-attach. If a concurrent backend
-		 * registered first, free our just-allocated DSA and attach
-		 * to its shared state instead — second arrival's bootstrap
-		 * still runs (under the per-index LW_EXCLUSIVE), but the
-		 * idempotency gate dedups and the atomic-write yields the
-		 * same answer.
-		 */
-		dsa_pointer existing_dp = InvalidDsaPointer;
-
-		if (!tp_registry_register_if_absent(
-					index_oid, shared_dp, &existing_dp))
-		{
-			dsa_free(dsa, memtable_dp);
-			dsa_free(dsa, shared_dp);
-			shared_dp	 = existing_dp;
-			shared_state = (TpSharedIndexState *)
-					dsa_get_address(dsa, existing_dp);
-		}
-	}
-	else
-	{
-		/* Replace any stale entry (e.g. left by a crashed CREATE INDEX). */
-		if (tp_registry_lookup(index_oid) != NULL)
-			tp_registry_unregister(index_oid);
-
-		if (!tp_registry_register(index_oid, shared_state, shared_dp))
-		{
-			tp_registry_shmem_startup();
-			if (!tp_registry_register(index_oid, shared_state, shared_dp))
-			{
-				dsa_free(dsa, memtable_dp);
-				dsa_free(dsa, shared_dp);
-				elog(ERROR, "Failed to register index %u", index_oid);
-			}
-		}
+		dsa_free(dsa, memtable_dp);
+		dsa_free(dsa, shared_dp);
+		shared_dp	 = existing_dp;
+		shared_state = (TpSharedIndexState *)dsa_get_address(dsa, existing_dp);
 	}
 
-	/* Create local state for the creating backend */
+	/*
+	 * The wrapper cache is backend-local and can outlive a committed DROP
+	 * performed by another backend.  The registry state resolved above is
+	 * authoritative; never inspect the old wrapper's potentially stale
+	 * shared pointer.  Release only the known-live shared lock, if this
+	 * backend already acquired it earlier in the transaction.
+	 */
+	if (LWLockHeldByMe(&shared_state->lock))
+		LWLockRelease(&shared_state->lock);
+
 	local_state = (TpLocalIndexState *)
 			MemoryContextAlloc(TopMemoryContext, sizeof(TpLocalIndexState));
-	local_state->shared					 = shared_state;
-	local_state->dsa					 = dsa;
-	local_state->is_build_mode			 = false; /* Runtime mode */
-	local_state->lock_held				 = false;
-	local_state->lock_mode				 = 0;
-	local_state->terms_added_this_xact	 = 0;
-	local_state->docs_since_global_check = 0;
-	local_state->created_in_subxact		 = GetCurrentSubTransactionId();
+	init_local_state(local_state, shared_state, shared_dp, dsa);
+	if (index_create_subid != InvalidSubTransactionId)
+	{
+		local_state->build_created_shared_state = true;
+		local_state->created_in_subxact			= index_create_subid;
+	}
 
-	/* Cache the local state */
 	init_local_state_cache();
 	entry = (LocalStateCacheEntry *)
 			hash_search(local_state_cache, &index_oid, HASH_ENTER, &found);
 	if (found)
+		old_local_state = entry->local_state;
+
+	/*
+	 * REINDEX replaces this backend's wrapper while retaining the same
+	 * registry allocation.  Carry transaction-local scalar accounting
+	 * forward only when the saved DSA identity matches the authoritative
+	 * state resolved above.  Never dereference old_local_state->shared.
+	 */
+	if (old_local_state != NULL && old_local_state->shared_dp == shared_dp)
 	{
-		/* This happens during index rebuild (e.g., VACUUM FULL)
-		 * Clean up the old local state before registering the new one */
-		if (entry->local_state != NULL)
-		{
-			/* Don't detach DSA as it's shared */
-			pfree(entry->local_state);
-		}
+		local_state->terms_added_this_xact =
+				old_local_state->terms_added_this_xact;
+		local_state->docs_since_global_check =
+				old_local_state->docs_since_global_check;
 	}
 
 	entry->local_state = local_state;
+	if (old_local_state != NULL)
+		pfree(old_local_state);
 
 	return local_state;
 }
 
-/*
- * Create index state for BUILD mode (CREATE INDEX)
- *
- * Uses a private DSA that is not shared with other backends.
- * This private DSA will be destroyed and recreated on each spill,
- * providing perfect memory reclamation.
- */
 TpLocalIndexState *
-tp_create_build_index_state(Oid index_oid, Oid heap_oid)
+tp_create_shared_index_state(
+		Oid index_oid, Oid heap_oid, SubTransactionId index_create_subid)
 {
-	TpSharedIndexState	 *shared_state;
-	TpLocalIndexState	 *local_state;
-	TpMemtable			 *memtable;
-	dsa_area			 *private_dsa;
-	dsa_area			 *global_dsa;
-	dsa_pointer			  shared_dp;
-	dsa_pointer			  memtable_dp;
-	LocalStateCacheEntry *entry;
-	bool				  found;
+	return create_or_attach_index_state(
+			index_oid, heap_oid, index_create_subid);
+}
 
-	/* Get the global DSA for shared state allocation */
-	global_dsa = tp_registry_get_dsa();
-
-	/* Allocate shared state in GLOBAL DSA (for statistics) */
-	shared_dp = dsa_allocate(global_dsa, sizeof(TpSharedIndexState));
-	if (shared_dp == InvalidDsaPointer)
-		elog(ERROR,
-			 "Failed to allocate shared state for build (index OID: %u)",
-			 index_oid);
-
-	shared_state = (TpSharedIndexState *)
-			dsa_get_address(global_dsa, shared_dp);
-
-	/* Initialize shared state */
-	shared_state->index_oid = index_oid;
-	shared_state->heap_oid	= heap_oid;
-	shared_state->memtable_dp =
-			InvalidDsaPointer; /* Memtable in private DSA */
-	/*
-	 * Mark this shared state as build-mode BEFORE we publish it
-	 * via tp_registry_register below.  The cross-index eviction
-	 * walker (src/memtable/cache.c:evict_walk_cb) reads this
-	 * flag lock-free and skips entries where it is true, which
-	 * prevents the walker from dereferencing memtable_dp through
-	 * the GLOBAL DSA once we publish a PRIVATE-DSA pointer at
-	 * "shared_state->memtable_dp = memtable_dp" further down.
-	 *
-	 * The flag is cleared in tp_finalize_build_mode() under
-	 * tp_registry_eviction_mutex EXCL, atomically with swapping
-	 * memtable_dp to a global-DSA pointer.
-	 */
-	shared_state->is_build_mode = true;
-	pg_atomic_init_u64(&shared_state->estimated_bytes, 0);
-	pg_atomic_init_u32(&shared_state->chain_page_count, 0);
-
-	/*
-	 * Initialize per-index LWLock using a fixed tranche ID.
-	 * Using a fixed ID avoids exhausting tranche IDs when creating many
-	 * indexes (e.g., partitioned tables with 500+ partitions).
-	 */
-	LWLockInitialize(&shared_state->lock, TP_TRANCHE_INDEX_LOCK);
-	pg_atomic_init_u64(&shared_state->spill_generation, 0);
-
-	/* Check if index already registered (rebuild case) */
-	if (tp_registry_lookup(index_oid) != NULL)
-		tp_registry_unregister(index_oid);
-
-	/* Register in global registry */
-	if (!tp_registry_register(index_oid, shared_state, shared_dp))
-	{
-		tp_registry_shmem_startup();
-		if (!tp_registry_register(index_oid, shared_state, shared_dp))
-		{
-			dsa_free(global_dsa, shared_dp);
-			elog(ERROR, "Failed to register index %u", index_oid);
-		}
-	}
-
-	/*
-	 * Create PRIVATE DSA for build.
-	 * This DSA is not registered globally - only this backend knows about it.
-	 * It will be destroyed and recreated on each spill for perfect
-	 * memory reclamation.
-	 *
-	 * Use a fixed tranche ID to avoid exhausting tranche IDs when creating
-	 * many indexes (e.g., partitioned tables with 500+ partitions).
-	 */
-	private_dsa = dsa_create(TP_TRANCHE_BUILD_DSA);
-	if (!private_dsa)
-		elog(ERROR, "Failed to create private DSA for index build");
-
-	/* Allocate and initialize memtable in PRIVATE DSA */
-	memtable_dp = dsa_allocate(private_dsa, sizeof(TpMemtable));
-	if (!DsaPointerIsValid(memtable_dp))
-		elog(ERROR, "Failed to allocate memtable in private DSA");
-
-	memtable = (TpMemtable *)dsa_get_address(private_dsa, memtable_dp);
-	memtable->string_hash_handle = DSHASH_HANDLE_INVALID;
-	memtable->doc_lengths_handle = DSHASH_HANDLE_INVALID;
-	LWLockInitialize(&memtable->apply_lock, TP_TRANCHE_CACHE_APPLY_LOCK);
-	LWLockInitialize(&memtable->lock, TP_TRANCHE_CACHE_LOCK);
-	memtable->cursor_gen_spill_count = 0;
-	memtable->cursor_next_blkno		 = InvalidBlockNumber;
-	memtable->cursor_next_off		 = 0;
-	pg_atomic_init_u64(&memtable->cursor_seq, 0);
-	pg_atomic_init_u64(&memtable->estimated_bytes, 0);
-
-	/* Store memtable pointer in shared state for memtable access */
-	shared_state->memtable_dp = memtable_dp;
-
-	/* Create local state pointing to PRIVATE DSA */
-	local_state = (TpLocalIndexState *)
-			MemoryContextAlloc(TopMemoryContext, sizeof(TpLocalIndexState));
-	local_state->shared					 = shared_state;
-	local_state->dsa					 = private_dsa; /* PRIVATE DSA */
-	local_state->is_build_mode			 = true;		/* BUILD MODE */
-	local_state->lock_held				 = false;
-	local_state->lock_mode				 = 0;
-	local_state->terms_added_this_xact	 = 0;
-	local_state->docs_since_global_check = 0;
-	local_state->created_in_subxact		 = GetCurrentSubTransactionId();
-
-	/* Cache the local state */
-	init_local_state_cache();
-	entry = (LocalStateCacheEntry *)
-			hash_search(local_state_cache, &index_oid, HASH_ENTER, &found);
-	if (found && entry->local_state != NULL)
-		pfree(entry->local_state);
-
-	entry->local_state = local_state;
-
-	return local_state;
+TpLocalIndexState *
+tp_create_build_index_state(
+		Oid index_oid, Oid heap_oid, SubTransactionId index_create_subid)
+{
+	return create_or_attach_index_state(
+			index_oid, heap_oid, index_create_subid);
 }
 
 /*
- * Finalize build mode and transition to runtime mode
- *
- * This is called at the end of CREATE INDEX. It:
- * 1. Destroys the private DSA (returns all memory to OS)
- * 2. Attaches to the global shared DSA
- * 3. Initializes a fresh memtable in the global DSA
- * 4. Sets is_build_mode = false for runtime operation
- *
- * After this, the index is ready for normal concurrent access.
+ * A successful serial or parallel build replaces the on-disk relfilenode.
+ * Discard the derived cache in place while preserving the registry entry,
+ * per-index LWLock, TpMemtable allocation, and memtable_dp.
  */
 void
 tp_finalize_build_mode(TpLocalIndexState *local_state)
 {
-	dsa_area   *global_dsa;
 	TpMemtable *memtable;
-	dsa_pointer memtable_dp;
-	LWLock	   *eviction_mutex;
 
 	Assert(local_state != NULL);
-	Assert(local_state->is_build_mode);
+	Assert(local_state->shared != NULL);
+	Assert(local_state->dsa != NULL);
+	Assert(DsaPointerIsValid(local_state->shared->memtable_dp));
 
-	/*
-	 * Attach to the global shared DSA for runtime operation.
-	 * This is the same DSA used by all backends for concurrent access.
-	 *
-	 * NOTE: we do NOT detach the private DSA yet.  The cross-index
-	 * eviction walker (src/memtable/cache.c:evict_walk_cb) skips
-	 * entries where shared->is_build_mode is true, so as long as
-	 * is_build_mode remains true the private memtable_dp is
-	 * safe.  We only detach after the swap+clear below.
-	 */
-	global_dsa = tp_registry_get_dsa();
-	if (!global_dsa)
-		elog(ERROR, "Failed to get global DSA for runtime mode");
+	tp_acquire_index_lock(local_state, LW_EXCLUSIVE);
+	memtable = (TpMemtable *)dsa_get_address(
+			local_state->dsa, local_state->shared->memtable_dp);
+	LWLockAcquire(&memtable->apply_lock, LW_EXCLUSIVE);
+	LWLockAcquire(&memtable->lock, LW_EXCLUSIVE);
+	tp_cache_clear(local_state->dsa, memtable);
+	pg_atomic_add_fetch_u64(&local_state->shared->spill_generation, 1);
+	pg_atomic_write_u32(
+			&local_state->shared->chain_page_count_needs_reseed, 1);
+	pg_atomic_write_u32(&local_state->shared->chain_page_count, 0);
+	LWLockRelease(&memtable->lock);
+	LWLockRelease(&memtable->apply_lock);
+	tp_release_index_lock(local_state);
+}
 
-	/*
-	 * Allocate a fresh memtable in the global DSA.
-	 * This memtable will be shared with other backends.
-	 */
-	memtable_dp = dsa_allocate(global_dsa, sizeof(TpMemtable));
-	if (!DsaPointerIsValid(memtable_dp))
-		elog(ERROR, "Failed to allocate memtable in global DSA");
+static void
+cleanup_owned_build_state(LocalStateCacheEntry *entry, dsa_area *global_dsa)
+{
+	TpLocalIndexState *local_state = entry->local_state;
+	TpRegistryKey	   key;
+	dsa_pointer		   shared_dp;
+	LWLock			  *eviction_mutex;
 
-	memtable = (TpMemtable *)dsa_get_address(global_dsa, memtable_dp);
-	memtable->string_hash_handle = DSHASH_HANDLE_INVALID;
-	memtable->doc_lengths_handle = DSHASH_HANDLE_INVALID;
-	LWLockInitialize(&memtable->apply_lock, TP_TRANCHE_CACHE_APPLY_LOCK);
-	LWLockInitialize(&memtable->lock, TP_TRANCHE_CACHE_LOCK);
-	memtable->cursor_gen_spill_count = 0;
-	memtable->cursor_next_blkno		 = InvalidBlockNumber;
-	memtable->cursor_next_off		 = 0;
-	pg_atomic_init_u64(&memtable->cursor_seq, 0);
-	pg_atomic_init_u64(&memtable->estimated_bytes, 0);
+	Assert(local_state != NULL);
+	Assert(local_state->build_created_shared_state);
+	Assert(local_state->shared != NULL);
 
-	/*
-	 * Publish the new global memtable_dp and clear is_build_mode
-	 * atomically with respect to the cross-index eviction walker.
-	 * The walker holds tp_registry_eviction_mutex EXCL across its
-	 * entire scan, so taking it EXCL here gives readers a single
-	 * coherent transition:
-	 *
-	 *   BEFORE: is_build_mode=true,  memtable_dp=<PRIVATE-DSA ptr>
-	 *   AFTER:  is_build_mode=false, memtable_dp=<GLOBAL-DSA ptr>
-	 *
-	 * Lock order matches evict_largest (eviction_mutex outermost),
-	 * so no inversion vs the rest of the eviction subsystem.
-	 */
+	key		  = tp_registry_key(MyDatabaseId, local_state->shared->index_oid);
+	shared_dp = tp_registry_lookup_dsa(key);
 	eviction_mutex = tp_registry_eviction_mutex();
+
 	if (eviction_mutex != NULL)
 		LWLockAcquire(eviction_mutex, LW_EXCLUSIVE);
 
-	local_state->shared->memtable_dp   = memtable_dp;
-	local_state->shared->is_build_mode = false;
+	tp_registry_unregister(key);
+	if (DsaPointerIsValid(shared_dp) && global_dsa != NULL)
+	{
+		TpMemtable *memtable = (TpMemtable *)
+				dsa_get_address(global_dsa, local_state->shared->memtable_dp);
+
+		tp_cache_clear(global_dsa, memtable);
+		dsa_free(global_dsa, local_state->shared->memtable_dp);
+		dsa_free(global_dsa, shared_dp);
+	}
 
 	if (eviction_mutex != NULL)
 		LWLockRelease(eviction_mutex);
 
-	/*
-	 * Now that no other backend can reach the private DSA via the
-	 * registry, detach it.  This returns ALL build-time memory to
-	 * the OS.  After build the memtable should be empty (all data
-	 * spilled to disk).
-	 */
-	if (local_state->dsa)
-	{
-		dsa_detach(local_state->dsa);
-		local_state->dsa = NULL;
-	}
-
-	local_state->dsa = global_dsa;
-
-	/* Transition to runtime mode (local-state flag) */
-	local_state->is_build_mode = false;
+	pfree(local_state);
+	entry->local_state = NULL;
 }
 
 /*
- * Clean up build mode state on transaction abort
- *
- * This is called from the transaction callback when a transaction aborts.
- * If we were in the middle of a CREATE INDEX (build mode), we need to:
- * 1. Detach from the private DSA (which destroys it since no other refs)
- * 2. Clean up the shared state from the registry
- * 3. Remove from local cache
- *
- * This prevents memory leaks when CREATE INDEX is aborted.
+ * Abort removes only a shared state registered by this transaction's
+ * initial CREATE INDEX.  REINDEX reuses pre-existing state; failure before
+ * finalization leaves its cache untouched, while abort after finalization
+ * may leave the stable cache empty.
  */
 void
 tp_cleanup_build_mode_on_abort(void)
@@ -708,61 +535,51 @@ tp_cleanup_build_mode_on_abort(void)
 		if (local_state == NULL)
 			continue;
 
-		if (!local_state->is_build_mode)
+		if (!local_state->build_created_shared_state)
 			continue;
 
-		/*
-		 * Detach from private DSA. Since this is a private DSA with no other
-		 * attachments, dsa_detach will destroy it and return memory to OS.
-		 */
-		if (local_state->dsa != NULL && local_state->dsa != global_dsa)
-		{
-			dsa_detach(local_state->dsa);
-			local_state->dsa = NULL;
-		}
-
-		/*
-		 * Clean up shared state from registry. The shared state was allocated
-		 * in the global DSA, so we need to free it there.
-		 *
-		 * Take tp_registry_eviction_mutex EXCL across the
-		 * unregister + dsa_free so the cross-index eviction
-		 * walker (src/memtable/cache.c:tp_cache_evict_largest)
-		 * cannot deref a half-freed shared_state.  We unregister
-		 * FIRST so a future walker can't even find the entry,
-		 * then free under the same mutex so any walker that is
-		 * currently iterating completes before we recycle the
-		 * memory.  Lock order matches evict_largest
-		 * (eviction_mutex outermost).
-		 */
-		if (local_state->shared != NULL)
-		{
-			Oid			index_oid	   = local_state->shared->index_oid;
-			dsa_pointer shared_dp	   = tp_registry_lookup_dsa(index_oid);
-			LWLock	   *eviction_mutex = tp_registry_eviction_mutex();
-
-			if (eviction_mutex != NULL)
-				LWLockAcquire(eviction_mutex, LW_EXCLUSIVE);
-
-			/* Unregister first so no new walker can find us */
-			tp_registry_unregister(index_oid);
-
-			if (DsaPointerIsValid(shared_dp) && global_dsa != NULL)
-			{
-				/* Free shared state from global DSA */
-				dsa_free(global_dsa, shared_dp);
-			}
-
-			if (eviction_mutex != NULL)
-				LWLockRelease(eviction_mutex);
-
-			local_state->shared = NULL;
-		}
-
-		/* Free local state */
-		pfree(local_state);
-		entry->local_state = NULL;
+		cleanup_owned_build_state(entry, global_dsa);
 	}
+}
+
+void
+tp_commit_build_states(void)
+{
+	HASH_SEQ_STATUS		  status;
+	LocalStateCacheEntry *entry;
+
+	if (local_state_cache == NULL)
+		return;
+
+	hash_seq_init(&status, local_state_cache);
+	while ((entry = hash_seq_search(&status)) != NULL)
+	{
+		if (entry->local_state != NULL)
+		{
+			entry->local_state->build_created_shared_state = false;
+			entry->local_state->created_in_subxact = InvalidSubTransactionId;
+		}
+	}
+}
+
+bool
+tp_has_initial_create_ownership(void)
+{
+	HASH_SEQ_STATUS		  status;
+	LocalStateCacheEntry *entry;
+
+	if (local_state_cache == NULL)
+		return false;
+
+	hash_seq_init(&status, local_state_cache);
+	while ((entry = hash_seq_search(&status)) != NULL)
+	{
+		if (entry->local_state != NULL &&
+			entry->local_state->build_created_shared_state)
+			return true;
+	}
+
+	return false;
 }
 
 /*
@@ -808,100 +625,19 @@ tp_cleanup_subxact_abort(SubTransactionId mySubid)
 		ls->lock_held = false;
 		ls->lock_mode = 0;
 
-		/* Only clean up state created in the aborting subxact */
+		/* Only process build state created in the aborting subxact. */
 		if (ls->created_in_subxact != mySubid)
 			continue;
 
-		/*
-		 * Reset bulk load counter only for entries being
-		 * destroyed. Resetting surviving entries would suppress
-		 * the PRE_COMMIT spill check for terms already in the
-		 * memtable from the outer transaction.
-		 */
-		ls->terms_added_this_xact = 0;
-
-		if (ls->is_build_mode)
+		if (ls->build_created_shared_state)
 		{
-			/*
-			 * Build mode: private DSA not shared with anyone.
-			 * Detach destroys it and returns memory to OS.
-			 */
-			if (ls->dsa != NULL && ls->dsa != global_dsa)
-			{
-				dsa_detach(ls->dsa);
-				ls->dsa = NULL;
-			}
+			ls->terms_added_this_xact = 0;
+			cleanup_owned_build_state(entry, global_dsa);
 		}
-
-		/*
-		 * Free shared state from global DSA and unregister.
-		 *
-		 * Take tp_registry_eviction_mutex EXCL across the
-		 * unregister + dsa_free (and, for runtime mode, the
-		 * memtable free + cache clear) so the cross-index
-		 * eviction walker can't observe a half-freed shared
-		 * state.  We unregister FIRST: once the registry no
-		 * longer references this oid, no new walker can find
-		 * it, and any walker currently iterating completes
-		 * before we recycle the memory.  Lock order matches
-		 * evict_largest (eviction_mutex outermost).
-		 *
-		 * NOTE: the runtime branch's tp_cache_clear is safe
-		 * under the eviction_mutex; it only takes per-memtable
-		 * locks (cache.apply_lock / cache.lock), which are
-		 * acquired BELOW eviction_mutex in the canonical lock
-		 * order documented at src/memtable/cache.c.
-		 */
-		if (ls->shared != NULL)
+		else
 		{
-			Oid			index_oid	   = ls->shared->index_oid;
-			dsa_pointer shared_dp	   = tp_registry_lookup_dsa(index_oid);
-			LWLock	   *eviction_mutex = tp_registry_eviction_mutex();
-
-			if (eviction_mutex != NULL)
-				LWLockAcquire(eviction_mutex, LW_EXCLUSIVE);
-
-			/* Unregister first so no new walker can find us */
-			tp_registry_unregister(index_oid);
-
-			if (!ls->is_build_mode && global_dsa != NULL)
-			{
-				/*
-				 * Runtime mode: the in-memory cache may have
-				 * populated the dshash tables hanging off the
-				 * TpMemtable; drop them first so dsa_free on
-				 * the TpMemtable allocation does not leak the
-				 * dshash internals.  Safe with an empty cache:
-				 * tp_cache_clear is a no-op when both handles
-				 * are INVALID.
-				 *
-				 * Subxact abort doesn't acquire cache.lock
-				 * itself: this path is unwinding an aborted
-				 * CREATE-INDEX-like subtransaction whose
-				 * shared state we just unregistered.
-				 */
-				TpMemtable *mt = NULL;
-
-				if (DsaPointerIsValid(ls->shared->memtable_dp))
-				{
-					mt = (TpMemtable *)dsa_get_address(
-							global_dsa, ls->shared->memtable_dp);
-					tp_cache_clear(global_dsa, mt);
-					dsa_free(global_dsa, ls->shared->memtable_dp);
-				}
-			}
-
-			if (DsaPointerIsValid(shared_dp) && global_dsa != NULL)
-				dsa_free(global_dsa, shared_dp);
-
-			if (eviction_mutex != NULL)
-				LWLockRelease(eviction_mutex);
-
-			ls->shared = NULL;
+			ls->created_in_subxact = InvalidSubTransactionId;
 		}
-
-		pfree(ls);
-		entry->local_state = NULL;
 	}
 }
 
@@ -941,8 +677,8 @@ tp_promote_subxact_states(
  * This is called when an index is dropped. We free the DSA allocations
  * but keep the DSA area itself since it's shared by all indices.
  */
-void
-tp_cleanup_index_shared_memory(Oid index_oid)
+static void
+cleanup_index_shared_memory(TpRegistryKey key, bool cleanup_local_state)
 {
 	dsa_area			 *dsa;
 	dsa_pointer			  shared_dp;
@@ -964,9 +700,12 @@ tp_cleanup_index_shared_memory(Oid index_oid)
 	 * remove it from the cache yet — the later block below will
 	 * dispose of it after the DSA frees.
 	 */
-	if (local_state_cache != NULL)
+	Assert(!cleanup_local_state || key.database_oid == MyDatabaseId);
+
+	if (cleanup_local_state && local_state_cache != NULL)
 	{
-		entry = hash_search(local_state_cache, &index_oid, HASH_FIND, &found);
+		entry = hash_search(
+				local_state_cache, &key.index_oid, HASH_FIND, &found);
 		if (found && entry != NULL && entry->local_state != NULL &&
 			entry->local_state->lock_held)
 			tp_release_index_lock(entry->local_state);
@@ -974,12 +713,15 @@ tp_cleanup_index_shared_memory(Oid index_oid)
 	entry = NULL;
 
 	/* Look up the DSA pointer in registry */
-	shared_dp = tp_registry_lookup_dsa(index_oid);
+	LWLockAcquire(tp_registry_eviction_mutex(), LW_EXCLUSIVE);
+
+	shared_dp = tp_registry_lookup_dsa(key);
 
 	if (!DsaPointerIsValid(shared_dp))
 	{
 		/* Still unregister even if no shared state found */
-		tp_registry_unregister(index_oid);
+		tp_registry_unregister(key);
+		LWLockRelease(tp_registry_eviction_mutex());
 		return; /* Nothing to clean up */
 	}
 
@@ -1010,10 +752,8 @@ tp_cleanup_index_shared_memory(Oid index_oid)
 	 * memory.  The mutex order is global before per-index, matching
 	 * evict_largest's acquire sequence.
 	 */
-	LWLockAcquire(tp_registry_eviction_mutex(), LW_EXCLUSIVE);
-
 	/* Unregister first so no new walker can find us */
-	tp_registry_unregister(index_oid);
+	tp_registry_unregister(key);
 
 	if (DsaPointerIsValid(shared_state->memtable_dp))
 	{
@@ -1030,15 +770,17 @@ tp_cleanup_index_shared_memory(Oid index_oid)
 	LWLockRelease(tp_registry_eviction_mutex());
 
 	/* Clean up local state if we have it cached */
-	if (local_state_cache != NULL)
+	if (cleanup_local_state && local_state_cache != NULL)
 	{
-		entry = hash_search(local_state_cache, &index_oid, HASH_FIND, &found);
+		entry = hash_search(
+				local_state_cache, &key.index_oid, HASH_FIND, &found);
 		if (found && entry != NULL && entry->local_state != NULL)
 		{
 			TpLocalIndexState *ls = entry->local_state;
 
 			/* Remove from cache first, before detaching DSA */
-			hash_search(local_state_cache, &index_oid, HASH_REMOVE, &found);
+			hash_search(
+					local_state_cache, &key.index_oid, HASH_REMOVE, &found);
 
 			/* Don't detach DSA - it's shared and still in use by registry */
 			/* Just nullify the reference */
@@ -1049,6 +791,144 @@ tp_cleanup_index_shared_memory(Oid index_oid)
 			pfree(ls);
 		}
 	}
+}
+
+void
+tp_cleanup_index_shared_memory(Oid index_oid)
+{
+	cleanup_index_shared_memory(
+			tp_registry_key(MyDatabaseId, index_oid), true);
+}
+
+/*
+ * Clean up every shared allocation qualified by a successfully dropped
+ * database.  DROP DATABASE cannot target the current connection, so this
+ * path deliberately leaves the backend-local wrapper cache untouched.
+ */
+void
+tp_cleanup_database_shared_memory(Oid database_oid)
+{
+	TpRegistryKey *keys;
+	Size		   key_count;
+	Size		   i;
+
+	if (!OidIsValid(database_oid))
+		return;
+
+	Assert(database_oid != MyDatabaseId);
+
+	key_count = tp_registry_collect_database_keys(database_oid, &keys);
+	for (i = 0; i < key_count; i++)
+		cleanup_index_shared_memory(keys[i], false);
+
+	if (keys != NULL)
+		pfree(keys);
+}
+
+void
+tp_set_chain_page_count_for_relation(
+		TpLocalIndexState *local_state, Relation index_rel, uint32 chain_pages)
+{
+	RelFileLocator locator;
+
+	Assert(local_state != NULL);
+	Assert(local_state->shared != NULL);
+	Assert(local_state->lock_held);
+	Assert(local_state->lock_mode == LW_EXCLUSIVE);
+	Assert(index_rel != NULL);
+
+	locator = index_rel->rd_locator;
+	pg_atomic_write_u32(&local_state->shared->chain_page_count, chain_pages);
+	pg_atomic_write_u32(
+			&local_state->shared->chain_page_count_spc_oid, locator.spcOid);
+	pg_atomic_write_u32(
+			&local_state->shared->chain_page_count_db_oid, locator.dbOid);
+	pg_atomic_write_u32(
+			&local_state->shared->chain_page_count_rel_number,
+			locator.relNumber);
+	pg_atomic_write_u32(
+			&local_state->shared->chain_page_count_needs_reseed, 0);
+}
+
+static bool
+chain_page_count_matches_relation(
+		TpLocalIndexState *local_state, Relation index_rel)
+{
+	RelFileLocator locator = index_rel->rd_locator;
+
+	Assert(local_state != NULL);
+	Assert(local_state->shared != NULL);
+	Assert(index_rel != NULL);
+
+	if (pg_atomic_read_u32(
+				&local_state->shared->chain_page_count_needs_reseed) != 0)
+		return false;
+
+	return pg_atomic_read_u32(
+				   &local_state->shared->chain_page_count_spc_oid) ==
+				   locator.spcOid &&
+		   pg_atomic_read_u32(&local_state->shared->chain_page_count_db_oid) ==
+				   locator.dbOid &&
+		   pg_atomic_read_u32(
+				   &local_state->shared->chain_page_count_rel_number) ==
+				   locator.relNumber;
+}
+
+static void
+reseed_chain_page_count_locked(
+		TpLocalIndexState *local_state, Relation index_rel)
+{
+	TpDataSource *chain_src;
+	uint32		  chain_pages = 0;
+
+	Assert(local_state != NULL);
+	Assert(local_state->shared != NULL);
+	Assert(local_state->lock_held);
+	Assert(local_state->lock_mode == LW_EXCLUSIVE);
+	Assert(index_rel != NULL);
+
+	chain_src =
+			tp_memtable_chain_source_create(local_state, index_rel, NULL, 0);
+	if (chain_src != NULL)
+	{
+		chain_pages = tp_memtable_chain_source_page_count(chain_src);
+		tp_source_close(chain_src);
+	}
+
+	tp_set_chain_page_count_for_relation(local_state, index_rel, chain_pages);
+}
+
+/*
+ * Rebuild finalization cannot know whether commit or rollback will select the
+ * new or old relfilenode.  Defer page-count reconstruction until a threshold
+ * consumer has the current Relation, then recount under the per-index lock.
+ */
+void
+tp_reseed_chain_page_count_if_needed(
+		TpLocalIndexState *local_state, Relation index_rel)
+{
+	bool acquired_lock = false;
+
+	if (local_state == NULL || local_state->shared == NULL ||
+		index_rel == NULL)
+		return;
+
+	if (chain_page_count_matches_relation(local_state, index_rel))
+		return;
+
+	if (!local_state->lock_held)
+	{
+		tp_acquire_index_lock(local_state, LW_EXCLUSIVE);
+		acquired_lock = true;
+	}
+	else
+		Assert(local_state->lock_mode == LW_EXCLUSIVE);
+
+	if (!chain_page_count_matches_relation(local_state, index_rel))
+		reseed_chain_page_count_locked(local_state, index_rel);
+
+	if (acquired_lock)
+		tp_release_index_lock(local_state);
 }
 
 /*
@@ -1086,7 +966,7 @@ tp_rebuild_index_from_disk(Oid index_oid)
 	TpIndexMetaPage	   early_metap;
 	TpLocalIndexState *local_state;
 	Oid				   heap_oid;
-	TpDataSource	  *chain_src;
+	SubTransactionId   index_create_subid;
 
 	/* Open the index relation */
 	index_rel = index_open(index_oid, AccessShareLock);
@@ -1096,7 +976,8 @@ tp_rebuild_index_from_disk(Oid index_oid)
 		return NULL;
 	}
 
-	heap_oid = index_rel->rd_index->indrelid;
+	heap_oid		   = index_rel->rd_index->indrelid;
+	index_create_subid = index_rel->rd_createSubid;
 
 	/*
 	 * Read the metapage early so we can validate the magic before
@@ -1137,7 +1018,7 @@ tp_rebuild_index_from_disk(Oid index_oid)
 	 * reaches this path.
 	 */
 	local_state = tp_create_shared_index_state(
-			index_oid, heap_oid, /* reuse_if_exists */ true);
+			index_oid, heap_oid, index_create_subid);
 	if (local_state == NULL)
 	{
 		index_close(index_rel, AccessShareLock);
@@ -1152,26 +1033,7 @@ tp_rebuild_index_from_disk(Oid index_oid)
 	 * entirely on the metapage and need no shmem seed.
 	 */
 	tp_acquire_index_lock(local_state, LW_EXCLUSIVE);
-
-	chain_src =
-			tp_memtable_chain_source_create(local_state, index_rel, NULL, 0);
-	if (chain_src != NULL)
-	{
-		uint32 chain_pages;
-
-		chain_pages = tp_memtable_chain_source_page_count(chain_src);
-		tp_source_close(chain_src);
-
-		/*
-		 * The writer always increments chain_page_count strictly
-		 * under SHARED, but we're inside tp_rebuild_index_from_disk's
-		 * LW_EXCLUSIVE (acquired above), so we can atomically
-		 * initialize it without racing the writer.
-		 */
-		pg_atomic_write_u32(
-				&local_state->shared->chain_page_count, chain_pages);
-	}
-
+	reseed_chain_page_count_locked(local_state, index_rel);
 	tp_release_index_lock(local_state);
 	index_close(index_rel, AccessShareLock);
 

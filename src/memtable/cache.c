@@ -86,6 +86,58 @@ extern int tp_memory_limit_kb;
  */
 #define TP_CACHE_GLOBAL_SOFT_CAP_DIVISOR 2
 
+static bool
+cache_locator_matches(const TpMemtable *memtable, Relation rel)
+{
+	const RelFileLocator *cached  = &memtable->cursor_locator;
+	const RelFileLocator *current = &rel->rd_locator;
+
+	return memtable->cursor_locator_valid &&
+		   cached->spcOid == current->spcOid &&
+		   cached->dbOid == current->dbOid &&
+		   cached->relNumber == current->relNumber;
+}
+
+static void
+cache_locator_set(TpMemtable *memtable, Relation rel)
+{
+	memtable->cursor_locator	   = rel->rd_locator;
+	memtable->cursor_locator_valid = true;
+}
+
+/*
+ * Drop cache contents built from a different relation file before
+ * admission checks can reject work and leave those stale bytes charged.
+ * The caller already holds the per-index lock.
+ */
+static bool
+cache_drop_locator_mismatch(
+		TpLocalIndexState *local_state, Relation rel, TpMemtable *memtable)
+{
+	bool dropped = false;
+
+	LWLockAcquire(&memtable->apply_lock, LW_EXCLUSIVE);
+	LWLockAcquire(&memtable->lock, LW_SHARED);
+
+	if (memtable->cursor_locator_valid &&
+		!cache_locator_matches(memtable, rel))
+	{
+		LWLockRelease(&memtable->lock);
+		LWLockAcquire(&memtable->lock, LW_EXCLUSIVE);
+		if (memtable->cursor_locator_valid &&
+			!cache_locator_matches(memtable, rel))
+		{
+			tp_cache_clear(local_state->dsa, memtable);
+			dropped = true;
+		}
+	}
+
+	LWLockRelease(&memtable->lock);
+	LWLockRelease(&memtable->apply_lock);
+
+	return dropped;
+}
+
 uint64
 tp_cache_per_index_soft_cap_bytes(void)
 {
@@ -205,6 +257,8 @@ tp_cache_clear(dsa_area *dsa, TpMemtable *memtable)
 	memtable->cursor_gen_spill_count = 0;
 	memtable->cursor_next_blkno		 = InvalidBlockNumber;
 	memtable->cursor_next_off		 = 0;
+	memset(&memtable->cursor_locator, 0, sizeof(memtable->cursor_locator));
+	memtable->cursor_locator_valid = false;
 	pg_atomic_write_u64(&memtable->cursor_seq, 0);
 
 	/*
@@ -219,17 +273,18 @@ tp_cache_clear(dsa_area *dsa, TpMemtable *memtable)
 /* ---------- eviction ---------- */
 
 /*
- * Argmax callback state.  We track (oid, dsa_pointer, bytes) of
- * the largest non-caller cache observed so far.  The dsa pointer
- * lets the post-walk path resolve the victim's shared state
- * without re-walking the registry.
+ * Argmax callback state.  We track (registry key, dsa_pointer,
+ * bytes) of the largest non-caller cache observed so far.  The
+ * dsa pointer lets the post-walk path resolve the victim's shared
+ * state without re-walking the registry.
  */
 typedef struct EvictCandidate
 {
-	Oid			caller_oid;
-	Oid			best_oid;
-	dsa_pointer best_shared_dp;
-	uint64		best_bytes;
+	TpRegistryKey caller_key;
+	TpRegistryKey best_key;
+	dsa_pointer	  best_shared_dp;
+	uint64		  best_bytes;
+	bool		  found;
 } EvictCandidate;
 
 /*
@@ -241,7 +296,7 @@ typedef struct EvictCandidate
  * eviction policy.
  */
 static bool
-evict_walk_cb(Oid oid, dsa_pointer shared_dp, void *ctx)
+evict_walk_cb(TpRegistryKey key, dsa_pointer shared_dp, void *ctx)
 {
 	EvictCandidate	   *c = (EvictCandidate *)ctx;
 	dsa_area		   *dsa;
@@ -249,7 +304,8 @@ evict_walk_cb(Oid oid, dsa_pointer shared_dp, void *ctx)
 	TpMemtable		   *mt;
 	uint64				bytes;
 
-	if (oid == c->caller_oid)
+	if (key.database_oid == c->caller_key.database_oid &&
+		key.index_oid == c->caller_key.index_oid)
 		return false;
 	if (!DsaPointerIsValid(shared_dp))
 		return false;
@@ -261,22 +317,6 @@ evict_walk_cb(Oid oid, dsa_pointer shared_dp, void *ctx)
 	if (st == NULL || !DsaPointerIsValid(st->memtable_dp))
 		return false;
 
-	/*
-	 * Skip entries owned by a backend that is still in
-	 * CREATE INDEX build mode: in that mode `st->memtable_dp` is
-	 * a pointer into the building backend's PRIVATE DSA and
-	 * cannot be safely dereferenced through the global DSA.  The
-	 * flag is set lock-free before tp_registry_register (see
-	 * src/index/state.c:tp_create_build_index_state) and cleared
-	 * under tp_registry_eviction_mutex EXCL (the mutex this
-	 * walker holds via tp_cache_evict_largest), so we either
-	 * observe is_build_mode=true (and skip the private pointer)
-	 * or is_build_mode=false (and the memtable_dp we read below
-	 * is guaranteed to be a global-DSA pointer).
-	 */
-	if (st->is_build_mode)
-		return false;
-
 	mt = (TpMemtable *)dsa_get_address(dsa, st->memtable_dp);
 	if (mt == NULL)
 		return false;
@@ -284,15 +324,16 @@ evict_walk_cb(Oid oid, dsa_pointer shared_dp, void *ctx)
 	bytes = pg_atomic_read_u64(&mt->estimated_bytes);
 	if (bytes > c->best_bytes)
 	{
-		c->best_oid		  = oid;
+		c->best_key		  = key;
 		c->best_shared_dp = shared_dp;
 		c->best_bytes	  = bytes;
+		c->found		  = true;
 	}
 	return false; /* don't stop early; scan all entries */
 }
 
 TpCacheEvictResult
-tp_cache_evict_largest(Oid caller_oid)
+tp_cache_evict_largest(TpRegistryKey caller_key)
 {
 	LWLock			   *mutex = tp_registry_eviction_mutex();
 	dsa_area		   *dsa	  = tp_registry_get_dsa();
@@ -305,14 +346,26 @@ tp_cache_evict_largest(Oid caller_oid)
 
 	LWLockAcquire(mutex, LW_EXCLUSIVE);
 
-	c.caller_oid	 = caller_oid;
-	c.best_oid		 = InvalidOid;
+	c.caller_key	 = caller_key;
+	c.best_key		 = tp_registry_key(InvalidOid, InvalidOid);
 	c.best_shared_dp = InvalidDsaPointer;
 	c.best_bytes	 = 0;
+	c.found			 = false;
 
 	tp_registry_walk(evict_walk_cb, &c);
 
-	if (c.best_oid == InvalidOid || !DsaPointerIsValid(c.best_shared_dp))
+	if (!c.found || !DsaPointerIsValid(c.best_shared_dp))
+	{
+		LWLockRelease(mutex);
+		return TP_CACHE_EVICT_NOTHING_FOUND;
+	}
+
+	/*
+	 * Registry replacements do not take the eviction mutex.  Confirm
+	 * that the qualified victim key still names the DSA allocation
+	 * selected by the walk before dereferencing it.
+	 */
+	if (tp_registry_lookup_dsa(c.best_key) != c.best_shared_dp)
 	{
 		LWLockRelease(mutex);
 		return TP_CACHE_EVICT_NOTHING_FOUND;
@@ -395,7 +448,7 @@ tp_cache_evict_largest(Oid caller_oid)
  * cache locks are out of the chain.
  */
 static bool
-global_cap_check(Oid caller_oid)
+global_cap_check(TpRegistryKey caller_key)
 {
 	uint64 soft = tp_cache_global_soft_cap_bytes();
 	uint64 hard = tp_cache_global_hard_cap_bytes();
@@ -408,7 +461,7 @@ global_cap_check(Oid caller_oid)
 
 	if (soft > 0 && cur >= soft)
 	{
-		(void)tp_cache_evict_largest(caller_oid);
+		(void)tp_cache_evict_largest(caller_key);
 		cur = pg_atomic_read_u64(tp_registry_estimated_total_bytes());
 	}
 
@@ -608,17 +661,41 @@ tp_cache_apply_to_tail(TpLocalIndexState *local_state, Relation rel)
 			 "index oid=%u",
 			 local_state->shared->index_oid);
 
+	if (cache_drop_locator_mismatch(local_state, rel, memtable))
+		return TP_CACHE_APPLY_DROPPED;
+
 	/*
 	 * Apply-protocol-entry hook: enforce the global cap before
 	 * we take cache.apply_lock.  If eviction fails to make room
 	 * and we're over the hard cap, return BUDGET_EXCEEDED so
 	 * the caller falls back to chain_source.
 	 */
-	if (!global_cap_check(local_state->shared->index_oid))
+	if (!global_cap_check(
+				tp_registry_key(MyDatabaseId, local_state->shared->index_oid)))
 		return TP_CACHE_APPLY_BUDGET_EXCEEDED;
 
 	LWLockAcquire(&memtable->apply_lock, LW_EXCLUSIVE);
 	LWLockAcquire(&memtable->lock, LW_SHARED);
+
+	if (memtable->cursor_locator_valid &&
+		!cache_locator_matches(memtable, rel))
+	{
+		/*
+		 * PostgreSQL can restore the previous relfilenode when a
+		 * transaction or savepoint containing REINDEX rolls back.
+		 * Generation alone cannot detect that switch if this cache
+		 * was repopulated after the REINDEX.  Drop the discarded-file
+		 * cache before any cursor block is read from the restored file.
+		 */
+		LWLockRelease(&memtable->lock);
+		LWLockAcquire(&memtable->lock, LW_EXCLUSIVE);
+		if (memtable->cursor_locator_valid &&
+			!cache_locator_matches(memtable, rel))
+			tp_cache_clear(local_state->dsa, memtable);
+		LWLockRelease(&memtable->lock);
+		LWLockRelease(&memtable->apply_lock);
+		return TP_CACHE_APPLY_DROPPED;
+	}
 
 	if (memtable->cursor_next_blkno == InvalidBlockNumber)
 	{
@@ -743,17 +820,24 @@ tp_cache_cold_build(TpLocalIndexState *local_state, Relation rel)
 			 "index oid=%u",
 			 local_state->shared->index_oid);
 
+	(void)cache_drop_locator_mismatch(local_state, rel, memtable);
+
 	/*
 	 * Apply-protocol-entry hook: enforce the global cap before
 	 * we take cache.apply_lock.  Returning ABORT instead of
 	 * building lets the caller fall back to chain_source for
 	 * this query without dirtying any cache state.
 	 */
-	if (!global_cap_check(local_state->shared->index_oid))
+	if (!global_cap_check(
+				tp_registry_key(MyDatabaseId, local_state->shared->index_oid)))
 		return TP_CACHE_COLD_ABORT;
 
 	LWLockAcquire(&memtable->apply_lock, LW_EXCLUSIVE);
 	LWLockAcquire(&memtable->lock, LW_EXCLUSIVE);
+
+	if (memtable->cursor_locator_valid &&
+		!cache_locator_matches(memtable, rel))
+		tp_cache_clear(local_state->dsa, memtable);
 
 	/*
 	 * Lost-race detection: another backend cold-built (or
@@ -899,6 +983,8 @@ tp_cache_cold_build(TpLocalIndexState *local_state, Relation rel)
 		 */
 		tp_cache_clear(local_state->dsa, memtable);
 	}
+	else
+		cache_locator_set(memtable, rel);
 
 	LWLockRelease(&memtable->lock);
 	LWLockRelease(&memtable->apply_lock);
@@ -1188,7 +1274,7 @@ bm25_cache_evict_largest(PG_FUNCTION_ARGS)
 				(errcode(ERRCODE_UNDEFINED_OBJECT),
 				 errmsg("pg_textsearch index \"%s\" not found", idx_name)));
 
-	r = tp_cache_evict_largest(oid);
+	r = tp_cache_evict_largest(tp_registry_key(MyDatabaseId, oid));
 	switch (r)
 	{
 	case TP_CACHE_EVICT_EVICTED:

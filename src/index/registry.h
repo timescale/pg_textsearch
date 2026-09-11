@@ -4,9 +4,9 @@
  *
  * registry.h - Global registry for shared index states
  *
- * Uses a dshash (dynamic shared hash table) to map index OIDs to their
- * shared state DSA pointers. This allows unlimited indexes (bounded only
- * by available memory) with O(1) lookup performance.
+ * Uses a dshash (dynamic shared hash table) to map database-qualified
+ * index OIDs to their shared state DSA pointers. This allows unlimited
+ * indexes (bounded only by available memory) with O(1) lookup performance.
  */
 #pragma once
 
@@ -29,13 +29,34 @@
 #define TP_REGISTRY_HASH_TRANCHE_ID TP_TRANCHE_REGISTRY
 
 /*
+ * Cluster-wide registry key.  Relation OIDs are unique only within a
+ * database, so every registry operation must carry both identifiers.
+ */
+typedef struct TpRegistryKey
+{
+	Oid database_oid;
+	Oid index_oid;
+} TpRegistryKey;
+
+static inline TpRegistryKey
+tp_registry_key(Oid database_oid, Oid index_oid)
+{
+	TpRegistryKey key = {
+			.database_oid = database_oid,
+			.index_oid	  = index_oid,
+	};
+
+	return key;
+}
+
+/*
  * Registry entry stored in dshash
- * The key is the first field (index_oid), value is shared_state_dp
+ * The key is the first field, value is shared_state_dp.
  */
 typedef struct TpRegistryEntry
 {
-	Oid			index_oid;		 /* Hash key - must be first */
-	dsa_pointer shared_state_dp; /* DSA pointer to TpSharedIndexState */
+	TpRegistryKey key;			   /* Hash key - must be first */
+	dsa_pointer	  shared_state_dp; /* DSA pointer to TpSharedIndexState */
 } TpRegistryEntry;
 
 /*
@@ -69,22 +90,31 @@ extern dsa_area *tp_registry_get_dsa(void);
 
 /* Registry operations */
 extern bool tp_registry_register(
-		Oid					index_oid,
+		TpRegistryKey		key,
 		TpSharedIndexState *shared_state,
 		dsa_pointer			shared_dp);
 /*
- * Register `shared_dp` for `index_oid` only if no entry exists.
+ * Register `shared_dp` for `key` only if no entry exists.
  * Returns true if a fresh entry was created, false if an existing
  * entry was found (in which case `*existing_dp` is set to the
  * existing shared_state_dp and the caller is expected to free its
  * own allocation and use the existing entry).
  */
 extern bool tp_registry_register_if_absent(
-		Oid index_oid, dsa_pointer shared_dp, dsa_pointer *existing_dp);
-extern TpSharedIndexState *tp_registry_lookup(Oid index_oid);
-extern dsa_pointer		   tp_registry_lookup_dsa(Oid index_oid);
-extern bool				   tp_registry_is_registered(Oid index_oid);
-extern void				   tp_registry_unregister(Oid index_oid);
+		TpRegistryKey key, dsa_pointer shared_dp, dsa_pointer *existing_dp);
+extern TpSharedIndexState *tp_registry_lookup(TpRegistryKey key);
+extern dsa_pointer		   tp_registry_lookup_dsa(TpRegistryKey key);
+extern bool				   tp_registry_is_registered(TpRegistryKey key);
+extern void				   tp_registry_unregister(TpRegistryKey key);
+
+/*
+ * Collect every key qualified by `database_oid` in one registry walk.
+ * The returned array is allocated in CurrentMemoryContext and must be
+ * pfree'd by the caller.  No entries are removed while the iterator holds
+ * a dshash partition lock.
+ */
+extern Size
+tp_registry_collect_database_keys(Oid database_oid, TpRegistryKey **keys);
 
 /*
  * Cache memory accounting helpers.  Increment/decrement the
@@ -103,17 +133,16 @@ extern LWLock			*tp_registry_eviction_mutex(void);
 
 /*
  * Callback-based registry iterator.  For each registered index,
- * invokes `cb(oid, shared_state_dp, ctx)`.  Stops early when the
- * callback returns true.  Returns true if the callback ever
- * returned true, false otherwise.  Bucket locks are held while
- * the callback runs; the callback MUST NOT acquire arbitrary
- * LWLocks (the dshash partition lock is held).  Reading fields
- * via dsa_get_address from the supplied DSA pointer is safe.
+ * invokes `cb(key, shared_state_dp, ctx)`.  A true callback return
+ * stops the void iterator early.  Bucket locks are held while the
+ * callback runs; the callback MUST NOT acquire arbitrary LWLocks
+ * (the dshash partition lock is held).  Reading fields via
+ * dsa_get_address from the supplied DSA pointer is safe.
  *
  * Used by tp_cache_evict_largest to scan for the largest-bytes
  * cache.  Reads only — no entry mutation from within the
  * callback.
  */
 typedef bool (*TpRegistryWalkCb)(
-		Oid index_oid, dsa_pointer shared_dp, void *ctx);
+		TpRegistryKey key, dsa_pointer shared_dp, void *ctx);
 extern void tp_registry_walk(TpRegistryWalkCb cb, void *ctx);

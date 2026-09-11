@@ -331,24 +331,12 @@ tp_get_or_create_posting_list(TpLocalIndexState *local_state, const char *term)
 	/*
 	 * The string hash table must already be initialized
 	 * by tp_ensure_string_table_initialized (called under
-	 * LW_EXCLUSIVE). In build mode it's created lazily
-	 * since there's no concurrency.
+	 * LW_EXCLUSIVE).
 	 */
 	if (memtable->string_hash_handle == DSHASH_HANDLE_INVALID)
-	{
-		if (!local_state->is_build_mode)
-			elog(ERROR,
-				 "String hash table not initialized "
-				 "(call tp_ensure_string_table_initialized "
-				 "first)");
-
-		/* Build mode: create lazily (single-threaded) */
-		string_table = tp_string_table_create(local_state->dsa);
-		if (!string_table)
-			elog(ERROR, "Failed to create string hash table");
-		memtable->string_hash_handle = dshash_get_hash_table_handle(
-				string_table);
-	}
+		elog(ERROR,
+			 "String hash table not initialized "
+			 "(call tp_ensure_string_table_initialized first)");
 	else
 	{
 		string_table = tp_string_table_attach(

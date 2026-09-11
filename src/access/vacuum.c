@@ -311,6 +311,8 @@ tp_spill_memtable_if_needed(
 	if (!index_state || !index_state->shared)
 		return;
 
+	tp_reseed_chain_page_count_if_needed(index_state, index);
+
 	if (pg_atomic_read_u32(&index_state->shared->chain_page_count) < min_pages)
 		return;
 
