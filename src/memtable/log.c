@@ -786,7 +786,7 @@ tp_spill_finalize(
 	GenericXLogFinish(state);
 	*published = true;
 	if (local_state != NULL && local_state->shared != NULL)
-		pg_atomic_write_u32(&local_state->shared->chain_page_count, 0);
+		tp_set_chain_page_count_for_relation(local_state, rel, 0);
 	if (BufferIsValid(seg_buf))
 		UnlockReleaseBuffer(seg_buf);
 	UnlockReleaseBuffer(metabuf);
