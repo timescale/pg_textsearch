@@ -12,6 +12,7 @@
 #include <catalog/dependency.h>
 #include <catalog/objectaccess.h>
 #include <catalog/pg_class_d.h>
+#include <commands/dbcommands.h>
 #include <fmgr.h>
 #include <limits.h>
 #include <miscadmin.h>
@@ -559,7 +560,8 @@ tp_object_access(
 		 */
 
 		/* Check if this is one of our indexes */
-		if (!tp_registry_is_registered(objectId))
+		if (!tp_registry_is_registered(
+					tp_registry_key(MyDatabaseId, objectId)))
 			return;
 
 		/* Cleanup shared memory and unregister from registry */
@@ -626,6 +628,7 @@ tp_xact_callback(XactEvent event, void *arg pg_attribute_unused())
 
 	case XACT_EVENT_COMMIT:
 	case XACT_EVENT_PARALLEL_COMMIT:
+		tp_commit_build_states();
 		/* Release all index locks held by this backend */
 		tp_release_all_index_locks();
 		/* Reset bulk load counters for next transaction */
@@ -634,7 +637,7 @@ tp_xact_callback(XactEvent event, void *arg pg_attribute_unused())
 
 	case XACT_EVENT_ABORT:
 	case XACT_EVENT_PARALLEL_ABORT:
-		/* Clean up any in-progress index builds (private DSA) */
+		/* Remove shared state owned by an aborted initial CREATE INDEX. */
 		tp_cleanup_build_mode_on_abort();
 		/* Release all index locks held by this backend */
 		tp_release_all_index_locks();
@@ -643,8 +646,33 @@ tp_xact_callback(XactEvent event, void *arg pg_attribute_unused())
 		break;
 
 	case XACT_EVENT_PRE_PREPARE:
+		if (tp_has_initial_create_ownership())
+			ereport(ERROR,
+					(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+					 errmsg("cannot prepare a transaction that created a "
+							"pg_textsearch index"),
+					 errdetail(
+							 "Initial CREATE INDEX shared-state ownership "
+							 "is backend-local and cannot be serialized "
+							 "for two-phase commit."),
+					 errhint("Commit or roll back the CREATE INDEX before "
+							 "preparing the transaction.")));
+		/*
+		 * Spill while PREPARE can still fail.  Once PostgreSQL records the
+		 * prepared transaction, a later backend cannot safely reproduce
+		 * this backend-local threshold decision.
+		 */
+		tp_bulk_load_spill_check();
+		break;
+
 	case XACT_EVENT_PREPARE:
-		/* Nothing to do for these events */
+		/*
+		 * PREPARE is terminal for this backend's transaction just like
+		 * COMMIT or ABORT.  Do not let extension lock tracking or bulk
+		 * counters bleed into the next transaction on this connection.
+		 */
+		tp_release_all_index_locks();
+		tp_reset_bulk_load_counters();
 		break;
 	}
 }
@@ -702,6 +730,45 @@ tp_process_utility(
 		QueryCompletion		 *qc)
 {
 	Node *parsetree = pstmt->utilityStmt;
+
+	if (IsA(parsetree, DropdbStmt))
+	{
+		DropdbStmt *stmt = (DropdbStmt *)parsetree;
+		Oid			database_oid;
+
+		/*
+		 * The pg_database row is gone after standard_ProcessUtility
+		 * succeeds, so resolve the qualified registry key prefix first.
+		 * Let the core command report missing databases and permission
+		 * errors; InvalidOid simply means there is nothing to clean.
+		 */
+		database_oid = get_database_oid(stmt->dbname, true);
+
+		if (prev_process_utility_hook)
+			prev_process_utility_hook(
+					pstmt,
+					queryString,
+					readOnlyTree,
+					context,
+					params,
+					queryEnv,
+					dest,
+					qc);
+		else
+			standard_ProcessUtility(
+					pstmt,
+					queryString,
+					readOnlyTree,
+					context,
+					params,
+					queryEnv,
+					dest,
+					qc);
+
+		if (OidIsValid(database_oid))
+			tp_cleanup_database_shared_memory(database_oid);
+		return;
+	}
 
 	if (IsA(parsetree, IndexStmt))
 	{

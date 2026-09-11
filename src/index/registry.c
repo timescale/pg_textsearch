@@ -2,7 +2,8 @@
  * Copyright (c) 2025-2026 Tiger Data, Inc.
  * Licensed under the PostgreSQL License. See LICENSE for details.
  *
- * registry.c - Global registry mapping index OIDs to shared state
+ * registry.c - Global registry mapping database-qualified index OIDs
+ * to shared state
  *
  * Uses a dshash (dynamic shared hash table) for O(1) lookups and no
  * limit on the number of indexes (beyond available memory).
@@ -35,44 +36,54 @@ static TpGlobalRegistry *tapir_registry = NULL;
 static dsa_area *tapir_dsa = NULL;
 
 /*
- * Hash function for Oid keys
+ * Hash function for database-qualified index keys
  */
 static uint32
 registry_hash_fn(const void *key, size_t keysize, void *arg)
 {
+	const TpRegistryKey *registry_key = (const TpRegistryKey *)key;
+	Oid					 key_parts[2] = {
+			 registry_key->database_oid,
+			 registry_key->index_oid,
+	 };
+
 	(void)keysize;
 	(void)arg;
-	return hash_bytes((const unsigned char *)key, sizeof(Oid));
+	return hash_bytes((const unsigned char *)key_parts, sizeof(key_parts));
 }
 
 /*
- * Compare function for Oid keys
+ * Compare function for database-qualified index keys
  */
 static int
 registry_compare_fn(const void *a, const void *b, size_t keysize, void *arg)
 {
-	Oid oid_a = *(const Oid *)a;
-	Oid oid_b = *(const Oid *)b;
+	const TpRegistryKey *key_a = (const TpRegistryKey *)a;
+	const TpRegistryKey *key_b = (const TpRegistryKey *)b;
 
 	(void)keysize;
 	(void)arg;
 
-	if (oid_a < oid_b)
+	if (key_a->database_oid < key_b->database_oid)
 		return -1;
-	if (oid_a > oid_b)
+	if (key_a->database_oid > key_b->database_oid)
+		return 1;
+	if (key_a->index_oid < key_b->index_oid)
+		return -1;
+	if (key_a->index_oid > key_b->index_oid)
 		return 1;
 	return 0;
 }
 
 /*
- * Copy function for Oid keys
+ * Copy function for database-qualified index keys
  */
 static void
 registry_copy_fn(void *dest, const void *src, size_t keysize, void *arg)
 {
 	(void)keysize;
 	(void)arg;
-	*(Oid *)dest = *(const Oid *)src;
+	*(TpRegistryKey *)dest = *(const TpRegistryKey *)src;
 }
 
 /*
@@ -81,7 +92,7 @@ registry_copy_fn(void *dest, const void *src, size_t keysize, void *arg)
 static void
 get_registry_params(dshash_parameters *params)
 {
-	params->key_size		 = sizeof(Oid);
+	params->key_size		 = sizeof(TpRegistryKey);
 	params->entry_size		 = sizeof(TpRegistryEntry);
 	params->compare_function = registry_compare_fn;
 	params->hash_function	 = registry_hash_fn;
@@ -264,7 +275,9 @@ tp_registry_get_dsa(void)
  */
 bool
 tp_registry_register(
-		Oid index_oid, TpSharedIndexState *shared_state, dsa_pointer shared_dp)
+		TpRegistryKey		key,
+		TpSharedIndexState *shared_state,
+		dsa_pointer			shared_dp)
 {
 	dshash_table	*registry_hash;
 	TpRegistryEntry *entry;
@@ -279,8 +292,9 @@ tp_registry_register(
 		tapir_registry->registry_handle == DSHASH_HANDLE_INVALID)
 	{
 		elog(ERROR,
-			 "Failed to initialize Tapir registry for index %u",
-			 index_oid);
+			 "Failed to initialize Tapir registry for database %u index %u",
+			 key.database_oid,
+			 key.index_oid);
 	}
 
 	registry_hash =
@@ -290,8 +304,8 @@ tp_registry_register(
 
 	/* Insert or update the entry */
 	entry = (TpRegistryEntry *)
-			dshash_find_or_insert(registry_hash, &index_oid, &found);
-	entry->index_oid	   = index_oid;
+			dshash_find_or_insert(registry_hash, &key, &found);
+	entry->key			   = key;
 	entry->shared_state_dp = shared_dp;
 	dshash_release_lock(registry_hash, entry);
 
@@ -308,7 +322,7 @@ tp_registry_register(
  */
 bool
 tp_registry_register_if_absent(
-		Oid index_oid, dsa_pointer shared_dp, dsa_pointer *existing_dp)
+		TpRegistryKey key, dsa_pointer shared_dp, dsa_pointer *existing_dp)
 {
 	dshash_table	*registry_hash;
 	TpRegistryEntry *entry;
@@ -320,8 +334,9 @@ tp_registry_register_if_absent(
 		tapir_registry->registry_handle == DSHASH_HANDLE_INVALID)
 	{
 		elog(ERROR,
-			 "Failed to initialize Tapir registry for index %u",
-			 index_oid);
+			 "Failed to initialize Tapir registry for database %u index %u",
+			 key.database_oid,
+			 key.index_oid);
 	}
 
 	registry_hash =
@@ -330,7 +345,7 @@ tp_registry_register_if_absent(
 		elog(ERROR, "Failed to attach to registry hash table");
 
 	entry = (TpRegistryEntry *)
-			dshash_find_or_insert(registry_hash, &index_oid, &found);
+			dshash_find_or_insert(registry_hash, &key, &found);
 	if (found)
 	{
 		if (existing_dp)
@@ -338,7 +353,7 @@ tp_registry_register_if_absent(
 	}
 	else
 	{
-		entry->index_oid	   = index_oid;
+		entry->key			   = key;
 		entry->shared_state_dp = shared_dp;
 	}
 	dshash_release_lock(registry_hash, entry);
@@ -352,7 +367,7 @@ tp_registry_register_if_absent(
  * Returns the shared state pointer (as DSA pointer cast) or NULL if not found
  */
 TpSharedIndexState *
-tp_registry_lookup(Oid index_oid)
+tp_registry_lookup(TpRegistryKey key)
 {
 	dshash_table	*registry_hash;
 	TpRegistryEntry *entry;
@@ -372,7 +387,7 @@ tp_registry_lookup(Oid index_oid)
 	if (!registry_hash)
 		return NULL;
 
-	entry = (TpRegistryEntry *)dshash_find(registry_hash, &index_oid, false);
+	entry = (TpRegistryEntry *)dshash_find(registry_hash, &key, false);
 	if (entry)
 	{
 		result = entry->shared_state_dp;
@@ -391,7 +406,7 @@ tp_registry_lookup(Oid index_oid)
  * Returns the DSA pointer if found, InvalidDsaPointer otherwise
  */
 dsa_pointer
-tp_registry_lookup_dsa(Oid index_oid)
+tp_registry_lookup_dsa(TpRegistryKey key)
 {
 	dshash_table	*registry_hash;
 	TpRegistryEntry *entry;
@@ -411,7 +426,7 @@ tp_registry_lookup_dsa(Oid index_oid)
 	if (!registry_hash)
 		return InvalidDsaPointer;
 
-	entry = (TpRegistryEntry *)dshash_find(registry_hash, &index_oid, false);
+	entry = (TpRegistryEntry *)dshash_find(registry_hash, &key, false);
 	if (entry)
 	{
 		result = entry->shared_state_dp;
@@ -428,7 +443,7 @@ tp_registry_lookup_dsa(Oid index_oid)
  * Returns true if the index is in the registry, false otherwise
  */
 bool
-tp_registry_is_registered(Oid index_oid)
+tp_registry_is_registered(TpRegistryKey key)
 {
 	dshash_table	*registry_hash;
 	TpRegistryEntry *entry;
@@ -455,7 +470,7 @@ tp_registry_is_registered(Oid index_oid)
 	if (!registry_hash)
 		return false;
 
-	entry = (TpRegistryEntry *)dshash_find(registry_hash, &index_oid, false);
+	entry = (TpRegistryEntry *)dshash_find(registry_hash, &key, false);
 	if (entry)
 	{
 		result = true;
@@ -472,7 +487,7 @@ tp_registry_is_registered(Oid index_oid)
  * Called when an index is dropped
  */
 void
-tp_registry_unregister(Oid index_oid)
+tp_registry_unregister(TpRegistryKey key)
 {
 	dshash_table *registry_hash;
 	bool		  deleted;
@@ -493,10 +508,78 @@ tp_registry_unregister(Oid index_oid)
 	if (!registry_hash)
 		return;
 
-	deleted = dshash_delete_key(registry_hash, &index_oid);
+	deleted = dshash_delete_key(registry_hash, &key);
 	(void)deleted; /* Ignore if not found */
 
 	dshash_detach(registry_hash);
+}
+
+typedef struct DatabaseKeyCollector
+{
+	Oid			   database_oid;
+	TpRegistryKey *keys;
+	Size		   count;
+	Size		   capacity;
+} DatabaseKeyCollector;
+
+static bool
+collect_database_key_cb(TpRegistryKey key, dsa_pointer shared_dp, void *ctx)
+{
+	DatabaseKeyCollector *collector = (DatabaseKeyCollector *)ctx;
+
+	(void)shared_dp;
+
+	if (key.database_oid != collector->database_oid)
+		return false;
+
+	if (collector->count == collector->capacity)
+	{
+		Size new_capacity;
+
+		if (collector->capacity == 0)
+			new_capacity = 16;
+		else
+		{
+			if (collector->capacity >
+				MaxAllocSize / (2 * sizeof(TpRegistryKey)))
+				elog(ERROR, "too many pg_textsearch registry entries");
+			new_capacity = collector->capacity * 2;
+		}
+
+		if (new_capacity > MaxAllocSize / sizeof(TpRegistryKey))
+			elog(ERROR, "too many pg_textsearch registry entries");
+
+		if (collector->keys == NULL)
+			collector->keys = palloc(new_capacity * sizeof(TpRegistryKey));
+		else
+			collector->keys = repalloc(
+					collector->keys, new_capacity * sizeof(TpRegistryKey));
+		collector->capacity = new_capacity;
+	}
+
+	collector->keys[collector->count++] = key;
+	return false;
+}
+
+Size
+tp_registry_collect_database_keys(Oid database_oid, TpRegistryKey **keys)
+{
+	DatabaseKeyCollector collector = {
+			.database_oid = database_oid,
+			.keys		  = NULL,
+			.count		  = 0,
+			.capacity	  = 0,
+	};
+
+	Assert(keys != NULL);
+	*keys = NULL;
+
+	if (!OidIsValid(database_oid))
+		return 0;
+
+	tp_registry_walk(collect_database_key_cb, &collector);
+	*keys = collector.keys;
+	return collector.count;
 }
 
 /*
@@ -538,18 +621,18 @@ tp_registry_walk(TpRegistryWalkCb cb, void *ctx)
 		return;
 
 	dshash_seq_init(&status, registry_hash, false);
-	while ((entry = (TpRegistryEntry *)dshash_seq_next(&status)) != NULL)
+	PG_TRY();
 	{
-		bool stop;
-
-		stop = cb(entry->index_oid, entry->shared_state_dp, ctx);
-		if (stop)
+		while ((entry = (TpRegistryEntry *)dshash_seq_next(&status)) != NULL)
 		{
-			dshash_seq_term(&status);
-			dshash_detach(registry_hash);
-			return;
+			if (cb(entry->key, entry->shared_state_dp, ctx))
+				break;
 		}
 	}
-	dshash_seq_term(&status);
-	dshash_detach(registry_hash);
+	PG_FINALLY();
+	{
+		dshash_seq_term(&status);
+		dshash_detach(registry_hash);
+	}
+	PG_END_TRY();
 }

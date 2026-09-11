@@ -30,11 +30,10 @@
  *                            teardown.  See the per-function
  *                            comment below for its lock contract.
  *
- * Spill detection: every apply call generation-checks the
- * cursor's captured spill_generation against
- * TpSharedIndexState.spill_generation; on mismatch the cache is
- * dropped (apply_to_tail) or the build is rejected (cold_build's
- * RETRY).
+ * Stale-cache detection: every apply call checks both the cursor's
+ * captured spill_generation and the RelFileLocator from which the
+ * cache was populated.  A mismatch drops the cache before any cursor
+ * block is read.
  *
  * Lock order:
  *   per-index LWLock (SHARED for read, EXCL for spill)
@@ -51,6 +50,7 @@
 
 #include <postgres.h>
 
+#include "index/registry.h"
 #include "index/state.h"
 #include "utils/rel.h"
 
@@ -61,11 +61,12 @@
  *                   tail; all locks released.  Caller can serve
  *                   from the cache.
  *
- *   DROPPED         the cursor's captured spill_generation
- *                   disagreed with TpSharedIndexState; the
- *                   cache has been cleared and locks released.
- *                   Caller (read path) decides whether to
- *                   cold_build or fall back to chain_source.
+ *   DROPPED         the cursor's captured spill_generation or
+ *                   RelFileLocator disagreed with the current
+ *                   index state; the cache has been cleared and
+ *                   locks released.  Caller (read path) decides
+ *                   whether to cold_build or fall back to
+ *                   chain_source.
  *
  *   BUDGET_EXCEEDED applying the next chain record would push
  *                   the cache footprint over the per-index soft
@@ -169,12 +170,12 @@ typedef enum TpCacheEvictResult
 } TpCacheEvictResult;
 
 /*
- * Pick the largest cache other than `caller_oid` and evict it
+ * Pick the largest cache other than `caller_key` and evict it
  * (clear its dshash tables, subtract its bytes from the global
  * counter).  Caller MUST hold its own per-index LWLock SHARED
  * (the read path's natural state); MUST NOT hold any cache lock.
  */
-extern TpCacheEvictResult tp_cache_evict_largest(Oid caller_oid);
+extern TpCacheEvictResult tp_cache_evict_largest(TpRegistryKey caller_key);
 
 /*
  * Drain `memtable->estimated_bytes` to zero and subtract the
@@ -188,9 +189,10 @@ extern void tp_cache_account_bytes_drain(TpMemtable *memtable);
 /*
  * Drop the in-memory cache state.  Frees the dshash inverted index
  * and doc-length table (returning their DSA memory to the arena),
- * resets the apply cursor and estimated_bytes to their post-init
- * values, and trims the DSA.  Safe to call when the cache is
- * already empty (handles == DSHASH_HANDLE_INVALID): a no-op then.
+ * resets the apply cursor, source locator, and estimated_bytes to
+ * their post-init values, and trims the DSA.  Safe to call when the
+ * cache is already empty (handles == DSHASH_HANDLE_INVALID): a no-op
+ * then.
  *
  * Does NOT touch:
  *   - apply_lock / lock: these LWLocks live inside the TpMemtable

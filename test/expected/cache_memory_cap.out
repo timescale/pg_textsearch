@@ -156,10 +156,215 @@ SELECT count(*) AS b_hits FROM (
       5
 (1 row)
 
--- Cleanup
-RESET pg_textsearch.memtable_cache_enabled;
+-- Remove the original test indexes before taking a baseline for the
+-- REINDEX accounting regression.  The baseline is intentionally
+-- relative because the global counter belongs to shared memory.
 DROP INDEX cache_cap_a_idx;
 DROP INDEX cache_cap_b_idx;
 DROP TABLE cache_cap_a;
 DROP TABLE cache_cap_b;
+SELECT bm25_cache_global_estimated_bytes()
+    AS reindex_original_baseline \gset
+-- Keep one populated cache alive across both REINDEX cycles.  This
+-- proves each replaced index releases only its own accounting rather
+-- than relying on the global counter reaching zero.
+CREATE TABLE cache_reindex_control (id int, body text);
+CREATE INDEX cache_reindex_control_idx ON cache_reindex_control
+    USING bm25 (body) WITH (text_config = 'english');
+NOTICE:  BM25 index build started for relation cache_reindex_control_idx
+NOTICE:  Using text search configuration: english
+NOTICE:  Using index options: k1=1.20, b=0.75
+NOTICE:  BM25 index build completed: 0 documents, avg_length=0.00
+INSERT INTO cache_reindex_control
+SELECT g, 'control retained ' || g FROM generate_series(1, 10) g;
+SELECT count(*) AS retained_control_hits FROM (
+    SELECT 1 FROM cache_reindex_control
+    ORDER BY body <@>
+        to_bm25query('control', 'cache_reindex_control_idx')
+) q;
+ retained_control_hits 
+-----------------------
+                    10
+(1 row)
+
+SELECT bm25_cache_global_estimated_bytes()
+           - :reindex_original_baseline
+    AS retained_control_bytes \gset
+SELECT :retained_control_bytes > 0 AS retained_control_charged;
+ retained_control_charged 
+--------------------------
+ t
+(1 row)
+
+-- Exercise the parallel REINDEX completion path separately.  The
+-- analyzed row count and worker settings match parallel_build.sql so
+-- both the initial build and REINDEX request one parallel worker.
+SET min_parallel_table_scan_size = 0;
+SET maintenance_work_mem = '256MB';
+SET max_parallel_maintenance_workers = 1;
+CREATE TABLE cache_reindex_parallel (id int, body text);
+INSERT INTO cache_reindex_parallel
+SELECT g, 'parallel database document ' || g
+FROM generate_series(1, 100000) g;
+ANALYZE cache_reindex_parallel;
+CREATE INDEX cache_reindex_parallel_idx ON cache_reindex_parallel
+    USING bm25 (body) WITH (text_config = 'english');
+NOTICE:  BM25 index build started for relation cache_reindex_parallel_idx
+NOTICE:  Using text search configuration: english
+NOTICE:  Using index options: k1=1.20, b=0.75
+NOTICE:  parallel index build: launched 1 of 1 requested workers
+NOTICE:  BM25 index build completed: 100000 documents, avg_length=4.00
+-- Add an unflushed runtime tail after the parallel build, then force
+-- that tail into the cache so REINDEX replaces a charged entry.
+INSERT INTO cache_reindex_parallel
+SELECT g, 'parallel database tail ' || g
+FROM generate_series(100001, 100025) g;
+SELECT count(*) AS parallel_reindex_hits FROM (
+    SELECT 1 FROM cache_reindex_parallel
+    ORDER BY body <@>
+        to_bm25query('database', 'cache_reindex_parallel_idx')
+) q;
+ parallel_reindex_hits 
+-----------------------
+                100000
+(1 row)
+
+SELECT bm25_cache_global_estimated_bytes()
+           > :reindex_original_baseline + :retained_control_bytes
+           AS parallel_runtime_cache_charged;
+ parallel_runtime_cache_charged 
+--------------------------------
+ t
+(1 row)
+
+REINDEX INDEX cache_reindex_parallel_idx;
+NOTICE:  BM25 index build started for relation cache_reindex_parallel_idx
+NOTICE:  Using text search configuration: english
+NOTICE:  Using index options: k1=1.20, b=0.75
+NOTICE:  parallel index build: launched 1 of 1 requested workers
+-- Finalization itself must drain the old cache. Checking before DROP
+-- distinguishes in-place REINDEX cleanup from eventual relation teardown.
+SELECT bm25_cache_global_estimated_bytes()
+           = :reindex_original_baseline + :retained_control_bytes
+           AS parallel_reindex_drained_before_drop \gset
+\echo parallel_reindex_drained_before_drop=:parallel_reindex_drained_before_drop
+parallel_reindex_drained_before_drop=t
+DROP TABLE cache_reindex_parallel;
+SELECT bm25_cache_global_estimated_bytes()
+           = :reindex_original_baseline + :retained_control_bytes
+           AS parallel_reindex_released,
+       bm25_cache_global_estimated_bytes()
+           > :reindex_original_baseline + :retained_control_bytes
+           AS parallel_reindex_exceeds_retained;
+ parallel_reindex_released | parallel_reindex_exceeds_retained 
+---------------------------+-----------------------------------
+ t                         | f
+(1 row)
+
+-- Cycle 1: segment spill, unflushed tail, cache-building scan,
+-- REINDEX, and drop.
+CREATE TABLE cache_reindex_test (id int, body text);
+CREATE INDEX cache_reindex_test_idx ON cache_reindex_test
+    USING bm25 (body) WITH (text_config = 'english');
+NOTICE:  BM25 index build started for relation cache_reindex_test_idx
+NOTICE:  Using text search configuration: english
+NOTICE:  Using index options: k1=1.20, b=0.75
+NOTICE:  BM25 index build completed: 0 documents, avg_length=0.00
+INSERT INTO cache_reindex_test
+SELECT g, 'databases original ' || g FROM generate_series(1, 50) g;
+SELECT bm25_spill_index('cache_reindex_test_idx');
+ bm25_spill_index 
+------------------
+                2
+(1 row)
+
+INSERT INTO cache_reindex_test
+SELECT g, 'databases tail ' || g FROM generate_series(51, 75) g;
+SELECT count(*) FROM (
+    SELECT 1 FROM cache_reindex_test
+    ORDER BY body <@> to_bm25query('databases', 'cache_reindex_test_idx')
+) q;
+ count 
+-------
+    75
+(1 row)
+
+REINDEX INDEX cache_reindex_test_idx;
+NOTICE:  BM25 index build started for relation cache_reindex_test_idx
+NOTICE:  Using text search configuration: english
+NOTICE:  Using index options: k1=1.20, b=0.75
+NOTICE:  BM25 index build completed: 75 documents, avg_length=3.00
+SELECT bm25_cache_global_estimated_bytes()
+           = :reindex_original_baseline + :retained_control_bytes
+           AS serial_reindex_drained_before_drop \gset
+\echo serial_reindex_drained_before_drop=:serial_reindex_drained_before_drop
+serial_reindex_drained_before_drop=t
+DROP TABLE cache_reindex_test;
+SELECT bm25_cache_global_estimated_bytes()
+           = :reindex_original_baseline + :retained_control_bytes
+           AS reindex_cycle_1_released,
+       bm25_cache_global_estimated_bytes()
+           > :reindex_original_baseline + :retained_control_bytes
+           AS reindex_cycle_1_exceeds_retained;
+ reindex_cycle_1_released | reindex_cycle_1_exceeds_retained 
+--------------------------+----------------------------------
+ t                        | f
+(1 row)
+
+-- Repeat the complete cycle to show that each registry replacement
+-- leaks another cache charge on the unfixed code.
+CREATE TABLE cache_reindex_test (id int, body text);
+CREATE INDEX cache_reindex_test_idx ON cache_reindex_test
+    USING bm25 (body) WITH (text_config = 'english');
+NOTICE:  BM25 index build started for relation cache_reindex_test_idx
+NOTICE:  Using text search configuration: english
+NOTICE:  Using index options: k1=1.20, b=0.75
+NOTICE:  BM25 index build completed: 0 documents, avg_length=0.00
+INSERT INTO cache_reindex_test
+SELECT g, 'databases original ' || g FROM generate_series(1, 50) g;
+SELECT bm25_spill_index('cache_reindex_test_idx');
+ bm25_spill_index 
+------------------
+                2
+(1 row)
+
+INSERT INTO cache_reindex_test
+SELECT g, 'databases tail ' || g FROM generate_series(51, 75) g;
+SELECT count(*) FROM (
+    SELECT 1 FROM cache_reindex_test
+    ORDER BY body <@> to_bm25query('databases', 'cache_reindex_test_idx')
+) q;
+ count 
+-------
+    75
+(1 row)
+
+REINDEX INDEX cache_reindex_test_idx;
+NOTICE:  BM25 index build started for relation cache_reindex_test_idx
+NOTICE:  Using text search configuration: english
+NOTICE:  Using index options: k1=1.20, b=0.75
+NOTICE:  BM25 index build completed: 75 documents, avg_length=3.00
+DROP TABLE cache_reindex_test;
+SELECT bm25_cache_global_estimated_bytes()
+           = :reindex_original_baseline + :retained_control_bytes
+           AS reindex_cycle_2_released,
+       bm25_cache_global_estimated_bytes()
+           > :reindex_original_baseline + :retained_control_bytes
+           AS reindex_cycle_2_exceeds_retained;
+ reindex_cycle_2_released | reindex_cycle_2_exceeds_retained 
+--------------------------+----------------------------------
+ t                        | f
+(1 row)
+
+DROP TABLE cache_reindex_control;
+SELECT bm25_cache_global_estimated_bytes() = :reindex_original_baseline
+           AS control_drop_restored_baseline,
+       bm25_cache_global_estimated_bytes() > :reindex_original_baseline
+           AS control_drop_exceeds_baseline;
+ control_drop_restored_baseline | control_drop_exceeds_baseline 
+--------------------------------+-------------------------------
+ t                              | f
+(1 row)
+
+RESET pg_textsearch.memtable_cache_enabled;
 DROP EXTENSION pg_textsearch CASCADE;

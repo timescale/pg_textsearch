@@ -19,6 +19,7 @@
  * Postgres headers we include here).
  */
 #include <storage/block.h>
+#include <storage/relfilelocator.h>
 
 /* Forward declarations */
 struct TpMemtable;
@@ -96,7 +97,10 @@ typedef struct TpMemtable
 	 * cursor_gen_spill_count is the generation token captured from
 	 * TpSharedIndexState.spill_generation at cold-build time; a
 	 * mismatch on a later apply means a spill raced through and the
-	 * cache is stale.
+	 * cache is stale.  cursor_locator identifies the relation file
+	 * from which the cache was populated, so transaction or savepoint
+	 * rollback after REINDEX cannot reuse a cache built from the
+	 * discarded file.
 	 *
 	 * (cursor_next_blkno, cursor_next_off) is the logical position of
 	 * the next chain record to apply; InvalidBlockNumber means "no
@@ -109,6 +113,8 @@ typedef struct TpMemtable
 	uint64			 cursor_gen_spill_count;
 	BlockNumber		 cursor_next_blkno;
 	uint16			 cursor_next_off;
+	RelFileLocator	 cursor_locator;
+	bool			 cursor_locator_valid;
 	pg_atomic_uint64 cursor_seq;
 
 	/*
@@ -130,43 +136,32 @@ typedef struct TpSharedIndexState
 	Oid index_oid; /* OID of this index */
 	Oid heap_oid;  /* OID of the indexed heap relation */
 
-	/* Memtable stored in DSA */
-	dsa_pointer memtable_dp; /* DSA pointer to TpMemtable */
-
 	/*
-	 * True while this shared state is published by a backend that
-	 * is still in BUILD mode (CREATE INDEX).  In that mode
-	 * `memtable_dp` is a pointer into the **private** DSA of the
-	 * building backend and MUST NOT be dereferenced through the
-	 * global DSA by any other backend (notably the cross-index
-	 * eviction walker at src/memtable/cache.c:evict_walk_cb).
-	 *
-	 * Set to true at registration time in
-	 * tp_create_build_index_state(), cleared in
-	 * tp_finalize_build_mode() under
-	 * tp_registry_eviction_mutex EXCL (the same mutex evict_largest
-	 * walks under) so the walker observes a consistent
-	 * (is_build_mode=false, memtable_dp in global DSA) transition.
-	 *
-	 * Read lock-free by the eviction walker; correctness comes from
-	 * the publish-before-register barrier on the true→true path
-	 * and the eviction_mutex on the true→false transition.
+	 * Runtime cache stored in the global DSA.  The allocation remains
+	 * stable for the lifetime of the registry entry, including REINDEX.
 	 */
-	bool is_build_mode;
+	dsa_pointer memtable_dp; /* DSA pointer to TpMemtable */
 
 	/*
 	 * Auto-spill heuristic for the on-disk memtable: number of
 	 * chain pages currently published in the page chain.
 	 * Incremented after each successful page-publish
 	 * GenericXLogFinish in src/memtable/log.c; reset to 0 after
-	 * tp_spill_finalize() completes.  Not WAL-logged: on crash
-	 * recovery, the counter starts at 0 even if the chain
-	 * survived.  Worst case the heuristic overshoots by ~one
-	 * threshold's worth of pages between restart and the next
-	 * normal merge — acceptable since the counter only governs
-	 * when to spill, not correctness.
+	 * tp_spill_finalize() completes.
+	 *
+	 * A completed CREATE/REINDEX also resets the count and sets
+	 * chain_page_count_needs_reseed.  The next threshold consumer
+	 * recounts the chain in whichever relfilenode PostgreSQL selected
+	 * (new file on commit, restored file on abort) under LW_EXCLUSIVE,
+	 * records that file's locator, then clears the marker.  A locator
+	 * mismatch also forces a recount, covering rollback after an
+	 * in-transaction reseed.  These fields are not WAL-logged.
 	 */
 	pg_atomic_uint32 chain_page_count;
+	pg_atomic_uint32 chain_page_count_needs_reseed;
+	pg_atomic_uint32 chain_page_count_spc_oid;
+	pg_atomic_uint32 chain_page_count_db_oid;
+	pg_atomic_uint32 chain_page_count_rel_number;
 
 	/*
 	 * Cached estimated memtable size in bytes, updated
@@ -185,8 +180,9 @@ typedef struct TpSharedIndexState
 	LWLock lock; /* Per-index lock for this index */
 
 	/*
-	 * Spill generation counter.  Bumped by tp_spill_finalize()
-	 * under LW_EXCLUSIVE after the on-disk chain is truncated.
+	 * Spill generation counter.  Bumped under LW_EXCLUSIVE after
+	 * the on-disk chain is truncated or a completed index build
+	 * replaces the relfilenode.
 	 * Acts as the in-memory memtable cache's invalidation
 	 * token: a cache built against generation N becomes stale
 	 * the moment this counter advances to N+1, even if a new
@@ -210,15 +206,23 @@ typedef struct TpLocalIndexState
 	/* Pointer to shared state in registry */
 	TpSharedIndexState *shared;
 
+	/*
+	 * DSA identity of shared.  This scalar remains safe to compare after a
+	 * committed DROP makes shared itself potentially stale.
+	 */
+	dsa_pointer shared_dp;
+
 	/* DSA attachment for this backend */
 	dsa_area *dsa; /* Attached DSA area for this index */
 
 	/*
-	 * Build mode flag: If true, this backend owns a private DSA that
-	 * gets destroyed and recreated on each spill for perfect memory
-	 * reclamation. If false, uses shared DSA for concurrent access.
+	 * True when this wrapper belongs to an index relation created by the
+	 * current transaction.  It remains set through build finalization so
+	 * abort can remove only state owned by that initial CREATE.  REINDEX
+	 * of a pre-existing relation leaves this false even if the registry
+	 * was cold and the build registered the shared state.
 	 */
-	bool is_build_mode;
+	bool build_created_shared_state;
 
 	/* Transaction-level lock tracking */
 	bool	   lock_held; /* True if we hold the lock in this transaction */
@@ -243,27 +247,19 @@ typedef struct TpLocalIndexState
 /* Function declarations for index state management */
 extern TpLocalIndexState *tp_get_local_index_state(Oid index_oid);
 /*
- * Allocate the per-index shared state, register it in the global
- * registry, and return a local-state handle.
- *
- * If `reuse_if_exists` is true and an entry for `index_oid` is
- * already registered when we go to insert, the just-allocated
- * DSA is freed and we attach to the existing entry — this is
- * what the cold-start bootstrap path uses, so concurrent
- * rebuilds from two backends don't unregister each other.
- *
- * If false, an existing entry is unregistered and replaced; the
- * parallel-build completion path uses this on the assumption
- * that any pre-existing entry is stale (left by a crashed
- * earlier CREATE INDEX).
+ * Create or attach the per-index shared runtime state and return a
+ * backend-local wrapper.  Existing registry state is always reused.
  */
 extern TpLocalIndexState *tp_create_shared_index_state(
-		Oid index_oid, Oid heap_oid, bool reuse_if_exists);
-extern TpLocalIndexState			 *
-tp_create_build_index_state(Oid index_oid, Oid heap_oid);
+		Oid index_oid, Oid heap_oid, SubTransactionId index_create_subid);
+extern TpLocalIndexState *tp_create_build_index_state(
+		Oid index_oid, Oid heap_oid, SubTransactionId index_create_subid);
 extern void tp_cleanup_index_shared_memory(Oid index_oid);
+extern void tp_cleanup_database_shared_memory(Oid database_oid);
 extern void tp_finalize_build_mode(TpLocalIndexState *local_state);
 extern void tp_cleanup_build_mode_on_abort(void);
+extern void tp_commit_build_states(void);
+extern bool tp_has_initial_create_ownership(void);
 extern TpLocalIndexState *tp_rebuild_index_from_disk(Oid index_oid);
 
 /* Helper function for accessing memtable from local state */
@@ -274,6 +270,12 @@ extern void
 tp_acquire_index_lock(TpLocalIndexState *local_state, LWLockMode mode);
 extern void tp_release_index_lock(TpLocalIndexState *local_state);
 extern void tp_release_all_index_locks(void);
+extern void tp_set_chain_page_count_for_relation(
+		TpLocalIndexState *local_state,
+		Relation		   index_rel,
+		uint32			   chain_pages);
+extern void tp_reseed_chain_page_count_if_needed(
+		TpLocalIndexState *local_state, Relation index_rel);
 
 /* Bulk load auto-spill */
 extern void tp_bulk_load_spill_check(void);

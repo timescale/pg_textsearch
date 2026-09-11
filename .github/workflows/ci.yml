@@ -71,6 +71,18 @@ jobs:
         make PG_CFLAGS="-Werror -Wno-error=unused-parameter"
         sudo env "PATH=$PATH" make install
 
+    - name: Run cross-database registry regression
+      timeout-minutes: 5
+      run: |
+        export PATH="/usr/lib/postgresql/${{ matrix.pg_version }}/bin:$PATH"
+        make test-cross-database-registry
+
+    - name: Run multi-backend REINDEX regression
+      timeout-minutes: 10
+      run: |
+        export PATH="/usr/lib/postgresql/${{ matrix.pg_version }}/bin:$PATH"
+        make test-reindex
+
     - name: Run regression tests
       timeout-minutes: 10
       run: |

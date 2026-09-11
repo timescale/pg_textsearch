@@ -96,7 +96,7 @@ PGXS := $(shell $(PG_CONFIG) --pgxs)
 include $(PGXS)
 
 # SQL regression tests
-test: test-compaction-ownercheck test-compaction-request-source
+test: test-compaction-ownercheck test-compaction-request-source test-state-build-source
 	@echo "Running SQL regression tests..."
 	@$(pg_regress_installcheck) $(REGRESS_OPTS) $(REGRESS)
 
@@ -106,10 +106,13 @@ test-compaction-ownercheck:
 test-compaction-request-source:
 	@./test/scripts/compaction_request_source.sh
 
+test-state-build-source:
+	@./test/scripts/state_build_source.sh
+
 # These guards cover invariants the SQL suite cannot observe, so they must
 # gate every way the suite is run, not just `make test`.
-installcheck: test-compaction-ownercheck test-compaction-request-source
-test-local: test-compaction-ownercheck test-compaction-request-source
+installcheck: test-compaction-ownercheck test-compaction-request-source test-state-build-source
+test-local: test-compaction-ownercheck test-compaction-request-source test-state-build-source
 
 # Custom local test target with dedicated PostgreSQL instance
 test-local: install
@@ -217,7 +220,11 @@ test-reindex:
 	@echo "Running multi-backend reindex regression tests (issue #390)..."
 	@cd test/scripts && ./multi_backend_reindex.sh
 
-test-shell: test-concurrency test-recovery test-segment test-cic test-multi-index test-reindex
+test-cross-database-registry:
+	@echo "Running cross-database registry regression tests (issue #464)..."
+	@cd test/scripts && ./cross_database_registry.sh
+
+test-shell: test-concurrency test-recovery test-segment test-cic test-multi-index test-reindex test-cross-database-registry
 	@echo "All shell-based tests completed"
 
 test-all: test test-shell
@@ -370,6 +377,7 @@ help:
 	@echo "  make test-cic         - Run CREATE INDEX CONCURRENTLY tests"
 	@echo "  make test-chinese     - Run Chinese tokenization test (needs zhparser)"
 	@echo "  make test-reindex     - Run multi-backend reindex regression tests (issue #390)"
+	@echo "  make test-cross-database-registry - Run issue #464 registry regression"
 	@echo "  make expected     - Generate expected output files from test results"
 	@echo ""
 	@echo "Code formatting targets:"
@@ -393,4 +401,4 @@ help:
 	@echo "  make test-all"
 	@echo "  make format"
 
-.PHONY: test test-compaction-ownercheck test-compaction-request-source clean-test-dirs installcheck test-concurrency test-recovery test-segment test-stress test-cic test-chinese test-replication test-replication-extended test-logical-replication test-multi-index test-reindex test-shell test-all expected lint-format format format-check format-diff format-single coverage coverage-build coverage-clean coverage-report help
+.PHONY: test test-compaction-ownercheck test-compaction-request-source test-state-build-source clean-test-dirs installcheck test-concurrency test-recovery test-segment test-stress test-cic test-chinese test-replication test-replication-extended test-logical-replication test-multi-index test-reindex test-cross-database-registry test-shell test-all expected lint-format format format-check format-diff format-single coverage coverage-build coverage-clean coverage-report help

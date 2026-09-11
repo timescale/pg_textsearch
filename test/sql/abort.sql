@@ -32,16 +32,28 @@ SELECT id, ROUND((body <@> to_bm25query('hello', 'abort_test2_idx'))::numeric, 4
     ORDER BY body <@> to_bm25query('hello', 'abort_test2_idx')
     LIMIT 5;
 
--- Scenario 3: Abort during CREATE INDEX
+-- Scenario 3: Abort during CREATE INDEX after charging its runtime cache
+SELECT bm25_cache_global_estimated_bytes()
+    AS abort_create_baseline \gset
 BEGIN;
 CREATE TABLE abort_test3 (id serial PRIMARY KEY, body text);
 INSERT INTO abort_test3 (body) VALUES ('test document');
-CREATE INDEX ON abort_test3
+CREATE INDEX abort_test3_idx ON abort_test3
     USING bm25 (body) WITH (text_config = 'english');
+-- INSERT only appends the durable chain. A cold build must read it to charge
+-- the derived shared-memory cache before abort cleanup is exercised.
+INSERT INTO abort_test3 (body) VALUES ('charged cache tail');
+SELECT result = 'OK' AND estimated_bytes > 0
+    AS create_abort_cache_charged
+FROM bm25_cache_cold_build('abort_test3_idx') \gset
+\echo create_abort_cache_charged=:create_abort_cache_charged
 SELECT 1/0;
 ROLLBACK;
 -- Table and index should not exist after rollback
 SELECT count(*) FROM pg_class WHERE relname = 'abort_test3';
+SELECT bm25_cache_global_estimated_bytes() = :abort_create_baseline
+    AS create_abort_accounting_restored \gset
+\echo create_abort_accounting_restored=:create_abort_accounting_restored
 
 -- Scenario 4: Abort with DDL (DROP TABLE that has a BM25 index)
 CREATE TABLE abort_test4 (id serial PRIMARY KEY, body text);
@@ -91,17 +103,27 @@ SELECT id FROM abort_test2
 SELECT 1/0;
 ROLLBACK;
 
--- Scenario 9: SAVEPOINT rollback of CREATE INDEX with populated memtable
--- Exercises SubXactCallback cleanup of dshash tables in memtable
+-- Scenario 9: SAVEPOINT rollback of CREATE INDEX with a charged cache
+-- Exercises SubXactCallback cleanup of cache dshash tables and accounting.
 BEGIN;
 CREATE TABLE abort_subxact1 (id serial PRIMARY KEY, body text);
+SELECT bm25_cache_global_estimated_bytes()
+    AS abort_subxact_create_baseline \gset
 SAVEPOINT sp1;
 CREATE INDEX abort_subxact1_idx ON abort_subxact1
     USING bm25 (body) WITH (text_config = 'english');
--- Insert data to populate the memtable (creates string_hash + doc_lengths)
+-- Append durable records, then read them into the shared-memory cache.
 INSERT INTO abort_subxact1 (body) VALUES ('memtable data one');
 INSERT INTO abort_subxact1 (body) VALUES ('memtable data two');
+SELECT result = 'OK' AND estimated_bytes > 0
+    AS subxact_create_abort_cache_charged
+FROM bm25_cache_cold_build('abort_subxact1_idx') \gset
+\echo subxact_create_abort_cache_charged=:subxact_create_abort_cache_charged
 ROLLBACK TO sp1;
+SELECT bm25_cache_global_estimated_bytes()
+           = :abort_subxact_create_baseline
+    AS subxact_create_abort_accounting_restored \gset
+\echo subxact_create_abort_accounting_restored=:subxact_create_abort_accounting_restored
 -- Table should still be usable without the index
 INSERT INTO abort_subxact1 (body) VALUES ('after rollback');
 COMMIT;
