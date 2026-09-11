@@ -867,14 +867,13 @@ tp_cleanup_subxact_abort(SubTransactionId mySubid)
 			if (!ls->is_build_mode && global_dsa != NULL)
 			{
 				/*
-				 * Runtime mode: the in-memory cache (see
-				 * docs/memtable_cache.md) may have populated
-				 * the dshash tables hanging off the
+				 * Runtime mode: the in-memory cache may have
+				 * populated the dshash tables hanging off the
 				 * TpMemtable; drop them first so dsa_free on
 				 * the TpMemtable allocation does not leak the
-				 * dshash internals.  Safe with an empty
-				 * cache: tp_cache_clear is a no-op when both
-				 * handles are INVALID.
+				 * dshash internals.  Safe with an empty cache:
+				 * tp_cache_clear is a no-op when both handles
+				 * are INVALID.
 				 *
 				 * Subxact abort doesn't acquire cache.lock
 				 * itself: this path is unwinding an aborted
@@ -991,25 +990,24 @@ tp_cleanup_index_shared_memory(Oid index_oid)
 	shared_state = (TpSharedIndexState *)dsa_get_address(dsa, shared_dp);
 
 	/*
-	 * The in-memory cache (see docs/memtable_cache.md) may have
-	 * populated the dshash tables hanging off the TpMemtable; drop
-	 * them first so dsa_free on the TpMemtable allocation does not
-	 * leak the dshash internals.  Safe with an empty cache:
+	 * The in-memory cache may have populated the dshash tables
+	 * hanging off the TpMemtable; drop them first so dsa_free on
+	 * the TpMemtable allocation does not leak the dshash internals.
+	 * Safe with an empty cache:
 	 * tp_cache_clear is a no-op when both handles are INVALID.
 	 *
 	 * DROP INDEX runs under AccessExclusiveLock on the index, so no
 	 * concurrent backend can be reading the cache here; we do not
 	 * acquire cache.lock.
 	 *
-	 * Memtable-cache eviction (docs/memtable_cache.md §"Memory cap
-	 * (3 tiers)") accesses victim shared states by DSA pointer
-	 * without holding the index relation lock.  Take the global
-	 * eviction mutex EXCL across the unregister + dsa_free so a
-	 * concurrent evict_largest cannot deref a victim->lock that we
-	 * are about to free.  Unregister FIRST so no new walker can
-	 * find the entry, then free under the same mutex so any walker
-	 * currently iterating completes before we recycle the memory.
-	 * The mutex order is global before per-index, matching
+	 * Memtable-cache eviction accesses victim shared states by DSA
+	 * pointer without holding the index relation lock.  Take the
+	 * global eviction mutex EXCL across the unregister + dsa_free
+	 * so a concurrent evict_largest cannot deref a victim->lock
+	 * that we are about to free.  Unregister FIRST so no new walker
+	 * can find the entry, then free under the same mutex so any
+	 * walker currently iterating completes before we recycle the
+	 * memory.  The mutex order is global before per-index, matching
 	 * evict_largest's acquire sequence.
 	 */
 	LWLockAcquire(tp_registry_eviction_mutex(), LW_EXCLUSIVE);
@@ -1076,10 +1074,10 @@ tp_cleanup_index_shared_memory(Oid index_oid)
  *
  * No WAL drain and no recovery-time corpus rebuild are needed:
  * the on-disk metapage + chain pages + segments already encode
- * every committed insert.  The in-memory memtable cache
- * (docs/memtable_cache.md) is derived state and lazily built on
- * the first query after rebuild; readers consult the chain source
- * for in-flight statistics in the meantime.
+ * every committed insert.  The in-memory memtable cache is
+ * derived state and lazily built on the first query after rebuild;
+ * readers consult the chain source for in-flight statistics in
+ * the meantime.
  */
 TpLocalIndexState *
 tp_rebuild_index_from_disk(Oid index_oid)

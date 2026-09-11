@@ -355,7 +355,9 @@ jobs:
         mkdir -p pg_textsearch-${CLEAN_VERSION}
 
         # Copy source files
-        cp -r src sql test benchmarks Makefile pg_textsearch.control README.md LICENSE pg_textsearch-${CLEAN_VERSION}/
+        cp -r src sql test benchmarks Makefile pg_textsearch.control \
+          README.md ARCHITECTURE.md CONTRIBUTING.md LICENSE \
+          pg_textsearch-${CLEAN_VERSION}/
 
         # Create tarball
         tar -czf pg_textsearch-${CLEAN_VERSION}.tar.gz pg_textsearch-${CLEAN_VERSION}/

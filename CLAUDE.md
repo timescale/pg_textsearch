@@ -31,18 +31,17 @@ consider a dedicated `pg_textsearch` schema for cleaner namespace management.
   and running the same test. Even if it does reproduce on main, it
   still needs to be investigated and fixed, not ignored.
 
-- **Physical replication**: All page mutations are WAL-logged via
-  `GenericXLog` records. There is no custom resource manager;
-  pg_textsearch does not register an rmgr. Stock PostgreSQL replay
-  reconstructs every page on a streaming standby or during crash
-  recovery — including the on-disk memtable chain pages, segment
-  pages, and the metapage. This is what lets PostgreSQL's
-  single-page WAL-redo helper (and any other no-extension-load
+- **Physical replication**: In-place and publication mutations are WAL-logged
+  via `GenericXLog`; newly written segment pages use `log_newpage_buffer()`
+  when WAL is required. There is no custom resource manager; pg_textsearch
+  does not register an rmgr. Stock PostgreSQL replay reconstructs every page
+  on a streaming standby or during crash recovery — including the on-disk
+  memtable chain pages, segment pages, and the metapage. This is what lets
+  PostgreSQL's single-page WAL-redo helper (and any other no-extension-load
   replay context) work without loading `pg_textsearch.so`.
-  **The on-disk memtable design is spec'd at
-  [`docs/memtable_v2.md`](docs/memtable_v2.md); read it before
-  changing the write/read/spill flow.** Closes #345, #349,
-  #350, #374.
+  **Read [ARCHITECTURE.md](ARCHITECTURE.md#storage-and-wal) before
+  changing the write/read/spill flow.** Closes #345, #349, #350,
+  #374.
 
 - **Standby-safe segment reclaim (#380)**: A segment merge does not
   free the displaced source pages to the FSM immediately. Doing so is
@@ -67,7 +66,7 @@ The index uses an LSM-like layered storage approach:
   relation itself. Writes append doc records (ctid + length +
   packed bm25vector bytes) to a tail page chained off the
   metapage. Mutations are WAL-logged via `GenericXLog`.
-  See [`docs/memtable_v2.md`](docs/memtable_v2.md).
+  See [ARCHITECTURE.md](ARCHITECTURE.md#storage-and-wal).
 - **Segments**: Immutable disk-based structures using V2 block storage format
   with skip lists for efficient top-k queries
 
@@ -90,8 +89,9 @@ details):
   source abstraction)
 - **Layer 3 (Storage):** `memtable/` (on-disk paged L0 — chain of
   doc-record pages mutated under buffer locks, WAL-logged via
-  `GenericXLog`; see [`docs/memtable_v2.md`](docs/memtable_v2.md)),
-  `segment/` (on-disk segments, merge, compression)
+  `GenericXLog`; see
+  [ARCHITECTURE.md](ARCHITECTURE.md#storage-and-wal)), `segment/`
+  (on-disk segments, merge, compression)
 - **Cross-cutting:** `debug/` (dump utilities), `mod.c` (init)
 
 ### Data Types
@@ -159,7 +159,7 @@ make format-single FILE=path/to/file.c  # format specific file
 | `pg_textsearch.debug_panic_after_spill_finalize` | Trigger PANIC after spill finalize (testing only, superuser-only) | false |
 | `pg_textsearch.memtable_cache_enabled` | Serve query reads from the in-memory memtable cache instead of the on-disk chain (chain remains source of truth; standbys always use the chain) | true |
 | `pg_textsearch.log_cache_state` | Log in-memory cache apply outcomes (OK / BUDGET_EXCEEDED / cold_build / RETRY / ABORT / fall back to chain) | false |
-| `pg_textsearch.memory_limit` | Max shared memory (KB, `PGC_SIGHUP`) for the in-memory memtable cache. Three-tier budget: per-index soft cap (`limit/8`) → BUDGET_EXCEEDED + chain fallback; global soft cap (`limit/2`) → evict largest non-caller cache; global hard cap (`limit`) → refuse new cache builds. `0` = no limit. See `docs/memtable_cache.md` | 2 GB |
+| `pg_textsearch.memory_limit` | Approximate shared-memory budget (KB, `PGC_SIGHUP`) for the in-memory memtable cache. Three tiers: per-index per-record growth guard (`limit/8`) → BUDGET_EXCEEDED + chain fallback before a record crosses it; global soft cap (`limit/2`) → best-effort eviction of the largest non-caller cache; the global `limit` is an approximate admission threshold → catch-up or cold-build fallback when the entry-time estimate is already at the limit. Admitted or concurrent work may increase estimated usage past the limit. `0` = unlimited. | 2 GB |
 
 
 ### Index Options
@@ -365,8 +365,8 @@ tables.
 - Wrap all lines at 79 characters
 - The L0 memtable is an on-disk chain of pages in the index relation
   (one chain per index). Mutated under standard buffer locks and
-  WAL-logged via `GenericXLog`. See
-  [`docs/memtable_v2.md`](docs/memtable_v2.md) before changing
+  WAL-logged via `GenericXLog`. Read
+  [ARCHITECTURE.md](ARCHITECTURE.md#storage-and-wal) before changing
   the write/read/spill flow.
 
 ### Pre-Commit Checklist

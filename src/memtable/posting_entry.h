@@ -6,7 +6,7 @@
  *
  * Shared between the in-memory memtable cache (DSA-allocated
  * posting lists) and the palloc-based local memtable used in
- * parallel builds.  See docs/memtable_cache.md.
+ * parallel builds.
  */
 #pragma once
 

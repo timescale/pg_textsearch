@@ -1,11 +1,11 @@
 #!/bin/bash
 
-# Cranfield Collection BM25 benchmark runner for Tapir extension
+# Cranfield Collection BM25 benchmark runner for pg_textsearch
 # This script runs the complete Cranfield IR benchmark (1400 documents, 225 queries)
 
 set -e
 
-echo "=== Tapir Cranfield Collection Benchmark ==="
+echo "=== pg_textsearch Cranfield Collection Benchmark ==="
 echo "Standard Information Retrieval benchmark with 1400 aerodynamics abstracts"
 echo "Starting at: $(date)"
 echo ""
@@ -28,13 +28,13 @@ fi
 cd "$CRANFIELD_DIR"
 
 # Check if pg_textsearch extension is available
-echo "Checking Tapir extension availability..."
+echo "Checking pg_textsearch extension availability..."
 psql -c "CREATE EXTENSION IF NOT EXISTS pg_textsearch;" || {
-    echo "ERROR: Tapir extension not available. Please install it first with 'make install'"
+    echo "ERROR: pg_textsearch extension not available. Please install it first with 'make install'"
     exit 1
 }
 
-echo "Tapir extension loaded successfully."
+echo "pg_textsearch extension loaded successfully."
 echo ""
 
 # Show initial configuration (skip if parameters not available)

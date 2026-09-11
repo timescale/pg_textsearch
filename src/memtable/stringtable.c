@@ -8,7 +8,7 @@
  * Strings are stored in DSA memory and referenced by dsa_pointer
  * keys.  Provides concurrent term lookup with a variant key that
  * compares char* (for lookup) and dsa_pointer (for storage) under
- * the same hash function.  See docs/memtable_cache.md.
+ * the same hash function.
  */
 #include <postgres.h>
 

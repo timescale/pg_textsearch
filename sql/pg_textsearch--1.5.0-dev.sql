@@ -420,7 +420,12 @@ AS 'MODULE_PATHNAME', 'bm25_cache_bump_spill_generation'
 LANGUAGE C STRICT;
 
 -- Cache memory-cap scaffolds.  Same INTERNAL-ONLY disclaimer as
--- above.  See docs/memtable_cache.md §"Memory cap (3 tiers)".
+-- above.  The per-index limit/8 per-record growth guard rejects
+-- a record whose estimated growth would cross it; the
+-- global limit/2 cap attempts best-effort eviction, and limit is an
+-- approximate admission threshold: catch-up or cold build falls back
+-- when the entry-time estimate is already at the limit, while admitted
+-- or concurrent work may exceed it.  Zero means unlimited.
 CREATE FUNCTION @extschema@.bm25_cache_global_estimated_bytes()
 RETURNS bigint
 AS 'MODULE_PATHNAME', 'bm25_cache_global_estimated_bytes'
