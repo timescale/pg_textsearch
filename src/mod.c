@@ -12,6 +12,7 @@
 #include <catalog/dependency.h>
 #include <catalog/objectaccess.h>
 #include <catalog/pg_class_d.h>
+#include <catalog/pg_database_d.h>
 #include <commands/dbcommands.h>
 #include <fmgr.h>
 #include <limits.h>
@@ -135,6 +136,15 @@ static shmem_request_hook_type prev_shmem_request_hook = NULL;
 
 /* Previous ProcessUtility hook */
 static ProcessUtility_hook_type prev_process_utility_hook = NULL;
+
+typedef struct TpDropDatabaseContext
+{
+	struct TpDropDatabaseContext *previous;
+	Oid							  database_oid;
+} TpDropDatabaseContext;
+
+/* Active DROP DATABASE invocation, including nested utility hooks. */
+static TpDropDatabaseContext *active_drop_database_context = NULL;
 
 /* Shared memory size calculation */
 static void tp_shmem_request(void);
@@ -549,7 +559,11 @@ tp_object_access(
 	if (prev_object_access_hook)
 		prev_object_access_hook(access, classId, objectId, subId, arg);
 
-	/* We only care about DROP events on relations (indexes are relations) */
+	if (access == OAT_DROP && classId == DatabaseRelationId && subId == 0 &&
+		active_drop_database_context != NULL)
+		active_drop_database_context->database_oid = objectId;
+
+	/* Clean up DROP events on relations (indexes are relations). */
 	if (access == OAT_DROP && classId == RelationRelationId && subId == 0)
 	{
 		/*
@@ -733,37 +747,47 @@ tp_process_utility(
 
 	if (IsA(parsetree, DropdbStmt))
 	{
-		DropdbStmt *stmt = (DropdbStmt *)parsetree;
-		Oid			database_oid;
+		TpDropDatabaseContext *drop_context;
+		Oid					   database_oid;
 
-		/*
-		 * The pg_database row is gone after standard_ProcessUtility
-		 * succeeds, so resolve the qualified registry key prefix first.
-		 * Let the core command report missing databases and permission
-		 * errors; InvalidOid simply means there is nothing to clean.
-		 */
-		database_oid = get_database_oid(stmt->dbname, true);
+		drop_context				 = palloc(sizeof(*drop_context));
+		drop_context->previous		 = active_drop_database_context;
+		drop_context->database_oid	 = InvalidOid;
+		active_drop_database_context = drop_context;
+		PG_TRY();
+		{
+			if (prev_process_utility_hook)
+				prev_process_utility_hook(
+						pstmt,
+						queryString,
+						readOnlyTree,
+						context,
+						params,
+						queryEnv,
+						dest,
+						qc);
+			else
+				standard_ProcessUtility(
+						pstmt,
+						queryString,
+						readOnlyTree,
+						context,
+						params,
+						queryEnv,
+						dest,
+						qc);
+		}
+		PG_CATCH();
+		{
+			active_drop_database_context = drop_context->previous;
+			pfree(drop_context);
+			PG_RE_THROW();
+		}
+		PG_END_TRY();
 
-		if (prev_process_utility_hook)
-			prev_process_utility_hook(
-					pstmt,
-					queryString,
-					readOnlyTree,
-					context,
-					params,
-					queryEnv,
-					dest,
-					qc);
-		else
-			standard_ProcessUtility(
-					pstmt,
-					queryString,
-					readOnlyTree,
-					context,
-					params,
-					queryEnv,
-					dest,
-					qc);
+		active_drop_database_context = drop_context->previous;
+		database_oid				 = drop_context->database_oid;
+		pfree(drop_context);
 
 		if (OidIsValid(database_oid))
 			tp_cleanup_database_shared_memory(database_oid);

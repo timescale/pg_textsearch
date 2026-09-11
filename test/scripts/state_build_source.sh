@@ -11,6 +11,8 @@ REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 BUILD_SOURCE="${REPO_ROOT}/src/access/build.c"
 STATE_SOURCE="${REPO_ROOT}/src/index/state.c"
 STATE_HEADER="${REPO_ROOT}/src/index/state.h"
+MOD_SOURCE="${REPO_ROOT}/src/mod.c"
+REGISTRY_SOURCE="${REPO_ROOT}/src/index/registry.c"
 
 if ! grep -Fq "index_create_subid = index->rd_createSubid" \
     "${BUILD_SOURCE}"; then
@@ -155,6 +157,65 @@ for required in \
     "pfree(old_local_state)"; do
     if ! grep -Fq "${required}" <<<"${create_body}"; then
         echo "build-state creation does not replace wrappers safely: ${required}" >&2
+        exit 1
+    fi
+done
+
+dropdb_body="$(
+    sed -n '/if (IsA(parsetree, DropdbStmt))/,/^[[:space:]]*return;/p' \
+        "${MOD_SOURCE}"
+)"
+
+if grep -Fq "get_database_oid(stmt->dbname" <<<"${dropdb_body}"; then
+    echo "DROP DATABASE cleanup resolves a racy name before core execution" >&2
+    exit 1
+fi
+
+for required in \
+    "TpDropDatabaseContext *drop_context" \
+    "palloc(sizeof(*drop_context))" \
+    "active_drop_database_context = drop_context" \
+    "PG_CATCH()" \
+    "active_drop_database_context = drop_context->previous" \
+    "drop_context->database_oid"; do
+    if ! grep -Fq "${required}" <<<"${dropdb_body}"; then
+        echo "DROP DATABASE cleanup does not track core's dropped OID: \
+${required}" >&2
+        exit 1
+    fi
+done
+
+if grep -Fq "TpDropDatabaseContext drop_context" <<<"${dropdb_body}"; then
+    echo "DROP DATABASE keeps mutable hook context across longjmp on stack" >&2
+    exit 1
+fi
+
+object_access_body="$(
+    sed -n '/^tp_object_access(/,/^}/p' "${MOD_SOURCE}"
+)"
+
+for required in \
+    "classId == DatabaseRelationId" \
+    "active_drop_database_context->database_oid = objectId"; do
+    if ! grep -Fq "${required}" <<<"${object_access_body}"; then
+        echo "database object hook does not capture the authoritative OID: \
+${required}" >&2
+        exit 1
+    fi
+done
+
+registry_walk_body="$(
+    sed -n '/^tp_registry_walk(/,/^}/p' "${REGISTRY_SOURCE}"
+)"
+
+for required in \
+    "dshash_seq_status *status" \
+    "palloc(sizeof(*status))" \
+    "dshash_seq_next(status)" \
+    "dshash_seq_term(status)"; do
+    if ! grep -Fq "${required}" <<<"${registry_walk_body}"; then
+        echo "registry walk keeps mutable iterator state across longjmp: \
+${required}" >&2
         exit 1
     fi
 done

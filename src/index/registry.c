@@ -604,9 +604,9 @@ tp_registry_eviction_mutex(void)
 void
 tp_registry_walk(TpRegistryWalkCb cb, void *ctx)
 {
-	dshash_table	 *registry_hash;
-	dshash_seq_status status;
-	TpRegistryEntry	 *entry;
+	dshash_table	  *registry_hash;
+	dshash_seq_status *status;
+	TpRegistryEntry	  *entry;
 
 	Assert(cb != NULL);
 
@@ -615,15 +615,19 @@ tp_registry_walk(TpRegistryWalkCb cb, void *ctx)
 		tapir_registry->registry_handle == DSHASH_HANDLE_INVALID)
 		return;
 
+	status = palloc(sizeof(*status));
 	registry_hash =
 			registry_attach(tapir_dsa, tapir_registry->registry_handle);
 	if (!registry_hash)
+	{
+		pfree(status);
 		return;
+	}
 
-	dshash_seq_init(&status, registry_hash, false);
+	dshash_seq_init(status, registry_hash, false);
 	PG_TRY();
 	{
-		while ((entry = (TpRegistryEntry *)dshash_seq_next(&status)) != NULL)
+		while ((entry = (TpRegistryEntry *)dshash_seq_next(status)) != NULL)
 		{
 			if (cb(entry->key, entry->shared_state_dp, ctx))
 				break;
@@ -631,8 +635,9 @@ tp_registry_walk(TpRegistryWalkCb cb, void *ctx)
 	}
 	PG_FINALLY();
 	{
-		dshash_seq_term(&status);
+		dshash_seq_term(status);
 		dshash_detach(registry_hash);
+		pfree(status);
 	}
 	PG_END_TRY();
 }
