@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789109726505,
+  "lastUpdate": 1789109730917,
   "repoUrl": "https://github.com/timescale/pg_textsearch",
   "entries": {
     "cranfield Benchmarks": [
@@ -157752,6 +157752,93 @@ window.BENCHMARK_DATA = {
           {
             "name": "msmarco_insert (0 docs) - Weighted Throughput (avg ms/query)",
             "value": 12.37,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco_insert (0 docs) - Index Size",
+            "value": 9520.57,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tjgreen@gmail.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "3c77689e5186ada21d79312066b01661f5e7fa7f",
+          "message": "docs: streamline user and developer documentation (#483)\n\nStreamline the README and developer guides, add a source-accurate\narchitecture guide and complete release history, and replace the stale\ntest guide.\n\nAlso remove superseded docs, correct examples and operational guidance,\ninclude the canonical guides in source packages, and stop version bumps\nfrom editing the README.",
+          "timestamp": "2026-09-10T03:52:26Z",
+          "url": "https://github.com/timescale/pg_textsearch/commit/3c77689e5186ada21d79312066b01661f5e7fa7f"
+        },
+        "date": 1789109730118,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "msmarco_insert (0 docs) - Index Build Time",
+            "value": 1.174,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco_insert (0 docs) - Insert Time",
+            "value": 858403.459,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco_insert (0 docs) - 1 Token Query (p50)",
+            "value": 4.27,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco_insert (0 docs) - 2 Token Query (p50)",
+            "value": 5.36,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco_insert (0 docs) - 3 Token Query (p50)",
+            "value": 8.4,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco_insert (0 docs) - 4 Token Query (p50)",
+            "value": 11.39,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco_insert (0 docs) - 5 Token Query (p50)",
+            "value": 13.09,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco_insert (0 docs) - 6 Token Query (p50)",
+            "value": 16.97,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco_insert (0 docs) - 7 Token Query (p50)",
+            "value": 21.27,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco_insert (0 docs) - 8+ Token Query (p50)",
+            "value": 30.14,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco_insert (0 docs) - Weighted Latency (p50, ms)",
+            "value": 10.33,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco_insert (0 docs) - Weighted Throughput (avg ms/query)",
+            "value": 11.37,
             "unit": "ms"
           },
           {
