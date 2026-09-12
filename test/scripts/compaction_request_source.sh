@@ -211,6 +211,20 @@ if grep -Fq "tp_compaction_flush_requests" <<<"${preprepare_body}"; then
     exit 1
 fi
 
+# REINDEX tracking state is allocated below TopMemoryContext before it is
+# published.  Any construction error must delete that child context explicitly.
+reindex_tracking_body="$(
+    sed -n \
+        '/^tp_reindex_tracking_begin(List \*indexoids)/,/^tp_reindex_target_refresh_identity(/p' \
+        "${MODULE_SOURCE}"
+)"
+if ! grep -Fq "PG_CATCH()" <<<"${reindex_tracking_body}" ||
+    [ "$(grep -Fc "MemoryContextDelete(context)" \
+        <<<"${reindex_tracking_body}")" -lt 2 ]; then
+    echo "REINDEX tracking construction does not clean up on error" >&2
+    exit 1
+fi
+
 # A spill caused during dispatch must compact inline: its request would land
 # in a list the running dispatch has already stopped reading.
 if ! grep -Fq "tp_dispatch_active = true" "${REQUEST_SOURCE}" ||

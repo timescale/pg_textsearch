@@ -27,7 +27,10 @@ extern const char *tp_index_compaction_schedule(Relation index_rel);
 extern const char *tp_index_compaction_lineage(Relation index_rel);
 extern char		  *tp_new_compaction_lineage(void);
 extern char *tp_ensure_index_compaction_lineage(Oid indexoid, bool *created);
-extern bool	 tp_compaction_lineage_in_use(const char *lineage);
-extern bool	 tp_compaction_dispatch_possible(void);
-extern void	 tp_compaction_request(Oid indexoid);
-extern void	 tp_compaction_flush_requests(void);
+extern char *tp_new_available_compaction_lineage(Oid heap_oid, Oid owner_oid);
+extern bool
+tp_compaction_lineage_in_use(const char *lineage, Oid heap_oid, Oid owner_oid);
+extern void tp_lock_compaction_lineage(const char *lineage);
+extern bool tp_compaction_dispatch_possible(void);
+extern void tp_compaction_request(Oid indexoid);
+extern void tp_compaction_flush_requests(void);

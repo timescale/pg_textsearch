@@ -16,6 +16,7 @@
 #include <catalog/pg_class_d.h>
 #include <catalog/pg_inherits.h>
 #include <commands/defrem.h>
+#include <commands/tablecmds.h>
 #include <fmgr.h>
 #include <limits.h>
 #include <miscadmin.h>
@@ -792,20 +793,14 @@ tp_index_stmt_option_count(IndexStmt *stmt, const char *option_name)
 }
 
 static void
-tp_index_stmt_ensure_lineage(IndexStmt *stmt)
+tp_index_stmt_ensure_lineage(IndexStmt *stmt, Oid heap_oid, Oid owner_oid)
 {
 	char *lineage;
 
 	if (tp_index_stmt_option(stmt, "compaction_lineage") != NULL)
 		return;
 
-	do
-	{
-		lineage = tp_new_compaction_lineage();
-		if (!tp_compaction_lineage_in_use(lineage))
-			break;
-		pfree(lineage);
-	} while (true);
+	lineage		  = tp_new_available_compaction_lineage(heap_oid, owner_oid);
 	stmt->options = lappend(
 			stmt->options,
 			makeDefElem(
@@ -813,7 +808,8 @@ tp_index_stmt_ensure_lineage(IndexStmt *stmt)
 }
 
 static void
-tp_index_stmt_validate_supplied_lineage(IndexStmt *stmt, Oid heap_oid)
+tp_index_stmt_validate_supplied_lineage(
+		IndexStmt *stmt, Oid heap_oid, Oid owner_oid)
 {
 	const char *lineage;
 	int			count;
@@ -833,7 +829,13 @@ tp_index_stmt_validate_supplied_lineage(IndexStmt *stmt, Oid heap_oid)
 	if (!object_ownercheck(RelationRelationId, heap_oid, GetUserId()))
 		return;
 
-	if (tp_compaction_lineage_in_use(lineage))
+	if (tp_compaction_lineage_in_use(lineage, heap_oid, owner_oid))
+		ereport(ERROR,
+				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+				 errmsg("background compaction lineage is already in use")));
+
+	tp_lock_compaction_lineage(lineage);
+	if (tp_compaction_lineage_in_use(lineage, heap_oid, owner_oid))
 		ereport(ERROR,
 				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
 				 errmsg("background compaction lineage is already in use")));
@@ -906,6 +908,8 @@ tp_alter_index_ensure_lineage(AlterTableStmt *stmt)
 	Oid			   indexoid;
 	Relation	   index_rel;
 	ListCell	  *lc;
+	Oid			   heap_oid;
+	Oid			   owner_oid;
 
 	foreach (lc, stmt->cmds)
 	{
@@ -937,15 +941,11 @@ tp_alter_index_ensure_lineage(AlterTableStmt *stmt)
 		relation_close(index_rel, AccessShareLock);
 		return;
 	}
+	heap_oid  = index_rel->rd_index->indrelid;
+	owner_oid = index_rel->rd_rel->relowner;
 	relation_close(index_rel, AccessShareLock);
 
-	do
-	{
-		lineage = tp_new_compaction_lineage();
-		if (!tp_compaction_lineage_in_use(lineage))
-			break;
-		pfree(lineage);
-	} while (true);
+	lineage		  = tp_new_available_compaction_lineage(heap_oid, owner_oid);
 	cmd			  = makeNode(AlterTableCmd);
 	cmd->subtype  = AT_SetRelOptions;
 	cmd->def	  = (Node *)list_make1(makeDefElem(
@@ -1141,40 +1141,28 @@ tp_reindex_index_lookup_callback(
 		return;
 
 	relkind = get_rel_relkind(relid);
-	if (relkind != RELKIND_INDEX && relkind != RELKIND_PARTITIONED_INDEX)
+	if (!relkind)
 		return;
+	if (relkind != RELKIND_INDEX && relkind != RELKIND_PARTITIONED_INDEX)
+		ereport(ERROR,
+				(errcode(ERRCODE_WRONG_OBJECT_TYPE),
+				 errmsg("\"%s\" is not an index", relation->relname)));
 
 	table_oid = IndexGetRelation(relid, true);
+	if (OidIsValid(table_oid))
+	{
+		AclResult aclresult;
+
+		aclresult = pg_class_aclcheck(table_oid, GetUserId(), ACL_MAINTAIN);
+		if (aclresult != ACLCHECK_OK)
+			aclcheck_error(aclresult, OBJECT_INDEX, relation->relname);
+	}
+
 	if (relid != old_relid && OidIsValid(table_oid))
 	{
 		LockRelationOid(table_oid, state->table_lockmode);
 		state->locked_table_oid = table_oid;
 	}
-}
-
-static void
-tp_reindex_authorize(ReindexStmt *stmt, Oid relation_oid, char relkind)
-{
-	AclResult aclresult;
-
-	if (stmt->kind == REINDEX_OBJECT_INDEX)
-	{
-		Oid table_oid = IndexGetRelation(relation_oid, true);
-
-		if (!OidIsValid(table_oid))
-			return;
-		aclresult = pg_class_aclcheck(table_oid, GetUserId(), ACL_MAINTAIN);
-		if (aclresult != ACLCHECK_OK)
-			aclcheck_error(aclresult, OBJECT_INDEX, stmt->relation->relname);
-		return;
-	}
-
-	aclresult = pg_class_aclcheck(relation_oid, GetUserId(), ACL_MAINTAIN);
-	if (aclresult != ACLCHECK_OK)
-		aclcheck_error(
-				aclresult,
-				get_relkind_objtype(relkind),
-				stmt->relation->relname);
 }
 
 static List *
@@ -1194,23 +1182,6 @@ tp_reindex_initial_indexes(ReindexStmt *stmt, bool *tracks_commits)
 		return NIL;
 	}
 
-	relation_oid = RangeVarGetRelid(stmt->relation, NoLock, false);
-	relkind		 = get_rel_relkind(relation_oid);
-	if ((stmt->kind == REINDEX_OBJECT_INDEX && relkind != RELKIND_INDEX &&
-		 relkind != RELKIND_PARTITIONED_INDEX) ||
-		(stmt->kind == REINDEX_OBJECT_TABLE && relkind != RELKIND_RELATION &&
-		 relkind != RELKIND_MATVIEW && relkind != RELKIND_PARTITIONED_TABLE))
-	{
-		*tracks_commits = false;
-		return NIL;
-	}
-	*tracks_commits = concurrently || relkind == RELKIND_PARTITIONED_INDEX ||
-					  relkind == RELKIND_PARTITIONED_TABLE;
-	if (!*tracks_commits)
-		return NIL;
-
-	tp_reindex_authorize(stmt, relation_oid, relkind);
-
 	if (stmt->kind == REINDEX_OBJECT_INDEX)
 	{
 		lookup_state.table_lockmode	  = concurrently ? ShareUpdateExclusiveLock
@@ -1224,15 +1195,29 @@ tp_reindex_initial_indexes(ReindexStmt *stmt, bool *tracks_commits)
 				 0,
 				 tp_reindex_index_lookup_callback,
 				 &lookup_state);
+		relkind			= get_rel_relkind(relation_oid);
+		*tracks_commits = concurrently || relkind == RELKIND_PARTITIONED_INDEX;
+		if (!*tracks_commits)
+			return NIL;
 
-		if (get_rel_relkind(relation_oid) == RELKIND_PARTITIONED_INDEX)
+		if (relkind == RELKIND_PARTITIONED_INDEX)
 			return tp_index_tree_locked(relation_oid, ShareLock);
 		return list_make1_oid(relation_oid);
 	}
 
 	relation_lockmode = concurrently ? ShareUpdateExclusiveLock : ShareLock;
-	relation_oid = RangeVarGetRelid(stmt->relation, relation_lockmode, false);
-	if (get_rel_relkind(relation_oid) == RELKIND_PARTITIONED_TABLE)
+	relation_oid	  = RangeVarGetRelidExtended(
+			 stmt->relation,
+			 relation_lockmode,
+			 0,
+			 RangeVarCallbackMaintainsTable,
+			 NULL);
+	relkind			= get_rel_relkind(relation_oid);
+	*tracks_commits = concurrently || relkind == RELKIND_PARTITIONED_TABLE;
+	if (!*tracks_commits)
+		return NIL;
+
+	if (relkind == RELKIND_PARTITIONED_TABLE)
 		return tp_relation_tree_indexes_locked(relation_oid, ShareLock);
 
 	indexoids = tp_relation_indexes_locked(relation_oid, NoLock);
@@ -1263,6 +1248,7 @@ tp_activate_background_indexes(List *indexoids, bool refresh_default)
 static TpReindexState *
 tp_reindex_tracking_begin(List *indexoids)
 {
+	MemoryContext	caller_context = CurrentMemoryContext;
 	MemoryContext	context;
 	TpReindexState *state;
 	ListCell	   *lc;
@@ -1272,44 +1258,54 @@ tp_reindex_tracking_begin(List *indexoids)
 	state			= MemoryContextAllocZero(context, sizeof(*state));
 	state->context	= context;
 	state->previous = tp_reindex_states;
-	foreach (lc, indexoids)
+	PG_TRY();
 	{
-		Oid				 indexoid = lfirst_oid(lc);
-		Relation		 index_rel;
-		TpReindexTarget *target;
-		MemoryContext	 old_context;
-		char			*lineage;
+		foreach (lc, indexoids)
+		{
+			Oid				 indexoid = lfirst_oid(lc);
+			Relation		 index_rel;
+			TpReindexTarget *target;
+			MemoryContext	 old_context;
+			char			*lineage;
 
-		lineage = tp_ensure_index_compaction_lineage(indexoid, NULL);
-		if (lineage == NULL)
-			continue;
-		index_rel = try_index_open(indexoid, AccessShareLock);
-		if (index_rel == NULL)
-		{
-			pfree(lineage);
-			continue;
-		}
-		if (!tp_is_background_index_relation(index_rel))
-		{
+			lineage = tp_ensure_index_compaction_lineage(indexoid, NULL);
+			if (lineage == NULL)
+				continue;
+			index_rel = try_index_open(indexoid, AccessShareLock);
+			if (index_rel == NULL)
+			{
+				pfree(lineage);
+				continue;
+			}
+			if (!tp_is_background_index_relation(index_rel))
+			{
+				index_close(index_rel, AccessShareLock);
+				pfree(lineage);
+				continue;
+			}
+
+			old_context			  = MemoryContextSwitchTo(context);
+			target				  = palloc0(sizeof(*target));
+			target->heap_oid	  = index_rel->rd_index->indrelid;
+			target->namespace_oid = RelationGetNamespace(index_rel);
+			target->index_name = pstrdup(RelationGetRelationName(index_rel));
+			target->index_oid  = indexoid;
+			target->tablespace_oid = index_rel->rd_locator.spcOid;
+			target->relfilenumber  = index_rel->rd_locator.relNumber;
+			target->lineage		   = pstrdup(lineage);
+			state->targets		   = lappend(state->targets, target);
+			MemoryContextSwitchTo(old_context);
 			index_close(index_rel, AccessShareLock);
 			pfree(lineage);
-			continue;
 		}
-
-		old_context			   = MemoryContextSwitchTo(context);
-		target				   = palloc0(sizeof(*target));
-		target->heap_oid	   = index_rel->rd_index->indrelid;
-		target->namespace_oid  = RelationGetNamespace(index_rel);
-		target->index_name	   = pstrdup(RelationGetRelationName(index_rel));
-		target->index_oid	   = indexoid;
-		target->tablespace_oid = index_rel->rd_locator.spcOid;
-		target->relfilenumber  = index_rel->rd_locator.relNumber;
-		target->lineage		   = pstrdup(lineage);
-		state->targets		   = lappend(state->targets, target);
-		MemoryContextSwitchTo(old_context);
-		index_close(index_rel, AccessShareLock);
-		pfree(lineage);
 	}
+	PG_CATCH();
+	{
+		MemoryContextSwitchTo(caller_context);
+		MemoryContextDelete(context);
+		PG_RE_THROW();
+	}
+	PG_END_TRY();
 
 	if (state->targets == NIL)
 	{
@@ -1680,9 +1676,11 @@ tp_process_utility(
 					   stmt->concurrent ? ShareUpdateExclusiveLock : ShareLock,
 					   false);
 			heap_rel = relation_open(heapoid, NoLock);
-			tp_index_stmt_validate_supplied_lineage(stmt, heapoid);
+			tp_index_stmt_validate_supplied_lineage(
+					stmt, heapoid, heap_rel->rd_rel->relowner);
 			if (compaction != NULL && strcmp(compaction, "background") == 0)
-				tp_index_stmt_ensure_lineage(stmt);
+				tp_index_stmt_ensure_lineage(
+						stmt, heapoid, heap_rel->rd_rel->relowner);
 
 			/*
 			 * CIC commits its catalog shell before returning to this hook.
