@@ -11,3 +11,4 @@
 extern void tp_compaction_job_preflight(Oid owner_oid, const char *schedule);
 extern void tp_compaction_job_activate(Oid indexoid, bool refresh_default);
 extern void tp_compaction_job_signal(Oid indexoid);
+extern bool tp_compaction_job_lineage_exists(const char *lineage);

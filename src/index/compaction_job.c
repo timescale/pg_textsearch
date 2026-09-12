@@ -67,6 +67,7 @@ typedef struct TpCompactionJobTarget
 	char		 *index_name;
 	char		 *schedule;
 	char		 *lineage;
+	bool		  lineage_backfilled;
 	char		 *history_prefix;
 	char		 *family_prefix;
 } TpCompactionJobTarget;
@@ -80,6 +81,7 @@ typedef struct TpCompactionJobObjects
 	Oid	  start_function_oid;
 	Oid	  explain_function_oid;
 	Oid	  signal_function_oid;
+	Oid	  cancel_function_oid;
 	Oid	  step_function_oid;
 	Oid	  current_function_oid;
 	Oid	  instances_relation_oid;
@@ -91,6 +93,7 @@ typedef struct TpCompactionJobObjects
 	char *start_function;
 	char *explain_function;
 	char *signal_function;
+	char *cancel_function;
 	char *wait_signal_function;
 	char *wait_schedule_function;
 	char *loop_function;
@@ -99,6 +102,12 @@ typedef struct TpCompactionJobObjects
 	char *step_function;
 	char *current_function;
 } TpCompactionJobObjects;
+
+static char *tp_copy_spi_text(
+		HeapTuple	  tuple,
+		TupleDesc	  tuple_desc,
+		int			  column,
+		MemoryContext context);
 
 static void
 tp_durable_required(void)
@@ -395,6 +404,139 @@ tp_extension_owner(Oid extension_oid)
 	return owner_oid;
 }
 
+static bool
+tp_label_has_lineage(const char *label, const char *lineage)
+{
+	unsigned int database_oid;
+	unsigned int index_oid;
+	unsigned int tablespace_oid;
+	unsigned int relfilenumber;
+	unsigned int owner_oid;
+	unsigned int heap_oid;
+	char		 parsed[TP_COMPACTION_LINEAGE_LENGTH + 1];
+	int			 consumed = 0;
+
+	return sscanf(label,
+				  TP_JOB_LABEL_PREFIX "%u:%u:%u:%u:%u:%u:%32[0-9a-f]:%n",
+				  &database_oid,
+				  &index_oid,
+				  &tablespace_oid,
+				  &relfilenumber,
+				  &owner_oid,
+				  &heap_oid,
+				  parsed,
+				  &consumed) == 7 &&
+		   consumed > 0 && database_oid == MyDatabaseId &&
+		   strcmp(parsed, lineage) == 0;
+}
+
+bool
+tp_compaction_job_lineage_exists(const char *lineage)
+{
+	Oid			   durable_oid;
+	Oid			   durable_owner;
+	Oid			   namespace_oid;
+	Oid			   instances_oid;
+	Oid			   save_userid;
+	int			   save_sec_context;
+	int			   save_nestlevel;
+	bool		   spi_connected = false;
+	bool		   found		 = false;
+	StringInfoData sql;
+	Oid			   argtypes[1] = {TEXTOID};
+	Datum		   values[1];
+	char		  *schema;
+	char		  *relation;
+	char		  *prefix;
+
+	durable_oid = get_extension_oid("pg_durable", true);
+	if (!OidIsValid(durable_oid) ||
+		!tp_extension_lookup(durable_oid, &durable_owner, NULL))
+		return false;
+
+	namespace_oid = get_namespace_oid("df", true);
+	if (!OidIsValid(namespace_oid))
+		return false;
+	instances_oid = get_relname_relid("instances", namespace_oid);
+	if (!OidIsValid(instances_oid) ||
+		getExtensionOfObject(RelationRelationId, instances_oid) != durable_oid)
+		return false;
+
+	schema	 = get_namespace_name(namespace_oid);
+	relation = get_rel_name(instances_oid);
+	if (schema == NULL || relation == NULL)
+		return false;
+
+	prefix	  = psprintf(TP_JOB_LABEL_PREFIX "%u:", MyDatabaseId);
+	values[0] = CStringGetTextDatum(prefix);
+	initStringInfo(&sql);
+	appendStringInfo(
+			&sql,
+			"SELECT label FROM %s "
+			"WHERE label OPERATOR(pg_catalog.~~) "
+			"($1 OPERATOR(pg_catalog.||) '%%')",
+			quote_qualified_identifier(schema, relation));
+
+	/* RLS must not hide a retained lineage from this internal collision check.
+	 */
+	save_nestlevel = NewGUCNestLevel();
+	(void)set_config_option(
+			"row_security",
+			"on",
+			PGC_USERSET,
+			PGC_S_SESSION,
+			GUC_ACTION_SAVE,
+			true,
+			0,
+			false);
+	GetUserIdAndSecContext(&save_userid, &save_sec_context);
+	SetUserIdAndSecContext(
+			durable_owner, save_sec_context | SECURITY_LOCAL_USERID_CHANGE);
+	PG_TRY();
+	{
+		int rc;
+
+		if (SPI_connect() != SPI_OK_CONNECT)
+			elog(ERROR, "SPI_connect failed");
+		spi_connected = true;
+		rc			  = SPI_execute_with_args(
+				   sql.data, 1, argtypes, values, NULL, true, 0);
+		if (rc != SPI_OK_SELECT)
+			elog(ERROR, "could not inspect pg_durable lineage history");
+
+		for (uint64 i = 0; i < SPI_processed; i++)
+		{
+			char *label = tp_copy_spi_text(
+					SPI_tuptable->vals[i],
+					SPI_tuptable->tupdesc,
+					1,
+					CurrentMemoryContext);
+
+			found = tp_label_has_lineage(label, lineage);
+			pfree(label);
+			if (found)
+				break;
+		}
+
+		SPI_finish();
+		spi_connected = false;
+	}
+	PG_FINALLY();
+	{
+		if (spi_connected)
+			SPI_finish();
+		AtEOXact_GUC(false, save_nestlevel);
+		SetUserIdAndSecContext(save_userid, save_sec_context);
+	}
+	PG_END_TRY();
+
+	pfree(prefix);
+	pfree(sql.data);
+	pfree(schema);
+	pfree(relation);
+	return found;
+}
+
 static void
 tp_discover_job_objects(TpCompactionJobObjects *objects)
 {
@@ -471,6 +613,10 @@ tp_discover_job_objects(TpCompactionJobObjects *objects)
 			durable_oid, durable_schema, "signal", 3, signal_args);
 	objects->signal_function = tp_qualified_function_name(
 			objects->signal_function_oid);
+	objects->cancel_function_oid = tp_resolve_extension_function(
+			durable_oid, durable_schema, "cancel", 2, text_args);
+	objects->cancel_function = tp_qualified_function_name(
+			objects->cancel_function_oid);
 	objects->wait_signal_function = tp_qualified_function_name(
 			tp_resolve_extension_function(
 					durable_oid,
@@ -761,6 +907,8 @@ tp_require_owner_durable_privileges(
 			objects->explain_function);
 	tp_require_owner_function_privilege(
 			owner_oid, objects->signal_function_oid, objects->signal_function);
+	tp_require_owner_function_privilege(
+			owner_oid, objects->cancel_function_oid, objects->cancel_function);
 
 	tp_require_owner_column_privileges(
 			objects->instances_relation_oid,
@@ -860,40 +1008,12 @@ tp_build_label(const TpCompactionJobTarget *target, const char *schedule)
 }
 
 static char *
-tp_schedule_from_label(
-		const TpCompactionJobTarget *target,
-		const char					*label,
-		MemoryContext				 result_context)
+tp_decode_schedule(const char *encoded, MemoryContext result_context)
 {
-	char *owner_prefix =
-			psprintf("%s%u:", target->family_prefix, target->owner_oid);
-	Size		  prefix_length = strlen(owner_prefix);
-	const char	 *encoded;
-	Size		  encoded_length;
-	unsigned int  heap_oid;
-	char		  lineage[TP_COMPACTION_LINEAGE_LENGTH + 1];
-	int			  consumed = 0;
+	Size		  encoded_length = strlen(encoded);
 	char		 *schedule;
 	MemoryContext old_context;
 
-	if (strncmp(label, owner_prefix, prefix_length) != 0)
-	{
-		pfree(owner_prefix);
-		return NULL;
-	}
-	pfree(owner_prefix);
-
-	if (sscanf(label + prefix_length,
-			   "%u:%32[0-9a-f]:%n",
-			   &heap_oid,
-			   lineage,
-			   &consumed) != 2 ||
-		consumed <= 0 || heap_oid != target->heap_oid ||
-		strcmp(lineage, target->lineage) != 0)
-		return NULL;
-
-	encoded		   = label + prefix_length + consumed;
-	encoded_length = strlen(encoded);
 	if ((encoded_length & 1) != 0)
 		return NULL;
 
@@ -917,14 +1037,75 @@ tp_schedule_from_label(
 	return schedule;
 }
 
+static char *
+tp_schedule_from_label(
+		const TpCompactionJobTarget *target,
+		const char					*label,
+		MemoryContext				 result_context)
+{
+	char *owner_prefix =
+			psprintf("%s%u:", target->family_prefix, target->owner_oid);
+	Size		 prefix_length = strlen(owner_prefix);
+	unsigned int heap_oid;
+	char		 lineage[TP_COMPACTION_LINEAGE_LENGTH + 1];
+	int			 consumed = 0;
+
+	if (strncmp(label, owner_prefix, prefix_length) != 0)
+	{
+		pfree(owner_prefix);
+		return NULL;
+	}
+	pfree(owner_prefix);
+
+	if (sscanf(label + prefix_length,
+			   "%u:%32[0-9a-f]:%n",
+			   &heap_oid,
+			   lineage,
+			   &consumed) != 2 ||
+		consumed <= 0 || heap_oid != target->heap_oid ||
+		strcmp(lineage, target->lineage) != 0)
+		return NULL;
+
+	return tp_decode_schedule(
+			label + prefix_length + consumed, result_context);
+}
+
+static char *
+tp_schedule_from_legacy_label(
+		const TpCompactionJobTarget *target,
+		const char					*label,
+		MemoryContext				 result_context)
+{
+	char *owner_prefix =
+			psprintf("%s%u:", target->family_prefix, target->owner_oid);
+	Size		prefix_length = strlen(owner_prefix);
+	const char *encoded;
+
+	if (strncmp(label, owner_prefix, prefix_length) != 0)
+	{
+		pfree(owner_prefix);
+		return NULL;
+	}
+	pfree(owner_prefix);
+
+	encoded = label + prefix_length;
+	if (strchr(encoded, ':') != NULL)
+		return NULL;
+	return tp_decode_schedule(encoded, result_context);
+}
+
 static void
 tp_capture_target(
 		Oid indexoid, bool refresh_default, TpCompactionJobTarget *target)
 {
 	Relation	index_rel;
 	const char *schedule;
+	char	   *lineage;
+	bool		lineage_backfilled;
 
 	memset(target, 0, sizeof(*target));
+	lineage =
+			tp_ensure_index_compaction_lineage(indexoid, &lineage_backfilled);
 	index_rel = try_relation_open(indexoid, AccessShareLock);
 	if (index_rel == NULL)
 		ereport(ERROR,
@@ -984,8 +1165,7 @@ tp_capture_target(
 	target->owner_oid	   = index_rel->rd_rel->relowner;
 	target->heap_oid	   = index_rel->rd_index->indrelid;
 	target->index_name	   = pstrdup(RelationGetRelationName(index_rel));
-	schedule			   = tp_index_compaction_lineage(index_rel);
-	if (schedule == NULL)
+	if (lineage == NULL)
 	{
 		relation_close(index_rel, AccessShareLock);
 		ereport(ERROR,
@@ -995,9 +1175,10 @@ tp_capture_target(
 				 errhint("Recreate the index before using managed background "
 						 "compaction.")));
 	}
-	target->lineage = pstrdup(schedule);
+	target->lineage			   = lineage;
+	target->lineage_backfilled = lineage_backfilled;
 
-	if (refresh_default)
+	if (refresh_default || lineage_backfilled)
 	{
 		schedule = tp_index_compaction_schedule(index_rel);
 		if (schedule == NULL)
@@ -1322,6 +1503,71 @@ tp_find_family_instance(
 				(errmsg("multiple active pg_textsearch background "
 						"compaction jobs exist for one physical index"),
 				 errdetail("The newest job was selected deterministically.")));
+
+	return instance_id;
+}
+
+static char *
+tp_find_legacy_family_instance(
+		const TpCompactionJobObjects *objects,
+		const TpCompactionJobTarget	 *target,
+		bool						  terminal,
+		char						**schedule,
+		MemoryContext				  result_context)
+{
+	StringInfoData sql;
+	Oid			   argtypes[2] = {TEXTOID, OIDOID};
+	Datum		   values[2] =
+			{CStringGetTextDatum(target->family_prefix),
+			 ObjectIdGetDatum(target->owner_oid)};
+	char *instance_id = NULL;
+	int	  rc;
+
+	*schedule = NULL;
+	initStringInfo(&sql);
+	appendStringInfo(
+			&sql,
+			"SELECT instance.id::pg_catalog.text, instance.label "
+			"FROM %s AS instance "
+			"WHERE instance.label OPERATOR(pg_catalog.~~) "
+			"($1 OPERATOR(pg_catalog.||) '%%') "
+			"AND instance.submitted_by::pg_catalog.oid "
+			"OPERATOR(pg_catalog.=) $2 "
+			"AND instance.status OPERATOR(pg_catalog.=) "
+			"ANY (ARRAY[%s]::pg_catalog.text[]) "
+			"ORDER BY instance.created_at DESC, instance.id DESC",
+			objects->instances_relation,
+			terminal ? "'completed', 'failed', 'cancelled'"
+					 : "'pending', 'running'");
+	rc = SPI_execute_with_args(sql.data, 2, argtypes, values, NULL, true, 0);
+	pfree(sql.data);
+	if (rc != SPI_OK_SELECT)
+		elog(ERROR, "could not search legacy pg_durable instance history");
+
+	for (uint64 i = 0; i < SPI_processed; i++)
+	{
+		char *label;
+		char *decoded_schedule;
+
+		label = tp_copy_spi_text(
+				SPI_tuptable->vals[i],
+				SPI_tuptable->tupdesc,
+				2,
+				CurrentMemoryContext);
+		decoded_schedule =
+				tp_schedule_from_legacy_label(target, label, result_context);
+		pfree(label);
+		if (decoded_schedule == NULL)
+			continue;
+
+		instance_id = tp_copy_spi_text(
+				SPI_tuptable->vals[i],
+				SPI_tuptable->tupdesc,
+				1,
+				result_context);
+		*schedule = decoded_schedule;
+		break;
+	}
 
 	return instance_id;
 }
@@ -1689,6 +1935,28 @@ tp_validate_graph_as_owner(
 	pfree(explanation);
 }
 
+static void
+tp_cancel_instance(
+		const TpCompactionJobObjects *objects, const char *instance_id)
+{
+	StringInfoData sql;
+	Oid			   argtypes[2] = {TEXTOID, TEXTOID};
+	Datum		   values[2] =
+			{CStringGetTextDatum(instance_id),
+			 CStringGetTextDatum("migrated to lineage-scoped workflow")};
+	int rc;
+
+	initStringInfo(&sql);
+	appendStringInfo(
+			&sql,
+			"SELECT %s($1::pg_catalog.text, $2::pg_catalog.text)",
+			objects->cancel_function);
+	rc = SPI_execute_with_args(sql.data, 2, argtypes, values, NULL, false, 1);
+	pfree(sql.data);
+	if (rc != SPI_OK_SELECT || SPI_processed != 1)
+		elog(ERROR, "could not retire legacy pg_durable compaction workflow");
+}
+
 static char *
 tp_reconcile_job(
 		const TpCompactionJobObjects *objects,
@@ -1724,8 +1992,28 @@ tp_reconcile_job(
 			objects, target, true, &schedule, result_context);
 	if (instance_id == NULL)
 	{
-		schedule = tp_find_prior_generation_schedule(
-				objects, target, result_context);
+		if (target->lineage_backfilled)
+		{
+			instance_id = tp_find_legacy_family_instance(
+					objects, target, false, &schedule, result_context);
+			if (instance_id != NULL)
+			{
+				tp_cancel_instance(objects, instance_id);
+				pfree(instance_id);
+				instance_id = NULL;
+			}
+			else
+				instance_id = tp_find_legacy_family_instance(
+						objects, target, true, &schedule, result_context);
+		}
+
+		if (instance_id != NULL)
+			pfree(instance_id);
+		if (schedule == NULL)
+			schedule = tp_find_prior_generation_schedule(
+					objects, target, result_context);
+		if (schedule == NULL && target->lineage_backfilled)
+			schedule = MemoryContextStrdup(result_context, target->schedule);
 		if (schedule == NULL)
 			ereport(ERROR,
 					(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
@@ -1781,9 +2069,21 @@ tp_reconcile_as_owner(
 {
 	Oid	  save_userid;
 	int	  save_sec_context;
+	int	  save_nestlevel;
 	bool  spi_connected = false;
 	char *instance_id	= NULL;
 
+	/* pg_dump emits row_security=off, which cannot be inherited here. */
+	save_nestlevel = NewGUCNestLevel();
+	(void)set_config_option(
+			"row_security",
+			"on",
+			PGC_USERSET,
+			PGC_S_SESSION,
+			GUC_ACTION_SAVE,
+			true,
+			0,
+			false);
 	GetUserIdAndSecContext(&save_userid, &save_sec_context);
 	SetUserIdAndSecContext(
 			target->owner_oid,
@@ -1804,6 +2104,7 @@ tp_reconcile_as_owner(
 	{
 		if (spi_connected)
 			SPI_finish();
+		AtEOXact_GUC(false, save_nestlevel);
 		SetUserIdAndSecContext(save_userid, save_sec_context);
 	}
 	PG_END_TRY();

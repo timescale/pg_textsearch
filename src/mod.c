@@ -310,6 +310,7 @@ typedef struct TpReindexTarget
 	Oid			  index_oid;
 	Oid			  tablespace_oid;
 	RelFileNumber relfilenumber;
+	char		 *lineage;
 } TpReindexTarget;
 
 typedef struct TpReindexState
@@ -741,7 +742,7 @@ _PG_init(void)
 			"Internal managed background compaction lineage",
 			NULL,
 			tp_validate_compaction_lineage,
-			AccessExclusiveLock);
+			ShareUpdateExclusiveLock);
 
 	/*
 	 * Install shared memory hooks (needed for registry)
@@ -983,26 +984,21 @@ tp_index_stmt_option(IndexStmt *stmt, const char *option_name)
 	return NULL;
 }
 
-static char *
-tp_new_compaction_lineage(void)
+static int
+tp_index_stmt_option_count(IndexStmt *stmt, const char *option_name)
 {
-	static const char digits[] = "0123456789abcdef";
-	unsigned char	  bytes[TP_COMPACTION_LINEAGE_BYTES];
-	char			 *lineage;
+	ListCell *lc;
+	int		  count = 0;
 
-	if (!pg_strong_random(bytes, sizeof(bytes)))
-		ereport(ERROR,
-				(errcode(ERRCODE_INTERNAL_ERROR),
-				 errmsg("could not generate background compaction lineage")));
-
-	lineage = palloc(sizeof(bytes) * 2 + 1);
-	for (Size i = 0; i < sizeof(bytes); i++)
+	foreach (lc, stmt->options)
 	{
-		lineage[i * 2]	   = digits[bytes[i] >> 4];
-		lineage[i * 2 + 1] = digits[bytes[i] & 0x0f];
+		DefElem *option = lfirst_node(DefElem, lc);
+
+		if (strcmp(option->defname, option_name) == 0)
+			count++;
 	}
-	lineage[sizeof(bytes) * 2] = '\0';
-	return lineage;
+
+	return count;
 }
 
 static void
@@ -1013,11 +1009,103 @@ tp_index_stmt_ensure_lineage(IndexStmt *stmt)
 	if (tp_index_stmt_option(stmt, "compaction_lineage") != NULL)
 		return;
 
-	lineage		  = tp_new_compaction_lineage();
+	do
+	{
+		lineage = tp_new_compaction_lineage();
+		if (!tp_compaction_lineage_in_use(lineage))
+			break;
+		pfree(lineage);
+	} while (true);
 	stmt->options = lappend(
 			stmt->options,
 			makeDefElem(
 					"compaction_lineage", (Node *)makeString(lineage), -1));
+}
+
+static void
+tp_index_stmt_validate_supplied_lineage(IndexStmt *stmt, Oid heap_oid)
+{
+	const char *lineage;
+	int			count;
+
+	count = tp_index_stmt_option_count(stmt, "compaction_lineage");
+	if (count == 0)
+		return;
+	if (count > 1)
+		ereport(ERROR,
+				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+				 errmsg("parameter \"compaction_lineage\" specified more "
+						"than once")));
+
+	lineage = tp_index_stmt_option(stmt, "compaction_lineage");
+	tp_validate_compaction_lineage(lineage);
+
+	if (!object_ownercheck(RelationRelationId, heap_oid, GetUserId()))
+		return;
+
+	if (tp_compaction_lineage_in_use(lineage))
+		ereport(ERROR,
+				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+				 errmsg("background compaction lineage is already in use")));
+}
+
+static bool
+tp_alter_index_mentions_lineage(AlterTableStmt *stmt)
+{
+	ListCell *lc;
+
+	if (stmt->objtype != OBJECT_INDEX)
+		return false;
+
+	foreach (lc, stmt->cmds)
+	{
+		AlterTableCmd *cmd = lfirst_node(AlterTableCmd, lc);
+		ListCell	  *option_lc;
+
+		if (cmd->subtype != AT_SetRelOptions &&
+			cmd->subtype != AT_ResetRelOptions &&
+			cmd->subtype != AT_ReplaceRelOptions)
+			continue;
+
+		foreach (option_lc, castNode(List, cmd->def))
+		{
+			DefElem *option = lfirst_node(DefElem, option_lc);
+
+			if (strcmp(option->defname, "compaction_lineage") == 0)
+				return true;
+		}
+	}
+
+	return false;
+}
+
+static void
+tp_reject_user_lineage_alter(AlterTableStmt *stmt)
+{
+	Oid		 indexoid;
+	Relation index_rel;
+	bool	 is_bm25;
+
+	if (!tp_alter_index_mentions_lineage(stmt))
+		return;
+
+	indexoid = RangeVarGetRelid(stmt->relation, NoLock, stmt->missing_ok);
+	if (!OidIsValid(indexoid) ||
+		!object_ownercheck(RelationRelationId, indexoid, GetUserId()))
+		return;
+
+	index_rel = try_index_open(indexoid, AccessShareLock);
+	if (index_rel == NULL)
+		return;
+	is_bm25 = index_rel->rd_indam != NULL &&
+			  index_rel->rd_indam->ambuild == tp_build;
+	index_close(index_rel, AccessShareLock);
+
+	if (is_bm25)
+		ereport(ERROR,
+				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+				 errmsg("cannot alter internal background compaction "
+						"lineage")));
 }
 
 static void
@@ -1061,7 +1149,13 @@ tp_alter_index_ensure_lineage(AlterTableStmt *stmt)
 	}
 	relation_close(index_rel, AccessShareLock);
 
-	lineage		  = tp_new_compaction_lineage();
+	do
+	{
+		lineage = tp_new_compaction_lineage();
+		if (!tp_compaction_lineage_in_use(lineage))
+			break;
+		pfree(lineage);
+	} while (true);
 	cmd			  = makeNode(AlterTableCmd);
 	cmd->subtype  = AT_SetRelOptions;
 	cmd->def	  = (Node *)list_make1(makeDefElem(
@@ -1268,6 +1362,31 @@ tp_reindex_index_lookup_callback(
 	}
 }
 
+static void
+tp_reindex_authorize(ReindexStmt *stmt, Oid relation_oid, char relkind)
+{
+	AclResult aclresult;
+
+	if (stmt->kind == REINDEX_OBJECT_INDEX)
+	{
+		Oid table_oid = IndexGetRelation(relation_oid, true);
+
+		if (!OidIsValid(table_oid))
+			return;
+		aclresult = pg_class_aclcheck(table_oid, GetUserId(), ACL_MAINTAIN);
+		if (aclresult != ACLCHECK_OK)
+			aclcheck_error(aclresult, OBJECT_INDEX, stmt->relation->relname);
+		return;
+	}
+
+	aclresult = pg_class_aclcheck(relation_oid, GetUserId(), ACL_MAINTAIN);
+	if (aclresult != ACLCHECK_OK)
+		aclcheck_error(
+				aclresult,
+				get_relkind_objtype(relkind),
+				stmt->relation->relname);
+}
+
 static List *
 tp_reindex_initial_indexes(ReindexStmt *stmt, bool *tracks_commits)
 {
@@ -1299,6 +1418,8 @@ tp_reindex_initial_indexes(ReindexStmt *stmt, bool *tracks_commits)
 					  relkind == RELKIND_PARTITIONED_TABLE;
 	if (!*tracks_commits)
 		return NIL;
+
+	tp_reindex_authorize(stmt, relation_oid, relkind);
 
 	if (stmt->kind == REINDEX_OBJECT_INDEX)
 	{
@@ -1367,13 +1488,21 @@ tp_reindex_tracking_begin(List *indexoids)
 		Relation		 index_rel;
 		TpReindexTarget *target;
 		MemoryContext	 old_context;
+		char			*lineage;
 
+		lineage = tp_ensure_index_compaction_lineage(indexoid, NULL);
+		if (lineage == NULL)
+			continue;
 		index_rel = try_index_open(indexoid, AccessShareLock);
 		if (index_rel == NULL)
+		{
+			pfree(lineage);
 			continue;
+		}
 		if (!tp_is_background_index_relation(index_rel))
 		{
 			index_close(index_rel, AccessShareLock);
+			pfree(lineage);
 			continue;
 		}
 
@@ -1385,9 +1514,11 @@ tp_reindex_tracking_begin(List *indexoids)
 		target->index_oid	   = indexoid;
 		target->tablespace_oid = index_rel->rd_locator.spcOid;
 		target->relfilenumber  = index_rel->rd_locator.relNumber;
+		target->lineage		   = pstrdup(lineage);
 		state->targets		   = lappend(state->targets, target);
 		MemoryContextSwitchTo(old_context);
 		index_close(index_rel, AccessShareLock);
+		pfree(lineage);
 	}
 
 	if (state->targets == NIL)
@@ -1414,6 +1545,16 @@ tp_reindex_target_refresh_identity(
 }
 
 static bool
+tp_reindex_target_matches(const TpReindexTarget *target, Relation index_rel)
+{
+	const char *lineage = tp_index_compaction_lineage(index_rel);
+
+	return index_rel->rd_index != NULL &&
+		   index_rel->rd_index->indrelid == target->heap_oid &&
+		   lineage != NULL && strcmp(lineage, target->lineage) == 0;
+}
+
+static bool
 tp_reindex_target_live_original(
 		TpReindexState	*state,
 		TpReindexTarget *target,
@@ -1429,8 +1570,7 @@ tp_reindex_target_live_original(
 		return false;
 
 	if (index_rel->rd_rel->relkind != RELKIND_INDEX ||
-		index_rel->rd_index == NULL ||
-		index_rel->rd_index->indrelid != target->heap_oid)
+		!tp_reindex_target_matches(target, index_rel))
 	{
 		relation_close(index_rel, AccessShareLock);
 		return false;
@@ -1494,7 +1634,7 @@ tp_reconcile_reindex_state(TpReindexState *state)
 				if (index_rel == NULL)
 					continue;
 				if (!tp_is_background_physical_index_relation(index_rel) ||
-					index_rel->rd_index->indrelid != target->heap_oid)
+					!tp_reindex_target_matches(target, index_rel))
 				{
 					index_close(index_rel, AccessShareLock);
 					continue;
@@ -1753,6 +1893,7 @@ call_next_process_utility(
 		AlterTableStmt *stmt = (AlterTableStmt *)parsetree;
 		RoleSpec	   *new_owner;
 
+		tp_reject_user_lineage_alter(stmt);
 		new_owner = tp_alter_new_owner(stmt);
 		if (new_owner != NULL &&
 			(stmt->objtype == OBJECT_TABLE || stmt->objtype == OBJECT_MATVIEW))
@@ -1895,13 +2036,14 @@ call_next_process_utility(
 			const char *compaction;
 
 			compaction = tp_index_stmt_option(stmt, "compaction");
+			heapoid	   = RangeVarGetRelid(
+					   stmt->relation,
+					   stmt->concurrent ? ShareUpdateExclusiveLock : ShareLock,
+					   false);
+			heap_rel = relation_open(heapoid, NoLock);
+			tp_index_stmt_validate_supplied_lineage(stmt, heapoid);
 			if (compaction != NULL && strcmp(compaction, "background") == 0)
 				tp_index_stmt_ensure_lineage(stmt);
-			heapoid = RangeVarGetRelid(
-					stmt->relation,
-					stmt->concurrent ? ShareUpdateExclusiveLock : ShareLock,
-					false);
-			heap_rel = relation_open(heapoid, NoLock);
 
 			/*
 			 * CIC commits its catalog shell before returning to this hook.
