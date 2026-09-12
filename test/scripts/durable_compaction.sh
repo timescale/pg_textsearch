@@ -941,7 +941,8 @@ ${create_output}"
 }
 
 test_actor_writer_worker_identity() {
-    local audit_rows_before index_oid instance_id memtable_threshold_before
+    local activation_audit_id activation_audit_rows index_oid instance_id
+    local memtable_threshold_before writer_audit_id writer_audit_rows
 
     sql_super -c "REVOKE durable_no_textsearch_schema FROM durable_writer;
                    GRANT durable_owner TO durable_actor;
@@ -954,7 +955,9 @@ test_actor_writer_worker_identity() {
                      WITH (text_config = 'english',
                            compaction = 'manual',
                            compaction_schedule = '0 0 1 1 *');
-                   CREATE TABLE worker_identity_audit (role_name name);
+                   CREATE TABLE worker_identity_audit (
+                       audit_id bigint GENERATED ALWAYS AS IDENTITY,
+                       role_name name);
                    ALTER TABLE worker_identity_audit OWNER TO durable_owner;
                    REVOKE ALL ON worker_identity_audit FROM PUBLIC;
                    GRANT INSERT ON worker_identity_audit TO durable_owner;"
@@ -1048,32 +1051,6 @@ SQL
                 'durable_writer', 'identity_docs', 'UPDATE')
             AND NOT pg_catalog.has_any_column_privilege(
                 'durable_writer', 'identity_docs', 'REFERENCES');")"
-    memtable_threshold_before="$(sql_super -c \
-        "SHOW pg_textsearch.memtable_pages_threshold;")"
-    sql_super -c "ALTER SYSTEM SET
-                     pg_textsearch.memtable_pages_threshold = 1;" >/dev/null
-    sql_super -c "SELECT pg_catalog.pg_reload_conf();" >/dev/null
-    assert_eq "writer spill threshold is active" "1" \
-        "$(sql_super -c \
-            "SHOW pg_textsearch.memtable_pages_threshold;")"
-    sql_as durable_writer -c "INSERT INTO public.identity_docs
-        SELECT document_number,
-               (SELECT pg_catalog.string_agg(
-                           pg_catalog.format(
-                               'writer%sterm%s', document_number, term_number),
-                           ' ')
-                FROM generate_series(1, 200) AS term_number)
-        FROM generate_series(1, 6) AS document_number;" >/dev/null
-    sql_super -c "ALTER SYSTEM RESET
-                     pg_textsearch.memtable_pages_threshold;" >/dev/null
-    sql_super -c "SELECT pg_catalog.pg_reload_conf();" >/dev/null
-    assert_eq "writer spill threshold is restored" \
-        "${memtable_threshold_before}" \
-        "$(sql_super -c \
-            "SHOW pg_textsearch.memtable_pages_threshold;")"
-    assert_eq "insert-only writer creates compaction debt" "t" \
-        "$(sql_super -c "SELECT bm25_needs_compaction(
-                              'identity_docs_idx'::regclass);")"
 
     assert_eq "actor command starts without SET ROLE" \
         "durable_actor:durable_actor" \
@@ -1096,7 +1073,53 @@ SQL
 
     wait_for_audit_rows 1 30
     wait_for_signal_node "${instance_id}" 90
-    assert_eq "initial owner-managed cascade preserves writer debt" "t" \
+    activation_audit_rows="$(sql_super -c \
+        "SELECT count(*) FROM worker_identity_audit;")"
+    activation_audit_id="$(sql_super -c \
+        "SELECT max(audit_id) FROM worker_identity_audit;")"
+    assert_eq "initial activation cascade executes as the index owner" "t" \
+        "$(sql_super -c "SELECT count(*) > 0
+                                AND pg_catalog.bool_and(
+                                    role_name = 'durable_owner')
+                          FROM worker_identity_audit
+                          WHERE audit_id <= ${activation_audit_id};")"
+
+    memtable_threshold_before="$(sql_super -c \
+        "SHOW pg_textsearch.memtable_pages_threshold;")"
+    sql_super -c "ALTER SYSTEM SET
+                     pg_textsearch.memtable_pages_threshold = 1;" >/dev/null
+    sql_super -c "SELECT pg_catalog.pg_reload_conf();" >/dev/null
+    assert_eq "writer spill threshold is active" "1" \
+        "$(sql_super -c \
+            "SHOW pg_textsearch.memtable_pages_threshold;")"
+    sql_as durable_writer -c "INSERT INTO public.identity_docs
+        SELECT document_number,
+               (SELECT pg_catalog.string_agg(
+                           pg_catalog.format(
+                               'writer%sterm%s', document_number, term_number),
+                           ' ')
+                FROM generate_series(1, 200) AS term_number)
+        FROM generate_series(1, 6) AS document_number;" >/dev/null
+    wait_for_audit_rows "$((activation_audit_rows + 1))" 30
+    assert_eq "writer-triggered signal executes as the index owner" "t" \
+        "$(sql_super -c "SELECT count(*) > 0
+                                AND pg_catalog.bool_and(
+                                    role_name = 'durable_owner')
+                          FROM worker_identity_audit
+                          WHERE audit_id > ${activation_audit_id};")"
+    wait_for_signal_node "${instance_id}" 30
+    writer_audit_rows="$(sql_super -c \
+        "SELECT count(*) FROM worker_identity_audit;")"
+    writer_audit_id="$(sql_super -c \
+        "SELECT max(audit_id) FROM worker_identity_audit;")"
+    sql_super -c "ALTER SYSTEM RESET
+                     pg_textsearch.memtable_pages_threshold;" >/dev/null
+    sql_super -c "SELECT pg_catalog.pg_reload_conf();" >/dev/null
+    assert_eq "writer spill threshold is restored" \
+        "${memtable_threshold_before}" \
+        "$(sql_super -c \
+            "SHOW pg_textsearch.memtable_pages_threshold;")"
+    assert_eq "insert-only writer creates compaction debt" "t" \
         "$(sql_super -c "SELECT bm25_needs_compaction(
                               'identity_docs_idx'::regclass);")"
     sql_super <<'SQL'
@@ -1117,17 +1140,21 @@ BEGIN
 END
 $body$;
 SQL
-    audit_rows_before="$(sql_super -c \
-        "SELECT count(*) FROM worker_identity_audit;")"
     sql_as durable_owner -c \
         "SELECT df.signal('${instance_id}', 'compact', '{}');" >/dev/null
-    wait_for_audit_rows "$((audit_rows_before + 1))" 30
+    wait_for_audit_rows "$((writer_audit_rows + 1))" 30
+    assert_eq "controlled consuming signal executes as the index owner" "t" \
+        "$(sql_super -c "SELECT count(*) > 0
+                                AND pg_catalog.bool_and(
+                                    role_name = 'durable_owner')
+                          FROM worker_identity_audit
+                          WHERE audit_id > ${writer_audit_id};")"
     wait_for_no_debt identity_docs_idx 60
     assert_eq "owner signal consumes writer-created debt" "f" \
         "$(sql_super -c "SELECT bm25_needs_compaction(
                               'identity_docs_idx'::regclass);")"
     assert_eq "every worker step executes as the index owner" "t" \
-        "$(sql_super -c "SELECT count(*) >= 2
+        "$(sql_super -c "SELECT count(*) >= 3
                                 AND pg_catalog.bool_and(
                                     role_name = 'durable_owner')
                           FROM worker_identity_audit;")"

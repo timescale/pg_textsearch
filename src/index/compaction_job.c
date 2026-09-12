@@ -1684,10 +1684,26 @@ tp_compaction_job_signal(Oid indexoid)
 {
 	TpCompactionJobTarget  target;
 	TpCompactionJobObjects objects;
+	Oid					   save_userid;
+	int					   save_sec_context;
 	char *instance_id	   PG_USED_FOR_ASSERTS_ONLY;
 
 	tp_capture_target(indexoid, false, &target);
-	tp_discover_job_objects(&objects);
+
+	/* Function lookup checks schema USAGE, which writers need not have. */
+	GetUserIdAndSecContext(&save_userid, &save_sec_context);
+	SetUserIdAndSecContext(
+			target.owner_oid, save_sec_context | SECURITY_LOCAL_USERID_CHANGE);
+	PG_TRY();
+	{
+		tp_discover_job_objects(&objects);
+	}
+	PG_FINALLY();
+	{
+		SetUserIdAndSecContext(save_userid, save_sec_context);
+	}
+	PG_END_TRY();
+
 	tp_grant_helper_access(&objects, target.owner_oid);
 	tp_take_admission_lock(&target);
 	instance_id = tp_reconcile_as_owner(
