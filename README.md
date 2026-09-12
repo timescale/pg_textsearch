@@ -448,8 +448,9 @@ ALTER INDEX documents_bm25 RESET (compaction_schedule);
 ALTER INDEX documents_bm25 SET (compaction = 'manual');
 ```
 
-Use `manual` with an external scheduler when pg_durable is not desired.
-Temporary indexes do not support background mode.
+Use `manual` with an external scheduler when pg_durable is unavailable or not
+desired and foreground compaction causes unacceptable write transaction
+stalls. Temporary indexes do not support background mode.
 
 See [ARCHITECTURE.md](ARCHITECTURE.md#managed-background-compaction) for
 workflow lifecycle and safety details.
