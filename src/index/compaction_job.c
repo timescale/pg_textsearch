@@ -400,6 +400,7 @@ tp_discover_job_objects(TpCompactionJobObjects *objects)
 	char	   *durable_schema;
 	const char *configured_database;
 	char	   *database_name;
+	bool		durable_preloaded;
 	Oid			textsearch_oid;
 	Oid			textsearch_namespace_oid;
 	char	   *textsearch_schema;
@@ -413,6 +414,18 @@ tp_discover_job_objects(TpCompactionJobObjects *objects)
 	Oid			oid_args[5]			= {OIDOID, OIDOID, OIDOID, OIDOID, OIDOID};
 
 	memset(objects, 0, sizeof(*objects));
+
+	durable_preloaded = tp_library_is_preloaded("pg_durable");
+	if (durable_preloaded)
+	{
+		configured_database =
+				GetConfigOption("pg_durable.database", true, false);
+		database_name = get_database_name(MyDatabaseId);
+		if (configured_database != NULL && database_name != NULL &&
+			strcmp(configured_database, database_name) != 0)
+			tp_durable_not_initialized(
+					"pg_durable.database does not name the current database");
+	}
 
 	durable_oid = get_extension_oid("pg_durable", true);
 	if (!OidIsValid(durable_oid))
@@ -434,12 +447,10 @@ tp_discover_job_objects(TpCompactionJobObjects *objects)
 	}
 	pfree(version);
 
-	if (!tp_library_is_preloaded("pg_durable"))
+	if (!durable_preloaded)
 		tp_durable_not_initialized(
 				"pg_durable is not present in shared_preload_libraries");
 
-	configured_database = GetConfigOption("pg_durable.database", true, false);
-	database_name		= get_database_name(MyDatabaseId);
 	if (configured_database == NULL || database_name == NULL ||
 		strcmp(configured_database, database_name) != 0)
 		tp_durable_not_initialized(

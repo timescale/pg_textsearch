@@ -12,7 +12,9 @@ KEEP_DIR="${REPO_ROOT}/test/tmp_durable_compaction_logs"
 SOCKET_DIR="${REPO_ROOT}"
 LOGFILE="${DATA_DIR}/postgres.log"
 TEST_PORT=55447
-TEST_DB=durable_compaction_test
+CONTROL_DB=durable_compaction_test
+REMOTE_DB=durable_compaction_remote
+TEST_DB="${CONTROL_DB}"
 ROLLBACK_DB=durable_compaction_rollback
 PG_CONFIG_BIN="${PG_CONFIG:-pg_config}"
 PGBINDIR="$("${PG_CONFIG_BIN}" --bindir)"
@@ -61,15 +63,31 @@ cleanup() {
 
 trap cleanup EXIT INT TERM
 
+sql_in_db_as() {
+    local database=$1 role=$2
+    shift 2
+    "${PGBINDIR}/psql" -h "${SOCKET_DIR}" -p "${TEST_PORT}" \
+        -U "${role}" -d "${database}" -qAt -v ON_ERROR_STOP=1 "$@"
+}
+
 sql_as() {
     local role=$1
     shift
-    "${PGBINDIR}/psql" -h "${SOCKET_DIR}" -p "${TEST_PORT}" \
-        -U "${role}" -d "${TEST_DB}" -qAt -v ON_ERROR_STOP=1 "$@"
+    sql_in_db_as "${TEST_DB}" "${role}" "$@"
 }
 
 sql_super() {
     sql_as postgres "$@"
+}
+
+sql_remote_as() {
+    local role=$1
+    shift
+    sql_in_db_as "${REMOTE_DB}" "${role}" "$@"
+}
+
+sql_remote_super() {
+    sql_remote_as postgres "$@"
 }
 
 assert_eq() {
@@ -485,6 +503,33 @@ dependency_count() {
       WHERE am.amname = 'bm25'
         AND ext.extname = 'pg_durable'
         AND dep.deptype = 'n';"
+}
+
+remote_dependency_snapshot() {
+    sql_remote_super -c "SELECT COALESCE(
+        pg_catalog.string_agg(
+            dep.refobjid::pg_catalog.text, ','
+            ORDER BY dep.refobjid),
+        '')
+      FROM pg_catalog.pg_depend AS dep
+      JOIN pg_catalog.pg_am AS am
+        ON dep.classid = 'pg_catalog.pg_am'::regclass
+       AND dep.objid = am.oid
+      WHERE am.amname = 'bm25'
+        AND dep.refclassid = 'pg_catalog.pg_extension'::regclass
+        AND dep.deptype = 'n';"
+}
+
+remote_helper_grant() {
+    sql_remote_super -c "SELECT
+        pg_catalog.has_function_privilege(
+            'durable_owner',
+            'bm25_compact_step_if_current(oid,oid,oid,oid,oid)',
+            'EXECUTE')
+        OR pg_catalog.has_function_privilege(
+            'durable_owner',
+            'bm25_background_target_is_current(oid,oid,oid,oid,oid)',
+            'EXECUTE');"
 }
 
 active_job_id() {
@@ -944,6 +989,109 @@ test_bypassrls_owner_isolation() {
                           WHERE id = '${replacement_instance}';")"
 }
 
+test_remote_database_rejection() {
+    local alter_error create_error dependency_snapshot jobs_before
+
+    sql_super -c "CREATE DATABASE ${REMOTE_DB};"
+    sql_remote_super -c "CREATE EXTENSION pg_textsearch;
+        GRANT CREATE ON SCHEMA public TO durable_owner;
+        ALTER ROLE durable_owner IN DATABASE ${REMOTE_DB}
+          SET maintenance_work_mem = '1MB';"
+
+    assert_eq "pg_durable exists in the control database" "t" \
+        "$(sql_super -c "SELECT EXISTS (
+            SELECT 1 FROM pg_catalog.pg_extension
+            WHERE extname = 'pg_durable');")"
+    assert_eq "pg_durable is absent from the remote database" "f" \
+        "$(sql_remote_super -c "SELECT EXISTS (
+            SELECT 1 FROM pg_catalog.pg_extension
+            WHERE extname = 'pg_durable');")"
+
+    dependency_snapshot="$(remote_dependency_snapshot)"
+    jobs_before="$(managed_job_count)"
+    sql_remote_super -c "CREATE TABLE remote_cic_docs (body text);
+        ALTER TABLE remote_cic_docs OWNER TO durable_owner;"
+    if create_error="$(sql_remote_as durable_owner -c "
+        CREATE INDEX CONCURRENTLY remote_cic_docs_idx
+          ON remote_cic_docs USING bm25(body)
+          WITH (text_config = 'english',
+                compaction = 'background');" 2>&1)"; then
+        error "remote background CIC unexpectedly succeeded"
+    fi
+    if ! grep -Fq \
+        "pg_durable is not initialized for this database" \
+        <<<"${create_error}" ||
+       ! grep -Fq \
+        "pg_durable.database does not name the current database" \
+        <<<"${create_error}"; then
+        error "remote CIC did not report the configured-database mismatch: \
+${create_error}"
+    fi
+    assert_eq "remote CIC leaves no relation" "t" \
+        "$(sql_remote_super -c "SELECT
+            pg_catalog.to_regclass('remote_cic_docs_idx') IS NULL;")"
+    assert_eq "remote CIC creates no control workflow" "${jobs_before}" \
+        "$(managed_job_count)"
+    assert_eq "remote CIC preserves extension dependency snapshot" \
+        "${dependency_snapshot}" "$(remote_dependency_snapshot)"
+
+    sql_remote_super -c "
+        CREATE TABLE remote_manual_docs (id integer, body text);
+        ALTER TABLE remote_manual_docs OWNER TO durable_owner;"
+    sql_remote_as durable_owner <<'SQL' >/dev/null
+CREATE INDEX remote_manual_docs_idx ON remote_manual_docs USING bm25(body)
+    WITH (text_config = 'english', compaction = 'manual');
+DO $body$
+BEGIN
+    FOR n IN 1..2 LOOP
+        INSERT INTO remote_manual_docs
+        SELECT n * 100 + i, format('remote round %s document %s', n, i)
+        FROM generate_series(1, 20) AS i;
+        PERFORM bm25_spill_index('remote_manual_docs_idx');
+    END LOOP;
+END
+$body$;
+SQL
+    assert_eq "remote manual index has compaction debt" "t" \
+        "$(sql_remote_as durable_owner -c "SELECT
+            bm25_needs_compaction('remote_manual_docs_idx'::regclass);")"
+
+    if alter_error="$(sql_remote_as durable_owner -c "
+        ALTER INDEX remote_manual_docs_idx
+          SET (compaction = 'background');" 2>&1)"; then
+        error "remote background ALTER unexpectedly succeeded"
+    fi
+    if ! grep -Fq \
+        "pg_durable is not initialized for this database" \
+        <<<"${alter_error}" ||
+       ! grep -Fq \
+        "pg_durable.database does not name the current database" \
+        <<<"${alter_error}"; then
+        error "remote ALTER did not report the configured-database mismatch: \
+${alter_error}"
+    fi
+    assert_eq "remote ALTER preserves manual mode" "t" \
+        "$(sql_remote_super -c "SELECT reloptions @>
+            ARRAY['compaction=manual']
+            FROM pg_catalog.pg_class
+            WHERE oid = 'remote_manual_docs_idx'::regclass;")"
+    assert_eq "remote ALTER creates no control workflow" "${jobs_before}" \
+        "$(managed_job_count)"
+    assert_eq "remote ALTER creates no helper grant" "f" \
+        "$(remote_helper_grant)"
+    assert_eq "remote ALTER preserves extension dependency snapshot" \
+        "${dependency_snapshot}" "$(remote_dependency_snapshot)"
+
+    sql_remote_as durable_owner -c \
+        "SELECT bm25_compact('remote_manual_docs_idx'::regclass);" \
+        >/dev/null
+    assert_eq "remote manual compaction clears debt" "t" \
+        "$(sql_remote_as durable_owner -c "SELECT NOT
+            bm25_needs_compaction('remote_manual_docs_idx'::regclass);")"
+
+    sql_super -c "DROP DATABASE ${REMOTE_DB};"
+}
+
 test_rollback_in_fresh_database() {
     local nologin_error
 
@@ -1028,6 +1176,7 @@ test_create_activation
 test_scheduled_failure_continuation
 test_initial_failure_continuation
 test_bypassrls_owner_isolation
+test_remote_database_rejection
 test_sticky_dependency
 test_rollback_in_fresh_database
 log "Managed pg_durable CREATE activation tests passed"

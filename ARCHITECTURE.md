@@ -96,6 +96,12 @@ the index owner. The owner must have `LOGIN`; a superuser owner also requires
 API through extension metadata and records a normal extension dependency
 after the first successful activation.
 
+The pg_durable extension and BM25 index must be in the same database.
+pg_durable's `database` argument routes SQL activities after submission; it
+does not expose `df.start`, `df.signal`, or workflow metadata in another
+database. pg_textsearch rejects background mode when `pg_durable.database`
+names a different database. Use `manual` mode there.
+
 Each physical background index has one owner-scoped workflow identified by
 its database, physical relation identity, owner, schedule, and protocol
 version. The workflow runs a stepped cascade immediately, then waits for a
