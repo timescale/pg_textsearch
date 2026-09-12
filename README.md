@@ -150,7 +150,8 @@ Option | Default | Description
 [`text_config`](https://www.postgresql.org/docs/current/textsearch-configuration.html) | required | PostgreSQL text search configuration
 `k1` | 1.2 | Term frequency saturation (0.1-10.0)
 `b` | 0.75 | Length normalization (0.0-1.0)
-`compaction` | inline | Spill-time compaction: `inline`, `background`, or `off`; see [Background Compaction](#background-compaction)
+`compaction` | inline | Spill-time compaction: `inline`, managed pg_durable `background`, or `manual`; see [Background Compaction](#background-compaction)
+`compaction_schedule` | global default | Optional cron schedule captured when the index enters background mode
 
 ```sql
 CREATE INDEX ON documents USING bm25(content) WITH (text_config='english', k1=1.5, b=0.8);
@@ -355,7 +356,7 @@ Setting | Default | Description
 `pg_textsearch.compress_segments` | on | Compress posting blocks in new segments
 `pg_textsearch.segments_per_level` | 8 | Segments per level before automatic compaction (2-64)
 `pg_textsearch.max_segment_size` | 4095MB | Conservative size budget for newly merged multi-source segments (1-4095MB)
-`pg_textsearch.compaction_request_function` | (empty) | Schema-qualified name of a function taking one `regclass`, invoked for indexes set to `compaction = 'background'`
+`pg_textsearch.background_compaction_schedule` | `*/5 * * * *` | Default cron schedule captured by indexes entering managed background mode
 `pg_textsearch.bulk_load_threshold` | 100000 | Terms per transaction before auto-spill (0 = disable)
 `pg_textsearch.memtable_pages_threshold` | 64 | Chain pages before auto-spill (0 = disable)
 `pg_textsearch.memtable_cache_enabled` | on | Cache memtable data in shared memory for faster queries
@@ -421,27 +422,38 @@ LIMIT 10;
 
 ### Background Compaction
 
-pg_textsearch does not include a background worker. `background` dispatches
-threshold debt at pre-commit, while `off` performs no automatic compaction:
+The default `inline` policy compacts synchronously during memtable spills.
+Managed `background` mode uses
+[pg_durable](https://github.com/microsoft/pg_durable) 0.2.8 or newer rather
+than a built-in worker. pg_durable must be preloaded, initialized in the
+current database, and granted to the index owner. The owner must have `LOGIN`;
+a superuser owner also requires
+`pg_durable.enable_superuser_instances = on`.
 
-Guidance for scheduling background compaction with `pg_durable` will be added
-in a future update.
+```sql
+CREATE INDEX documents_bm25 ON documents USING bm25(content)
+WITH (
+    text_config = 'english',
+    compaction = 'background',
+    compaction_schedule = '*/5 * * * *'
+);
+```
 
-- `background` calls `pg_textsearch.compaction_request_function` at
-  pre-commit. The callback must hand work to something that survives its
-  rolled-back internal subtransaction; a plain table insert does not.
-- `off` requires an external job to call `bm25_compact()` or
-  `bm25_compact_step()`; without one, segments accumulate and spills
-  eventually fail.
+Change modes with `ALTER INDEX`. Resetting `compaction_schedule` uses the
+current `pg_textsearch.background_compaction_schedule` default.
 
-Change the policy with `ALTER INDEX ... SET (compaction = ...)`.
-`background` falls back to inline compaction for temporary indexes,
-autovacuum, callback-triggered spills, and `CREATE INDEX`. Prepared
-transactions do not flush queued requests. Unconfigured, unresolvable, or
-failed callbacks do not fall back inline; the compaction debt remains for a
-later spill or explicit maintenance.
+```sql
+ALTER INDEX documents_bm25 SET (compaction = 'background');
+ALTER INDEX documents_bm25 RESET (compaction_schedule);
+ALTER INDEX documents_bm25 SET (compaction = 'manual');
+```
 
-See [ARCHITECTURE.md](ARCHITECTURE.md#spill-and-compaction).
+Use `manual` with an external scheduler when pg_durable is unavailable or not
+desired and foreground compaction causes unacceptable write transaction
+stalls. Temporary indexes do not support background mode.
+
+See [ARCHITECTURE.md](ARCHITECTURE.md#managed-background-compaction) for
+workflow lifecycle and safety details.
 
 ### Partitioned Tables
 

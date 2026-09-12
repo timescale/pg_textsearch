@@ -11,6 +11,161 @@ REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 REQUEST_SOURCE="${REPO_ROOT}/src/index/compaction_request.c"
 MODULE_SOURCE="${REPO_ROOT}/src/mod.c"
 STATE_SOURCE="${REPO_ROOT}/src/index/state.c"
+JOB_SOURCE="${TP_JOB_SOURCE_OVERRIDE:-${REPO_ROOT}/src/index/compaction_job.c}"
+FRESH_SQL="${REPO_ROOT}/sql/pg_textsearch--1.5.0-dev.sql"
+UPGRADE_SQL="${REPO_ROOT}/sql/pg_textsearch--1.4.0--1.5.0-dev.sql"
+
+strip_c_comments() {
+    awk '
+    BEGIN {
+        in_block = 0
+        in_string = 0
+        in_char = 0
+        escaped = 0
+    }
+    {
+        output = ""
+        for (i = 1; i <= length($0); i++) {
+            current = substr($0, i, 1)
+            next_char = substr($0, i + 1, 1)
+
+            if (in_block) {
+                if (current == "*" && next_char == "/") {
+                    in_block = 0
+                    i++
+                }
+                continue
+            }
+            if (in_string || in_char) {
+                output = output current
+                if (escaped) {
+                    escaped = 0
+                } else if (current == "\\") {
+                    escaped = 1
+                } else if ((in_string && current == "\"") ||
+                           (in_char && current == "\047")) {
+                    in_string = 0
+                    in_char = 0
+                }
+                continue
+            }
+            if (current == "/" && next_char == "*") {
+                in_block = 1
+                i++
+                continue
+            }
+            if (current == "/" && next_char == "/")
+                break
+            if (current == "\"")
+                in_string = 1
+            else if (current == "\047")
+                in_char = 1
+            output = output current
+        }
+        print output
+    }'
+}
+
+comment_only_source='
+/* df.wait_for_signal and df.wait_for_schedule */
+// df.explain
+'
+comment_free_fixture="$(
+    printf '%s\n' "${comment_only_source}" | strip_c_comments
+)"
+for comment_token in \
+    "df.wait_for_signal" \
+    "df.wait_for_schedule" \
+    "df.explain"; do
+    if grep -Fq "${comment_token}" <<<"${comment_free_fixture}"; then
+        echo "C comment stripping retained ${comment_token}" >&2
+        exit 1
+    fi
+done
+
+job_code="$(strip_c_comments <"${JOB_SOURCE}")"
+discovery_body="$(
+    sed -n '/^tp_discover_job_objects(/,/^}/p' <<<"${job_code}"
+)"
+job_graph_body="$(
+    sed -n '/^tp_append_job_graph(/,/^}/p' <<<"${job_code}"
+)"
+validation_body="$(
+    sed -n '/^tp_validate_graph_as_owner(/,/^}/p' <<<"${job_code}"
+)"
+
+for required in \
+    '"wait_for_signal"' \
+    '"wait_for_schedule"'; do
+    if ! grep -Fq "${required}" <<<"${discovery_body}"; then
+        echo "managed compaction discovery is missing ${required}" >&2
+        exit 1
+    fi
+done
+
+for required in \
+    "objects->wait_signal_function" \
+    "objects->wait_schedule_function"; do
+    if ! grep -Fq "${required}" <<<"${job_graph_body}"; then
+        echo "managed compaction graph is missing ${required}" >&2
+        exit 1
+    fi
+done
+
+if ! grep -Fq "objects->explain_function" <<<"${validation_body}"; then
+    echo "managed compaction validation is missing df.explain" >&2
+    exit 1
+fi
+
+if ! grep -Fq "candidate->nargs - candidate->ndargs == 4" \
+    <<<"${job_code}"; then
+    echo "df.start resolution ignores trailing defaulted arguments" >&2
+    exit 1
+fi
+
+owner_predicate_count="$(
+    grep -Fc "instance.submitted_by::pg_catalog.oid" <<<"${job_code}" || true
+)"
+if [ "${owner_predicate_count}" -lt 3 ]; then
+    echo "managed instance queries lack explicit owner predicates" >&2
+    exit 1
+fi
+
+for required in \
+    "bm25_compact_step_if_current" \
+    "{sys_instance_id}" \
+    "DEPENDENCY_NORMAL" \
+    "AccessMethodRelationId" \
+    "REGROLEOID" \
+    "OPERATOR(pg_catalog.=)" \
+    "OPERATOR(pg_catalog.~~)" \
+    "ANY (ARRAY["; do
+    if ! grep -Fq "${required}" <<<"${job_code}"; then
+        echo "managed compaction source is missing ${required}" >&2
+        exit 1
+    fi
+done
+
+if ! grep -Fq "tp_compaction_job_preflight" "${JOB_SOURCE}" ||
+    ! grep -Fq "tp_compaction_job_preflight" "${MODULE_SOURCE}"; then
+    echo "background CIC admission is not preflighted" >&2
+    exit 1
+fi
+
+if grep -Fq " IN (" "${JOB_SOURCE}"; then
+    echo "managed compaction SQL contains a search-path-sensitive IN" >&2
+    exit 1
+fi
+
+if grep -Fq "bm25_compact_pending" "${FRESH_SQL}" "${UPGRADE_SQL}"; then
+    echo "database-wide background compaction sweep remains installed" >&2
+    exit 1
+fi
+
+if grep -Eq '#include[[:space:]]*[<"].*pg_durable' "${JOB_SOURCE}"; then
+    echo "managed compaction has a build-time pg_durable header dependency" >&2
+    exit 1
+fi
 
 if grep -Fq "tp_compaction_drop_request(objectId)" "${MODULE_SOURCE}"; then
     echo "DROP removes pending requests before subtransaction outcome" >&2
@@ -56,18 +211,11 @@ if grep -Fq "tp_compaction_flush_requests" <<<"${preprepare_body}"; then
     exit 1
 fi
 
-# A one-part callback name would resolve through the committing backend's
-# search_path and run as that backend's user.
-if ! grep -Fq "list_length(names) == 2" "${REQUEST_SOURCE}"; then
-    echo "callback GUC does not require a schema-qualified name" >&2
-    exit 1
-fi
-
-# A spill caused by the callback must compact inline: its request would
-# land in a list the running dispatch has already stopped reading.
+# A spill caused during dispatch must compact inline: its request would land
+# in a list the running dispatch has already stopped reading.
 if ! grep -Fq "tp_dispatch_active = true" "${REQUEST_SOURCE}" ||
     ! grep -Fq "tp_dispatch_active" "${REQUEST_SOURCE}"; then
-    echo "callback re-entry is not routed to inline compaction" >&2
+    echo "managed dispatch re-entry is not routed to inline compaction" >&2
     exit 1
 fi
 
@@ -76,12 +224,12 @@ flush_body="$(
 )"
 revalidate_line="$(grep -n "SearchSysCacheExists1" <<<"${flush_body}" |
     cut -d: -f1)"
-lookup_line="$(grep -n "function = tp_lookup_request_function" \
+signal_line="$(grep -n "tp_run_request(indexoid)" \
     <<<"${flush_body}" | cut -d: -f1)"
 
-if [[ -z "${revalidate_line}" || -z "${lookup_line}" ||
-      "${revalidate_line}" -ge "${lookup_line}" ]]; then
-    echo "callback lookup is not lazy on the first live request" >&2
+if [[ -z "${revalidate_line}" || -z "${signal_line}" ||
+      "${revalidate_line}" -ge "${signal_line}" ]]; then
+    echo "pending requests are not revalidated before signaling" >&2
     exit 1
 fi
 
