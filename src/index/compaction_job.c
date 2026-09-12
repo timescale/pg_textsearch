@@ -65,6 +65,7 @@ typedef struct TpCompactionJobTarget
 	Oid			  owner_oid;
 	char		 *index_name;
 	char		 *schedule;
+	char		 *logical_prefix;
 	char		 *family_prefix;
 } TpCompactionJobTarget;
 
@@ -790,6 +791,15 @@ tp_require_owner_durable_privileges(
 }
 
 static char *
+tp_build_logical_prefix(const TpCompactionJobTarget *target)
+{
+	return psprintf(
+			TP_JOB_LABEL_PREFIX "%u:%u:",
+			target->database_oid,
+			target->index_oid);
+}
+
+static char *
 tp_build_family_prefix(const TpCompactionJobTarget *target)
 {
 	return psprintf(
@@ -975,7 +985,8 @@ tp_capture_target(
 	relation_close(index_rel, NoLock);
 	tp_require_owner_login(target->owner_oid);
 	tp_require_owner_database_connect(target->owner_oid);
-	target->family_prefix = tp_build_family_prefix(target);
+	target->logical_prefix = tp_build_logical_prefix(target);
+	target->family_prefix  = tp_build_family_prefix(target);
 }
 
 static bool
@@ -1286,6 +1297,116 @@ tp_find_family_instance(
 	return instance_id;
 }
 
+static char *
+tp_schedule_from_prior_label(
+		const TpCompactionJobTarget *target,
+		const char					*label,
+		MemoryContext				 result_context)
+{
+	const char	 *suffix;
+	const char	 *encoded;
+	unsigned int  tablespace_oid;
+	unsigned int  relfilenumber;
+	unsigned int  owner_oid;
+	int			  consumed = 0;
+	Size		  encoded_length;
+	char		 *schedule;
+	MemoryContext old_context;
+
+	if (strncmp(label,
+				target->logical_prefix,
+				strlen(target->logical_prefix)) != 0)
+		return NULL;
+
+	suffix = label + strlen(target->logical_prefix);
+	if (sscanf(suffix,
+			   "%u:%u:%u:%n",
+			   &tablespace_oid,
+			   &relfilenumber,
+			   &owner_oid,
+			   &consumed) != 3 ||
+		consumed <= 0 || owner_oid != target->owner_oid)
+		return NULL;
+
+	if (tablespace_oid == target->tablespace_oid &&
+		relfilenumber == (unsigned int)target->relfilenumber)
+		return NULL;
+
+	encoded		   = suffix + consumed;
+	encoded_length = strlen(encoded);
+	if ((encoded_length & 1) != 0)
+		return NULL;
+
+	old_context = MemoryContextSwitchTo(result_context);
+	schedule	= palloc(encoded_length / 2 + 1);
+	MemoryContextSwitchTo(old_context);
+
+	for (Size i = 0; i < encoded_length; i += 2)
+	{
+		int high = tp_hex_value(encoded[i]);
+		int low	 = tp_hex_value(encoded[i + 1]);
+
+		if (high < 0 || low < 0 || (high == 0 && low == 0))
+		{
+			pfree(schedule);
+			return NULL;
+		}
+		schedule[i / 2] = (char)((high << 4) | low);
+	}
+	schedule[encoded_length / 2] = '\0';
+	return schedule;
+}
+
+static char *
+tp_find_prior_generation_schedule(
+		const TpCompactionJobObjects *objects,
+		const TpCompactionJobTarget	 *target,
+		MemoryContext				  result_context)
+{
+	StringInfoData sql;
+	Oid			   argtypes[2] = {TEXTOID, OIDOID};
+	Datum		   values[2] =
+			{CStringGetTextDatum(target->logical_prefix),
+			 ObjectIdGetDatum(target->owner_oid)};
+	char *schedule = NULL;
+	int	  rc;
+
+	initStringInfo(&sql);
+	appendStringInfo(
+			&sql,
+			"SELECT instance.label "
+			"FROM %s AS instance "
+			"WHERE instance.label OPERATOR(pg_catalog.~~) "
+			"($1 OPERATOR(pg_catalog.||) '%%') "
+			"AND instance.submitted_by::pg_catalog.oid "
+			"OPERATOR(pg_catalog.=) $2 "
+			"AND instance.status OPERATOR(pg_catalog.=) "
+			"ANY (ARRAY['pending', 'running', 'completed', 'failed', "
+			"'cancelled']::pg_catalog.text[]) "
+			"ORDER BY instance.created_at DESC, instance.id DESC",
+			objects->instances_relation);
+	rc = SPI_execute_with_args(sql.data, 2, argtypes, values, NULL, true, 0);
+	pfree(sql.data);
+	if (rc != SPI_OK_SELECT)
+		elog(ERROR, "could not search prior pg_durable instance history");
+
+	for (uint64 i = 0; i < SPI_processed; i++)
+	{
+		char *label = tp_copy_spi_text(
+				SPI_tuptable->vals[i],
+				SPI_tuptable->tupdesc,
+				1,
+				CurrentMemoryContext);
+
+		schedule = tp_schedule_from_prior_label(target, label, result_context);
+		pfree(label);
+		if (schedule != NULL)
+			break;
+	}
+
+	return schedule;
+}
+
 static void
 tp_build_worker_queries(
 		const TpCompactionJobObjects *objects,
@@ -1565,13 +1686,19 @@ tp_reconcile_job(
 	instance_id = tp_find_family_instance(
 			objects, target, true, &schedule, result_context);
 	if (instance_id == NULL)
-		ereport(ERROR,
-				(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
-				 errmsg("background compaction for index \"%s\" requires "
-						"explicit adoption",
-						target->index_name)));
+	{
+		schedule = tp_find_prior_generation_schedule(
+				objects, target, result_context);
+		if (schedule == NULL)
+			ereport(ERROR,
+					(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
+					 errmsg("background compaction for index \"%s\" requires "
+							"explicit adoption",
+							target->index_name)));
+	}
+	else
+		pfree(instance_id);
 
-	pfree(instance_id);
 	label = tp_build_label(target, schedule);
 	instance_id =
 			tp_find_exact_instance(objects, target, label, result_context);
@@ -1672,6 +1799,19 @@ tp_compaction_job_preflight(Oid owner_oid, const char *schedule)
 }
 
 void
+tp_compaction_job_preflight_index(Oid indexoid)
+{
+	TpCompactionJobTarget  target;
+	TpCompactionJobObjects objects;
+
+	tp_capture_target(indexoid, true, &target);
+	tp_discover_job_objects(&objects);
+	tp_require_owner_superuser_policy(target.owner_oid);
+	tp_require_owner_durable_privileges(&objects, target.owner_oid);
+	tp_validate_graph_as_owner(&objects, &target);
+}
+
+void
 tp_compaction_job_activate(Oid indexoid, bool refresh_default)
 {
 	TpCompactionJobTarget  target;
@@ -1719,6 +1859,9 @@ tp_compaction_job_signal(Oid indexoid)
 	}
 	PG_END_TRY();
 
+	tp_require_owner_superuser_policy(target.owner_oid);
+	tp_require_owner_durable_privileges(&objects, target.owner_oid);
+	tp_pin_durable_dependency(&objects);
 	tp_grant_helper_access(&objects, target.owner_oid);
 	tp_take_admission_lock(&target);
 	instance_id = tp_reconcile_as_owner(
