@@ -1,6 +1,6 @@
 #!/bin/bash
 #
-# End-to-end CREATE admission test for owner-scoped pg_durable workflows.
+# End-to-end permission and lifecycle tests for owner-scoped workflows.
 #
 
 set -euo pipefail
@@ -79,6 +79,93 @@ assert_eq() {
         error "${description}: expected '${expected}', got '${actual}'"
     fi
     log "PASS: ${description}"
+}
+
+helper_privileges_for_role() {
+    local role=$1
+
+    sql_super -c "SELECT pg_catalog.concat_ws(
+        ':',
+        pg_catalog.has_function_privilege(
+            '${role}',
+            'bm25_compact_step_if_current(oid,oid,oid,oid,oid)',
+            'EXECUTE'),
+        pg_catalog.has_function_privilege(
+            '${role}',
+            'bm25_background_target_is_current(oid,oid,oid,oid,oid)',
+            'EXECUTE'));"
+}
+
+assert_rejected_background_alter() {
+    local description=$1 owner=$2 executor=$3 prefix=$4 expected_error=$5
+    local alter_error dependencies_before jobs_before privileges_before
+    local table_name="${prefix}_docs"
+    local index_name="${prefix}_idx"
+
+    sql_super -c "CREATE TABLE ${table_name} (body text);
+                   ALTER TABLE ${table_name} OWNER TO ${owner};
+                   CREATE INDEX ${index_name}
+                     ON ${table_name} USING bm25(body)
+                     WITH (text_config = 'english',
+                           compaction = 'manual');"
+    assert_eq "${description} test index has the expected owner" \
+        "${owner}" \
+        "$(sql_super -c "SELECT pg_catalog.pg_get_userbyid(relowner)
+                          FROM pg_catalog.pg_class
+                          WHERE oid = '${index_name}'::regclass;")"
+
+    jobs_before="$(managed_job_count)"
+    dependencies_before="$(dependency_count)"
+    privileges_before="$(helper_privileges_for_role "${owner}")"
+    if [ "${executor}" = "set-role" ]; then
+        if alter_error="$(sql_super -c "SET ROLE ${owner};
+            ALTER INDEX public.${index_name}
+              SET (compaction = 'background');" 2>&1)"; then
+            error "${description} ALTER unexpectedly succeeded"
+        fi
+    elif alter_error="$(sql_as "${executor}" -c "
+        ALTER INDEX public.${index_name}
+          SET (compaction = 'background');" 2>&1)"; then
+        error "${description} ALTER unexpectedly succeeded"
+    fi
+    if ! grep -Fq "${expected_error}" <<<"${alter_error}"; then
+        error "${description} ALTER did not fail admission: ${alter_error}"
+    fi
+
+    assert_eq "${description} ALTER preserves manual reloption" "t" \
+        "$(sql_super -c "SELECT reloptions @> ARRAY['compaction=manual']
+                          FROM pg_catalog.pg_class
+                          WHERE oid = '${index_name}'::regclass;")"
+    assert_eq "${description} ALTER creates no managed job" \
+        "${jobs_before}" "$(managed_job_count)"
+    assert_eq "${description} ALTER leaves dependencies unchanged" \
+        "${dependencies_before}" "$(dependency_count)"
+    assert_eq "${description} ALTER leaves helper privileges unchanged" \
+        "${privileges_before}" "$(helper_privileges_for_role "${owner}")"
+
+    sql_super -c "DROP TABLE ${table_name};"
+}
+
+test_alter_preflight_rejections() {
+    assert_rejected_background_alter \
+        "NOLOGIN owner" durable_nologin set-role alter_nologin \
+        "index owner must have LOGIN for background compaction"
+    assert_rejected_background_alter \
+        "disallowed superuser owner" postgres postgres alter_superuser \
+        "pg_durable superuser instances are disabled"
+    assert_rejected_background_alter \
+        "owner without pg_durable table privileges" durable_usage_only \
+        durable_usage_only alter_usage_only \
+        "index owner lacks required pg_durable privileges"
+    assert_rejected_background_alter \
+        "owner without database CONNECT" durable_no_connect durable_actor \
+        alter_no_connect \
+        "index owner cannot connect for background compaction"
+    assert_rejected_background_alter \
+        "owner without pg_textsearch schema USAGE" \
+        durable_no_textsearch_schema durable_writer \
+        alter_no_textsearch_schema \
+        "index owner lacks required pg_durable privileges"
 }
 
 test_cic_owner_privilege_preflight() {
@@ -449,6 +536,22 @@ wait_for_log_message() {
         waited=$((waited + 1))
     done
     error "server log did not contain: ${message}"
+}
+
+wait_for_audit_rows() {
+    local expected=$1 timeout=$2
+    local waited=0 count
+
+    while [ "${waited}" -lt "${timeout}" ]; do
+        count="$(sql_super -c \
+            "SELECT count(*) FROM public.worker_identity_audit;")"
+        if [ "${count}" -ge "${expected}" ]; then
+            return 0
+        fi
+        sleep 1
+        waited=$((waited + 1))
+    done
+    error "worker identity audit did not reach ${expected} rows"
 }
 
 wait_for_durable_worker() {
@@ -837,6 +940,144 @@ ${create_output}"
         "$(active_jobs_for_index "${index_oid}")"
 }
 
+test_actor_writer_worker_identity() {
+    local audit_rows_before index_oid instance_id memtable_threshold_before
+
+    sql_super -c "GRANT durable_owner TO durable_actor;
+                   REVOKE CREATE ON SCHEMA public FROM durable_writer;
+                   CREATE TABLE identity_docs (id integer, body text);
+                   ALTER TABLE identity_docs OWNER TO durable_owner;
+                   GRANT INSERT ON identity_docs TO durable_writer;
+                   CREATE INDEX identity_docs_idx
+                     ON identity_docs USING bm25(body)
+                     WITH (text_config = 'english',
+                           compaction = 'manual',
+                           compaction_schedule = '0 0 1 1 *');
+                   CREATE TABLE worker_identity_audit (role_name name);
+                   ALTER TABLE worker_identity_audit OWNER TO durable_owner;
+                   REVOKE ALL ON worker_identity_audit FROM PUBLIC;
+                   GRANT INSERT ON worker_identity_audit TO durable_owner;"
+    sql_super <<'SQL'
+CREATE FUNCTION bm25_compact_step_if_current_test_c(
+    index_oid oid, database_oid oid, tablespace_oid oid,
+    relfilenumber oid, owner_oid oid)
+RETURNS boolean
+AS '$libdir/pg_textsearch', 'tp_compact_index_step_if_current'
+LANGUAGE C VOLATILE STRICT;
+
+REVOKE ALL ON FUNCTION
+    bm25_compact_step_if_current_test_c(oid, oid, oid, oid, oid)
+    FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION
+    bm25_compact_step_if_current_test_c(oid, oid, oid, oid, oid)
+    TO durable_owner;
+
+CREATE OR REPLACE FUNCTION bm25_compact_step_if_current(
+    index_oid oid, database_oid oid, tablespace_oid oid,
+    relfilenumber oid, owner_oid oid)
+RETURNS boolean
+LANGUAGE plpgsql
+VOLATILE
+STRICT
+SET search_path = pg_catalog, pg_temp
+AS $body$
+BEGIN
+    INSERT INTO public.worker_identity_audit(role_name)
+    VALUES (current_user);
+    RETURN public.bm25_compact_step_if_current_test_c(
+        index_oid, database_oid, tablespace_oid, relfilenumber, owner_oid);
+END
+$body$;
+SQL
+
+    assert_eq "actor command starts without SET ROLE" \
+        "durable_actor:durable_actor" \
+        "$(sql_as durable_actor -c \
+            "SELECT current_user || ':' || session_user;")"
+    sql_as durable_actor -c "
+        ALTER INDEX public.identity_docs_idx
+          SET (compaction = 'background');" >/dev/null 2>&1
+    index_oid="$(sql_super -c \
+        "SELECT 'identity_docs_idx'::regclass::oid;")"
+    instance_id="$(active_job_id_for_owner \
+        "${index_oid}" durable_owner)"
+    [ -n "${instance_id}" ] ||
+        error "actor-enabled index has no durable_owner workflow"
+    assert_eq "actor activation submits as the index owner" \
+        "durable_owner" \
+        "$(sql_super -c "SELECT submitted_by::text
+                          FROM df.instances
+                          WHERE id = '${instance_id}';")"
+
+    wait_for_audit_rows 1 30
+    wait_for_signal_node "${instance_id}" 30
+    audit_rows_before="$(sql_super -c \
+        "SELECT count(*) FROM worker_identity_audit;")"
+    assert_eq "writer has only INSERT table privilege" "t" \
+        "$(sql_super -c "SELECT
+            pg_catalog.has_table_privilege(
+                'durable_writer', 'identity_docs', 'INSERT')
+            AND NOT pg_catalog.has_table_privilege(
+                'durable_writer', 'identity_docs',
+                'SELECT, UPDATE, DELETE, TRUNCATE, REFERENCES, TRIGGER');")"
+    memtable_threshold_before="$(sql_super -c \
+        "SHOW pg_textsearch.memtable_pages_threshold;")"
+    sql_super -c "ALTER SYSTEM SET
+                     pg_textsearch.memtable_pages_threshold = 1;" >/dev/null
+    sql_super -c "SELECT pg_catalog.pg_reload_conf();" >/dev/null
+    assert_eq "writer spill threshold is active" "1" \
+        "$(sql_super -c \
+            "SHOW pg_textsearch.memtable_pages_threshold;")"
+    sql_as durable_writer -c "INSERT INTO public.identity_docs
+        SELECT i, 'writer spill document ' || i || ' ' ||
+                  repeat('filler ', 50)
+        FROM generate_series(1, 200) AS i;" >/dev/null
+    wait_for_audit_rows "$((audit_rows_before + 1))" 30
+    sql_super -c "ALTER SYSTEM RESET
+                     pg_textsearch.memtable_pages_threshold;" >/dev/null
+    sql_super -c "SELECT pg_catalog.pg_reload_conf();" >/dev/null
+    assert_eq "writer spill threshold is restored" \
+        "${memtable_threshold_before}" \
+        "$(sql_super -c \
+            "SHOW pg_textsearch.memtable_pages_threshold;")"
+    assert_eq "every worker step executes as the index owner" "t" \
+        "$(sql_super -c "SELECT count(*) >= 2
+                                AND pg_catalog.bool_and(
+                                    role_name = 'durable_owner')
+                          FROM worker_identity_audit;")"
+
+    sql_super <<'SQL'
+CREATE OR REPLACE FUNCTION bm25_compact_step_if_current(
+    index_oid oid, database_oid oid, tablespace_oid oid,
+    relfilenumber oid, owner_oid oid)
+RETURNS boolean
+AS '$libdir/pg_textsearch', 'tp_compact_index_step_if_current'
+LANGUAGE C VOLATILE STRICT;
+SQL
+    assert_eq "worker helper definition is restored" \
+        "c:tp_compact_index_step_if_current:true" \
+        "$(sql_super -c "SELECT language.lanname || ':' ||
+                                procedure.prosrc || ':' ||
+                                (procedure.proconfig IS NULL)
+                          FROM pg_catalog.pg_proc AS procedure
+                          JOIN pg_catalog.pg_language AS language
+                            ON language.oid = procedure.prolang
+                          WHERE procedure.oid =
+                            pg_catalog.to_regprocedure(
+                              'bm25_compact_step_if_current' ||
+                              '(oid,oid,oid,oid,oid)');")"
+    sql_as durable_owner -c \
+        "SELECT df.cancel('${instance_id}', 'identity test complete');" \
+        >/dev/null
+    wait_for_terminal "${instance_id}" 30
+    sql_super -c "DROP FUNCTION
+                     bm25_compact_step_if_current_test_c(
+                         oid, oid, oid, oid, oid);
+                   DROP TABLE identity_docs, worker_identity_audit;
+                   GRANT CREATE ON SCHEMA public TO durable_writer;
+                   REVOKE durable_owner FROM durable_actor;"
+}
+
 test_scheduled_failure_continuation() {
     local index_oid instance_id failure_message
 
@@ -968,6 +1209,135 @@ SQL
     sql_super -c "DROP TABLE initial_failure_docs;"
 }
 
+test_cross_owner_helper_isolation() {
+    local current_error index_one_oid index_two_oid instance_one instance_two
+    local level_counts_before step_error workflow_state_before
+    local database_oid tablespace_oid relfilenumber owner_oid
+
+    sql_super -c "CREATE ROLE durable_owner_two LOGIN;
+                   GRANT CONNECT ON DATABASE ${TEST_DB}
+                     TO durable_owner_two;
+                   GRANT USAGE, CREATE ON SCHEMA public
+                     TO durable_owner_two;"
+    sql_super -c "SELECT df.grant_usage('durable_owner_two');" >/dev/null
+    sql_super -c "CREATE TABLE isolation_one_docs (body text);
+                   ALTER TABLE isolation_one_docs OWNER TO durable_owner;
+                   CREATE TABLE isolation_two_docs (body text);
+                   ALTER TABLE isolation_two_docs OWNER TO durable_owner_two;"
+    sql_as durable_owner -c "
+        CREATE INDEX isolation_one_idx
+          ON public.isolation_one_docs USING bm25(body)
+          WITH (text_config = 'english', compaction = 'manual',
+                compaction_schedule = '0 0 1 1 *');
+        ALTER INDEX public.isolation_one_idx
+          SET (compaction = 'background');" >/dev/null 2>&1
+    sql_as durable_owner_two -c "
+        CREATE INDEX isolation_two_idx
+          ON public.isolation_two_docs USING bm25(body)
+          WITH (text_config = 'english', compaction = 'manual',
+                compaction_schedule = '0 0 1 1 *');
+        ALTER INDEX public.isolation_two_idx
+          SET (compaction = 'background');" >/dev/null 2>&1
+
+    index_one_oid="$(sql_super -c \
+        "SELECT 'isolation_one_idx'::regclass::oid;")"
+    index_two_oid="$(sql_super -c \
+        "SELECT 'isolation_two_idx'::regclass::oid;")"
+    instance_one="$(active_job_id_for_owner \
+        "${index_one_oid}" durable_owner)"
+    instance_two="$(active_job_id_for_owner \
+        "${index_two_oid}" durable_owner_two)"
+    [ -n "${instance_one}" ] ||
+        error "first isolation owner has no managed workflow"
+    [ -n "${instance_two}" ] ||
+        error "second isolation owner has no managed workflow"
+    wait_for_signal_node "${instance_one}" 30
+    wait_for_signal_node "${instance_two}" 30
+    assert_eq "both owners receive private helper EXECUTE" "t" \
+        "$(sql_super -c "SELECT
+            pg_catalog.has_function_privilege(
+                'durable_owner',
+                'bm25_compact_step_if_current(oid,oid,oid,oid,oid)',
+                'EXECUTE')
+            AND pg_catalog.has_function_privilege(
+                'durable_owner',
+                'bm25_background_target_is_current(oid,oid,oid,oid,oid)',
+                'EXECUTE')
+            AND pg_catalog.has_function_privilege(
+                'durable_owner_two',
+                'bm25_compact_step_if_current(oid,oid,oid,oid,oid)',
+                'EXECUTE')
+            AND pg_catalog.has_function_privilege(
+                'durable_owner_two',
+                'bm25_background_target_is_current(oid,oid,oid,oid,oid)',
+                'EXECUTE');")"
+
+    IFS='|' read -r database_oid tablespace_oid relfilenumber owner_oid < <(
+        sql_super -c "SELECT database.oid,
+                             coalesce(nullif(relation.reltablespace, 0),
+                                      database.dattablespace),
+                             pg_catalog.pg_relation_filenode(relation.oid),
+                             relation.relowner
+                      FROM pg_catalog.pg_class AS relation
+                      JOIN pg_catalog.pg_database AS database
+                        ON database.datname = pg_catalog.current_database()
+                      WHERE relation.oid =
+                            'isolation_two_idx'::regclass;"
+    )
+    level_counts_before="$(sql_super -c \
+        "SELECT bm25_level_counts('isolation_two_idx'::regclass);")"
+    workflow_state_before="$(sql_super -c \
+        "SELECT id || ':' || status FROM df.instances
+          WHERE id = '${instance_two}';")"
+
+    if step_error="$(sql_as durable_owner -c "
+        SELECT public.bm25_compact_step_if_current(
+            ${index_two_oid}, ${database_oid}, ${tablespace_oid},
+            ${relfilenumber}, ${owner_oid});" 2>&1)"; then
+        error "first owner compacted the second owner's captured target"
+    fi
+    if ! grep -Fq "must be owner" <<<"${step_error}"; then
+        error "cross-owner compaction used an unexpected error: ${step_error}"
+    fi
+    assert_eq "rejected cross-owner step preserves level counts" \
+        "${level_counts_before}" \
+        "$(sql_super -c \
+            "SELECT bm25_level_counts('isolation_two_idx'::regclass);")"
+    assert_eq "rejected cross-owner step preserves workflow state" \
+        "${workflow_state_before}" \
+        "$(sql_super -c "SELECT id || ':' || status FROM df.instances
+                          WHERE id = '${instance_two}';")"
+
+    if current_error="$(sql_as durable_owner -c "
+        SELECT public.bm25_background_target_is_current(
+            ${index_two_oid}, ${database_oid}, ${tablespace_oid},
+            ${relfilenumber}, ${owner_oid});" 2>&1)"; then
+        error "first owner inspected the second owner's captured target"
+    fi
+    if ! grep -Fq "must be owner" <<<"${current_error}"; then
+        error "cross-owner current check used an unexpected error: \
+${current_error}"
+    fi
+    assert_eq "rejected cross-owner current check preserves level counts" \
+        "${level_counts_before}" \
+        "$(sql_super -c \
+            "SELECT bm25_level_counts('isolation_two_idx'::regclass);")"
+    assert_eq "rejected cross-owner current check preserves workflow state" \
+        "${workflow_state_before}" \
+        "$(sql_super -c "SELECT id || ':' || status FROM df.instances
+                          WHERE id = '${instance_two}';")"
+
+    sql_as durable_owner -c \
+        "SELECT df.cancel('${instance_one}', 'isolation test complete');" \
+        >/dev/null
+    sql_as durable_owner_two -c \
+        "SELECT df.cancel('${instance_two}', 'isolation test complete');" \
+        >/dev/null
+    wait_for_terminal "${instance_one}" 30
+    wait_for_terminal "${instance_two}" 30
+    sql_super -c "DROP TABLE isolation_one_docs, isolation_two_docs;"
+}
+
 test_bypassrls_owner_isolation() {
     local index_oid label owner_instance foreign_instance replacement_instance
 
@@ -1032,6 +1402,73 @@ test_bypassrls_owner_isolation() {
         "durable_bypass" \
         "$(sql_super -c "SELECT submitted_by::text FROM df.instances
                           WHERE id = '${replacement_instance}';")"
+}
+
+test_superuser_policy_success() {
+    local index_oid instance_id setting_before
+
+    setting_before="$(sql_super -c \
+        "SHOW pg_durable.enable_superuser_instances;")"
+    assert_eq "superuser workflow policy starts disabled" "off" \
+        "${setting_before}"
+    sql_super -c "ALTER SYSTEM SET
+                     pg_durable.enable_superuser_instances = on;" >/dev/null
+    PGHOST="${SOCKET_DIR}" "${PGBINDIR}/pg_ctl" restart -D "${DATA_DIR}" \
+        -l "${LOGFILE}" -w >/dev/null
+    wait_for_durable_worker
+    assert_eq "superuser workflow policy is enabled" "on" \
+        "$(sql_super -c \
+            "SHOW pg_durable.enable_superuser_instances;")"
+    sql_super -c "CREATE TABLE superuser_policy_docs
+                      (id integer, body text);
+                   CREATE INDEX superuser_policy_docs_idx
+                     ON superuser_policy_docs USING bm25(body)
+                     WITH (text_config = 'english', compaction = 'manual',
+                           compaction_schedule = '0 0 1 1 *');
+                   ALTER INDEX superuser_policy_docs_idx
+                     SET (compaction = 'background');" >/dev/null 2>&1
+    index_oid="$(sql_super -c \
+        "SELECT 'superuser_policy_docs_idx'::regclass::oid;")"
+    instance_id="$(active_job_id_for_owner "${index_oid}" postgres)"
+    [ -n "${instance_id}" ] ||
+        error "enabled superuser policy created no postgres workflow"
+    wait_for_signal_node "${instance_id}" 30
+    assert_eq "superuser workflow is submitted as postgres" "postgres" \
+        "$(sql_super -c "SELECT submitted_by::text FROM df.instances
+                          WHERE id = '${instance_id}';")"
+
+    sql_super <<'SQL' >/dev/null
+BEGIN;
+DO $body$
+BEGIN
+    FOR n IN 1..2 LOOP
+        INSERT INTO superuser_policy_docs (id, body)
+        SELECT n * 100 + i,
+               format('superuser round %s document %s filler', n, i)
+        FROM generate_series(1, 20) AS i;
+        PERFORM bm25_spill_index('superuser_policy_docs_idx');
+    END LOOP;
+END
+$body$;
+COMMIT;
+SQL
+    wait_for_no_debt superuser_policy_docs_idx 30
+    assert_eq "postgres workflow executes after a spill signal" \
+        "${instance_id}" "$(active_job_id_for_owner "${index_oid}" postgres)"
+
+    sql_super -c \
+        "SELECT df.cancel('${instance_id}', 'superuser test complete');" \
+        >/dev/null
+    wait_for_terminal "${instance_id}" 30
+    sql_super -c "DROP TABLE superuser_policy_docs;"
+    sql_super -c "ALTER SYSTEM RESET
+                     pg_durable.enable_superuser_instances;" >/dev/null
+    PGHOST="${SOCKET_DIR}" "${PGBINDIR}/pg_ctl" restart -D "${DATA_DIR}" \
+        -l "${LOGFILE}" -w >/dev/null
+    wait_for_durable_worker
+    assert_eq "superuser workflow policy is restored" "${setting_before}" \
+        "$(sql_super -c \
+            "SHOW pg_durable.enable_superuser_instances;")"
 }
 
 test_rollback_in_fresh_database() {
@@ -1113,11 +1550,15 @@ test_missing_durable_cic
 initialize_database
 test_cic_preflight_rejections
 test_cic_owner_privilege_preflight
+test_alter_preflight_rejections
 test_defaulted_start_arity
+test_actor_writer_worker_identity
 test_create_activation
 test_scheduled_failure_continuation
 test_initial_failure_continuation
+test_cross_owner_helper_isolation
 test_bypassrls_owner_isolation
+test_superuser_policy_success
 test_sticky_dependency
 test_rollback_in_fresh_database
-log "Managed pg_durable CREATE activation tests passed"
+log "Managed pg_durable compaction tests passed"
