@@ -1068,8 +1068,9 @@ test_partitioned_create_activation() {
 }
 
 test_owner_reconciliation() {
-    local alter_error dependencies_before index_oid job_before job_after
-    local jobs_before filenumber_before filenumber_after privileges_before
+    local alter_error alter_output dependencies_before index_oid job_before
+    local job_after jobs_before filenumber_before filenumber_after
+    local privileges_before
 
     sql_as durable_owner -c "
         CREATE TABLE public.lifecycle_owner_docs (body text);
@@ -1083,6 +1084,34 @@ test_owner_reconciliation() {
     filenumber_before="$(sql_super -c \
         "SELECT pg_catalog.pg_relation_filenode(${index_oid});")"
     job_before="$(current_generation_job_id "${index_oid}")"
+
+    jobs_before="$(managed_job_count)"
+    if ! alter_output="$(sql_super -c "
+        ALTER INDEX public.lifecycle_owner_idx
+          OWNER TO durable_nologin;" 2>&1)"; then
+        error "ALTER INDEX OWNER no-op failed: ${alter_output}"
+    fi
+    if ! grep -Fq "cannot change owner of index" <<<"${alter_output}"; then
+        error "ALTER INDEX OWNER did not preserve the core warning: \
+${alter_output}"
+    fi
+    assert_eq "ALTER INDEX OWNER remains a no-op" "durable_owner" \
+        "$(sql_super -c "SELECT pg_catalog.pg_get_userbyid(relowner)
+                          FROM pg_catalog.pg_class
+                          WHERE oid = ${index_oid};")"
+    assert_eq "ALTER INDEX OWNER no-op creates no workflow" \
+        "${jobs_before}" "$(managed_job_count)"
+
+    if alter_error="$(sql_as durable_owner -c "
+        ALTER TABLE public.lifecycle_owner_docs
+          OWNER TO durable_usage_only;" 2>&1)"; then
+        error "ALTER TABLE OWNER bypassed role membership"
+    fi
+    if ! grep -Fq "must be able to SET ROLE \"durable_usage_only\"" \
+        <<<"${alter_error}"; then
+        error "ALTER TABLE OWNER did not preserve core role-membership \
+ordering: ${alter_error}"
+    fi
 
     sql_super -c \
         "ALTER TABLE public.lifecycle_owner_docs
@@ -1153,6 +1182,36 @@ ${alter_error}"
     assert_eq "rejected ALTER TABLE OWNER changes no helper grants" \
         "${privileges_before}" \
         "$(helper_privileges_for_role durable_nologin)"
+
+    sql_super -c "
+        CREATE SCHEMA lifecycle_owner_private
+          AUTHORIZATION durable_owner;
+        GRANT durable_owner_two TO durable_owner;"
+    sql_as durable_owner -c "
+        CREATE TABLE lifecycle_owner_private.docs (body text);
+        CREATE INDEX docs_idx
+          ON lifecycle_owner_private.docs USING bm25(body)
+          WITH (text_config = 'english',
+                compaction = 'background',
+                compaction_schedule = '0 0 1 1 *');" >/dev/null 2>&1
+    if alter_error="$(sql_as durable_owner -c "
+        ALTER TABLE lifecycle_owner_private.docs
+          OWNER TO durable_owner_two;" 2>&1)"; then
+        error "ALTER TABLE OWNER bypassed target schema CREATE"
+    fi
+    if ! grep -Fq "permission denied for schema lifecycle_owner_private" \
+        <<<"${alter_error}"; then
+        error "ALTER TABLE OWNER did not preserve core schema CREATE \
+ordering: ${alter_error}"
+    fi
+    assert_eq "schema-rejected ALTER TABLE OWNER preserves the old owner" \
+        "durable_owner" \
+        "$(sql_super -c "SELECT pg_catalog.pg_get_userbyid(relowner)
+          FROM pg_catalog.pg_class
+          WHERE oid = 'lifecycle_owner_private.docs_idx'::regclass;")"
+    sql_super -c "
+        REVOKE durable_owner_two FROM durable_owner;
+        DROP SCHEMA lifecycle_owner_private CASCADE;" >/dev/null
 
     sql_as durable_owner_two -c "SELECT df.cancel(
         '${job_after}', 'owner lifecycle test complete');" >/dev/null
@@ -1258,10 +1317,362 @@ test_reindex_reconciliation() {
     sql_as durable_owner -c "DROP TABLE public.lifecycle_reindex_docs;"
 }
 
+test_concurrent_reindex_reconciliation() {
+    local a_before a_after a_oid_before a_oid_after
+    local b_before b_after b_oid_before b_oid_after
+
+    sql_as durable_owner -c "
+        CREATE TABLE public.lifecycle_concurrent_docs
+          (body_a text, body_b text);
+        INSERT INTO public.lifecycle_concurrent_docs
+          SELECT pg_catalog.format('document %s', value),
+                 pg_catalog.format('other %s', value)
+          FROM generate_series(1, 20) AS value;
+        CREATE INDEX lifecycle_concurrent_a_idx
+          ON public.lifecycle_concurrent_docs USING bm25(body_a)
+          WITH (text_config = 'english',
+                compaction = 'background',
+                compaction_schedule = '0 0 1 1 *');
+        CREATE INDEX lifecycle_concurrent_b_idx
+          ON public.lifecycle_concurrent_docs USING bm25(body_b)
+          WITH (text_config = 'english',
+                compaction = 'background',
+                compaction_schedule = '0 0 1 1 *');" >/dev/null 2>&1
+
+    a_oid_before="$(sql_super -c \
+        "SELECT 'public.lifecycle_concurrent_a_idx'::regclass::oid;")"
+    a_before="$(current_generation_job_id "${a_oid_before}")"
+    sql_as durable_owner -c \
+        "REINDEX INDEX CONCURRENTLY
+           public.lifecycle_concurrent_a_idx;" >/dev/null 2>&1
+    a_oid_after="$(sql_super -c \
+        "SELECT 'public.lifecycle_concurrent_a_idx'::regclass::oid;")"
+    a_after="$(current_generation_job_id "${a_oid_after}")"
+    if [ "${a_oid_after}" = "${a_oid_before}" ]; then
+        error "REINDEX INDEX CONCURRENTLY did not replace the index OID"
+    fi
+    if [ -z "${a_after}" ] || [ "${a_after}" = "${a_before}" ]; then
+        error "REINDEX INDEX CONCURRENTLY did not reconcile the new OID"
+    fi
+    assert_eq "concurrent index replacement has one current workflow" "1" \
+        "$(current_generation_job_count "${a_oid_after}")"
+
+    a_oid_before="${a_oid_after}"
+    b_oid_before="$(sql_super -c \
+        "SELECT 'public.lifecycle_concurrent_b_idx'::regclass::oid;")"
+    a_before="${a_after}"
+    b_before="$(current_generation_job_id "${b_oid_before}")"
+    sql_as durable_owner -c \
+        "REINDEX TABLE CONCURRENTLY
+           public.lifecycle_concurrent_docs;" >/dev/null 2>&1
+    a_oid_after="$(sql_super -c \
+        "SELECT 'public.lifecycle_concurrent_a_idx'::regclass::oid;")"
+    b_oid_after="$(sql_super -c \
+        "SELECT 'public.lifecycle_concurrent_b_idx'::regclass::oid;")"
+    a_after="$(current_generation_job_id "${a_oid_after}")"
+    b_after="$(current_generation_job_id "${b_oid_after}")"
+    if [ "${a_oid_after}" = "${a_oid_before}" ] ||
+        [ "${b_oid_after}" = "${b_oid_before}" ]; then
+        error "REINDEX TABLE CONCURRENTLY did not replace every index OID"
+    fi
+    if [ -z "${a_after}" ] || [ "${a_after}" = "${a_before}" ] ||
+        [ -z "${b_after}" ] || [ "${b_after}" = "${b_before}" ]; then
+        error "REINDEX TABLE CONCURRENTLY did not reconcile replacement OIDs"
+    fi
+
+    sql_as durable_owner -c "SELECT df.cancel(
+        instance.id, 'concurrent reindex lifecycle test complete')
+      FROM df.instances AS instance
+      WHERE (instance.label OPERATOR(pg_catalog.~~)
+               'pg_textsearch:bg:v1:%:${a_oid_after}:%'
+             OR instance.label OPERATOR(pg_catalog.~~)
+               'pg_textsearch:bg:v1:%:${b_oid_after}:%')
+        AND instance.status OPERATOR(pg_catalog.=)
+            ANY (ARRAY['pending', 'running']::pg_catalog.text[]);" \
+        >/dev/null
+    sql_as durable_owner -c \
+        "DROP TABLE public.lifecycle_concurrent_docs;"
+}
+
+test_partitioned_reindex_reconciliation() {
+    local leaf_count leaf_jobs parent_index_oid
+
+    sql_as durable_owner <<'SQL' >/dev/null
+CREATE TABLE public.lifecycle_reindex_partitioned_docs
+    (id integer, body text)
+    PARTITION BY RANGE (id);
+CREATE TABLE public.lifecycle_reindex_partitioned_low
+    PARTITION OF public.lifecycle_reindex_partitioned_docs
+    FOR VALUES FROM (0) TO (100);
+CREATE TABLE public.lifecycle_reindex_partitioned_high
+    PARTITION OF public.lifecycle_reindex_partitioned_docs
+    FOR VALUES FROM (100) TO (200);
+INSERT INTO public.lifecycle_reindex_partitioned_docs
+VALUES (1, 'low partition'), (101, 'high partition');
+CREATE INDEX lifecycle_reindex_partitioned_idx
+    ON public.lifecycle_reindex_partitioned_docs USING bm25(body)
+    WITH (text_config = 'english',
+          compaction = 'background',
+          compaction_schedule = '0 0 1 1 *');
+SQL
+    parent_index_oid="$(sql_super -c "SELECT
+        'public.lifecycle_reindex_partitioned_idx'::regclass::oid;")"
+    sql_super <<SQL
+CREATE TABLE public.lifecycle_reindex_partitioned_before AS
+SELECT child.relname,
+       child.oid AS index_oid,
+       pg_catalog.pg_relation_filenode(child.oid) AS filenumber,
+       (
+         SELECT instance.id
+         FROM df.instances AS instance
+         WHERE instance.label OPERATOR(pg_catalog.~~)
+               ('pg_textsearch:bg:v1:%:' || child.oid::text || ':%')
+           AND instance.status OPERATOR(pg_catalog.=)
+               ANY (ARRAY['pending', 'running']::pg_catalog.text[])
+         ORDER BY instance.created_at DESC, instance.id DESC
+         LIMIT 1
+       ) AS instance_id
+FROM pg_catalog.pg_inherits AS inheritance
+JOIN pg_catalog.pg_class AS child
+  ON child.oid = inheritance.inhrelid
+WHERE inheritance.inhparent = ${parent_index_oid}
+  AND child.relkind = 'i';
+SQL
+    sql_as durable_owner -c \
+        "REINDEX INDEX
+           public.lifecycle_reindex_partitioned_idx;" >/dev/null 2>&1
+    assert_eq "partitioned REINDEX INDEX keeps both leaf OIDs" "2" \
+        "$(sql_super -c "SELECT count(*)
+          FROM public.lifecycle_reindex_partitioned_before AS before
+          JOIN pg_catalog.pg_class AS current
+            ON current.oid = before.index_oid
+          WHERE pg_catalog.pg_relation_filenode(current.oid)
+                OPERATOR(pg_catalog.<>) before.filenumber;")"
+    leaf_jobs="$(sql_super -c "SELECT count(*)
+      FROM public.lifecycle_reindex_partitioned_before AS before
+      JOIN pg_catalog.pg_class AS current
+        ON current.oid = before.index_oid
+      JOIN df.instances AS instance
+        ON instance.label OPERATOR(pg_catalog.~~)
+           pg_catalog.format(
+             'pg_textsearch:bg:v1:%%:%s:%%:%s:%s:%%',
+             current.oid,
+             pg_catalog.pg_relation_filenode(current.oid),
+             current.relowner)
+       AND instance.status OPERATOR(pg_catalog.=)
+           ANY (ARRAY['pending', 'running']::pg_catalog.text[])
+      WHERE instance.id OPERATOR(pg_catalog.<>) before.instance_id;")"
+    assert_eq "partitioned REINDEX INDEX reconciles every leaf" "2" \
+        "${leaf_jobs}"
+
+    sql_super -c "TRUNCATE public.lifecycle_reindex_partitioned_before;
+      INSERT INTO public.lifecycle_reindex_partitioned_before
+      SELECT child.relname,
+             child.oid,
+             pg_catalog.pg_relation_filenode(child.oid),
+             (
+               SELECT instance.id
+               FROM df.instances AS instance
+               WHERE instance.label OPERATOR(pg_catalog.~~)
+                     ('pg_textsearch:bg:v1:%:' ||
+                      child.oid::text || ':%')
+                 AND instance.status OPERATOR(pg_catalog.=)
+                     ANY (ARRAY['pending', 'running']::pg_catalog.text[])
+               ORDER BY instance.created_at DESC, instance.id DESC
+               LIMIT 1
+             )
+      FROM pg_catalog.pg_inherits AS inheritance
+      JOIN pg_catalog.pg_class AS child
+        ON child.oid = inheritance.inhrelid
+      WHERE inheritance.inhparent = ${parent_index_oid}
+        AND child.relkind = 'i';"
+    sql_as durable_owner -c \
+        "REINDEX TABLE CONCURRENTLY
+           public.lifecycle_reindex_partitioned_docs;" >/dev/null 2>&1
+    leaf_count="$(sql_super -c "SELECT count(*)
+      FROM public.lifecycle_reindex_partitioned_before AS before
+      JOIN pg_catalog.pg_class AS current
+        ON current.relname = before.relname
+       AND current.relnamespace = 'public'::regnamespace
+      WHERE current.oid OPERATOR(pg_catalog.<>) before.index_oid;")"
+    assert_eq "partitioned concurrent REINDEX resolves replacement OIDs" \
+        "2" "${leaf_count}"
+    leaf_jobs="$(sql_super -c "SELECT count(*)
+      FROM public.lifecycle_reindex_partitioned_before AS before
+      JOIN pg_catalog.pg_class AS current
+        ON current.relname = before.relname
+       AND current.relnamespace = 'public'::regnamespace
+      JOIN df.instances AS instance
+        ON instance.label OPERATOR(pg_catalog.~~)
+           ('pg_textsearch:bg:v1:%:' || current.oid::text || ':%')
+       AND instance.status OPERATOR(pg_catalog.=)
+           ANY (ARRAY['pending', 'running']::pg_catalog.text[])
+      WHERE instance.id OPERATOR(pg_catalog.<>) before.instance_id;")"
+    assert_eq "partitioned concurrent REINDEX reconciles every leaf" "2" \
+        "${leaf_jobs}"
+
+    sql_as durable_owner -c \
+        "DROP TABLE public.lifecycle_reindex_partitioned_docs;"
+    sql_super -c "DROP TABLE public.lifecycle_reindex_partitioned_before;"
+}
+
+test_partitioned_reindex_failure_reconciliation() {
+    local first_file_before first_file_after first_index_oid
+    local first_job_before first_job_after reindex_error second_file_before
+    local second_file_after second_index_oid
+
+    sql_as durable_owner <<'SQL' >/dev/null
+CREATE FUNCTION public.lifecycle_reindex_value(value text)
+RETURNS text
+LANGUAGE plpgsql
+IMMUTABLE
+SET search_path = pg_catalog, pg_temp
+AS $body$
+BEGIN
+    IF pg_catalog.current_setting(
+           'lifecycle.reindex_failure', true)
+           OPERATOR(pg_catalog.=) 'on'
+       AND value OPERATOR(pg_catalog.=) 'fail' THEN
+        RAISE EXCEPTION 'intentional partition reindex failure';
+    END IF;
+    RETURN value;
+END
+$body$;
+
+CREATE TABLE public.lifecycle_reindex_failure_docs
+    (id integer, body text)
+    PARTITION BY RANGE (id);
+CREATE TABLE public.lifecycle_reindex_failure_low
+    PARTITION OF public.lifecycle_reindex_failure_docs
+    FOR VALUES FROM (0) TO (100);
+CREATE TABLE public.lifecycle_reindex_failure_high
+    PARTITION OF public.lifecycle_reindex_failure_docs
+    FOR VALUES FROM (100) TO (200);
+INSERT INTO public.lifecycle_reindex_failure_docs
+VALUES (1, 'safe'), (101, 'fail');
+CREATE INDEX lifecycle_reindex_failure_idx
+    ON public.lifecycle_reindex_failure_docs
+    USING bm25 (public.lifecycle_reindex_value(body))
+    WITH (text_config = 'english',
+          compaction = 'background',
+          compaction_schedule = '0 0 1 1 *');
+SQL
+    first_index_oid="$(sql_super -c "SELECT child.oid
+      FROM pg_catalog.pg_inherits AS inheritance
+      JOIN pg_catalog.pg_class AS child
+        ON child.oid = inheritance.inhrelid
+      WHERE inheritance.inhparent =
+            'public.lifecycle_reindex_failure_idx'::regclass
+      ORDER BY child.oid
+      LIMIT 1;")"
+    second_index_oid="$(sql_super -c "SELECT child.oid
+      FROM pg_catalog.pg_inherits AS inheritance
+      JOIN pg_catalog.pg_class AS child
+        ON child.oid = inheritance.inhrelid
+      WHERE inheritance.inhparent =
+            'public.lifecycle_reindex_failure_idx'::regclass
+      ORDER BY child.oid DESC
+      LIMIT 1;")"
+    first_file_before="$(sql_super -c \
+        "SELECT pg_catalog.pg_relation_filenode(${first_index_oid});")"
+    second_file_before="$(sql_super -c \
+        "SELECT pg_catalog.pg_relation_filenode(${second_index_oid});")"
+    first_job_before="$(current_generation_job_id "${first_index_oid}")"
+
+    sql_super -c "ALTER ROLE durable_owner IN DATABASE ${TEST_DB}
+        SET lifecycle.reindex_failure = 'on';"
+    if reindex_error="$(sql_as durable_owner -c "
+        REINDEX INDEX
+          public.lifecycle_reindex_failure_idx;" 2>&1)"; then
+        error "partitioned REINDEX failure injection unexpectedly succeeded"
+    fi
+    if ! grep -Fq "intentional partition reindex failure" \
+        <<<"${reindex_error}"; then
+        error "partitioned REINDEX failed for the wrong reason: \
+${reindex_error}"
+    fi
+    first_file_after="$(sql_super -c \
+        "SELECT pg_catalog.pg_relation_filenode(${first_index_oid});")"
+    second_file_after="$(sql_super -c \
+        "SELECT pg_catalog.pg_relation_filenode(${second_index_oid});")"
+    if [ "${first_file_after}" = "${first_file_before}" ]; then
+        error "partitioned REINDEX did not commit the earlier leaf"
+    fi
+    assert_eq "failed partitioned REINDEX rolls back the failing leaf" \
+        "${second_file_before}" "${second_file_after}"
+    first_job_after="$(current_generation_job_id "${first_index_oid}")"
+    if [ -z "${first_job_after}" ] ||
+        [ "${first_job_after}" = "${first_job_before}" ]; then
+        error "committed partition leaf replacement was not reconciled"
+    fi
+
+    sql_super -c "ALTER ROLE durable_owner IN DATABASE ${TEST_DB}
+        RESET lifecycle.reindex_failure;"
+    sql_as durable_owner -c "
+        DROP TABLE public.lifecycle_reindex_failure_docs;
+        DROP FUNCTION public.lifecycle_reindex_value(text);"
+}
+
+test_ordinary_inheritance_reindex_scope() {
+    local child_file_before child_file_after child_job_before
+    local child_job_after parent_file_before parent_file_after
+    local parent_index_oid
+
+    sql_as durable_owner -c "
+        CREATE TABLE public.lifecycle_inherit_parent (body text);
+        CREATE TABLE public.lifecycle_inherit_child ()
+          INHERITS (public.lifecycle_inherit_parent);
+        CREATE INDEX lifecycle_inherit_parent_idx
+          ON public.lifecycle_inherit_parent USING bm25(body)
+          WITH (text_config = 'english',
+                compaction = 'background',
+                compaction_schedule = '0 0 1 1 *');
+        CREATE INDEX lifecycle_inherit_child_idx
+          ON public.lifecycle_inherit_child USING bm25(body)
+          WITH (text_config = 'english',
+                compaction = 'background',
+                compaction_schedule = '0 0 1 1 *');" >/dev/null 2>&1
+    sql_super -c "ALTER TABLE public.lifecycle_inherit_child
+                   OWNER TO durable_owner_two;" >/dev/null 2>&1
+    parent_index_oid="$(sql_super -c \
+        "SELECT 'public.lifecycle_inherit_parent_idx'::regclass::oid;")"
+    parent_file_before="$(sql_super -c \
+        "SELECT pg_catalog.pg_relation_filenode(${parent_index_oid});")"
+    child_file_before="$(sql_super -c "SELECT pg_catalog.pg_relation_filenode(
+        'public.lifecycle_inherit_child_idx'::regclass);")"
+    child_job_before="$(current_generation_job_id \
+        "$(sql_super -c "SELECT
+          'public.lifecycle_inherit_child_idx'::regclass::oid;")")"
+
+    sql_super -c "ALTER ROLE durable_owner_two NOLOGIN;"
+    sql_as durable_owner -c \
+        "REINDEX TABLE public.lifecycle_inherit_parent;" >/dev/null 2>&1
+    sql_super -c "ALTER ROLE durable_owner_two LOGIN;"
+
+    parent_file_after="$(sql_super -c \
+        "SELECT pg_catalog.pg_relation_filenode(${parent_index_oid});")"
+    child_file_after="$(sql_super -c "SELECT pg_catalog.pg_relation_filenode(
+        'public.lifecycle_inherit_child_idx'::regclass);")"
+    child_job_after="$(current_generation_job_id \
+        "$(sql_super -c "SELECT
+          'public.lifecycle_inherit_child_idx'::regclass::oid;")")"
+    if [ "${parent_file_after}" = "${parent_file_before}" ]; then
+        error "ordinary parent REINDEX did not rebuild its own index"
+    fi
+    assert_eq "ordinary child index is not reindexed with its parent" \
+        "${child_file_before}" "${child_file_after}"
+    assert_eq "ordinary child workflow is not mistaken for parent work" \
+        "${child_job_before}" "${child_job_after}"
+
+    sql_super -c "DROP TABLE public.lifecycle_inherit_child,
+                             public.lifecycle_inherit_parent;"
+}
+
 test_prior_generation_spill_adoption() {
     local index_oid old_instance current_instance replacement_instance
     local threshold_before
 
+    install_signal_probe
     sql_as durable_owner -c "
         CREATE TABLE public.lifecycle_adopt_docs (id integer, body text);
         INSERT INTO public.lifecycle_adopt_docs
@@ -1302,6 +1713,7 @@ test_prior_generation_spill_adoption() {
                      pg_textsearch.memtable_pages_threshold = 1;" >/dev/null
     sql_super -c "SELECT pg_catalog.pg_reload_conf();" >/dev/null
 
+    reset_signal_probe
     sql_as durable_writer -c "INSERT INTO public.lifecycle_adopt_docs
       SELECT 1000 + document_number,
              (SELECT pg_catalog.string_agg(
@@ -1322,6 +1734,12 @@ test_prior_generation_spill_adoption() {
         "$(sql_super -c "SELECT submitted_by::pg_catalog.text
                           FROM df.instances
                           WHERE id = '${replacement_instance}';")"
+    assert_eq "spill adoption signals the replacement once as owner" \
+        "${replacement_instance}:durable_owner" \
+        "$(sql_super -c "SELECT instance_id || ':' || role_name
+                          FROM public.compaction_signal_audit;")"
+    assert_eq "spill adoption attempts exactly one signal" "1" \
+        "$(signal_attempt_count)"
     assert_eq "spill adoption preserves the prior generation schedule" "t" \
         "$(sql_super -c "SELECT label LIKE '%:' ||
             pg_catalog.encode(
@@ -1345,6 +1763,7 @@ test_prior_generation_spill_adoption() {
         AND instance.status OPERATOR(pg_catalog.=)
             ANY (ARRAY['pending', 'running']::pg_catalog.text[]);" \
         >/dev/null
+    restore_signal_probe
     sql_as durable_owner -c "DROP TABLE public.lifecycle_adopt_docs;"
 }
 
@@ -2542,6 +2961,10 @@ run_test test_defaulted_start_arity
 run_test test_partitioned_create_activation
 run_test test_owner_reconciliation
 run_test test_reindex_reconciliation
+run_test test_concurrent_reindex_reconciliation
+run_test test_partitioned_reindex_reconciliation
+run_test test_partitioned_reindex_failure_reconciliation
+run_test test_ordinary_inheritance_reindex_scope
 run_test test_prior_generation_spill_adoption
 run_test test_request_queue_runtime
 run_test test_actor_writer_worker_identity
