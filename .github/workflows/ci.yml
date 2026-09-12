@@ -724,8 +724,8 @@ jobs:
       # Managed background compaction is only exercisable against a live
       # pg_durable; src/index/compaction_job.c is otherwise unreachable.
       PG_DURABLE_VERSION: 0.2.8
-      PG_DURABLE_REF: 53b49896a92e0e6b60267d170f897f2468997a3c
-      PGRX_VERSION: 0.16.1
+      PG_DURABLE_PACKAGE: pg-durable-postgresql-17_0.2.8-1_amd64.deb
+      PG_DURABLE_SHA256: 927b091e57be42c63079fc50a548af5f491b223534eaca112c5d1f18299dc29f
 
     steps:
     - uses: actions/checkout@v4
@@ -811,27 +811,14 @@ jobs:
         export PATH="/usr/lib/postgresql/17/bin:$PATH"
         pg_ctl stop -D tmp_check_shared/data -l tmp_check_shared/data/logfile || true
 
-    - name: Cache pg_durable package
-      id: durable-cache
-      uses: actions/cache@v4
-      with:
-        path: pg_durable_src/target/release/pg_durable-pg17
-        key: pg-durable-${{ env.PG_DURABLE_REF }}-pg17-${{ runner.os }}
-
-    - name: Build pg_durable
-      if: steps.durable-cache.outputs.cache-hit != 'true'
+    - name: Download pg_durable release package
       run: |
-        export PATH="/usr/lib/postgresql/17/bin:$PATH"
-        git init pg_durable_src
-        git -C pg_durable_src remote add origin \
-          https://github.com/microsoft/pg_durable.git
-        git -C pg_durable_src fetch --depth 1 origin "$PG_DURABLE_REF"
-        git -C pg_durable_src checkout --detach FETCH_HEAD
-        test "$(git -C pg_durable_src rev-parse HEAD)" = "$PG_DURABLE_REF"
-        cargo install cargo-pgrx --version "$PGRX_VERSION" --locked
-        cargo pgrx init --pg17 /usr/lib/postgresql/17/bin/pg_config
-        make -C pg_durable_src package \
-          PG_CONFIG=/usr/lib/postgresql/17/bin/pg_config
+        curl -fL --retry 3 \
+          -o "$PG_DURABLE_PACKAGE" \
+          "https://github.com/microsoft/pg_durable/releases/download/v${PG_DURABLE_VERSION}/${PG_DURABLE_PACKAGE}"
+        echo "${PG_DURABLE_SHA256}  ${PG_DURABLE_PACKAGE}" | sha256sum -c -
+        mkdir pg_durable_package
+        dpkg-deb -x "$PG_DURABLE_PACKAGE" pg_durable_package
 
     - name: Run managed pg_durable compaction test
       timeout-minutes: 15
@@ -841,7 +828,7 @@ jobs:
         # PostgreSQL sharedir, which is root-owned on the runner image.
         sudo chown -R "$(id -u):$(id -g)" \
           /usr/share/postgresql/17/extension
-        export PG_DURABLE_PACKAGE_DIR="$PWD/pg_durable_src/target/release/pg_durable-pg17"
+        export PG_DURABLE_PACKAGE_DIR="$PWD/pg_durable_package"
         make test-durable \
           PG_CONFIG=/usr/lib/postgresql/17/bin/pg_config
 
