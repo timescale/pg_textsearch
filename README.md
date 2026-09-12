@@ -425,10 +425,10 @@ LIMIT 10;
 The default `inline` policy compacts synchronously during memtable spills.
 Managed `background` mode uses
 [pg_durable](https://github.com/microsoft/pg_durable) 0.2.8 or newer rather
-than a worker built into pg_textsearch. pg_durable must be installed, listed
-in `shared_preload_libraries`, initialized for the current database, and
-granted to the index owner. The owner must have `LOGIN`; a superuser owner
-also requires `pg_durable.enable_superuser_instances = on`.
+than a built-in worker. pg_durable must be preloaded, initialized in the
+current database, and granted to the index owner. The owner must have `LOGIN`;
+a superuser owner also requires
+`pg_durable.enable_superuser_instances = on`.
 
 ```sql
 CREATE INDEX documents_bm25 ON documents USING bm25(content)
@@ -439,17 +439,8 @@ WITH (
 );
 ```
 
-Each physical index gets one owner-scoped workflow. It runs an immediate
-stepped cascade, then waits for either a spill signal or the captured schedule.
-Each merge batch runs in its own transaction. Transient SQL failures are
-recorded without terminating the workflow; the same workflow retries the
-startup cascade or handles a later signal or schedule tick.
-
-Use `manual` when pg_durable is not desired and invoke `bm25_compact()` or
-`bm25_compact_step()` from an external scheduler. Background mode is rejected
-for temporary indexes because another backend cannot open them.
-
-Change modes or refresh the captured default schedule with `ALTER INDEX`:
+Change modes with `ALTER INDEX`. Resetting `compaction_schedule` uses the
+current `pg_textsearch.background_compaction_schedule` default.
 
 ```sql
 ALTER INDEX documents_bm25 SET (compaction = 'background');
@@ -457,9 +448,8 @@ ALTER INDEX documents_bm25 RESET (compaction_schedule);
 ALTER INDEX documents_bm25 SET (compaction = 'manual');
 ```
 
-Reapplying background mode captures the current global default only when the
-index has no explicit `compaction_schedule`; reset that reloption to return to
-the default.
+Use `manual` with an external scheduler when pg_durable is not desired.
+Temporary indexes do not support background mode.
 
 See [ARCHITECTURE.md](ARCHITECTURE.md#managed-background-compaction) for
 workflow lifecycle and safety details.
