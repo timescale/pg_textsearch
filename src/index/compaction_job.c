@@ -641,6 +641,25 @@ tp_owner_privilege_error(
 			 errhint("Grant the role access with df.grant_usage().")));
 }
 
+static void
+tp_owner_textsearch_schema_privilege_error(
+		Oid owner_oid, const char *schema_name)
+{
+	const char *owner_name = GetUserNameFromId(owner_oid, false);
+
+	ereport(ERROR,
+			(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
+			 errmsg("index owner lacks required pg_textsearch schema "
+					"privilege"),
+			 errdetail(
+					 "Role \"%s\" lacks USAGE privilege on schema %s.",
+					 owner_name,
+					 quote_identifier(schema_name)),
+			 errhint("Grant access with GRANT USAGE ON SCHEMA %s TO %s.",
+					 quote_identifier(schema_name),
+					 quote_identifier(owner_name))));
+}
+
 static bool
 tp_owner_has_column_privilege(
 		Oid			relation_oid,
@@ -721,12 +740,8 @@ tp_require_owner_durable_privileges(
 				objects->textsearch_namespace_oid,
 				owner_oid,
 				ACL_USAGE) != ACLCHECK_OK)
-		tp_owner_privilege_error(
-				owner_oid,
-				"USAGE",
-				psprintf(
-						"schema %s",
-						quote_identifier(objects->textsearch_schema)));
+		tp_owner_textsearch_schema_privilege_error(
+				owner_oid, objects->textsearch_schema);
 
 	if (object_aclcheck(
 				NamespaceRelationId,

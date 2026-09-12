@@ -165,7 +165,7 @@ test_alter_preflight_rejections() {
         "owner without pg_textsearch schema USAGE" \
         durable_no_textsearch_schema durable_writer \
         alter_no_textsearch_schema \
-        "index owner lacks required pg_durable privileges"
+        "index owner lacks required pg_textsearch schema privilege"
 }
 
 test_cic_owner_privilege_preflight() {
@@ -227,7 +227,8 @@ schema USAGE"
     assert_eq "rejected no-schema-USAGE CIC leaves no relation" "t" \
         "$(sql_super -c "SELECT pg_catalog.to_regclass(
             'no_textsearch_schema_docs_idx') IS NULL;")"
-    if ! grep -Fq "index owner lacks required pg_durable privileges" \
+    if ! grep -Fq \
+        "index owner lacks required pg_textsearch schema privilege" \
         <<<"${create_error}"; then
         error "no-schema-USAGE owner did not fail stable privilege check: \
 ${create_error}"
@@ -235,6 +236,12 @@ ${create_error}"
     if ! grep -Fq "${schema_error}" <<<"${create_error}"; then
         error "no-schema-USAGE owner error did not identify public: \
 ${create_error}"
+    fi
+    if ! grep -Fq \
+        'Grant access with GRANT USAGE ON SCHEMA public TO' \
+        <<<"${create_error}"; then
+        error "no-schema-USAGE owner error did not provide an actionable \
+hint: ${create_error}"
     fi
     assert_eq "no-schema-USAGE CIC creates no probe workflow" \
         "${jobs_before}" "$(managed_job_count)"
@@ -1658,7 +1665,7 @@ SQL
 }
 
 test_rollback_in_fresh_database() {
-    local nologin_error
+    local alter_error nologin_error
 
     sql_super -c "CREATE DATABASE ${ROLLBACK_DB};"
     sql_super -c "ALTER SYSTEM SET pg_durable.database = '${ROLLBACK_DB}';"
@@ -1706,6 +1713,53 @@ SQL
     assert_eq "rolled-back CREATE leaves no sticky dependency" "0" \
         "$(dependency_count)"
     assert_eq "rolled-back CREATE leaves no private-helper grant" "f" \
+        "$(sql_super -c "SELECT
+            pg_catalog.has_function_privilege(
+                'durable_owner',
+                'bm25_compact_step_if_current(oid,oid,oid,oid,oid)',
+                'EXECUTE')
+            OR pg_catalog.has_function_privilege(
+                'durable_owner',
+                'bm25_background_target_is_current(oid,oid,oid,oid,oid)',
+                'EXECUTE');")"
+
+    sql_super -c "CREATE TABLE alter_rollback_documents (
+                       id integer, body text);
+                   ALTER TABLE alter_rollback_documents
+                     OWNER TO durable_owner;"
+    sql_as durable_owner -c "
+        CREATE INDEX alter_rollback_documents_idx
+          ON alter_rollback_documents USING bm25(body)
+          WITH (text_config = 'english', compaction = 'manual');" >/dev/null
+    if alter_error="$(sql_as durable_owner <<'SQL' 2>&1
+BEGIN;
+ALTER INDEX alter_rollback_documents_idx
+  SET (compaction = 'background');
+DO $body$
+BEGIN
+    RAISE EXCEPTION 'force background ALTER rollback';
+END
+$body$;
+COMMIT;
+SQL
+    )"; then
+        error "background ALTER rollback transaction unexpectedly committed"
+    fi
+    if ! grep -Fq "force background ALTER rollback" \
+        <<<"${alter_error}"; then
+        error "background ALTER rollback did not reach forced failure: \
+${alter_error}"
+    fi
+    assert_eq "rolled-back ALTER preserves manual reloption" "t" \
+        "$(sql_super -c "SELECT reloptions @> ARRAY['compaction=manual']
+                          FROM pg_catalog.pg_class
+                          WHERE oid =
+                            'alter_rollback_documents_idx'::regclass;")"
+    assert_eq "rolled-back ALTER leaves no managed job" "0" \
+        "$(managed_job_count)"
+    assert_eq "rolled-back ALTER leaves no sticky dependency" "0" \
+        "$(dependency_count)"
+    assert_eq "rolled-back ALTER leaves no private-helper grant" "f" \
         "$(sql_super -c "SELECT
             pg_catalog.has_function_privilege(
                 'durable_owner',
