@@ -177,9 +177,9 @@ test_cic_owner_privilege_preflight() {
     sql_super -c "REVOKE CONNECT ON DATABASE durable_compaction_test
                    FROM PUBLIC;
                    GRANT CONNECT ON DATABASE durable_compaction_test
-                   TO postgres, durable_owner, durable_usage_only,
-                      durable_read_only, durable_bypass, durable_actor,
-                      durable_writer;"
+                   TO postgres, durable_owner, durable_owner_two,
+                      durable_usage_only, durable_read_only, durable_bypass,
+                      durable_actor, durable_writer;"
 
     jobs_before="$(managed_job_count)"
     sql_super -c "CREATE TABLE no_connect_docs (body text);
@@ -208,9 +208,10 @@ ${create_error}"
                    TO durable_no_textsearch_schema;
                    REVOKE USAGE ON SCHEMA public FROM PUBLIC;
                    GRANT USAGE ON SCHEMA public
-                   TO postgres, durable_owner, durable_nologin,
-                      durable_usage_only, durable_read_only, durable_bypass,
-                      durable_no_connect, durable_actor, durable_writer;"
+                   TO postgres, durable_owner, durable_owner_two,
+                      durable_nologin, durable_usage_only, durable_read_only,
+                      durable_bypass, durable_no_connect, durable_actor,
+                      durable_writer;"
 
     jobs_before="$(managed_job_count)"
     sql_super -c "CREATE TABLE no_textsearch_schema_docs (body text);
@@ -604,9 +605,11 @@ initialize_database() {
                             AND NOT attribute.attisdropped;")"
     sql_super -c "CREATE EXTENSION pg_textsearch;"
     sql_super -c "GRANT CREATE ON SCHEMA public
-                   TO durable_owner, durable_usage_only, durable_read_only,
-                      durable_bypass, durable_actor, durable_writer;"
+                   TO durable_owner, durable_owner_two, durable_usage_only,
+                      durable_read_only, durable_bypass, durable_actor,
+                      durable_writer;"
     sql_super -c "SELECT df.grant_usage('durable_owner');" >/dev/null
+    sql_super -c "SELECT df.grant_usage('durable_owner_two');" >/dev/null
     sql_super -c "SELECT df.grant_usage('durable_bypass');" >/dev/null
     sql_super -c "SELECT df.grant_usage('durable_no_connect');" >/dev/null
     sql_super -c \
@@ -714,6 +717,52 @@ active_job_id_for_owner() {
       LIMIT 1;"
 }
 
+current_generation_job_id() {
+    local index_oid=$1
+
+    sql_super -c "SELECT instance.id
+      FROM df.instances AS instance
+      JOIN pg_catalog.pg_class AS relation
+        ON relation.oid = ${index_oid}
+      JOIN pg_catalog.pg_database AS database
+        ON database.datname = pg_catalog.current_database()
+      WHERE instance.label LIKE pg_catalog.format(
+                'pg_textsearch:bg:v1:%s:%s:%s:%s:%s:%%',
+                database.oid,
+                relation.oid,
+                coalesce(
+                    nullif(relation.reltablespace, 0),
+                    database.dattablespace),
+                pg_catalog.pg_relation_filenode(relation.oid),
+                relation.relowner)
+        AND instance.submitted_by::pg_catalog.oid = relation.relowner
+        AND instance.status IN ('pending', 'running')
+      ORDER BY instance.created_at DESC, instance.id DESC
+      LIMIT 1;"
+}
+
+current_generation_job_count() {
+    local index_oid=$1
+
+    sql_super -c "SELECT count(*)
+      FROM df.instances AS instance
+      JOIN pg_catalog.pg_class AS relation
+        ON relation.oid = ${index_oid}
+      JOIN pg_catalog.pg_database AS database
+        ON database.datname = pg_catalog.current_database()
+      WHERE instance.label LIKE pg_catalog.format(
+                'pg_textsearch:bg:v1:%s:%s:%s:%s:%s:%%',
+                database.oid,
+                relation.oid,
+                coalesce(
+                    nullif(relation.reltablespace, 0),
+                    database.dattablespace),
+                pg_catalog.pg_relation_filenode(relation.oid),
+                relation.relowner)
+        AND instance.submitted_by::pg_catalog.oid = relation.relowner
+        AND instance.status IN ('pending', 'running');"
+}
+
 managed_job_count() {
     sql_super -c "SELECT count(*) FROM df.instances
       WHERE label LIKE 'pg_textsearch:bg:v1:%';"
@@ -789,6 +838,7 @@ setup_cluster() {
     "${PGBINDIR}/createdb" -h "${SOCKET_DIR}" -p "${TEST_PORT}" \
         -U postgres "${TEST_DB}"
     sql_super -c "CREATE ROLE durable_owner LOGIN;"
+    sql_super -c "CREATE ROLE durable_owner_two LOGIN;"
     sql_super -c "CREATE ROLE durable_nologin NOLOGIN;"
     sql_super -c "CREATE ROLE durable_usage_only LOGIN;"
     sql_super -c "CREATE ROLE durable_read_only LOGIN;"
@@ -945,6 +995,699 @@ ${create_output}"
     fi
     assert_eq "recovery admits one replacement owner workflow" "1" \
         "$(active_jobs_for_index "${index_oid}")"
+}
+
+test_partitioned_create_activation() {
+    local create_output leaf_jobs parent_oid
+
+    sql_as durable_owner -c "
+        CREATE TABLE public.lifecycle_partitioned_docs
+          (id integer, body text)
+          PARTITION BY RANGE (id);
+        CREATE TABLE public.lifecycle_partitioned_docs_low
+          PARTITION OF public.lifecycle_partitioned_docs
+          FOR VALUES FROM (0) TO (100);
+        CREATE TABLE public.lifecycle_partitioned_docs_high
+          PARTITION OF public.lifecycle_partitioned_docs
+          FOR VALUES FROM (100) TO (200);"
+    if ! create_output="$(sql_as durable_owner -c "
+        CREATE INDEX lifecycle_partitioned_idx
+          ON public.lifecycle_partitioned_docs USING bm25(body)
+          WITH (text_config = 'english',
+                compaction = 'background',
+                compaction_schedule = '0 0 1 1 *');" 2>&1)"; then
+        error "partitioned background CREATE failed: ${create_output}"
+    fi
+
+    parent_oid="$(sql_super -c \
+        "SELECT 'public.lifecycle_partitioned_idx'::regclass::oid;")"
+    assert_eq "partitioned parent has two physical leaf indexes" "2" \
+        "$(sql_super -c "SELECT count(*)
+          FROM pg_catalog.pg_inherits AS inheritance
+          JOIN pg_catalog.pg_class AS child
+            ON child.oid = inheritance.inhrelid
+          WHERE inheritance.inhparent = ${parent_oid}
+            AND child.relkind = 'i';")"
+    assert_eq "partitioned parent has no managed workflow" "0" \
+        "$(active_jobs_for_index "${parent_oid}")"
+    leaf_jobs="$(sql_super -c "SELECT count(*)
+      FROM pg_catalog.pg_inherits AS inheritance
+      JOIN pg_catalog.pg_class AS relation
+        ON relation.oid = inheritance.inhrelid
+      JOIN pg_catalog.pg_database AS database
+        ON database.datname = pg_catalog.current_database()
+      JOIN df.instances AS instance
+        ON instance.label LIKE pg_catalog.format(
+             'pg_textsearch:bg:v1:%s:%s:%s:%s:%s:%%',
+             database.oid,
+             relation.oid,
+             coalesce(nullif(relation.reltablespace, 0),
+                      database.dattablespace),
+             pg_catalog.pg_relation_filenode(relation.oid),
+             relation.relowner)
+       AND instance.submitted_by::pg_catalog.oid = relation.relowner
+       AND instance.status IN ('pending', 'running')
+      WHERE inheritance.inhparent = ${parent_oid}
+        AND relation.relkind = 'i';")"
+    assert_eq "partitioned CREATE activates every physical leaf" "2" \
+        "${leaf_jobs}"
+
+    sql_as durable_owner -c "SELECT df.cancel(
+        instance.id, 'partitioned lifecycle test complete')
+      FROM df.instances AS instance
+      JOIN pg_catalog.pg_inherits AS inheritance
+        ON instance.label OPERATOR(pg_catalog.~~)
+           ('pg_textsearch:bg:v1:%:' ||
+            inheritance.inhrelid::pg_catalog.text || ':%')
+      WHERE inheritance.inhparent = ${parent_oid}
+        AND instance.status OPERATOR(pg_catalog.=)
+            ANY (ARRAY['pending', 'running']::pg_catalog.text[]);" \
+        >/dev/null
+    sql_as durable_owner -c \
+        "DROP TABLE public.lifecycle_partitioned_docs;"
+}
+
+test_owner_reconciliation() {
+    local alter_error dependencies_before index_oid job_before job_after
+    local jobs_before filenumber_before filenumber_after privileges_before
+
+    sql_as durable_owner -c "
+        CREATE TABLE public.lifecycle_owner_docs (body text);
+        CREATE INDEX lifecycle_owner_idx
+          ON public.lifecycle_owner_docs USING bm25(body)
+          WITH (text_config = 'english',
+                compaction = 'background',
+                compaction_schedule = '0 0 1 1 *');" >/dev/null 2>&1
+    index_oid="$(sql_super -c \
+        "SELECT 'public.lifecycle_owner_idx'::regclass::oid;")"
+    filenumber_before="$(sql_super -c \
+        "SELECT pg_catalog.pg_relation_filenode(${index_oid});")"
+    job_before="$(current_generation_job_id "${index_oid}")"
+
+    sql_super -c \
+        "ALTER TABLE public.lifecycle_owner_docs
+           OWNER TO durable_owner_two;" \
+        >/dev/null 2>&1
+    filenumber_after="$(sql_super -c \
+        "SELECT pg_catalog.pg_relation_filenode(${index_oid});")"
+    job_after="$(current_generation_job_id "${index_oid}")"
+    assert_eq "ALTER OWNER preserves the physical generation" \
+        "${filenumber_before}" "${filenumber_after}"
+    assert_eq "ALTER TABLE OWNER changes the physical index owner" \
+        "durable_owner_two" \
+        "$(sql_super -c "SELECT pg_catalog.pg_get_userbyid(relowner)
+                          FROM pg_catalog.pg_class
+                          WHERE oid = ${index_oid};")"
+    if [ -z "${job_after}" ] || [ "${job_after}" = "${job_before}" ]; then
+        error "ALTER TABLE OWNER did not create a new-owner workflow"
+    fi
+    assert_eq "ALTER TABLE OWNER submits the replacement as the new owner" \
+        "durable_owner_two" \
+        "$(sql_super -c "SELECT submitted_by::pg_catalog.text
+                          FROM df.instances
+                          WHERE id = '${job_after}';")"
+
+    sql_as durable_owner -c "
+        CREATE TABLE public.lifecycle_owner_reject_docs (body text);
+        CREATE INDEX lifecycle_owner_reject_idx
+          ON public.lifecycle_owner_reject_docs USING bm25(body)
+          WITH (text_config = 'english',
+                compaction = 'background',
+                compaction_schedule = '0 0 1 1 *');" >/dev/null 2>&1
+    jobs_before="$(managed_job_count)"
+    dependencies_before="$(dependency_count)"
+    privileges_before="$(helper_privileges_for_role durable_nologin)"
+    if alter_error="$(sql_as durable_writer -c "
+        ALTER TABLE public.lifecycle_owner_reject_docs
+          OWNER TO durable_nologin;" 2>&1)"; then
+        error "unrelated writer changed background index ownership"
+    fi
+    if ! grep -Fq "must be owner of table lifecycle_owner_reject_docs" \
+        <<<"${alter_error}"; then
+        error "unauthorized ALTER OWNER bypassed core ownership checks: \
+${alter_error}"
+    fi
+    assert_eq "unauthorized ALTER OWNER creates no workflow" \
+        "${jobs_before}" "$(managed_job_count)"
+
+    if alter_error="$(sql_super -c "
+        ALTER TABLE public.lifecycle_owner_reject_docs
+          OWNER TO durable_nologin;" 2>&1)"; then
+        error "ALTER TABLE OWNER accepted an ineligible NOLOGIN owner"
+    fi
+    if ! grep -Fq \
+        "index owner must have LOGIN for background compaction" \
+        <<<"${alter_error}"; then
+        error "ALTER TABLE OWNER did not preflight the new owner: \
+${alter_error}"
+    fi
+    assert_eq "rejected ALTER TABLE OWNER preserves the old owner" \
+        "durable_owner" \
+        "$(sql_super -c "SELECT pg_catalog.pg_get_userbyid(relowner)
+          FROM pg_catalog.pg_class
+          WHERE oid = 'public.lifecycle_owner_reject_idx'::regclass;")"
+    assert_eq "rejected ALTER TABLE OWNER creates no workflow" \
+        "${jobs_before}" "$(managed_job_count)"
+    assert_eq "rejected ALTER TABLE OWNER changes no dependency" \
+        "${dependencies_before}" "$(dependency_count)"
+    assert_eq "rejected ALTER TABLE OWNER changes no helper grants" \
+        "${privileges_before}" \
+        "$(helper_privileges_for_role durable_nologin)"
+
+    sql_as durable_owner_two -c "SELECT df.cancel(
+        '${job_after}', 'owner lifecycle test complete');" >/dev/null
+    sql_as durable_owner -c "SELECT df.cancel(
+        instance.id, 'owner lifecycle test complete')
+      FROM df.instances AS instance
+      WHERE instance.label OPERATOR(pg_catalog.~~)
+            'pg_textsearch:bg:v1:%:${index_oid}:%'
+        AND instance.submitted_by OPERATOR(pg_catalog.=)
+            'durable_owner'::regrole
+        AND instance.status OPERATOR(pg_catalog.=)
+            ANY (ARRAY['pending', 'running']::pg_catalog.text[]);" \
+        >/dev/null
+    sql_as durable_owner -c "SELECT df.cancel(
+        instance.id, 'owner lifecycle test complete')
+      FROM df.instances AS instance
+      WHERE instance.label OPERATOR(pg_catalog.~~)
+            ('pg_textsearch:bg:v1:%:' ||
+             'public.lifecycle_owner_reject_idx'::regclass::oid::text ||
+             ':%')
+        AND instance.status OPERATOR(pg_catalog.=)
+            ANY (ARRAY['pending', 'running']::pg_catalog.text[]);" \
+        >/dev/null
+    sql_super -c \
+        "DROP TABLE public.lifecycle_owner_docs,
+                    public.lifecycle_owner_reject_docs;"
+}
+
+test_reindex_reconciliation() {
+    local a_before a_after a_table_after b_before b_after
+    local a_file_before a_file_after a_table_file_before a_table_file_after
+    local b_file_before b_file_after a_oid b_oid
+
+    sql_as durable_owner -c "
+        CREATE TABLE public.lifecycle_reindex_docs
+          (body_a text, body_b text);
+        CREATE INDEX lifecycle_reindex_a_idx
+          ON public.lifecycle_reindex_docs USING bm25(body_a)
+          WITH (text_config = 'english',
+                compaction = 'background',
+                compaction_schedule = '0 0 1 1 *');
+        CREATE INDEX lifecycle_reindex_b_idx
+          ON public.lifecycle_reindex_docs USING bm25(body_b)
+          WITH (text_config = 'english',
+                compaction = 'background',
+                compaction_schedule = '0 0 1 1 *');" >/dev/null 2>&1
+    a_oid="$(sql_super -c \
+        "SELECT 'public.lifecycle_reindex_a_idx'::regclass::oid;")"
+    b_oid="$(sql_super -c \
+        "SELECT 'public.lifecycle_reindex_b_idx'::regclass::oid;")"
+    a_before="$(current_generation_job_id "${a_oid}")"
+    b_before="$(current_generation_job_id "${b_oid}")"
+    a_file_before="$(sql_super -c \
+        "SELECT pg_catalog.pg_relation_filenode(${a_oid});")"
+
+    sql_as durable_owner -c \
+        "REINDEX INDEX public.lifecycle_reindex_a_idx;" >/dev/null 2>&1
+    a_file_after="$(sql_super -c \
+        "SELECT pg_catalog.pg_relation_filenode(${a_oid});")"
+    a_after="$(current_generation_job_id "${a_oid}")"
+    if [ "${a_file_after}" = "${a_file_before}" ]; then
+        error "REINDEX INDEX did not replace the physical generation"
+    fi
+    if [ -z "${a_after}" ] || [ "${a_after}" = "${a_before}" ]; then
+        error "REINDEX INDEX did not reconcile a replacement workflow"
+    fi
+
+    a_table_after="${a_after}"
+    a_table_file_before="${a_file_after}"
+    b_file_before="$(sql_super -c \
+        "SELECT pg_catalog.pg_relation_filenode(${b_oid});")"
+    sql_as durable_owner -c \
+        "REINDEX TABLE public.lifecycle_reindex_docs;" >/dev/null 2>&1
+    a_table_file_after="$(sql_super -c \
+        "SELECT pg_catalog.pg_relation_filenode(${a_oid});")"
+    b_file_after="$(sql_super -c \
+        "SELECT pg_catalog.pg_relation_filenode(${b_oid});")"
+    a_table_after="$(current_generation_job_id "${a_oid}")"
+    b_after="$(current_generation_job_id "${b_oid}")"
+    if [ "${a_table_file_after}" = "${a_table_file_before}" ] ||
+        [ "${b_file_after}" = "${b_file_before}" ]; then
+        error "REINDEX TABLE did not replace every physical generation"
+    fi
+    if [ -z "${a_table_after}" ] ||
+        [ "${a_table_after}" = "${a_after}" ] ||
+        [ -z "${b_after}" ] || [ "${b_after}" = "${b_before}" ]; then
+        error "REINDEX TABLE did not reconcile every background index"
+    fi
+    assert_eq "REINDEX TABLE selects one current workflow per index" "2" \
+        "$(( $(current_generation_job_count "${a_oid}") +
+             $(current_generation_job_count "${b_oid}") ))"
+
+    sql_as durable_owner -c "SELECT df.cancel(
+        instance.id, 'reindex lifecycle test complete')
+      FROM df.instances AS instance
+      WHERE (instance.label OPERATOR(pg_catalog.~~)
+               'pg_textsearch:bg:v1:%:${a_oid}:%'
+             OR instance.label OPERATOR(pg_catalog.~~)
+               'pg_textsearch:bg:v1:%:${b_oid}:%')
+        AND instance.status OPERATOR(pg_catalog.=)
+            ANY (ARRAY['pending', 'running']::pg_catalog.text[]);" \
+        >/dev/null
+    sql_as durable_owner -c "DROP TABLE public.lifecycle_reindex_docs;"
+}
+
+test_prior_generation_spill_adoption() {
+    local index_oid old_instance current_instance replacement_instance
+    local threshold_before
+
+    sql_as durable_owner -c "
+        CREATE TABLE public.lifecycle_adopt_docs (id integer, body text);
+        INSERT INTO public.lifecycle_adopt_docs
+          SELECT i, pg_catalog.format('seed document %s filler', i)
+          FROM generate_series(1, 100) AS i;
+        CREATE INDEX lifecycle_adopt_idx
+          ON public.lifecycle_adopt_docs USING bm25(body)
+          WITH (text_config = 'english',
+                compaction = 'background',
+                compaction_schedule = '0 0 1 1 *');
+        GRANT INSERT ON public.lifecycle_adopt_docs TO durable_writer;" \
+        >/dev/null 2>&1
+    index_oid="$(sql_super -c \
+        "SELECT 'public.lifecycle_adopt_idx'::regclass::oid;")"
+    old_instance="$(current_generation_job_id "${index_oid}")"
+    wait_for_signal_node "${old_instance}" 30
+
+    sql_as durable_owner -c \
+        "REINDEX INDEX public.lifecycle_adopt_idx;" >/dev/null 2>&1
+    current_instance="$(current_generation_job_id "${index_oid}")"
+    if [ -n "${current_instance}" ] &&
+        [ "${current_instance}" != "${old_instance}" ]; then
+        sql_as durable_owner -c "SELECT df.cancel(
+            '${current_instance}', 'force spill-time adoption');" >/dev/null
+        wait_for_terminal "${current_instance}" 30
+        sql_super -c "UPDATE df.instances
+          SET label = 'retired-current-generation-' || id
+          WHERE id = '${current_instance}';"
+    fi
+
+    sql_super -c "REVOKE EXECUTE ON FUNCTION
+        bm25_compact_step_if_current(oid, oid, oid, oid, oid),
+        bm25_background_target_is_current(oid, oid, oid, oid, oid)
+        FROM durable_owner;"
+    threshold_before="$(sql_super -c \
+        "SHOW pg_textsearch.memtable_pages_threshold;")"
+    sql_super -c "ALTER SYSTEM SET
+                     pg_textsearch.memtable_pages_threshold = 1;" >/dev/null
+    sql_super -c "SELECT pg_catalog.pg_reload_conf();" >/dev/null
+
+    sql_as durable_writer -c "INSERT INTO public.lifecycle_adopt_docs
+      SELECT 1000 + document_number,
+             (SELECT pg_catalog.string_agg(
+                         pg_catalog.format(
+                           'adopt%sterm%s',
+                           document_number, term_number),
+                         ' ')
+              FROM generate_series(1, 200) AS term_number)
+      FROM generate_series(1, 6) AS document_number;" >/dev/null
+    replacement_instance="$(current_generation_job_id "${index_oid}")"
+    if [ -z "${replacement_instance}" ] ||
+        [ "${replacement_instance}" = "${old_instance}" ] ||
+        [ "${replacement_instance}" = "${current_instance}" ]; then
+        error "spill did not adopt the prior generation schedule"
+    fi
+    assert_eq "spill adoption submits as the physical index owner" \
+        "durable_owner" \
+        "$(sql_super -c "SELECT submitted_by::pg_catalog.text
+                          FROM df.instances
+                          WHERE id = '${replacement_instance}';")"
+    assert_eq "spill adoption preserves the prior generation schedule" "t" \
+        "$(sql_super -c "SELECT label LIKE '%:' ||
+            pg_catalog.encode(
+              pg_catalog.convert_to('0 0 1 1 *', 'UTF8'), 'hex')
+          FROM df.instances
+          WHERE id = '${replacement_instance}';")"
+    assert_eq "spill adoption restores private helper access" "t:t" \
+        "$(helper_privileges_for_role durable_owner)"
+    assert_eq "spill adoption preserves the durable dependency" "1" \
+        "$(dependency_count)"
+
+    sql_super -c "ALTER SYSTEM SET
+        pg_textsearch.memtable_pages_threshold = '${threshold_before}';" \
+        >/dev/null
+    sql_super -c "SELECT pg_catalog.pg_reload_conf();" >/dev/null
+    sql_as durable_owner -c "SELECT df.cancel(
+        instance.id, 'spill adoption test complete')
+      FROM df.instances AS instance
+      WHERE instance.label OPERATOR(pg_catalog.~~)
+            'pg_textsearch:bg:v1:%:${index_oid}:%'
+        AND instance.status OPERATOR(pg_catalog.=)
+            ANY (ARRAY['pending', 'running']::pg_catalog.text[]);" \
+        >/dev/null
+    sql_as durable_owner -c "DROP TABLE public.lifecycle_adopt_docs;"
+}
+
+install_signal_probe() {
+    sql_super <<'SQL'
+ALTER FUNCTION df.signal(text, text, text) RENAME TO signal_v028;
+
+CREATE SEQUENCE public.compaction_signal_attempt_seq;
+CREATE TABLE public.compaction_signal_audit (
+    attempt bigint PRIMARY KEY,
+    instance_id text NOT NULL,
+    role_name name NOT NULL
+);
+CREATE TABLE public.compaction_signal_fault (
+    instance_id text PRIMARY KEY,
+    fault text NOT NULL
+);
+
+GRANT USAGE, SELECT ON SEQUENCE public.compaction_signal_attempt_seq
+    TO durable_owner, durable_owner_two;
+GRANT INSERT ON public.compaction_signal_audit
+    TO durable_owner, durable_owner_two;
+GRANT SELECT ON public.compaction_signal_fault
+    TO durable_owner, durable_owner_two;
+
+CREATE FUNCTION df.signal(
+    instance_id text,
+    signal_name text,
+    signal_data text DEFAULT '{}')
+RETURNS text
+LANGUAGE plpgsql
+STRICT
+SET search_path = pg_catalog, pg_temp
+AS $body$
+DECLARE
+    attempt_number bigint;
+    injected_fault text;
+BEGIN
+    attempt_number :=
+        nextval('public.compaction_signal_attempt_seq'::regclass);
+    SELECT fault
+      INTO injected_fault
+      FROM public.compaction_signal_fault AS control
+      WHERE control.instance_id OPERATOR(pg_catalog.=) $1;
+
+    IF injected_fault OPERATOR(pg_catalog.=) 'error' THEN
+        RAISE EXCEPTION 'probe ordinary signal failure';
+    ELSIF injected_fault OPERATOR(pg_catalog.=) 'cancel' THEN
+        RAISE EXCEPTION 'probe query cancellation'
+            USING ERRCODE = '57014';
+    END IF;
+
+    INSERT INTO public.compaction_signal_audit(
+        attempt, instance_id, role_name)
+    VALUES (attempt_number, $1, current_user);
+    RETURN pg_catalog.format('probe-%s', attempt_number);
+END
+$body$;
+
+ALTER EXTENSION pg_durable ADD FUNCTION df.signal(text, text, text);
+REVOKE ALL ON FUNCTION df.signal(text, text, text) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION df.signal(text, text, text)
+    TO durable_owner, durable_owner_two;
+
+CREATE FUNCTION public.queue_force_spills(
+    target_table regclass,
+    target_index regclass,
+    first_id integer,
+    rounds integer)
+RETURNS void
+LANGUAGE plpgsql
+SET search_path = pg_catalog, pg_temp
+AS $body$
+BEGIN
+    FOR round_number IN 1..rounds LOOP
+        EXECUTE pg_catalog.format(
+            'INSERT INTO %s(id, body) '
+            'SELECT $1 + $2 * 100 + value, '
+            'pg_catalog.format(''queue round %%s row %%s filler'', '
+            '$2, value) FROM pg_catalog.generate_series(1, 20) AS value',
+            target_table)
+        USING first_id, round_number;
+        PERFORM public.bm25_spill_index(target_index::text);
+    END LOOP;
+END
+$body$;
+SQL
+}
+
+restore_signal_probe() {
+    sql_super <<'SQL'
+ALTER EXTENSION pg_durable DROP FUNCTION df.signal(text, text, text);
+DROP FUNCTION df.signal(text, text, text);
+ALTER FUNCTION df.signal_v028(text, text, text) RENAME TO signal;
+DROP FUNCTION public.queue_force_spills(regclass, regclass, integer, integer);
+DROP TABLE public.compaction_signal_fault;
+DROP TABLE public.compaction_signal_audit;
+DROP SEQUENCE public.compaction_signal_attempt_seq;
+SQL
+}
+
+reset_signal_probe() {
+    sql_super -c "TRUNCATE public.compaction_signal_audit,
+                           public.compaction_signal_fault;
+                   ALTER SEQUENCE public.compaction_signal_attempt_seq
+                     RESTART WITH 1;"
+}
+
+signal_attempt_count() {
+    sql_super -c "SELECT CASE WHEN is_called THEN last_value ELSE 0 END
+      FROM public.compaction_signal_attempt_seq;"
+}
+
+test_request_queue_runtime() {
+    local abort_instance cancel_error cancel_instance dedup_a_instance
+    local dedup_b_instance drop_instance failure_a_instance
+    local failure_b_instance failure_output savepoint_instance
+
+    sql_as durable_owner -c "
+        CREATE TABLE public.queue_below_docs (id integer, body text);
+        CREATE INDEX queue_below_idx
+          ON public.queue_below_docs USING bm25(body)
+          WITH (text_config = 'english',
+                compaction = 'background',
+                compaction_schedule = '0 0 1 1 *');
+        CREATE TABLE public.queue_abort_docs (id integer, body text);
+        CREATE INDEX queue_abort_idx
+          ON public.queue_abort_docs USING bm25(body)
+          WITH (text_config = 'english',
+                compaction = 'background',
+                compaction_schedule = '0 0 1 1 *');
+        CREATE TABLE public.queue_dedup_a_docs (id integer, body text);
+        CREATE INDEX queue_dedup_a_idx
+          ON public.queue_dedup_a_docs USING bm25(body)
+          WITH (text_config = 'english',
+                compaction = 'background',
+                compaction_schedule = '0 0 1 1 *');
+        CREATE TABLE public.queue_dedup_b_docs (id integer, body text);
+        CREATE INDEX queue_dedup_b_idx
+          ON public.queue_dedup_b_docs USING bm25(body)
+          WITH (text_config = 'english',
+                compaction = 'background',
+                compaction_schedule = '0 0 1 1 *');
+        CREATE TABLE public.queue_savepoint_docs (id integer, body text);
+        CREATE INDEX queue_savepoint_idx
+          ON public.queue_savepoint_docs USING bm25(body)
+          WITH (text_config = 'english',
+                compaction = 'background',
+                compaction_schedule = '0 0 1 1 *');
+        CREATE TABLE public.queue_drop_docs (id integer, body text);
+        CREATE INDEX queue_drop_idx
+          ON public.queue_drop_docs USING bm25(body)
+          WITH (text_config = 'english',
+                compaction = 'background',
+                compaction_schedule = '0 0 1 1 *');
+        CREATE TABLE public.queue_failure_a_docs (id integer, body text);
+        CREATE INDEX queue_failure_a_idx
+          ON public.queue_failure_a_docs USING bm25(body)
+          WITH (text_config = 'english',
+                compaction = 'background',
+                compaction_schedule = '0 0 1 1 *');
+        CREATE TABLE public.queue_failure_b_docs (id integer, body text);
+        CREATE INDEX queue_failure_b_idx
+          ON public.queue_failure_b_docs USING bm25(body)
+          WITH (text_config = 'english',
+                compaction = 'background',
+                compaction_schedule = '0 0 1 1 *');
+        CREATE TABLE public.queue_cancel_docs (id integer, body text);
+        CREATE INDEX queue_cancel_idx
+          ON public.queue_cancel_docs USING bm25(body)
+          WITH (text_config = 'english',
+                compaction = 'background',
+                compaction_schedule = '0 0 1 1 *');" >/dev/null 2>&1
+
+    abort_instance="$(current_generation_job_id \
+        "$(sql_super -c \
+            "SELECT 'public.queue_abort_idx'::regclass::oid;")")"
+    dedup_a_instance="$(current_generation_job_id \
+        "$(sql_super -c \
+            "SELECT 'public.queue_dedup_a_idx'::regclass::oid;")")"
+    dedup_b_instance="$(current_generation_job_id \
+        "$(sql_super -c \
+            "SELECT 'public.queue_dedup_b_idx'::regclass::oid;")")"
+    savepoint_instance="$(current_generation_job_id \
+        "$(sql_super -c \
+            "SELECT 'public.queue_savepoint_idx'::regclass::oid;")")"
+    drop_instance="$(current_generation_job_id \
+        "$(sql_super -c \
+            "SELECT 'public.queue_drop_idx'::regclass::oid;")")"
+    failure_a_instance="$(current_generation_job_id \
+        "$(sql_super -c \
+            "SELECT 'public.queue_failure_a_idx'::regclass::oid;")")"
+    failure_b_instance="$(current_generation_job_id \
+        "$(sql_super -c \
+            "SELECT 'public.queue_failure_b_idx'::regclass::oid;")")"
+    cancel_instance="$(current_generation_job_id \
+        "$(sql_super -c \
+            "SELECT 'public.queue_cancel_idx'::regclass::oid;")")"
+
+    install_signal_probe
+
+    reset_signal_probe
+    sql_as durable_owner -c "SELECT public.queue_force_spills(
+        'public.queue_below_docs'::regclass,
+        'public.queue_below_idx'::regclass, 0, 1);" >/dev/null
+    assert_eq "below-threshold spill does not signal" "0" \
+        "$(signal_attempt_count)"
+
+    reset_signal_probe
+    sql_as durable_owner <<'SQL' >/dev/null
+BEGIN;
+SELECT public.queue_force_spills(
+    'public.queue_abort_docs'::regclass,
+    'public.queue_abort_idx'::regclass, 1000, 2);
+ROLLBACK;
+BEGIN;
+SELECT 1;
+COMMIT;
+SQL
+    assert_eq "top-level abort does not leak a pending request" "0" \
+        "$(signal_attempt_count)"
+    assert_eq "aborted queue test targeted a live workflow" "1" \
+        "$(sql_super -c "SELECT count(*) FROM df.instances
+                          WHERE id = '${abort_instance}';")"
+
+    reset_signal_probe
+    sql_as durable_owner <<'SQL' >/dev/null
+BEGIN;
+SELECT public.queue_force_spills(
+    'public.queue_dedup_a_docs'::regclass,
+    'public.queue_dedup_a_idx'::regclass, 2000, 3);
+SELECT public.queue_force_spills(
+    'public.queue_dedup_b_docs'::regclass,
+    'public.queue_dedup_b_idx'::regclass, 3000, 2);
+COMMIT;
+SQL
+    assert_eq "request queue signals two indexes once each" "2" \
+        "$(signal_attempt_count)"
+    assert_eq "multiple request hits deduplicate per index" "1:1" \
+        "$(sql_super -c "SELECT
+            count(*) FILTER (WHERE instance_id = '${dedup_a_instance}')
+            || ':' ||
+            count(*) FILTER (WHERE instance_id = '${dedup_b_instance}')
+          FROM public.compaction_signal_audit;")"
+
+    reset_signal_probe
+    sql_as durable_owner <<'SQL' >/dev/null
+BEGIN;
+SAVEPOINT queue_spill;
+SELECT public.queue_force_spills(
+    'public.queue_savepoint_docs'::regclass,
+    'public.queue_savepoint_idx'::regclass, 4000, 2);
+DROP INDEX public.queue_savepoint_idx;
+ROLLBACK TO SAVEPOINT queue_spill;
+COMMIT;
+SQL
+    assert_eq "savepoint-surviving spill request dispatches" "1" \
+        "$(signal_attempt_count)"
+    assert_eq "rolled-back DROP retains the original request target" \
+        "${savepoint_instance}" \
+        "$(sql_super -c "SELECT instance_id
+                          FROM public.compaction_signal_audit;")"
+
+    reset_signal_probe
+    sql_as durable_owner <<'SQL' >/dev/null
+BEGIN;
+SELECT public.queue_force_spills(
+    'public.queue_drop_docs'::regclass,
+    'public.queue_drop_idx'::regclass, 5000, 2);
+DROP INDEX public.queue_drop_idx;
+COMMIT;
+SQL
+    assert_eq "committed DROP suppresses stale-OID dispatch" "0" \
+        "$(signal_attempt_count)"
+    assert_eq "dropped request targeted an existing workflow" "1" \
+        "$(sql_super -c "SELECT count(*) FROM df.instances
+                          WHERE id = '${drop_instance}';")"
+
+    reset_signal_probe
+    sql_super -c "INSERT INTO public.compaction_signal_fault
+        VALUES ('${failure_a_instance}', 'error');"
+    if ! failure_output="$(sql_as durable_owner <<'SQL' 2>&1
+BEGIN;
+SELECT public.queue_force_spills(
+    'public.queue_failure_a_docs'::regclass,
+    'public.queue_failure_a_idx'::regclass, 6000, 2);
+SELECT public.queue_force_spills(
+    'public.queue_failure_b_docs'::regclass,
+    'public.queue_failure_b_idx'::regclass, 7000, 2);
+COMMIT;
+SQL
+    )"; then
+        error "ordinary PRE_COMMIT signal failure aborted writer data: \
+${failure_output}"
+    fi
+    if ! grep -Fq "probe ordinary signal failure" \
+        <<<"${failure_output}"; then
+        error "ordinary PRE_COMMIT signal failure emitted no warning"
+    fi
+    assert_eq "ordinary failure continues later dispatch" "2" \
+        "$(signal_attempt_count)"
+    assert_eq "ordinary failure preserves both writers' rows" "40:40" \
+        "$(sql_super -c "SELECT
+            (SELECT count(*) FROM public.queue_failure_a_docs)
+            || ':' ||
+            (SELECT count(*) FROM public.queue_failure_b_docs);")"
+    assert_eq "ordinary failure continues to the second index" \
+        "${failure_b_instance}:durable_owner" \
+        "$(sql_super -c "SELECT instance_id || ':' || role_name
+                          FROM public.compaction_signal_audit;")"
+
+    reset_signal_probe
+    sql_super -c "INSERT INTO public.compaction_signal_fault
+        VALUES ('${cancel_instance}', 'cancel');"
+    if cancel_error="$(sql_as durable_owner <<'SQL' 2>&1
+BEGIN;
+SELECT public.queue_force_spills(
+    'public.queue_cancel_docs'::regclass,
+    'public.queue_cancel_idx'::regclass, 8000, 2);
+COMMIT;
+SQL
+    )"; then
+        error "query cancellation during PRE_COMMIT unexpectedly committed"
+    fi
+    if ! grep -Fq "probe query cancellation" <<<"${cancel_error}"; then
+        error "query cancellation did not propagate: ${cancel_error}"
+    fi
+    assert_eq "query cancellation attempted one signal" "1" \
+        "$(signal_attempt_count)"
+    assert_eq "query cancellation rolls back writer data" "0" \
+        "$(sql_super -c \
+            "SELECT count(*) FROM public.queue_cancel_docs;")"
+
+    restore_signal_probe
+    sql_super -c "DROP TABLE public.queue_below_docs,
+                              public.queue_abort_docs,
+                              public.queue_dedup_a_docs,
+                              public.queue_dedup_b_docs,
+                              public.queue_savepoint_docs,
+                              public.queue_drop_docs,
+                              public.queue_failure_a_docs,
+                              public.queue_failure_b_docs,
+                              public.queue_cancel_docs;"
 }
 
 test_actor_writer_worker_identity() {
@@ -1334,12 +2077,6 @@ test_cross_owner_helper_isolation() {
     local debt_before level_counts_before step_error workflow_state_before
     local database_oid tablespace_oid relfilenumber owner_oid
 
-    sql_super -c "CREATE ROLE durable_owner_two LOGIN;
-                   GRANT CONNECT ON DATABASE ${TEST_DB}
-                     TO durable_owner_two;
-                   GRANT USAGE, CREATE ON SCHEMA public
-                     TO durable_owner_two;"
-    sql_super -c "SELECT df.grant_usage('durable_owner_two');" >/dev/null
     sql_super -c "CREATE TABLE isolation_one_docs (body text);
                    ALTER TABLE isolation_one_docs OWNER TO durable_owner;
                    CREATE TABLE isolation_two_docs (body text);
@@ -1784,21 +2521,36 @@ test_sticky_dependency() {
                               WHERE extname = 'pg_textsearch';")"
 }
 
+run_test() {
+    local test_name=$1
+    local selected=",${DURABLE_TEST_FILTER:-},"
+
+    if [ -z "${DURABLE_TEST_FILTER:-}" ] ||
+        [[ "${selected}" == *",${test_name},"* ]]; then
+        "${test_name}"
+    fi
+}
+
 stage_durable_package
 setup_cluster
-test_missing_durable_cic
+run_test test_missing_durable_cic
 initialize_database
-test_cic_preflight_rejections
-test_cic_owner_privilege_preflight
-test_alter_preflight_rejections
-test_defaulted_start_arity
-test_actor_writer_worker_identity
-test_create_activation
-test_scheduled_failure_continuation
-test_initial_failure_continuation
-test_cross_owner_helper_isolation
-test_bypassrls_owner_isolation
-test_superuser_policy_success
-test_sticky_dependency
-test_rollback_in_fresh_database
+run_test test_cic_preflight_rejections
+run_test test_cic_owner_privilege_preflight
+run_test test_alter_preflight_rejections
+run_test test_defaulted_start_arity
+run_test test_partitioned_create_activation
+run_test test_owner_reconciliation
+run_test test_reindex_reconciliation
+run_test test_prior_generation_spill_adoption
+run_test test_request_queue_runtime
+run_test test_actor_writer_worker_identity
+run_test test_create_activation
+run_test test_scheduled_failure_continuation
+run_test test_initial_failure_continuation
+run_test test_cross_owner_helper_isolation
+run_test test_bypassrls_owner_isolation
+run_test test_superuser_policy_success
+run_test test_sticky_dependency
+run_test test_rollback_in_fresh_database
 log "Managed pg_durable compaction tests passed"

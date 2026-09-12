@@ -18,6 +18,7 @@
 #include <catalog/objectaccess.h>
 #include <catalog/pg_class_d.h>
 #include <catalog/pg_extension_d.h>
+#include <catalog/pg_inherits.h>
 #include <catalog/pg_inherits_d.h>
 #include <commands/extension.h>
 #include <commands/defrem.h>
@@ -973,6 +974,161 @@ tp_alter_index_refreshes_background(AlterTableStmt *stmt)
 	return false;
 }
 
+static bool
+tp_is_background_physical_index(Oid indexoid)
+{
+	Relation index_rel;
+	bool	 background;
+
+	index_rel = try_index_open(indexoid, AccessShareLock);
+	if (index_rel == NULL)
+		return false;
+
+	background = index_rel->rd_rel->relkind == RELKIND_INDEX &&
+				 index_rel->rd_indam != NULL &&
+				 index_rel->rd_indam->ambuild == tp_build &&
+				 index_rel->rd_index != NULL &&
+				 index_rel->rd_index->indisvalid &&
+				 index_rel->rd_index->indisready &&
+				 index_rel->rd_index->indislive &&
+				 tp_index_compaction_mode(index_rel) ==
+						 TP_COMPACTION_BACKGROUND;
+	index_close(index_rel, AccessShareLock);
+	return background;
+}
+
+static List *
+tp_relation_indexes(Oid relation_oid)
+{
+	Relation relation;
+	List	*indexes;
+
+	relation = relation_open(relation_oid, AccessShareLock);
+	indexes	 = list_copy(RelationGetIndexList(relation));
+	relation_close(relation, NoLock);
+	return indexes;
+}
+
+static List *
+tp_relation_tree_indexes(Oid relation_oid)
+{
+	Relation  root;
+	List	 *relations;
+	List	 *indexes = NIL;
+	ListCell *lc;
+
+	root	  = relation_open(relation_oid, AccessShareLock);
+	relations = find_all_inheritors(relation_oid, AccessShareLock, NULL);
+	relation_close(root, NoLock);
+	foreach (lc, relations)
+	{
+		Oid		 child_oid = lfirst_oid(lc);
+		Relation child;
+		List	*child_indexes;
+
+		child		  = relation_open(child_oid, NoLock);
+		child_indexes = list_copy(RelationGetIndexList(child));
+		relation_close(child, NoLock);
+		indexes = list_concat_unique_oid(indexes, child_indexes);
+	}
+	list_free(relations);
+	return indexes;
+}
+
+static List *
+tp_index_tree(Oid indexoid)
+{
+	return find_all_inheritors(indexoid, AccessShareLock, NULL);
+}
+
+static List *
+tp_reindex_target_indexes(ReindexStmt *stmt)
+{
+	Oid relation_oid;
+
+	if (stmt->kind != REINDEX_OBJECT_INDEX &&
+		stmt->kind != REINDEX_OBJECT_TABLE)
+		return NIL;
+
+	relation_oid = RangeVarGetRelid(stmt->relation, AccessShareLock, false);
+	if (stmt->kind == REINDEX_OBJECT_INDEX)
+		return tp_index_tree(relation_oid);
+
+	return tp_relation_tree_indexes(relation_oid);
+}
+
+static void
+tp_activate_background_indexes(List *indexoids, bool refresh_default)
+{
+	ListCell *lc;
+
+	foreach (lc, indexoids)
+	{
+		Oid indexoid = lfirst_oid(lc);
+
+		if (tp_is_background_physical_index(indexoid))
+			tp_compaction_job_activate(indexoid, refresh_default);
+	}
+}
+
+static void
+tp_preflight_background_indexes(List *indexoids)
+{
+	ListCell *lc;
+
+	foreach (lc, indexoids)
+	{
+		Oid indexoid = lfirst_oid(lc);
+
+		if (tp_is_background_physical_index(indexoid))
+			tp_compaction_job_preflight_index(indexoid);
+	}
+}
+
+static void
+tp_preflight_background_indexes_as_owner(List *indexoids, Oid owner_oid)
+{
+	ListCell *lc;
+
+	foreach (lc, indexoids)
+	{
+		Oid			indexoid = lfirst_oid(lc);
+		Relation	index_rel;
+		const char *configured_schedule;
+		char	   *schedule;
+
+		if (!tp_is_background_physical_index(indexoid))
+			continue;
+
+		index_rel			= index_open(indexoid, AccessShareLock);
+		configured_schedule = tp_index_compaction_schedule(index_rel);
+		if (configured_schedule == NULL)
+			configured_schedule = tp_background_compaction_schedule;
+		schedule = pstrdup(configured_schedule);
+		index_close(index_rel, NoLock);
+		tp_compaction_job_preflight(owner_oid, schedule);
+		pfree(schedule);
+	}
+}
+
+static RoleSpec *
+tp_alter_new_owner(AlterTableStmt *stmt)
+{
+	ListCell *lc;
+
+	foreach (lc, stmt->cmds)
+	{
+		AlterTableCmd *cmd = lfirst_node(AlterTableCmd, lc);
+
+		if (cmd->subtype != AT_ChangeOwner)
+			continue;
+
+		return cmd->newowner;
+	}
+
+	return NULL;
+}
+
 /*
  * ProcessUtility hook - detect CREATE INDEX USING bm25 and wrap
  * with build progress tracking. This collapses per-partition
@@ -1145,12 +1301,60 @@ call_next_process_utility(
 	if (IsA(parsetree, AlterTableStmt))
 	{
 		AlterTableStmt *stmt = (AlterTableStmt *)parsetree;
+		RoleSpec	   *new_owner;
+
+		new_owner = tp_alter_new_owner(stmt);
+		if (new_owner != NULL &&
+			(stmt->objtype == OBJECT_INDEX || stmt->objtype == OBJECT_TABLE ||
+			 stmt->objtype == OBJECT_MATVIEW))
+		{
+			Oid	  relation_oid;
+			List *indexoids;
+
+			relation_oid = RangeVarGetRelid(
+					stmt->relation, AccessShareLock, stmt->missing_ok);
+			if (!OidIsValid(relation_oid))
+				return;
+
+			if (stmt->objtype == OBJECT_INDEX)
+				indexoids = tp_index_tree(relation_oid);
+			else
+				indexoids = tp_relation_indexes(relation_oid);
+
+			if (object_ownercheck(
+						RelationRelationId, relation_oid, GetUserId()))
+				tp_preflight_background_indexes_as_owner(
+						indexoids, get_rolespec_oid(new_owner, false));
+
+			if (prev_process_utility_hook)
+				prev_process_utility_hook(
+						pstmt,
+						queryString,
+						readOnlyTree,
+						context,
+						params,
+						queryEnv,
+						dest,
+						qc);
+			else
+				standard_ProcessUtility(
+						pstmt,
+						queryString,
+						readOnlyTree,
+						context,
+						params,
+						queryEnv,
+						dest,
+						qc);
+
+			tp_activate_background_indexes(indexoids, true);
+			list_free(indexoids);
+			return;
+		}
 
 		if (tp_alter_index_refreshes_background(stmt))
 		{
-			Oid		 indexoid;
-			Relation index_rel;
-			bool	 activate;
+			Oid indexoid;
 
 			if (prev_process_utility_hook)
 				prev_process_utility_hook(
@@ -1178,24 +1382,43 @@ call_next_process_utility(
 			if (!OidIsValid(indexoid))
 				return;
 
-			index_rel = try_index_open(indexoid, NoLock);
-			activate  = index_rel != NULL &&
-					   index_rel->rd_rel->relkind == RELKIND_INDEX &&
-					   index_rel->rd_indam != NULL &&
-					   index_rel->rd_indam->ambuild == tp_build &&
-					   index_rel->rd_index != NULL &&
-					   index_rel->rd_index->indisvalid &&
-					   index_rel->rd_index->indisready &&
-					   index_rel->rd_index->indislive &&
-					   tp_index_compaction_mode(index_rel) ==
-							   TP_COMPACTION_BACKGROUND;
-			if (index_rel != NULL)
-				index_close(index_rel, AccessShareLock);
-
-			if (activate)
+			if (tp_is_background_physical_index(indexoid))
 				tp_compaction_job_activate(indexoid, true);
 			return;
 		}
+	}
+
+	if (IsA(parsetree, ReindexStmt))
+	{
+		ReindexStmt *stmt	   = (ReindexStmt *)parsetree;
+		List		*indexoids = tp_reindex_target_indexes(stmt);
+
+		tp_preflight_background_indexes(indexoids);
+
+		if (prev_process_utility_hook)
+			prev_process_utility_hook(
+					pstmt,
+					queryString,
+					readOnlyTree,
+					context,
+					params,
+					queryEnv,
+					dest,
+					qc);
+		else
+			standard_ProcessUtility(
+					pstmt,
+					queryString,
+					readOnlyTree,
+					context,
+					params,
+					queryEnv,
+					dest,
+					qc);
+
+		tp_activate_background_indexes(indexoids, true);
+		list_free(indexoids);
+		return;
 	}
 
 	if (IsA(parsetree, IndexStmt))
@@ -1204,12 +1427,11 @@ call_next_process_utility(
 
 		if (stmt->accessMethod && strcmp(stmt->accessMethod, "bm25") == 0)
 		{
-			Oid		  heapoid;
-			Relation  heap_rel;
-			List	 *indexes_before;
-			List	 *indexes_after;
-			List	 *created_indexes;
-			ListCell *lc;
+			Oid		 heapoid;
+			Relation heap_rel;
+			List	*indexes_before;
+			List	*indexes_after;
+			List	*created_indexes;
 
 			heapoid = RangeVarGetRelid(stmt->relation, AccessShareLock, false);
 			heap_rel = relation_open(heapoid, NoLock);
@@ -1232,7 +1454,7 @@ call_next_process_utility(
 						heap_rel->rd_rel->relowner, schedule);
 			}
 
-			indexes_before = list_copy(RelationGetIndexList(heap_rel));
+			indexes_before = tp_relation_tree_indexes(heapoid);
 			relation_close(heap_rel, NoLock);
 
 			tp_build_progress_begin();
@@ -1265,34 +1487,11 @@ call_next_process_utility(
 			 * inside standard_ProcessUtility, so reacquire the heap lock
 			 * before consulting its post-command relcache state.
 			 */
-			heap_rel	  = relation_open(heapoid, AccessShareLock);
-			indexes_after = list_copy(RelationGetIndexList(heap_rel));
-			relation_close(heap_rel, AccessShareLock);
+			indexes_after = tp_relation_tree_indexes(heapoid);
 			created_indexes =
 					list_difference_oid(indexes_after, indexes_before);
 
-			foreach (lc, created_indexes)
-			{
-				Oid		 indexoid  = lfirst_oid(lc);
-				Relation index_rel = try_index_open(indexoid, AccessShareLock);
-				bool	 activate;
-
-				if (index_rel == NULL)
-					continue;
-				activate = index_rel->rd_rel->relkind == RELKIND_INDEX &&
-						   index_rel->rd_indam != NULL &&
-						   index_rel->rd_indam->ambuild == tp_build &&
-						   index_rel->rd_index != NULL &&
-						   index_rel->rd_index->indisvalid &&
-						   index_rel->rd_index->indisready &&
-						   index_rel->rd_index->indislive &&
-						   tp_index_compaction_mode(index_rel) ==
-								   TP_COMPACTION_BACKGROUND;
-				index_close(index_rel, AccessShareLock);
-
-				if (activate)
-					tp_compaction_job_activate(indexoid, true);
-			}
+			tp_activate_background_indexes(created_indexes, true);
 
 			list_free(created_indexes);
 			list_free(indexes_after);
