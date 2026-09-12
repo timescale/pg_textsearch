@@ -246,6 +246,30 @@ if ! grep -Fq "ShareUpdateExclusiveLock" <<<"${ensure_lineage_body}"; then
     echo "legacy lineage backfill lacks its required relation lock" >&2
     exit 1
 fi
+ensure_relation_line="$(
+    grep -n "try_index_open(indexoid, ShareUpdateExclusiveLock)" \
+        <<<"${ensure_lineage_body}" | head -1 | cut -d: -f1
+)"
+ensure_private_line="$(
+    grep -n "tp_take_index_lineage_lock(indexoid)" \
+        <<<"${ensure_lineage_body}" | head -1 | cut -d: -f1
+)"
+ensure_recheck_line="$(
+    grep -n "existing = tp_index_compaction_lineage(index_rel)" \
+        <<<"${ensure_lineage_body}" | head -1 | cut -d: -f1
+)"
+if [[ -z "${ensure_relation_line}" || -z "${ensure_private_line}" ||
+      "${ensure_relation_line}" -ge "${ensure_private_line}" ]]; then
+    echo "legacy lineage backfill takes its private lock before the relation" \
+        >&2
+    exit 1
+fi
+if [[ -z "${ensure_recheck_line}" ||
+      "${ensure_private_line}" -ge "${ensure_recheck_line}" ]]; then
+    echo "legacy lineage backfill does not recheck options under both locks" \
+        >&2
+    exit 1
+fi
 if grep -Fq "tp_alter_index_ensure_lineage" "${MODULE_SOURCE}"; then
     echo "ALTER still injects a legacy lineage before serialized activation" \
         >&2

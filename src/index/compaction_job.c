@@ -18,11 +18,13 @@
 #include <catalog/partition.h>
 #include <catalog/pg_am_d.h>
 #include <catalog/pg_authid.h>
+#include <catalog/pg_class.h>
 #include <catalog/pg_database_d.h>
 #include <catalog/pg_depend.h>
 #include <catalog/pg_depend_d.h>
 #include <catalog/pg_extension.h>
 #include <catalog/pg_extension_d.h>
+#include <catalog/pg_inherits.h>
 #include <catalog/pg_namespace_d.h>
 #include <catalog/pg_operator_d.h>
 #include <catalog/pg_proc_d.h>
@@ -103,6 +105,12 @@ typedef struct TpCompactionJobObjects
 	char *step_function;
 	char *current_function;
 } TpCompactionJobObjects;
+
+typedef struct TpHistoryHeapOwner
+{
+	Oid heap_oid;
+	Oid owner_oid;
+} TpHistoryHeapOwner;
 
 static char *tp_copy_spi_text(
 		HeapTuple	  tuple,
@@ -405,29 +413,53 @@ tp_extension_owner(Oid extension_oid)
 	return owner_oid;
 }
 
-static bool
-tp_history_heap_matches(Oid label_heap_oid, Oid heap_oid)
+static List *
+tp_history_heap_owners(Oid heap_oid, Oid expected_owner_oid)
 {
-	List *ancestors;
-	bool  matches;
+	List	 *relation_oids;
+	List	 *identities = NIL;
+	ListCell *lc;
+	bool	  partitioned;
 
-	if (label_heap_oid == heap_oid)
-		return true;
-	if (get_rel_relkind(heap_oid) != RELKIND_PARTITIONED_TABLE ||
-		!SearchSysCacheExists1(RELOID, ObjectIdGetDatum(label_heap_oid)) ||
-		!get_rel_relispartition(label_heap_oid) ||
-		get_rel_relkind(label_heap_oid) == RELKIND_PARTITIONED_TABLE)
-		return false;
+	partitioned	  = get_rel_relkind(heap_oid) == RELKIND_PARTITIONED_TABLE;
+	relation_oids = partitioned ? find_all_inheritors(heap_oid, NoLock, NULL)
+								: list_make1_oid(heap_oid);
+	foreach (lc, relation_oids)
+	{
+		Oid					relation_oid = lfirst_oid(lc);
+		HeapTuple			tuple;
+		Form_pg_class		relation_form;
+		TpHistoryHeapOwner *identity;
 
-	ancestors = get_partition_ancestors(label_heap_oid);
-	matches	  = list_member_oid(ancestors, heap_oid);
-	list_free(ancestors);
-	return matches;
+		tuple = SearchSysCache1(RELOID, ObjectIdGetDatum(relation_oid));
+		if (!HeapTupleIsValid(tuple))
+			continue;
+		relation_form = (Form_pg_class)GETSTRUCT(tuple);
+		if ((partitioned &&
+			 (!relation_form->relispartition ||
+			  relation_form->relkind == RELKIND_PARTITIONED_TABLE)) ||
+			(!partitioned && relation_form->relowner != expected_owner_oid))
+		{
+			ReleaseSysCache(tuple);
+			continue;
+		}
+
+		identity			= palloc(sizeof(*identity));
+		identity->heap_oid	= relation_oid;
+		identity->owner_oid = relation_form->relowner;
+		identities			= lappend(identities, identity);
+		ReleaseSysCache(tuple);
+	}
+	list_free(relation_oids);
+	return identities;
 }
 
 static bool
 tp_label_has_lineage(
-		const char *label, const char *lineage, Oid heap_oid, Oid owner_oid)
+		const char *label,
+		const char *lineage,
+		Oid			submitted_by,
+		List	   *identities)
 {
 	unsigned int database_oid;
 	unsigned int index_oid;
@@ -437,7 +469,7 @@ tp_label_has_lineage(
 	unsigned int label_heap_oid;
 	char		 parsed[TP_COMPACTION_LINEAGE_LENGTH + 1];
 	int			 consumed = 0;
-	bool		 heap_matches;
+	ListCell	*lc;
 
 	if (sscanf(label,
 			   TP_JOB_LABEL_PREFIX "%u:%u:%u:%u:%u:%u:%32[0-9a-f]:%n",
@@ -450,12 +482,18 @@ tp_label_has_lineage(
 			   parsed,
 			   &consumed) != 7 ||
 		consumed <= 0 || database_oid != MyDatabaseId ||
-		label_owner_oid != owner_oid || strcmp(parsed, lineage) != 0)
+		label_owner_oid != submitted_by || strcmp(parsed, lineage) != 0)
 		return false;
 
-	heap_matches = tp_history_heap_matches(label_heap_oid, heap_oid);
+	foreach (lc, identities)
+	{
+		TpHistoryHeapOwner *identity = lfirst(lc);
 
-	return heap_matches;
+		if (identity->heap_oid == label_heap_oid &&
+			identity->owner_oid == label_owner_oid)
+			return true;
+	}
+	return false;
 }
 
 bool
@@ -472,8 +510,9 @@ tp_compaction_job_lineage_exists(
 	bool		   spi_connected = false;
 	bool		   found		 = false;
 	StringInfoData sql;
-	Oid			   argtypes[2] = {TEXTOID, OIDOID};
-	Datum		   values[2];
+	Oid			   argtypes[1] = {TEXTOID};
+	Datum		   values[1];
+	List		  *identities;
 	char		  *schema;
 	char		  *relation;
 	char		  *prefix;
@@ -496,17 +535,17 @@ tp_compaction_job_lineage_exists(
 	if (schema == NULL || relation == NULL)
 		return false;
 
-	prefix	  = psprintf(TP_JOB_LABEL_PREFIX "%u:", MyDatabaseId);
-	values[0] = CStringGetTextDatum(prefix);
-	values[1] = ObjectIdGetDatum(owner_oid);
+	identities = tp_history_heap_owners(heap_oid, owner_oid);
+	prefix	   = psprintf(TP_JOB_LABEL_PREFIX "%u:", MyDatabaseId);
+	values[0]  = CStringGetTextDatum(prefix);
 	initStringInfo(&sql);
 	appendStringInfo(
 			&sql,
-			"SELECT instance.label FROM %s AS instance "
+			"SELECT instance.label, "
+			"instance.submitted_by::pg_catalog.oid "
+			"FROM %s AS instance "
 			"WHERE instance.label OPERATOR(pg_catalog.~~) "
-			"($1 OPERATOR(pg_catalog.||) '%%') "
-			"AND instance.submitted_by::pg_catalog.oid "
-			"OPERATOR(pg_catalog.=) $2",
+			"($1 OPERATOR(pg_catalog.||) '%%')",
 			quote_qualified_identifier(schema, relation));
 
 	/* RLS must not hide a retained lineage from this internal collision check.
@@ -532,19 +571,27 @@ tp_compaction_job_lineage_exists(
 			elog(ERROR, "SPI_connect failed");
 		spi_connected = true;
 		rc			  = SPI_execute_with_args(
-				   sql.data, 2, argtypes, values, NULL, true, 0);
+				   sql.data, 1, argtypes, values, NULL, true, 0);
 		if (rc != SPI_OK_SELECT)
 			elog(ERROR, "could not inspect pg_durable lineage history");
 
 		for (uint64 i = 0; i < SPI_processed; i++)
 		{
+			bool  isnull;
+			Datum submitted_by;
 			char *label = tp_copy_spi_text(
 					SPI_tuptable->vals[i],
 					SPI_tuptable->tupdesc,
 					1,
 					CurrentMemoryContext);
 
-			found = tp_label_has_lineage(label, lineage, heap_oid, owner_oid);
+			submitted_by = SPI_getbinval(
+					SPI_tuptable->vals[i], SPI_tuptable->tupdesc, 2, &isnull);
+			found = !isnull && tp_label_has_lineage(
+									   label,
+									   lineage,
+									   DatumGetObjectId(submitted_by),
+									   identities);
 			pfree(label);
 			if (found)
 				break;
@@ -566,6 +613,7 @@ tp_compaction_job_lineage_exists(
 	pfree(sql.data);
 	pfree(schema);
 	pfree(relation);
+	list_free_deep(identities);
 	return found;
 }
 
@@ -1989,6 +2037,57 @@ tp_cancel_instance(
 		elog(ERROR, "could not retire legacy pg_durable compaction workflow");
 }
 
+static void
+tp_cancel_other_active_family_instances(
+		const TpCompactionJobObjects *objects,
+		const TpCompactionJobTarget	 *target,
+		const char					 *keep_instance_id)
+{
+	StringInfoData sql;
+	Oid			   argtypes[2] = {TEXTOID, OIDOID};
+	Datum		   values[2] =
+			{CStringGetTextDatum(target->family_prefix),
+			 ObjectIdGetDatum(target->owner_oid)};
+	List	 *instance_ids = NIL;
+	ListCell *lc;
+	int		  rc;
+
+	initStringInfo(&sql);
+	appendStringInfo(
+			&sql,
+			"SELECT instance.id::pg_catalog.text "
+			"FROM %s AS instance "
+			"WHERE instance.label OPERATOR(pg_catalog.~~) "
+			"($1 OPERATOR(pg_catalog.||) '%%') "
+			"AND instance.submitted_by::pg_catalog.oid "
+			"OPERATOR(pg_catalog.=) $2 "
+			"AND instance.status OPERATOR(pg_catalog.=) "
+			"ANY (ARRAY['pending', 'running']::pg_catalog.text[])",
+			objects->instances_relation);
+	rc = SPI_execute_with_args(sql.data, 2, argtypes, values, NULL, true, 0);
+	pfree(sql.data);
+	if (rc != SPI_OK_SELECT)
+		elog(ERROR, "could not search active pg_durable instance history");
+
+	for (uint64 i = 0; i < SPI_processed; i++)
+	{
+		char *instance_id = tp_copy_spi_text(
+				SPI_tuptable->vals[i],
+				SPI_tuptable->tupdesc,
+				1,
+				CurrentMemoryContext);
+
+		if (strcmp(instance_id, keep_instance_id) == 0)
+			pfree(instance_id);
+		else
+			instance_ids = lappend(instance_ids, instance_id);
+	}
+
+	foreach (lc, instance_ids)
+		tp_cancel_instance(objects, lfirst(lc));
+	list_free_deep(instance_ids);
+}
+
 static char *
 tp_reconcile_job(
 		const TpCompactionJobObjects *objects,
@@ -2008,6 +2107,7 @@ tp_reconcile_job(
 		if (instance_id == NULL)
 			instance_id = tp_start_job(
 					objects, target, target->schedule, label, result_context);
+		tp_cancel_other_active_family_instances(objects, target, instance_id);
 		pfree(label);
 		return instance_id;
 	}

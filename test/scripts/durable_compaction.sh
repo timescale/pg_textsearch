@@ -1125,6 +1125,146 @@ test_partitioned_create_activation() {
         "DROP TABLE public.lifecycle_partitioned_docs;"
 }
 
+test_partitioned_existing_leaf_reconciliation() {
+    local high_oid low_oid parent_lineage parent_oid
+
+    sql_as durable_owner <<'SQL' >/dev/null
+CREATE TABLE public.lifecycle_existing_leaf_docs
+    (id integer, body text)
+    PARTITION BY RANGE (id);
+CREATE TABLE public.lifecycle_existing_leaf_low
+    PARTITION OF public.lifecycle_existing_leaf_docs
+    FOR VALUES FROM (0) TO (100);
+CREATE TABLE public.lifecycle_existing_leaf_high
+    PARTITION OF public.lifecycle_existing_leaf_docs
+    FOR VALUES FROM (100) TO (200);
+CREATE INDEX lifecycle_existing_leaf_low_idx
+    ON public.lifecycle_existing_leaf_low USING bm25(body)
+    WITH (text_config = 'english', compaction = 'manual');
+SQL
+    sql_super -c "ALTER TABLE public.lifecycle_existing_leaf_high
+                   OWNER TO durable_owner_two;"
+    sql_as durable_owner_two -c "
+        CREATE INDEX lifecycle_existing_leaf_high_idx
+          ON public.lifecycle_existing_leaf_high USING bm25(body)
+          WITH (text_config = 'english',
+                compaction = 'background',
+                compaction_schedule = '5 4 3 2 *');" >/dev/null 2>&1
+
+    low_oid="$(sql_super -c "SELECT
+        'public.lifecycle_existing_leaf_low_idx'::regclass::oid;")"
+    high_oid="$(sql_super -c "SELECT
+        'public.lifecycle_existing_leaf_high_idx'::regclass::oid;")"
+    sql_as durable_owner -c "
+        CREATE INDEX lifecycle_existing_leaf_parent_idx
+          ON public.lifecycle_existing_leaf_docs USING bm25(body)
+          WITH (text_config = 'english',
+                compaction = 'background',
+                compaction_schedule = '0 0 1 1 *');" >/dev/null 2>&1
+
+    parent_oid="$(sql_super -c "SELECT
+        'public.lifecycle_existing_leaf_parent_idx'::regclass::oid;")"
+    parent_lineage="$(
+        index_lineage public.lifecycle_existing_leaf_parent_idx
+    )"
+    assert_eq "partitioned CREATE attaches both existing leaf indexes" \
+        "2" \
+        "$(sql_super -c "SELECT count(*)
+          FROM pg_catalog.pg_partition_tree(${parent_oid}) AS tree
+          WHERE tree.isleaf
+            AND tree.relid = ANY (
+              ARRAY[${low_oid}, ${high_oid}]::pg_catalog.oid[]);")"
+    assert_eq "attached leaves inherit parent background options" "2:2:2" \
+        "$(sql_super -c "SELECT
+            count(*) FILTER (
+              WHERE relation.reloptions @>
+                    ARRAY['compaction=background']) || ':' ||
+            count(*) FILTER (
+              WHERE relation.reloptions @>
+                    ARRAY['compaction_schedule=0 0 1 1 *']) || ':' ||
+            count(*) FILTER (
+              WHERE relation.reloptions @>
+                    ARRAY['compaction_lineage=${parent_lineage}'])
+          FROM pg_catalog.pg_partition_tree(${parent_oid}) AS tree
+          JOIN pg_catalog.pg_class AS relation
+            ON relation.oid = tree.relid
+          WHERE tree.isleaf
+            AND relation.relkind = 'i';")"
+    assert_eq "attached leaves have one current owner workflow each" "2:2" \
+        "$(sql_super -c "SELECT
+            count(*) || ':' ||
+            count(*) FILTER (
+              WHERE EXISTS (
+                SELECT 1
+                FROM df.instances AS instance
+                JOIN pg_catalog.pg_database AS database
+                  ON database.datname = pg_catalog.current_database()
+                WHERE instance.label OPERATOR(pg_catalog.~~)
+                      pg_catalog.format(
+                        'pg_textsearch:bg:v1:%s:%s:%s:%s:%s:%s:%s:%%',
+                        database.oid,
+                        relation.oid,
+                        coalesce(nullif(relation.reltablespace, 0),
+                                 database.dattablespace),
+                        pg_catalog.pg_relation_filenode(relation.oid),
+                        relation.relowner,
+                        index_catalog.indrelid,
+                        '${parent_lineage}')
+                  AND instance.submitted_by::pg_catalog.oid =
+                      relation.relowner
+                  AND instance.status OPERATOR(pg_catalog.=)
+                      ANY (ARRAY['pending', 'running']
+                           ::pg_catalog.text[])))
+          FROM pg_catalog.pg_partition_tree(${parent_oid}) AS tree
+          JOIN pg_catalog.pg_class AS relation
+            ON relation.oid = tree.relid
+          JOIN pg_catalog.pg_index AS index_catalog
+            ON index_catalog.indexrelid = relation.oid
+          WHERE tree.isleaf
+            AND relation.relkind = 'i';")"
+    assert_eq "attached leaves retain no stale active physical workflow" "2" \
+        "$(sql_super -c "SELECT count(*)
+          FROM pg_catalog.pg_partition_tree(${parent_oid}) AS tree
+          JOIN pg_catalog.pg_class AS relation
+            ON relation.oid = tree.relid
+          JOIN pg_catalog.pg_database AS database
+            ON database.datname = pg_catalog.current_database()
+          JOIN df.instances AS instance
+            ON instance.label OPERATOR(pg_catalog.~~)
+               pg_catalog.format(
+                 'pg_textsearch:bg:v1:%s:%s:%s:%s:%s:%%',
+                 database.oid,
+                 relation.oid,
+                 coalesce(nullif(relation.reltablespace, 0),
+                          database.dattablespace),
+                 pg_catalog.pg_relation_filenode(relation.oid),
+                 relation.relowner)
+           AND instance.submitted_by::pg_catalog.oid = relation.relowner
+           AND instance.status OPERATOR(pg_catalog.=)
+               ANY (ARRAY['pending', 'running']::pg_catalog.text[])
+          WHERE tree.isleaf
+            AND relation.relkind = 'i';")"
+
+    sql_as durable_owner -c "SELECT df.cancel(
+        instance.id, 'existing leaf reconciliation complete')
+      FROM df.instances AS instance
+      WHERE instance.submitted_by = 'durable_owner'::regrole
+        AND instance.status OPERATOR(pg_catalog.=)
+            ANY (ARRAY['pending', 'running']::pg_catalog.text[])
+        AND (instance.label OPERATOR(pg_catalog.~~)
+               'pg_textsearch:bg:v1:%:${low_oid}:%');" >/dev/null
+    sql_as durable_owner_two -c "SELECT df.cancel(
+        instance.id, 'existing leaf reconciliation complete')
+      FROM df.instances AS instance
+      WHERE instance.submitted_by = 'durable_owner_two'::regrole
+        AND instance.status OPERATOR(pg_catalog.=)
+            ANY (ARRAY['pending', 'running']::pg_catalog.text[])
+        AND (instance.label OPERATOR(pg_catalog.~~)
+               'pg_textsearch:bg:v1:%:${high_oid}:%');" >/dev/null
+    sql_super -c \
+        "DROP TABLE public.lifecycle_existing_leaf_docs;"
+}
+
 test_owner_reconciliation() {
     local alter_error alter_output dependencies_before index_oid job_before
     local job_after jobs_before filenumber_before filenumber_after
@@ -2229,6 +2369,199 @@ second: $(cat "${second_output}")"
     sql_super -c "DROP TABLE public.lifecycle_legacy_race_docs;"
 }
 
+test_legacy_reindex_spill_lock_order() {
+    local blocker_output blocker_pid final_lineage first_oid
+    local reindex_output reindex_pid
+    local reindex_status=0 spill_output spill_pid spill_status=0 target_oid
+    local target_oid_after
+
+    blocker_output="${DATA_DIR}/legacy-lock-blocker.out"
+    reindex_output="${DATA_DIR}/legacy-lock-reindex.out"
+    spill_output="${DATA_DIR}/legacy-lock-spill.out"
+    sql_as durable_owner <<'SQL' >/dev/null 2>&1
+CREATE TABLE public.lifecycle_legacy_lock_docs
+    (id integer, body text);
+CREATE INDEX lifecycle_legacy_lock_first_idx
+    ON public.lifecycle_legacy_lock_docs USING bm25(body)
+    WITH (text_config = 'english',
+          compaction = 'background',
+          compaction_schedule = '0 0 1 1 *');
+CREATE INDEX lifecycle_legacy_lock_target_idx
+    ON public.lifecycle_legacy_lock_docs USING bm25(body)
+    WITH (text_config = 'english',
+          compaction = 'background',
+          compaction_schedule = '0 0 1 1 *');
+SQL
+    first_oid="$(sql_super -c "SELECT
+        'public.lifecycle_legacy_lock_first_idx'::regclass::oid;")"
+    target_oid="$(sql_super -c "SELECT
+        'public.lifecycle_legacy_lock_target_idx'::regclass::oid;")"
+    remove_index_lineage public.lifecycle_legacy_lock_first_idx
+    remove_index_lineage public.lifecycle_legacy_lock_target_idx
+
+    PGAPPNAME=lifecycle-legacy-lock-blocker sql_super -c "
+        BEGIN;
+        UPDATE pg_catalog.pg_class
+        SET reloptions = reloptions
+        WHERE oid = ${first_oid};
+        SELECT pg_catalog.pg_sleep(120);" \
+        >"${blocker_output}" 2>&1 &
+    blocker_pid=$!
+    for _ in $(seq 1 100); do
+        if [ "$(sql_super -c "SELECT count(*)
+              FROM pg_catalog.pg_stat_activity
+              WHERE application_name =
+                    'lifecycle-legacy-lock-blocker'
+                AND wait_event = 'PgSleep';")" = "1" ]; then
+            break
+        fi
+        sleep 0.1
+    done
+    assert_eq "legacy lock blocker holds the first catalog row" "1" \
+        "$(sql_super -c "SELECT count(*)
+          FROM pg_catalog.pg_stat_activity
+          WHERE application_name = 'lifecycle-legacy-lock-blocker'
+            AND wait_event = 'PgSleep';")"
+
+    PGAPPNAME=lifecycle-legacy-lock-reindex \
+        "${PGBINDIR}/psql" -h "${SOCKET_DIR}" -p "${TEST_PORT}" \
+        -U durable_owner -d "${TEST_DB}" -qAt -v ON_ERROR_STOP=1 \
+        -c "REINDEX TABLE CONCURRENTLY
+              public.lifecycle_legacy_lock_docs;" \
+        >"${reindex_output}" 2>&1 &
+    reindex_pid=$!
+    for _ in $(seq 1 100); do
+        if [ "$(sql_super -c "SELECT count(*)
+              FROM pg_catalog.pg_stat_activity AS activity
+              WHERE activity.application_name =
+                    'lifecycle-legacy-lock-reindex'
+                AND activity.wait_event = 'transactionid'
+                AND EXISTS (
+                  SELECT 1
+                  FROM pg_catalog.pg_locks AS relation_lock
+                  WHERE relation_lock.pid = activity.pid
+                    AND relation_lock.locktype = 'relation'
+                    AND relation_lock.relation = ${target_oid}
+                    AND relation_lock.mode = 'ShareUpdateExclusiveLock'
+                    AND relation_lock.granted);")" = "1" ]; then
+            break
+        fi
+        sleep 0.1
+    done
+    assert_eq "tracked REINDEX holds the target before legacy backfill" "1" \
+        "$(sql_super -c "SELECT count(*)
+          FROM pg_catalog.pg_stat_activity AS activity
+          WHERE activity.application_name =
+                'lifecycle-legacy-lock-reindex'
+            AND activity.wait_event = 'transactionid'
+            AND EXISTS (
+              SELECT 1
+              FROM pg_catalog.pg_locks AS relation_lock
+              WHERE relation_lock.pid = activity.pid
+                AND relation_lock.locktype = 'relation'
+                AND relation_lock.relation = ${target_oid}
+                AND relation_lock.mode = 'ShareUpdateExclusiveLock'
+                AND relation_lock.granted);")"
+
+    PGAPPNAME=lifecycle-legacy-lock-spill \
+        "${PGBINDIR}/psql" -h "${SOCKET_DIR}" -p "${TEST_PORT}" \
+        -U durable_owner -d "${TEST_DB}" -qAt -v ON_ERROR_STOP=1 \
+        -c "BEGIN;
+            INSERT INTO public.lifecycle_legacy_lock_docs
+            SELECT document_number,
+                   pg_catalog.format(
+                     'legacy lock first %s filler', document_number)
+            FROM generate_series(1, 20) AS document_number;
+            SELECT bm25_spill_index(
+              'public.lifecycle_legacy_lock_target_idx');
+            INSERT INTO public.lifecycle_legacy_lock_docs
+            SELECT 100 + document_number,
+                   pg_catalog.format(
+                     'legacy lock second %s filler', document_number)
+            FROM generate_series(1, 20) AS document_number;
+            SELECT bm25_spill_index(
+              'public.lifecycle_legacy_lock_target_idx');
+            COMMIT;" >"${spill_output}" 2>&1 &
+    spill_pid=$!
+    for _ in $(seq 1 100); do
+        if [ "$(sql_super -c "SELECT count(*)
+              FROM pg_catalog.pg_stat_activity AS activity
+              JOIN pg_catalog.pg_locks AS relation_lock
+                ON relation_lock.pid = activity.pid
+              WHERE activity.application_name =
+                    'lifecycle-legacy-lock-spill'
+                AND relation_lock.locktype = 'relation'
+                AND relation_lock.relation = ${target_oid}
+                AND relation_lock.mode = 'ShareUpdateExclusiveLock'
+                AND NOT relation_lock.granted;")" = "1" ]; then
+            break
+        fi
+        sleep 0.1
+    done
+    assert_eq "legacy spill waits behind tracked REINDEX" "1" \
+        "$(sql_super -c "SELECT count(*)
+          FROM pg_catalog.pg_stat_activity AS activity
+          JOIN pg_catalog.pg_locks AS relation_lock
+            ON relation_lock.pid = activity.pid
+          WHERE activity.application_name = 'lifecycle-legacy-lock-spill'
+            AND relation_lock.locktype = 'relation'
+            AND relation_lock.relation = ${target_oid}
+            AND relation_lock.mode = 'ShareUpdateExclusiveLock'
+            AND NOT relation_lock.granted;")"
+    assert_eq "waiting legacy spill does not hold the private index lock" \
+        "0" \
+        "$(sql_super -c "SELECT count(*)
+          FROM pg_catalog.pg_stat_activity AS activity
+          JOIN pg_catalog.pg_locks AS private_lock
+            ON private_lock.pid = activity.pid
+          WHERE activity.application_name = 'lifecycle-legacy-lock-spill'
+            AND private_lock.locktype = 'object'
+            AND private_lock.classid =
+                'pg_catalog.pg_am'::pg_catalog.regclass
+            AND private_lock.objid = (
+              SELECT oid FROM pg_catalog.pg_am WHERE amname = 'bm25')
+            AND private_lock.objsubid =
+                ((${target_oid} % 32767) + 1)
+            AND private_lock.mode = 'ExclusiveLock'
+            AND private_lock.granted;")"
+
+    sql_super -c "SELECT pg_catalog.pg_terminate_backend(pid)
+      FROM pg_catalog.pg_stat_activity
+      WHERE application_name =
+            'lifecycle-legacy-lock-blocker';" >/dev/null
+    wait "${blocker_pid}" || true
+    wait "${reindex_pid}" || reindex_status=$?
+    wait "${spill_pid}" || spill_status=$?
+    if [ "${reindex_status}" -ne 0 ] || [ "${spill_status}" -ne 0 ]; then
+        error "legacy REINDEX/spill lock race failed:
+reindex: $(cat "${reindex_output}")
+spill: $(cat "${spill_output}")"
+    fi
+
+    assert_eq "legacy REINDEX/spill preserves writer rows" "40" \
+        "$(sql_super -c "SELECT count(*)
+          FROM public.lifecycle_legacy_lock_docs;")"
+    target_oid_after="$(sql_super -c "SELECT
+        'public.lifecycle_legacy_lock_target_idx'::regclass::oid;")"
+    final_lineage="$(
+        index_lineage public.lifecycle_legacy_lock_target_idx
+    )"
+    assert_eq "legacy REINDEX/spill converges on one lineage" "32" \
+        "${#final_lineage}"
+    assert_eq "legacy REINDEX/spill leaves one current workflow" "1" \
+        "$(current_generation_job_count "${target_oid_after}")"
+
+    sql_as durable_owner -c "SELECT df.cancel(
+        instance.id, 'legacy lock race complete')
+      FROM df.instances AS instance
+      WHERE instance.submitted_by = 'durable_owner'::regrole
+        AND instance.status OPERATOR(pg_catalog.=)
+            ANY (ARRAY['pending', 'running']::pg_catalog.text[])
+        AND (instance.label OPERATOR(pg_catalog.~~)
+               'pg_textsearch:bg:v1:%:${target_oid_after}:%');" >/dev/null
+    sql_super -c "DROP TABLE public.lifecycle_legacy_lock_docs;"
+}
+
 test_internal_lock_namespace() {
     local gate_pid index_oid lock_key owner_error
 
@@ -2397,13 +2730,26 @@ CREATE TABLE public.lifecycle_partition_history_low
 CREATE TABLE public.lifecycle_partition_history_high
     PARTITION OF public.lifecycle_partition_history_docs
     FOR VALUES FROM (100) TO (200);
+SQL
+    sql_super -c "ALTER TABLE public.lifecycle_partition_history_high
+                   OWNER TO durable_owner_two;"
+    sql_as durable_owner -c "
 CREATE INDEX lifecycle_partition_history_idx
     ON public.lifecycle_partition_history_docs USING bm25(body)
     WITH (text_config = 'english',
           compaction = 'background',
           compaction_schedule = '0 0 1 1 *');
-SQL
+"
     lineage="$(index_lineage public.lifecycle_partition_history_idx)"
+    assert_eq "partition history has mixed physical leaf owners" "2" \
+        "$(sql_super -c "SELECT count(DISTINCT heap.relowner)
+          FROM pg_catalog.pg_partition_tree(
+                 'public.lifecycle_partition_history_idx'::regclass) AS tree
+          JOIN pg_catalog.pg_index AS index_catalog
+            ON index_catalog.indexrelid = tree.relid
+          JOIN pg_catalog.pg_class AS heap
+            ON heap.oid = index_catalog.indrelid
+          WHERE tree.isleaf;")"
     sql_as durable_owner -c "SELECT df.cancel(
         instance.id, 'partition lineage history test')
       FROM df.instances AS instance
@@ -2416,6 +2762,17 @@ SQL
         AND instance.status OPERATOR(pg_catalog.=)
             ANY (ARRAY['pending', 'running']::pg_catalog.text[]);" \
         >/dev/null
+    sql_super -c "UPDATE df.instances
+      SET label = 'retired-partition-owner-' || id
+      WHERE submitted_by = 'durable_owner'::regrole
+        AND label OPERATOR(pg_catalog.~~)
+            'pg_textsearch:bg:v1:%:%:%:%:%:%:${lineage}:%';"
+    assert_eq "mixed-owner retained leaf history remains" "1" \
+        "$(sql_super -c "SELECT count(*)
+          FROM df.instances
+          WHERE submitted_by = 'durable_owner_two'::regrole
+            AND label OPERATOR(pg_catalog.~~)
+                'pg_textsearch:bg:v1:%:%:%:%:%:%:${lineage}:%';")"
     sql_as durable_owner -c \
         "DROP INDEX public.lifecycle_partition_history_idx;" >/dev/null
 
@@ -2912,7 +3269,7 @@ ${partition_error}"
 }
 
 test_create_authorization_ordering() {
-    local blocker_pid create_error jobs_before
+    local blocker_pid create_error jobs_before malformed_error
     local lock_output="${DATA_DIR}/create-auth-lock.out"
 
     sql_as durable_owner -c "
@@ -2958,6 +3315,20 @@ test_create_authorization_ordering() {
 ${create_error}"
     fi
     log "PASS: unauthorized CREATE fails before custom strong locking"
+
+    if malformed_error="$(sql_as durable_writer -c "
+        SET statement_timeout = '1s';
+        CREATE INDEX lifecycle_create_auth_malformed_idx
+          ON public.lifecycle_create_auth_docs USING bm25(body)
+          WITH (text_config = 'english', compaction);" 2>&1)"; then
+        error "unauthorized malformed CREATE INDEX unexpectedly succeeded"
+    fi
+    if ! grep -Fq "must be owner of table lifecycle_create_auth_docs" \
+        <<<"${malformed_error}"; then
+        error "malformed compaction option preceded core permission error: \
+${malformed_error}"
+    fi
+    log "PASS: CREATE ownership check precedes malformed option extraction"
 
     sql_super -c "SELECT pg_catalog.pg_terminate_backend(pid)
       FROM pg_catalog.pg_stat_activity
@@ -4580,6 +4951,7 @@ run_test test_cic_owner_privilege_preflight
 run_test test_alter_preflight_rejections
 run_test test_defaulted_start_arity
 run_test test_partitioned_create_activation
+run_test test_partitioned_existing_leaf_reconciliation
 run_test test_owner_reconciliation
 run_test test_reindex_reconciliation
 run_test test_concurrent_reindex_reconciliation
@@ -4590,6 +4962,7 @@ run_test test_reindex_tracking_reentry
 run_test test_ordinary_inheritance_reindex_scope
 run_test test_legacy_lineage_backfill
 run_test test_concurrent_legacy_lineage_backfill
+run_test test_legacy_reindex_spill_lock_order
 run_test test_internal_lock_namespace
 run_test test_lineage_ddl_guards
 run_test test_partitioned_lineage_history
