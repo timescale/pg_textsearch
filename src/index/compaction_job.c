@@ -17,6 +17,7 @@
 #include <catalog/objectaddress.h>
 #include <catalog/pg_am_d.h>
 #include <catalog/pg_authid.h>
+#include <catalog/pg_database_d.h>
 #include <catalog/pg_depend.h>
 #include <catalog/pg_depend_d.h>
 #include <catalog/pg_extension.h>
@@ -71,6 +72,7 @@ typedef struct TpCompactionJobObjects
 {
 	Oid	  durable_extension_oid;
 	Oid	  durable_namespace_oid;
+	Oid	  textsearch_namespace_oid;
 	Oid	  textsearch_extension_owner;
 	Oid	  start_function_oid;
 	Oid	  explain_function_oid;
@@ -81,6 +83,7 @@ typedef struct TpCompactionJobObjects
 	Oid	  nodes_relation_oid;
 	Oid	  vars_relation_oid;
 	char *durable_schema;
+	char *textsearch_schema;
 	char *operator_schema;
 	char *start_function;
 	char *explain_function;
@@ -523,15 +526,17 @@ tp_discover_job_objects(TpCompactionJobObjects *objects)
 		elog(ERROR, "pg_textsearch extension schema is missing");
 
 	objects->textsearch_extension_owner = tp_extension_owner(textsearch_oid);
+	objects->textsearch_namespace_oid	= textsearch_namespace_oid;
+	objects->textsearch_schema			= pstrdup(textsearch_schema);
 	objects->step_function_oid			= tp_resolve_extension_function(
 			 textsearch_oid,
-			 textsearch_schema,
+			 objects->textsearch_schema,
 			 "bm25_compact_step_if_current",
 			 5,
 			 oid_args);
 	objects->current_function_oid = tp_resolve_extension_function(
 			textsearch_oid,
-			textsearch_schema,
+			objects->textsearch_schema,
 			"bm25_background_target_is_current",
 			5,
 			oid_args);
@@ -564,6 +569,23 @@ tp_require_owner_login(Oid owner_oid)
 				(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
 				 errmsg("index owner must have LOGIN for background "
 						"compaction")));
+}
+
+static void
+tp_require_owner_database_connect(Oid owner_oid)
+{
+	if (object_aclcheck(
+				DatabaseRelationId, MyDatabaseId, owner_oid, ACL_CONNECT) !=
+		ACLCHECK_OK)
+		ereport(ERROR,
+				(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
+				 errmsg("index owner cannot connect for background "
+						"compaction"),
+				 errdetail(
+						 "Role \"%s\" lacks CONNECT privilege on database "
+						 "\"%s\".",
+						 GetUserNameFromId(owner_oid, false),
+						 get_database_name(MyDatabaseId))));
 }
 
 static void
@@ -693,6 +715,18 @@ tp_require_owner_durable_privileges(
 			 "database"};
 	static const char *const vars_select_columns[] =
 			{"name", "value", "owner"};
+
+	if (object_aclcheck(
+				NamespaceRelationId,
+				objects->textsearch_namespace_oid,
+				owner_oid,
+				ACL_USAGE) != ACLCHECK_OK)
+		tp_owner_privilege_error(
+				owner_oid,
+				"USAGE",
+				psprintf(
+						"schema %s",
+						quote_identifier(objects->textsearch_schema)));
 
 	if (object_aclcheck(
 				NamespaceRelationId,
@@ -925,6 +959,7 @@ tp_capture_target(
 	 */
 	relation_close(index_rel, NoLock);
 	tp_require_owner_login(target->owner_oid);
+	tp_require_owner_database_connect(target->owner_oid);
 	target->family_prefix = tp_build_family_prefix(target);
 }
 
@@ -1607,6 +1642,7 @@ tp_compaction_job_preflight(Oid owner_oid, const char *schedule)
 		elog(ERROR, "background compaction schedule is not initialized");
 
 	tp_require_owner_login(owner_oid);
+	tp_require_owner_database_connect(owner_oid);
 	tp_discover_job_objects(&objects);
 	tp_require_owner_superuser_policy(owner_oid);
 	tp_require_owner_durable_privileges(&objects, owner_oid);
