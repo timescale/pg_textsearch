@@ -6,10 +6,16 @@
  */
 #include <postgres.h>
 
+#include <access/genam.h>
 #include <access/parallel.h>
+#include <access/table.h>
 #include <access/xact.h>
+#include <catalog/pg_class.h>
 #include <catalog/pg_class_d.h>
+#include <commands/defrem.h>
+#include <commands/tablecmds.h>
 #include <miscadmin.h>
+#include <nodes/makefuncs.h>
 #include <nodes/pg_list.h>
 #include <utils/lsyscache.h>
 #include <utils/memutils.h>
@@ -81,6 +87,164 @@ tp_index_compaction_lineage(Relation index_rel)
 		return NULL;
 
 	return (const char *)options + options->compaction_lineage_offset;
+}
+
+char *
+tp_new_compaction_lineage(void)
+{
+	static const char digits[] = "0123456789abcdef";
+	unsigned char	  bytes[TP_COMPACTION_LINEAGE_BYTES];
+	char			 *lineage;
+
+	if (!pg_strong_random(bytes, sizeof(bytes)))
+		ereport(ERROR,
+				(errcode(ERRCODE_INTERNAL_ERROR),
+				 errmsg("could not generate background compaction lineage")));
+
+	lineage = palloc(sizeof(bytes) * 2 + 1);
+	for (Size i = 0; i < sizeof(bytes); i++)
+	{
+		lineage[i * 2]	   = digits[bytes[i] >> 4];
+		lineage[i * 2 + 1] = digits[bytes[i] & 0x0f];
+	}
+	lineage[sizeof(bytes) * 2] = '\0';
+	return lineage;
+}
+
+static bool
+tp_live_compaction_lineage_exists(const char *lineage)
+{
+	Relation	class_rel;
+	SysScanDesc scan;
+	HeapTuple	tuple;
+	bool		found = false;
+
+	class_rel = table_open(RelationRelationId, AccessShareLock);
+	scan = systable_beginscan(class_rel, InvalidOid, false, NULL, 0, NULL);
+	while ((tuple = systable_getnext(scan)) != NULL)
+	{
+		Form_pg_class class_form = (Form_pg_class)GETSTRUCT(tuple);
+		Datum		  reloptions;
+		bool		  isnull;
+		List		 *options;
+		ListCell	 *lc;
+
+		if (class_form->relkind != RELKIND_INDEX &&
+			class_form->relkind != RELKIND_PARTITIONED_INDEX)
+			continue;
+
+		reloptions = heap_getattr(
+				tuple,
+				Anum_pg_class_reloptions,
+				RelationGetDescr(class_rel),
+				&isnull);
+		if (isnull)
+			continue;
+
+		options = untransformRelOptions(reloptions);
+		foreach (lc, options)
+		{
+			DefElem *option = lfirst_node(DefElem, lc);
+
+			if (strcmp(option->defname, "compaction_lineage") == 0 &&
+				strcmp(defGetString(option), lineage) == 0)
+			{
+				found = true;
+				break;
+			}
+		}
+		list_free_deep(options);
+		if (found)
+			break;
+	}
+	systable_endscan(scan);
+	table_close(class_rel, AccessShareLock);
+	return found;
+}
+
+bool
+tp_compaction_lineage_in_use(const char *lineage)
+{
+	return tp_live_compaction_lineage_exists(lineage) ||
+		   tp_compaction_job_lineage_exists(lineage);
+}
+
+static char *
+tp_new_available_compaction_lineage(void)
+{
+	char *lineage;
+
+	do
+	{
+		lineage = tp_new_compaction_lineage();
+		if (!tp_compaction_lineage_in_use(lineage))
+			return lineage;
+		pfree(lineage);
+	} while (true);
+}
+
+char *
+tp_ensure_index_compaction_lineage(Oid indexoid, bool *created)
+{
+	AlterTableCmd *cmd;
+	Relation	   index_rel;
+	const char	  *existing;
+	char		  *lineage;
+	Oid			   owner_oid;
+	Oid			   save_userid;
+	int			   save_sec_context;
+
+	if (created != NULL)
+		*created = false;
+
+	index_rel = try_index_open(indexoid, AccessShareLock);
+	if (index_rel == NULL)
+		return NULL;
+	if (index_rel->rd_indam == NULL ||
+		index_rel->rd_indam->ambuild != tp_build ||
+		index_rel->rd_rel->relkind != RELKIND_INDEX ||
+		tp_index_compaction_mode(index_rel) != TP_COMPACTION_BACKGROUND)
+	{
+		index_close(index_rel, AccessShareLock);
+		return NULL;
+	}
+
+	existing = tp_index_compaction_lineage(index_rel);
+	if (existing != NULL)
+	{
+		lineage = pstrdup(existing);
+		index_close(index_rel, AccessShareLock);
+		return lineage;
+	}
+
+	/* Upgrade a pre-lineage background index under its physical owner. */
+	owner_oid = index_rel->rd_rel->relowner;
+	index_close(index_rel, NoLock);
+	lineage = tp_new_available_compaction_lineage();
+
+	cmd			  = makeNode(AlterTableCmd);
+	cmd->subtype  = AT_SetRelOptions;
+	cmd->def	  = (Node *)list_make1(makeDefElem(
+			 "compaction_lineage", (Node *)makeString(lineage), -1));
+	cmd->behavior = DROP_RESTRICT;
+
+	GetUserIdAndSecContext(&save_userid, &save_sec_context);
+	SetUserIdAndSecContext(
+			owner_oid, save_sec_context | SECURITY_LOCAL_USERID_CHANGE);
+	PG_TRY();
+	{
+		AlterTableInternal(indexoid, list_make1(cmd), false);
+		CommandCounterIncrement();
+	}
+	PG_FINALLY();
+	{
+		SetUserIdAndSecContext(save_userid, save_sec_context);
+	}
+	PG_END_TRY();
+
+	if (created != NULL)
+		*created = true;
+	return lineage;
 }
 
 static void

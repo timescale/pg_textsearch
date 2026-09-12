@@ -768,6 +768,28 @@ managed_job_count() {
       WHERE label LIKE 'pg_textsearch:bg:v1:%';"
 }
 
+index_lineage() {
+    local index_name=$1
+
+    sql_super -c "SELECT pg_catalog.substr(
+        option, pg_catalog.length('compaction_lineage=') + 1)
+      FROM pg_catalog.pg_class AS relation,
+           LATERAL pg_catalog.unnest(relation.reloptions) AS option
+      WHERE relation.oid = '${index_name}'::regclass
+        AND option OPERATOR(pg_catalog.~~) 'compaction_lineage=%';"
+}
+
+remove_index_lineage() {
+    local index_name=$1
+
+    sql_super -c "UPDATE pg_catalog.pg_class
+      SET reloptions = ARRAY(
+        SELECT option
+        FROM pg_catalog.unnest(reloptions) AS option
+        WHERE option OPERATOR(pg_catalog.!~~) 'compaction_lineage=%')
+      WHERE oid = '${index_name}'::regclass;"
+}
+
 create_compaction_debt() {
     sql_as durable_owner <<'SQL' >/dev/null
 BEGIN;
@@ -1905,6 +1927,487 @@ test_ordinary_inheritance_reindex_scope() {
 
     sql_super -c "DROP TABLE public.lifecycle_inherit_child,
                              public.lifecycle_inherit_parent;"
+}
+
+test_legacy_lineage_backfill() {
+    local legacy_instance legacy_lineage legacy_oid owner_job
+    local owner_lineage reindex_lineage reindex_oid_before reindex_oid_after
+
+    install_signal_probe
+    sql_as durable_owner <<'SQL' >/dev/null 2>&1
+CREATE TABLE public.lifecycle_legacy_signal_docs
+    (id integer, body text);
+CREATE INDEX lifecycle_legacy_signal_idx
+    ON public.lifecycle_legacy_signal_docs USING bm25(body)
+    WITH (text_config = 'english',
+          compaction = 'background',
+          compaction_schedule = '0 0 1 1 *');
+GRANT INSERT ON public.lifecycle_legacy_signal_docs TO durable_writer;
+
+CREATE TABLE public.lifecycle_legacy_owner_docs (body text);
+CREATE INDEX lifecycle_legacy_owner_idx
+    ON public.lifecycle_legacy_owner_docs USING bm25(body)
+    WITH (text_config = 'english',
+          compaction = 'background',
+          compaction_schedule = '0 0 1 1 *');
+
+CREATE TABLE public.lifecycle_legacy_reindex_docs (body text);
+INSERT INTO public.lifecycle_legacy_reindex_docs VALUES ('legacy');
+CREATE INDEX lifecycle_legacy_reindex_idx
+    ON public.lifecycle_legacy_reindex_docs USING bm25(body)
+    WITH (text_config = 'english',
+          compaction = 'background',
+          compaction_schedule = '0 0 1 1 *');
+SQL
+
+    legacy_oid="$(sql_super -c "SELECT
+        'public.lifecycle_legacy_signal_idx'::regclass::oid;")"
+    legacy_instance="$(current_generation_job_id "${legacy_oid}")"
+    wait_for_signal_node "${legacy_instance}" 30
+    sql_super -c "UPDATE df.instances AS instance
+      SET label = pg_catalog.format(
+        'pg_textsearch:bg:v1:%s:%s:%s:%s:%s:%s',
+        database.oid,
+        relation.oid,
+        coalesce(nullif(relation.reltablespace, 0),
+                 database.dattablespace),
+        pg_catalog.pg_relation_filenode(relation.oid),
+        relation.relowner,
+        pg_catalog.encode(
+          pg_catalog.convert_to('0 0 1 1 *', 'UTF8'), 'hex'))
+      FROM pg_catalog.pg_class AS relation,
+           pg_catalog.pg_database AS database
+      WHERE instance.id = '${legacy_instance}'
+        AND relation.oid = ${legacy_oid}
+        AND database.datname = pg_catalog.current_database();"
+    remove_index_lineage public.lifecycle_legacy_signal_idx
+    assert_eq "legacy signal setup removes lineage" "" \
+        "$(index_lineage public.lifecycle_legacy_signal_idx)"
+
+    reset_signal_probe
+    sql_as durable_owner <<'SQL' >/dev/null
+BEGIN;
+INSERT INTO public.lifecycle_legacy_signal_docs
+SELECT 1000 + document_number,
+       (SELECT pg_catalog.string_agg(
+                   pg_catalog.format(
+                     'legacy%sterm%s', document_number, term_number),
+                   ' ')
+        FROM generate_series(1, 200) AS term_number)
+FROM generate_series(1, 6) AS document_number;
+SELECT bm25_spill_index('public.lifecycle_legacy_signal_idx');
+INSERT INTO public.lifecycle_legacy_signal_docs
+SELECT 2000 + document_number,
+       (SELECT pg_catalog.string_agg(
+                   pg_catalog.format(
+                     'legacy%sterm%s', document_number, term_number),
+                   ' ')
+        FROM generate_series(201, 400) AS term_number)
+FROM generate_series(1, 6) AS document_number;
+SELECT bm25_spill_index('public.lifecycle_legacy_signal_idx');
+COMMIT;
+SQL
+    legacy_lineage="$(index_lineage public.lifecycle_legacy_signal_idx)"
+    assert_eq "legacy signal lazily assigns a 128-bit lineage" "32" \
+        "${#legacy_lineage}"
+    assert_eq "legacy signal dispatches the replacement workflow" "1" \
+        "$(signal_attempt_count)"
+    assert_eq "legacy signal retires the unscoped workflow" "cancelled" \
+        "$(sql_super -c "SELECT status FROM df.instances
+                          WHERE id = '${legacy_instance}';")"
+    assert_eq "legacy signal leaves one active physical workflow" "1" \
+        "$(current_generation_job_count "${legacy_oid}")"
+
+    remove_index_lineage public.lifecycle_legacy_owner_idx
+    sql_super -c "ALTER TABLE public.lifecycle_legacy_owner_docs
+                   OWNER TO durable_owner_two;" >/dev/null 2>&1
+    owner_lineage="$(index_lineage public.lifecycle_legacy_owner_idx)"
+    assert_eq "legacy owner reconciliation backfills lineage" "32" \
+        "${#owner_lineage}"
+    owner_job="$(current_generation_job_id \
+        "$(sql_super -c "SELECT
+          'public.lifecycle_legacy_owner_idx'::regclass::oid;")")"
+    assert_eq "legacy owner reconciliation uses the new owner" \
+        "durable_owner_two" \
+        "$(sql_super -c "SELECT submitted_by::pg_catalog.text
+                          FROM df.instances
+                          WHERE id = '${owner_job}';")"
+
+    reindex_oid_before="$(sql_super -c "SELECT
+        'public.lifecycle_legacy_reindex_idx'::regclass::oid;")"
+    remove_index_lineage public.lifecycle_legacy_reindex_idx
+    sql_as durable_owner -c "REINDEX INDEX CONCURRENTLY
+        public.lifecycle_legacy_reindex_idx;" >/dev/null 2>&1
+    reindex_oid_after="$(sql_super -c "SELECT
+        'public.lifecycle_legacy_reindex_idx'::regclass::oid;")"
+    if [ "${reindex_oid_after}" = "${reindex_oid_before}" ]; then
+        error "legacy concurrent REINDEX did not replace the index OID"
+    fi
+    reindex_lineage="$(index_lineage public.lifecycle_legacy_reindex_idx)"
+    assert_eq "legacy concurrent REINDEX backfills lineage" "32" \
+        "${#reindex_lineage}"
+    if [ -z "$(current_generation_job_id "${reindex_oid_after}")" ]; then
+        error "legacy concurrent REINDEX created no replacement workflow"
+    fi
+
+    restore_signal_probe
+    sql_super -c "DROP TABLE public.lifecycle_legacy_signal_docs,
+                             public.lifecycle_legacy_owner_docs,
+                             public.lifecycle_legacy_reindex_docs;"
+}
+
+test_lineage_ddl_guards() {
+    local duplicate_error lineage replay_error reset_error set_error
+
+    sql_as durable_owner <<'SQL' >/dev/null 2>&1
+CREATE TABLE public.lifecycle_lineage_source_docs (body text);
+CREATE INDEX lifecycle_lineage_source_idx
+    ON public.lifecycle_lineage_source_docs USING bm25(body)
+    WITH (text_config = 'english',
+          compaction = 'background',
+          compaction_schedule = '0 0 1 1 *');
+CREATE TABLE public.lifecycle_lineage_duplicate_docs (body text);
+SQL
+    lineage="$(index_lineage public.lifecycle_lineage_source_idx)"
+
+    if set_error="$(sql_as durable_owner -c "
+        ALTER INDEX public.lifecycle_lineage_source_idx SET (
+          compaction_lineage =
+            '11111111111111111111111111111111');" 2>&1)"; then
+        error "ALTER INDEX SET changed managed lineage"
+    fi
+    if ! grep -Fq "cannot alter internal background compaction lineage" \
+        <<<"${set_error}"; then
+        error "lineage SET failed for the wrong reason: ${set_error}"
+    fi
+    assert_eq "rejected lineage SET preserves identity" "${lineage}" \
+        "$(index_lineage public.lifecycle_lineage_source_idx)"
+
+    if reset_error="$(sql_as durable_owner -c "
+        ALTER INDEX public.lifecycle_lineage_source_idx
+          RESET (compaction_lineage);" 2>&1)"; then
+        error "ALTER INDEX RESET removed managed lineage"
+    fi
+    if ! grep -Fq "cannot alter internal background compaction lineage" \
+        <<<"${reset_error}"; then
+        error "lineage RESET failed for the wrong reason: ${reset_error}"
+    fi
+    assert_eq "rejected lineage RESET preserves identity" "${lineage}" \
+        "$(index_lineage public.lifecycle_lineage_source_idx)"
+
+    if duplicate_error="$(sql_as durable_owner -c "
+        CREATE INDEX lifecycle_lineage_duplicate_options_idx
+          ON public.lifecycle_lineage_duplicate_docs USING bm25(body)
+          WITH (text_config = 'english',
+                compaction = 'background',
+                compaction_lineage = '${lineage}',
+                compaction_lineage = '${lineage}');" 2>&1)"; then
+        error "CREATE accepted duplicate lineage options"
+    fi
+    if ! grep -Fq "compaction_lineage" <<<"${duplicate_error}"; then
+        error "duplicate lineage options failed unexpectedly: \
+${duplicate_error}"
+    fi
+
+    if duplicate_error="$(sql_as durable_owner -c "
+        CREATE INDEX lifecycle_lineage_duplicate_idx
+          ON public.lifecycle_lineage_duplicate_docs USING bm25(body)
+          WITH (text_config = 'english',
+                compaction = 'background',
+                compaction_lineage = '${lineage}');" 2>&1)"; then
+        error "CREATE reused a live background compaction lineage"
+    fi
+    if ! grep -Fq "background compaction lineage is already in use" \
+        <<<"${duplicate_error}"; then
+        error "live lineage reuse failed unexpectedly: ${duplicate_error}"
+    fi
+    assert_eq "rejected live lineage reuse creates no index" "" \
+        "$(sql_super -c "SELECT pg_catalog.to_regclass(
+          'public.lifecycle_lineage_duplicate_idx');")"
+
+    sql_as durable_owner -c \
+        "DROP INDEX public.lifecycle_lineage_source_idx;" >/dev/null
+    if replay_error="$(sql_as durable_owner -c "
+        CREATE INDEX lifecycle_lineage_source_idx
+          ON public.lifecycle_lineage_source_docs USING bm25(body)
+          WITH (text_config = 'english',
+                compaction = 'background',
+                compaction_lineage = '${lineage}');" 2>&1)"; then
+        error "drop/recreate replay reused retained lineage history"
+    fi
+    if ! grep -Fq "background compaction lineage is already in use" \
+        <<<"${replay_error}"; then
+        error "retained lineage replay failed unexpectedly: ${replay_error}"
+    fi
+
+    sql_super -c "DROP TABLE public.lifecycle_lineage_source_docs,
+                             public.lifecycle_lineage_duplicate_docs;"
+}
+
+test_reindex_lineage_replacement_isolation() {
+    local blocker_pid old_index_name old_index_oid old_lineage
+    local reindex_pid reindex_output replacement_instance replacement_oid
+    local replacement_lineage
+    local lock_output="${DATA_DIR}/reindex-lineage-lock.out"
+
+    reindex_output="${DATA_DIR}/reindex-lineage-replacement.out"
+    sql_as durable_owner <<'SQL' >/dev/null 2>&1
+CREATE FUNCTION public.lifecycle_lineage_pause(value text)
+RETURNS text
+LANGUAGE plpgsql
+IMMUTABLE
+SET search_path = pg_catalog, pg_temp
+AS $body$
+BEGIN
+    IF value OPERATOR(pg_catalog.=) 'pause' THEN
+        PERFORM pg_catalog.pg_advisory_xact_lock(478, 4);
+    END IF;
+    RETURN value;
+END
+$body$;
+
+CREATE TABLE public.lifecycle_lineage_reindex_docs
+    (id integer, body text)
+    PARTITION BY RANGE (id);
+CREATE TABLE public.lifecycle_lineage_reindex_low
+    PARTITION OF public.lifecycle_lineage_reindex_docs
+    FOR VALUES FROM (0) TO (100);
+CREATE TABLE public.lifecycle_lineage_reindex_high
+    PARTITION OF public.lifecycle_lineage_reindex_docs
+    FOR VALUES FROM (100) TO (200);
+INSERT INTO public.lifecycle_lineage_reindex_docs
+VALUES (1, 'pause'), (101, 'continue');
+CREATE INDEX lifecycle_lineage_reindex_idx
+    ON public.lifecycle_lineage_reindex_docs
+    USING bm25 (public.lifecycle_lineage_pause(body))
+    WITH (text_config = 'english',
+          compaction = 'background',
+          compaction_schedule = '0 0 1 1 *');
+SQL
+    old_index_oid="$(sql_super -c "SELECT index_class.oid
+      FROM pg_catalog.pg_inherits AS inheritance
+      JOIN pg_catalog.pg_class AS index_class
+        ON index_class.oid = inheritance.inhrelid
+      JOIN pg_catalog.pg_index AS index_catalog
+        ON index_catalog.indexrelid = index_class.oid
+      WHERE inheritance.inhparent =
+            'public.lifecycle_lineage_reindex_idx'::regclass
+        AND index_catalog.indrelid =
+            'public.lifecycle_lineage_reindex_high'::regclass;")"
+    old_index_name="$(sql_super -c "SELECT relname
+      FROM pg_catalog.pg_class WHERE oid = ${old_index_oid};")"
+    old_lineage="$(index_lineage "public.${old_index_name}")"
+
+    sql_super -c \
+        "SELECT pg_catalog.pg_advisory_lock(478, 4);
+         SELECT pg_catalog.pg_sleep(120);" \
+        >"${lock_output}" 2>&1 &
+    blocker_pid=$!
+    for _ in $(seq 1 100); do
+        if [ "$(sql_super -c "SELECT pg_catalog.count(*)
+              FROM pg_catalog.pg_locks
+              WHERE locktype = 'advisory'
+                AND classid = 478
+                AND objid = 4
+                AND granted;")" = "1" ]; then
+            break
+        fi
+        sleep 0.1
+    done
+
+    PGAPPNAME=lifecycle-lineage-replacement \
+        "${PGBINDIR}/psql" -h "${SOCKET_DIR}" -p "${TEST_PORT}" \
+        -U durable_owner -d "${TEST_DB}" -qAt -v ON_ERROR_STOP=1 \
+        -c "REINDEX INDEX public.lifecycle_lineage_reindex_idx;" \
+        >"${reindex_output}" 2>&1 &
+    reindex_pid=$!
+    for _ in $(seq 1 100); do
+        if [ "$(sql_super -c "SELECT pg_catalog.count(*)
+              FROM pg_catalog.pg_stat_activity
+              WHERE application_name = 'lifecycle-lineage-replacement'
+                AND wait_event = 'advisory';")" = "1" ]; then
+            break
+        fi
+        sleep 0.1
+    done
+    assert_eq "lineage isolation pauses before the pending leaf" "1" \
+        "$(sql_super -c "SELECT pg_catalog.count(*)
+          FROM pg_catalog.pg_stat_activity
+          WHERE application_name = 'lifecycle-lineage-replacement'
+            AND wait_event = 'advisory';")"
+
+    sql_as durable_owner -c "
+        ALTER TABLE public.lifecycle_lineage_reindex_docs
+          DETACH PARTITION public.lifecycle_lineage_reindex_high;
+        DROP INDEX public.${old_index_name};
+        CREATE INDEX ${old_index_name}
+          ON public.lifecycle_lineage_reindex_high
+          USING bm25 (public.lifecycle_lineage_pause(body))
+          WITH (text_config = 'english',
+                compaction = 'background',
+                compaction_schedule = '5 4 3 2 *');" >/dev/null 2>&1
+    replacement_oid="$(sql_super -c \
+        "SELECT 'public.${old_index_name}'::regclass::oid;")"
+    replacement_lineage="$(index_lineage "public.${old_index_name}")"
+    if [ "${replacement_oid}" = "${old_index_oid}" ] ||
+        [ "${replacement_lineage}" = "${old_lineage}" ]; then
+        error "lineage replacement setup reused the original identity"
+    fi
+    replacement_instance="$(current_generation_job_id "${replacement_oid}")"
+    sql_as durable_owner -c "SELECT df.cancel(
+        '${replacement_instance}', 'hide unrelated replacement');" >/dev/null
+    wait_for_terminal "${replacement_instance}" 30
+    sql_super -c "UPDATE df.instances
+      SET label = 'retired-lineage-replacement-' || id
+      WHERE id = '${replacement_instance}';"
+
+    sql_super -c "SELECT pg_catalog.pg_terminate_backend(pid)
+      FROM pg_catalog.pg_stat_activity
+      WHERE pid <> pg_catalog.pg_backend_pid()
+        AND query OPERATOR(pg_catalog.~~)
+            'SELECT pg_catalog.pg_advisory_lock(478, 4)%';" >/dev/null
+    wait "${blocker_pid}" || true
+    if ! wait "${reindex_pid}"; then
+        error "partitioned REINDEX replacement test failed: \
+$(cat "${reindex_output}")"
+    fi
+    assert_eq "outer REINDEX ignores same-name different-lineage index" "" \
+        "$(current_generation_job_id "${replacement_oid}")"
+
+    sql_as durable_owner -c "
+        DROP TABLE public.lifecycle_lineage_reindex_docs,
+                   public.lifecycle_lineage_reindex_high;
+        DROP FUNCTION public.lifecycle_lineage_pause(text);"
+}
+
+test_reindex_authorization_ordering() {
+    local blocker_pid index_error index_oid jobs_before lineage_before
+    local lock_output="${DATA_DIR}/reindex-auth-lock.out"
+    local partition_error partition_jobs_before partition_parent_oid
+
+    sql_as durable_owner <<'SQL' >/dev/null 2>&1
+CREATE TABLE public.lifecycle_auth_docs (body text);
+CREATE INDEX lifecycle_auth_idx
+    ON public.lifecycle_auth_docs USING bm25(body)
+    WITH (text_config = 'english',
+          compaction = 'background',
+          compaction_schedule = '0 0 1 1 *');
+
+CREATE TABLE public.lifecycle_auth_partitioned_docs
+    (id integer, body text)
+    PARTITION BY RANGE (id);
+CREATE TABLE public.lifecycle_auth_partitioned_low
+    PARTITION OF public.lifecycle_auth_partitioned_docs
+    FOR VALUES FROM (0) TO (100);
+CREATE TABLE public.lifecycle_auth_partitioned_high
+    PARTITION OF public.lifecycle_auth_partitioned_docs
+    FOR VALUES FROM (100) TO (200);
+CREATE INDEX lifecycle_auth_partitioned_idx
+    ON public.lifecycle_auth_partitioned_docs USING bm25(body)
+    WITH (text_config = 'english',
+          compaction = 'background',
+          compaction_schedule = '0 0 1 1 *');
+SQL
+    index_oid="$(sql_super -c \
+        "SELECT 'public.lifecycle_auth_idx'::regclass::oid;")"
+    lineage_before="$(index_lineage public.lifecycle_auth_idx)"
+    jobs_before="$(managed_job_count)"
+
+    PGAPPNAME=lifecycle-auth-index-lock sql_as durable_owner -c \
+        "BEGIN;
+         LOCK TABLE public.lifecycle_auth_docs IN SHARE MODE;
+         SELECT pg_catalog.pg_sleep(120);" >"${lock_output}" 2>&1 &
+    blocker_pid=$!
+    for _ in $(seq 1 100); do
+        if [ "$(sql_super -c "SELECT pg_catalog.count(*)
+              FROM pg_catalog.pg_locks
+              WHERE relation =
+                    'public.lifecycle_auth_docs'::regclass
+                AND mode = 'ShareLock'
+                AND granted;")" = "1" ]; then
+            break
+        fi
+        sleep 0.1
+    done
+    if index_error="$(sql_as durable_writer -c "
+        SET statement_timeout = '1s';
+        REINDEX INDEX CONCURRENTLY
+          public.lifecycle_auth_idx;" 2>&1)"; then
+        error "unauthorized concurrent REINDEX unexpectedly succeeded"
+    fi
+    if ! grep -Fq "permission denied for index lifecycle_auth_idx" \
+        <<<"${index_error}"; then
+        error "unauthorized concurrent REINDEX did not fail before locking: \
+${index_error}"
+    fi
+    sql_super -c "SELECT pg_catalog.pg_terminate_backend(pid)
+      FROM pg_catalog.pg_stat_activity
+      WHERE pid <> pg_catalog.pg_backend_pid()
+        AND application_name =
+            'lifecycle-auth-index-lock';" >/dev/null
+    wait "${blocker_pid}" || true
+    assert_eq "unauthorized concurrent REINDEX preserves lineage" \
+        "${lineage_before}" "$(index_lineage public.lifecycle_auth_idx)"
+    assert_eq "unauthorized concurrent REINDEX preserves index OID" \
+        "${index_oid}" \
+        "$(sql_super -c "SELECT
+          'public.lifecycle_auth_idx'::regclass::oid;")"
+    assert_eq "unauthorized concurrent REINDEX creates no workflow" \
+        "${jobs_before}" "$(managed_job_count)"
+
+    partition_parent_oid="$(sql_super -c "SELECT
+      'public.lifecycle_auth_partitioned_idx'::regclass::oid;")"
+    partition_jobs_before="$(managed_job_count)"
+    PGAPPNAME=lifecycle-auth-partition-lock sql_as durable_owner -c \
+        "BEGIN;
+         LOCK TABLE public.lifecycle_auth_partitioned_docs
+           IN ACCESS EXCLUSIVE MODE;
+         SELECT pg_catalog.pg_sleep(120);" >"${lock_output}" 2>&1 &
+    blocker_pid=$!
+    for _ in $(seq 1 100); do
+        if [ "$(sql_super -c "SELECT pg_catalog.count(*)
+              FROM pg_catalog.pg_locks
+              WHERE relation =
+                    'public.lifecycle_auth_partitioned_docs'::regclass
+                AND mode = 'AccessExclusiveLock'
+                AND granted;")" = "1" ]; then
+            break
+        fi
+        sleep 0.1
+    done
+    if partition_error="$(sql_as durable_writer -c "
+        SET statement_timeout = '1s';
+        REINDEX TABLE
+          public.lifecycle_auth_partitioned_docs;" 2>&1)"; then
+        error "unauthorized partitioned REINDEX unexpectedly succeeded"
+    fi
+    if ! grep -Fq \
+        "permission denied for table lifecycle_auth_partitioned_docs" \
+        <<<"${partition_error}"; then
+        error "unauthorized partitioned REINDEX did not fail before locking: \
+${partition_error}"
+    fi
+    sql_super -c "SELECT pg_catalog.pg_terminate_backend(pid)
+      FROM pg_catalog.pg_stat_activity
+      WHERE pid <> pg_catalog.pg_backend_pid()
+        AND application_name =
+            'lifecycle-auth-partition-lock';" >/dev/null
+    wait "${blocker_pid}" || true
+    assert_eq "unauthorized partitioned REINDEX preserves parent OID" \
+        "${partition_parent_oid}" \
+        "$(sql_super -c "SELECT
+          'public.lifecycle_auth_partitioned_idx'::regclass::oid;")"
+    assert_eq "unauthorized partitioned REINDEX creates no workflow" \
+        "${partition_jobs_before}" "$(managed_job_count)"
+
+    sql_super -c "GRANT MAINTAIN ON public.lifecycle_auth_docs
+                   TO durable_writer;"
+    sql_as durable_writer -c "REINDEX INDEX CONCURRENTLY
+        public.lifecycle_auth_idx;" >/dev/null 2>&1
+    log "PASS: MAINTAIN permits tracked concurrent REINDEX"
+
+    sql_super -c "DROP TABLE public.lifecycle_auth_docs,
+                             public.lifecycle_auth_partitioned_docs;"
 }
 
 test_prior_generation_spill_adoption() {
@@ -3147,7 +3650,24 @@ SQL
 }
 
 test_rollback_in_fresh_database() {
-    local alter_error nologin_error
+    local alter_error dump_file dump_lineage nologin_error restored_lineage
+    local restore_output
+
+    dump_file="${DATA_DIR}/lineage-dump.sql"
+    sql_as durable_owner -c "
+        CREATE TABLE public.lifecycle_dump_docs (body text);
+        CREATE INDEX lifecycle_dump_idx
+          ON public.lifecycle_dump_docs USING bm25(body)
+          WITH (text_config = 'english',
+                compaction = 'background',
+                compaction_schedule = '0 0 1 1 *');" >/dev/null 2>&1
+    dump_lineage="$(index_lineage public.lifecycle_dump_idx)"
+    "${PGBINDIR}/pg_dump" -h "${SOCKET_DIR}" -p "${TEST_PORT}" \
+        -U durable_owner -d "${TEST_DB}" --schema-only --no-owner \
+        --table=public.lifecycle_dump_docs >"${dump_file}"
+    if ! grep -Fq "compaction_lineage" "${dump_file}"; then
+        error "pg_dump omitted the managed lineage reloption"
+    fi
 
     sql_super -c "CREATE DATABASE ${ROLLBACK_DB};"
     sql_super -c "ALTER SYSTEM SET pg_durable.database = '${ROLLBACK_DB}';"
@@ -3251,6 +3771,16 @@ ${alter_error}"
                 'durable_owner',
                 'bm25_background_target_is_current(oid,oid,oid,oid,oid)',
                 'EXECUTE');")"
+
+    if ! restore_output="$(sql_as durable_owner -f "${dump_file}" 2>&1)"; then
+        error "normal pg_dump restore rejected a fresh-database lineage: \
+${restore_output}"
+    fi
+    restored_lineage="$(index_lineage public.lifecycle_dump_idx)"
+    assert_eq "pg_dump restore preserves a fresh-database lineage" \
+        "${dump_lineage}" "${restored_lineage}"
+    sql_as durable_owner -c \
+        "DROP TABLE public.lifecycle_dump_docs;" >/dev/null
 }
 
 test_sticky_dependency() {
@@ -3293,6 +3823,10 @@ run_test test_partitioned_reindex_failure_reconciliation
 run_test test_partitioned_reindex_rename_reconciliation
 run_test test_reindex_tracking_reentry
 run_test test_ordinary_inheritance_reindex_scope
+run_test test_legacy_lineage_backfill
+run_test test_lineage_ddl_guards
+run_test test_reindex_lineage_replacement_isolation
+run_test test_reindex_authorization_ordering
 run_test test_prior_generation_spill_adoption
 run_test test_request_queue_runtime
 run_test test_actor_writer_worker_identity
@@ -3302,6 +3836,6 @@ run_test test_initial_failure_continuation
 run_test test_cross_owner_helper_isolation
 run_test test_bypassrls_owner_isolation
 run_test test_superuser_policy_success
-run_test test_sticky_dependency
 run_test test_rollback_in_fresh_database
+run_test test_sticky_dependency
 log "Managed pg_durable compaction tests passed"
