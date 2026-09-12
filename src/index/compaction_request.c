@@ -72,6 +72,17 @@ tp_index_compaction_schedule(Relation index_rel)
 	return (const char *)options + options->compaction_schedule_offset;
 }
 
+const char *
+tp_index_compaction_lineage(Relation index_rel)
+{
+	TpOptions *options = (TpOptions *)index_rel->rd_options;
+
+	if (options == NULL || options->compaction_lineage_offset == 0)
+		return NULL;
+
+	return (const char *)options + options->compaction_lineage_offset;
+}
+
 static void
 tp_pending_compactions_reset(void *arg pg_attribute_unused())
 {

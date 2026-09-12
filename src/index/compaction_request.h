@@ -17,10 +17,14 @@ typedef enum TpCompactionMode
 	TP_COMPACTION_MANUAL
 } TpCompactionMode;
 
+#define TP_COMPACTION_LINEAGE_BYTES	 16
+#define TP_COMPACTION_LINEAGE_LENGTH (TP_COMPACTION_LINEAGE_BYTES * 2)
+
 extern char *tp_background_compaction_schedule;
 
 extern int		   tp_index_compaction_mode(Relation index_rel);
 extern const char *tp_index_compaction_schedule(Relation index_rel);
+extern const char *tp_index_compaction_lineage(Relation index_rel);
 extern bool		   tp_compaction_dispatch_possible(void);
 extern void		   tp_compaction_request(Oid indexoid);
 extern void		   tp_compaction_flush_requests(void);

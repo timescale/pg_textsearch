@@ -143,6 +143,9 @@ tp_options(Datum reloptions, bool validate)
 			 {.optname = "compaction_schedule",
 			  .opttype = RELOPT_TYPE_STRING,
 			  .offset  = offsetof(TpOptions, compaction_schedule_offset)},
+			 {.optname = "compaction_lineage",
+			  .opttype = RELOPT_TYPE_STRING,
+			  .offset  = offsetof(TpOptions, compaction_lineage_offset)},
 			 {.optname = "compaction",
 			  .opttype = RELOPT_TYPE_ENUM,
 			  .offset  = offsetof(TpOptions, compaction)}};

@@ -61,6 +61,7 @@ typedef struct TpOptions
 	double k1;				   /* BM25 k1 parameter */
 	double b;				   /* BM25 b parameter */
 	int32  compaction_schedule_offset;
+	int32  compaction_lineage_offset;
 	int	   compaction; /* TpCompactionMode for this index */
 } TpOptions;
 

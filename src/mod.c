@@ -26,6 +26,7 @@
 #include <fmgr.h>
 #include <limits.h>
 #include <miscadmin.h>
+#include <nodes/makefuncs.h>
 #include <nodes/parsenodes.h>
 #include <nodes/pg_list.h>
 #include <pg_config.h>
@@ -313,17 +314,18 @@ typedef struct TpReindexTarget
 
 typedef struct TpReindexState
 {
-	MemoryContext context;
-	List		 *targets;
-	bool		  reconciling;
+	MemoryContext		   context;
+	List				  *targets;
+	bool				   reconciling;
+	struct TpReindexState *previous;
 } TpReindexState;
 
 /*
- * Concurrent and partitioned REINDEX commit inside ProcessUtility.  Keep
- * logical target names across those commits so each replacement can be
- * reconciled in the transaction that publishes it.
+ * Concurrent and partitioned REINDEX commit inside ProcessUtility.  Keep a
+ * stack of invocation-owned targets across those commits so each replacement
+ * can be reconciled in the transaction that publishes it.
  */
-static TpReindexState *tp_reindex_state = NULL;
+static TpReindexState *tp_reindex_states = NULL;
 
 /* Shared memory size calculation */
 static void tp_shmem_request(void);
@@ -359,7 +361,29 @@ static void tp_process_utility(
 		QueryEnvironment	 *queryEnv,
 		DestReceiver		 *dest,
 		QueryCompletion		 *qc);
-static void tp_reconcile_reindex_state(void);
+static void tp_reconcile_reindex_states(void);
+
+static void
+tp_validate_compaction_lineage(const char *lineage)
+{
+	if (lineage == NULL)
+		return;
+
+	if (strlen(lineage) != TP_COMPACTION_LINEAGE_BYTES * 2)
+		goto invalid;
+
+	for (Size i = 0; lineage[i] != '\0'; i++)
+		if (!((lineage[i] >= '0' && lineage[i] <= '9') ||
+			  (lineage[i] >= 'a' && lineage[i] <= 'f')))
+			goto invalid;
+
+	return;
+
+invalid:
+	ereport(ERROR,
+			(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+			 errmsg("invalid background compaction lineage")));
+}
 
 /*
  * Extension entry point - called when the extension is loaded
@@ -711,6 +735,13 @@ _PG_init(void)
 			NULL,
 			NULL,
 			ShareUpdateExclusiveLock);
+	add_string_reloption(
+			tp_relopt_kind,
+			"compaction_lineage",
+			"Internal managed background compaction lineage",
+			NULL,
+			tp_validate_compaction_lineage,
+			AccessExclusiveLock);
 
 	/*
 	 * Install shared memory hooks (needed for registry)
@@ -860,7 +891,7 @@ tp_xact_callback(XactEvent event, void *arg pg_attribute_unused())
 	switch (event)
 	{
 	case XACT_EVENT_PRE_COMMIT:
-		tp_reconcile_reindex_state();
+		tp_reconcile_reindex_states();
 
 		/*
 		 * Check for bulk load auto-spill before commit.
@@ -950,6 +981,93 @@ tp_index_stmt_option(IndexStmt *stmt, const char *option_name)
 	}
 
 	return NULL;
+}
+
+static char *
+tp_new_compaction_lineage(void)
+{
+	static const char digits[] = "0123456789abcdef";
+	unsigned char	  bytes[TP_COMPACTION_LINEAGE_BYTES];
+	char			 *lineage;
+
+	if (!pg_strong_random(bytes, sizeof(bytes)))
+		ereport(ERROR,
+				(errcode(ERRCODE_INTERNAL_ERROR),
+				 errmsg("could not generate background compaction lineage")));
+
+	lineage = palloc(sizeof(bytes) * 2 + 1);
+	for (Size i = 0; i < sizeof(bytes); i++)
+	{
+		lineage[i * 2]	   = digits[bytes[i] >> 4];
+		lineage[i * 2 + 1] = digits[bytes[i] & 0x0f];
+	}
+	lineage[sizeof(bytes) * 2] = '\0';
+	return lineage;
+}
+
+static void
+tp_index_stmt_ensure_lineage(IndexStmt *stmt)
+{
+	char *lineage;
+
+	if (tp_index_stmt_option(stmt, "compaction_lineage") != NULL)
+		return;
+
+	lineage		  = tp_new_compaction_lineage();
+	stmt->options = lappend(
+			stmt->options,
+			makeDefElem(
+					"compaction_lineage", (Node *)makeString(lineage), -1));
+}
+
+static void
+tp_alter_index_ensure_lineage(AlterTableStmt *stmt)
+{
+	AlterTableCmd *cmd;
+	char		  *lineage;
+	Oid			   indexoid;
+	Relation	   index_rel;
+	ListCell	  *lc;
+
+	foreach (lc, stmt->cmds)
+	{
+		AlterTableCmd *existing_cmd = lfirst_node(AlterTableCmd, lc);
+		ListCell	  *option_lc;
+
+		if (existing_cmd->subtype != AT_SetRelOptions &&
+			existing_cmd->subtype != AT_ResetRelOptions &&
+			existing_cmd->subtype != AT_ReplaceRelOptions)
+			continue;
+
+		foreach (option_lc, castNode(List, existing_cmd->def))
+		{
+			DefElem *option = lfirst_node(DefElem, option_lc);
+
+			if (strcmp(option->defname, "compaction_lineage") == 0)
+				return;
+		}
+	}
+
+	indexoid = RangeVarGetRelid(stmt->relation, AccessShareLock, true);
+	if (!OidIsValid(indexoid))
+		return;
+	index_rel = relation_open(indexoid, NoLock);
+	if (index_rel->rd_indam == NULL ||
+		index_rel->rd_indam->ambuild != tp_build ||
+		tp_index_compaction_lineage(index_rel) != NULL)
+	{
+		relation_close(index_rel, AccessShareLock);
+		return;
+	}
+	relation_close(index_rel, AccessShareLock);
+
+	lineage		  = tp_new_compaction_lineage();
+	cmd			  = makeNode(AlterTableCmd);
+	cmd->subtype  = AT_SetRelOptions;
+	cmd->def	  = (Node *)list_make1(makeDefElem(
+			 "compaction_lineage", (Node *)makeString(lineage), -1));
+	cmd->behavior = DROP_RESTRICT;
+	stmt->cmds	  = lappend(stmt->cmds, cmd);
 }
 
 static bool
@@ -1231,19 +1349,18 @@ tp_activate_background_indexes(List *indexoids, bool refresh_default)
 	}
 }
 
-static void
+static TpReindexState *
 tp_reindex_tracking_begin(List *indexoids)
 {
 	MemoryContext	context;
 	TpReindexState *state;
 	ListCell	   *lc;
 
-	Assert(tp_reindex_state == NULL);
 	context = AllocSetContextCreate(
 			TopMemoryContext, "pg_textsearch reindex", ALLOCSET_SMALL_SIZES);
-	state			 = MemoryContextAllocZero(context, sizeof(*state));
-	state->context	 = context;
-	tp_reindex_state = state;
+	state			= MemoryContextAllocZero(context, sizeof(*state));
+	state->context	= context;
+	state->previous = tp_reindex_states;
 	foreach (lc, indexoids)
 	{
 		Oid				 indexoid = lfirst_oid(lc);
@@ -1275,23 +1392,85 @@ tp_reindex_tracking_begin(List *indexoids)
 
 	if (state->targets == NIL)
 	{
-		tp_reindex_state = NULL;
 		MemoryContextDelete(context);
+		return NULL;
 	}
+
+	tp_reindex_states = state;
+	return state;
 }
 
 static void
-tp_reconcile_reindex_state(void)
+tp_reindex_target_refresh_identity(
+		TpReindexState *state, TpReindexTarget *target, Relation index_rel)
+{
+	MemoryContext old_context;
+
+	old_context = MemoryContextSwitchTo(state->context);
+	pfree(target->index_name);
+	target->namespace_oid = RelationGetNamespace(index_rel);
+	target->index_name	  = pstrdup(RelationGetRelationName(index_rel));
+	MemoryContextSwitchTo(old_context);
+}
+
+static bool
+tp_reindex_target_live_original(
+		TpReindexState	*state,
+		TpReindexTarget *target,
+		Oid				*indexoid,
+		Oid				*tablespace_oid,
+		RelFileNumber	*relfilenumber)
+{
+	Relation index_rel;
+
+	*indexoid = InvalidOid;
+	index_rel = try_relation_open(target->index_oid, AccessShareLock);
+	if (index_rel == NULL)
+		return false;
+
+	if (index_rel->rd_rel->relkind != RELKIND_INDEX ||
+		index_rel->rd_index == NULL ||
+		index_rel->rd_index->indrelid != target->heap_oid)
+	{
+		relation_close(index_rel, AccessShareLock);
+		return false;
+	}
+
+	/*
+	 * A concurrent replacement invalidates the old OID before publishing the
+	 * replacement under its original name.  Only that state permits fallback
+	 * to a name lookup; a still-live index remains the authoritative target.
+	 */
+	if (!index_rel->rd_index->indisvalid || !index_rel->rd_index->indisready ||
+		!index_rel->rd_index->indislive)
+	{
+		relation_close(index_rel, AccessShareLock);
+		return false;
+	}
+
+	if (tp_is_background_physical_index_relation(index_rel))
+	{
+		tp_reindex_target_refresh_identity(state, target, index_rel);
+		*indexoid		= target->index_oid;
+		*tablespace_oid = index_rel->rd_locator.spcOid;
+		*relfilenumber	= index_rel->rd_locator.relNumber;
+	}
+	relation_close(index_rel, AccessShareLock);
+	return true;
+}
+
+static void
+tp_reconcile_reindex_state(TpReindexState *state)
 {
 	ListCell *lc;
 
-	if (tp_reindex_state == NULL || tp_reindex_state->reconciling)
+	if (state->reconciling)
 		return;
 
-	tp_reindex_state->reconciling = true;
+	state->reconciling = true;
 	PG_TRY();
 	{
-		foreach (lc, tp_reindex_state->targets)
+		foreach (lc, state->targets)
 		{
 			TpReindexTarget *target = lfirst(lc);
 			Relation		 index_rel;
@@ -1299,24 +1478,36 @@ tp_reconcile_reindex_state(void)
 			Oid				 tablespace_oid;
 			RelFileNumber	 relfilenumber;
 
-			indexoid = get_relname_relid(
-					target->index_name, target->namespace_oid);
-			if (!OidIsValid(indexoid))
-				continue;
-
-			index_rel = try_index_open(indexoid, AccessShareLock);
-			if (index_rel == NULL)
-				continue;
-			if (!tp_is_background_physical_index_relation(index_rel) ||
-				index_rel->rd_index->indrelid != target->heap_oid)
+			if (!tp_reindex_target_live_original(
+						state,
+						target,
+						&indexoid,
+						&tablespace_oid,
+						&relfilenumber))
 			{
+				indexoid = get_relname_relid(
+						target->index_name, target->namespace_oid);
+				if (!OidIsValid(indexoid))
+					continue;
+
+				index_rel = try_index_open(indexoid, AccessShareLock);
+				if (index_rel == NULL)
+					continue;
+				if (!tp_is_background_physical_index_relation(index_rel) ||
+					index_rel->rd_index->indrelid != target->heap_oid)
+				{
+					index_close(index_rel, AccessShareLock);
+					continue;
+				}
+
+				tp_reindex_target_refresh_identity(state, target, index_rel);
+				tablespace_oid = index_rel->rd_locator.spcOid;
+				relfilenumber  = index_rel->rd_locator.relNumber;
 				index_close(index_rel, AccessShareLock);
-				continue;
 			}
 
-			tablespace_oid = index_rel->rd_locator.spcOid;
-			relfilenumber  = index_rel->rd_locator.relNumber;
-			index_close(index_rel, AccessShareLock);
+			if (!OidIsValid(indexoid))
+				continue;
 			if (indexoid == target->index_oid &&
 				tablespace_oid == target->tablespace_oid &&
 				relfilenumber == target->relfilenumber)
@@ -1330,21 +1521,31 @@ tp_reconcile_reindex_state(void)
 	}
 	PG_FINALLY();
 	{
-		tp_reindex_state->reconciling = false;
+		state->reconciling = false;
 	}
 	PG_END_TRY();
 }
 
 static void
-tp_reindex_tracking_end(void)
+tp_reconcile_reindex_states(void)
+{
+	TpReindexState *state;
+
+	for (state = tp_reindex_states; state != NULL; state = state->previous)
+		tp_reconcile_reindex_state(state);
+}
+
+static void
+tp_reindex_tracking_end(TpReindexState *state)
 {
 	MemoryContext context;
 
-	if (tp_reindex_state == NULL)
+	if (state == NULL)
 		return;
 
-	context			 = tp_reindex_state->context;
-	tp_reindex_state = NULL;
+	Assert(tp_reindex_states == state);
+	context			  = state->context;
+	tp_reindex_states = state->previous;
 	MemoryContextDelete(context);
 }
 
@@ -1594,6 +1795,7 @@ call_next_process_utility(
 		{
 			Oid indexoid;
 
+			tp_alter_index_ensure_lineage(stmt);
 			if (prev_process_utility_hook)
 				prev_process_utility_hook(
 						pstmt,
@@ -1628,16 +1830,17 @@ call_next_process_utility(
 
 	if (IsA(parsetree, ReindexStmt))
 	{
-		ReindexStmt *stmt = (ReindexStmt *)parsetree;
-		List		*indexoids;
-		bool		 tracks_commits;
+		ReindexStmt	   *stmt = (ReindexStmt *)parsetree;
+		List		   *indexoids;
+		bool			tracks_commits;
+		TpReindexState *reindex_state = NULL;
 
 		indexoids = tp_reindex_initial_indexes(stmt, &tracks_commits);
 
 		PG_TRY();
 		{
 			if (tracks_commits)
-				tp_reindex_tracking_begin(indexoids);
+				reindex_state = tp_reindex_tracking_begin(indexoids);
 			list_free(indexoids);
 
 			if (prev_process_utility_hook)
@@ -1662,7 +1865,7 @@ call_next_process_utility(
 						qc);
 
 			if (tracks_commits)
-				tp_reconcile_reindex_state();
+				tp_reconcile_reindex_states();
 			else
 			{
 				indexoids = tp_reindex_current_indexes(stmt);
@@ -1672,7 +1875,7 @@ call_next_process_utility(
 		}
 		PG_FINALLY();
 		{
-			tp_reindex_tracking_end();
+			tp_reindex_tracking_end(reindex_state);
 		}
 		PG_END_TRY();
 		return;
@@ -1684,12 +1887,16 @@ call_next_process_utility(
 
 		if (stmt->accessMethod && strcmp(stmt->accessMethod, "bm25") == 0)
 		{
-			Oid		 heapoid;
-			Relation heap_rel;
-			List	*indexes_before;
-			List	*indexes_after;
-			List	*created_indexes;
+			Oid			heapoid;
+			Relation	heap_rel;
+			List	   *indexes_before;
+			List	   *indexes_after;
+			List	   *created_indexes;
+			const char *compaction;
 
+			compaction = tp_index_stmt_option(stmt, "compaction");
+			if (compaction != NULL && strcmp(compaction, "background") == 0)
+				tp_index_stmt_ensure_lineage(stmt);
 			heapoid = RangeVarGetRelid(
 					stmt->relation,
 					stmt->concurrent ? ShareUpdateExclusiveLock : ShareLock,

@@ -63,9 +63,11 @@ typedef struct TpCompactionJobTarget
 	Oid			  tablespace_oid;
 	RelFileNumber relfilenumber;
 	Oid			  owner_oid;
+	Oid			  heap_oid;
 	char		 *index_name;
 	char		 *schedule;
-	char		 *logical_prefix;
+	char		 *lineage;
+	char		 *history_prefix;
 	char		 *family_prefix;
 } TpCompactionJobTarget;
 
@@ -791,12 +793,9 @@ tp_require_owner_durable_privileges(
 }
 
 static char *
-tp_build_logical_prefix(const TpCompactionJobTarget *target)
+tp_build_history_prefix(const TpCompactionJobTarget *target)
 {
-	return psprintf(
-			TP_JOB_LABEL_PREFIX "%u:%u:",
-			target->database_oid,
-			target->index_oid);
+	return psprintf(TP_JOB_LABEL_PREFIX "%u:", target->database_oid);
 }
 
 static char *
@@ -849,7 +848,12 @@ tp_build_label(const TpCompactionJobTarget *target, const char *schedule)
 {
 	char *encoded = tp_hex_encode(schedule);
 	char *label	  = psprintf(
-			  "%s%u:%s", target->family_prefix, target->owner_oid, encoded);
+			  "%s%u:%u:%s:%s",
+			  target->family_prefix,
+			  target->owner_oid,
+			  target->heap_oid,
+			  target->lineage,
+			  encoded);
 
 	pfree(encoded);
 	return label;
@@ -866,6 +870,9 @@ tp_schedule_from_label(
 	Size		  prefix_length = strlen(owner_prefix);
 	const char	 *encoded;
 	Size		  encoded_length;
+	unsigned int  heap_oid;
+	char		  lineage[TP_COMPACTION_LINEAGE_LENGTH + 1];
+	int			  consumed = 0;
 	char		 *schedule;
 	MemoryContext old_context;
 
@@ -876,7 +883,16 @@ tp_schedule_from_label(
 	}
 	pfree(owner_prefix);
 
-	encoded		   = label + prefix_length;
+	if (sscanf(label + prefix_length,
+			   "%u:%32[0-9a-f]:%n",
+			   &heap_oid,
+			   lineage,
+			   &consumed) != 2 ||
+		consumed <= 0 || heap_oid != target->heap_oid ||
+		strcmp(lineage, target->lineage) != 0)
+		return NULL;
+
+	encoded		   = label + prefix_length + consumed;
 	encoded_length = strlen(encoded);
 	if ((encoded_length & 1) != 0)
 		return NULL;
@@ -966,7 +982,20 @@ tp_capture_target(
 	target->tablespace_oid = index_rel->rd_locator.spcOid;
 	target->relfilenumber  = index_rel->rd_locator.relNumber;
 	target->owner_oid	   = index_rel->rd_rel->relowner;
+	target->heap_oid	   = index_rel->rd_index->indrelid;
 	target->index_name	   = pstrdup(RelationGetRelationName(index_rel));
+	schedule			   = tp_index_compaction_lineage(index_rel);
+	if (schedule == NULL)
+	{
+		relation_close(index_rel, AccessShareLock);
+		ereport(ERROR,
+				(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
+				 errmsg("index \"%s\" has no background compaction lineage",
+						target->index_name),
+				 errhint("Recreate the index before using managed background "
+						 "compaction.")));
+	}
+	target->lineage = pstrdup(schedule);
 
 	if (refresh_default)
 	{
@@ -985,7 +1014,7 @@ tp_capture_target(
 	relation_close(index_rel, NoLock);
 	tp_require_owner_login(target->owner_oid);
 	tp_require_owner_database_connect(target->owner_oid);
-	target->logical_prefix = tp_build_logical_prefix(target);
+	target->history_prefix = tp_build_history_prefix(target);
 	target->family_prefix  = tp_build_family_prefix(target);
 }
 
@@ -1305,30 +1334,38 @@ tp_schedule_from_prior_label(
 {
 	const char	 *suffix;
 	const char	 *encoded;
+	char		  lineage[TP_COMPACTION_LINEAGE_LENGTH + 1];
+	unsigned int  index_oid;
 	unsigned int  tablespace_oid;
 	unsigned int  relfilenumber;
 	unsigned int  owner_oid;
+	unsigned int  heap_oid;
 	int			  consumed = 0;
 	Size		  encoded_length;
 	char		 *schedule;
 	MemoryContext old_context;
 
 	if (strncmp(label,
-				target->logical_prefix,
-				strlen(target->logical_prefix)) != 0)
+				target->history_prefix,
+				strlen(target->history_prefix)) != 0)
 		return NULL;
 
-	suffix = label + strlen(target->logical_prefix);
+	suffix = label + strlen(target->history_prefix);
 	if (sscanf(suffix,
-			   "%u:%u:%u:%n",
+			   "%u:%u:%u:%u:%u:%32[0-9a-f]:%n",
+			   &index_oid,
 			   &tablespace_oid,
 			   &relfilenumber,
 			   &owner_oid,
-			   &consumed) != 3 ||
-		consumed <= 0 || owner_oid != target->owner_oid)
+			   &heap_oid,
+			   lineage,
+			   &consumed) != 6 ||
+		consumed <= 0 || owner_oid != target->owner_oid ||
+		heap_oid != target->heap_oid || strcmp(lineage, target->lineage) != 0)
 		return NULL;
 
-	if (tablespace_oid == target->tablespace_oid &&
+	if (index_oid == target->index_oid &&
+		tablespace_oid == target->tablespace_oid &&
 		relfilenumber == (unsigned int)target->relfilenumber)
 		return NULL;
 
@@ -1366,7 +1403,7 @@ tp_find_prior_generation_schedule(
 	StringInfoData sql;
 	Oid			   argtypes[2] = {TEXTOID, OIDOID};
 	Datum		   values[2] =
-			{CStringGetTextDatum(target->logical_prefix),
+			{CStringGetTextDatum(target->history_prefix),
 			 ObjectIdGetDatum(target->owner_oid)};
 	char *schedule = NULL;
 	int	  rc;
