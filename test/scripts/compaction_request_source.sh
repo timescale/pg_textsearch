@@ -126,7 +126,7 @@ fi
 owner_predicate_count="$(
     grep -Fc "instance.submitted_by::pg_catalog.oid" <<<"${job_code}" || true
 )"
-if [ "${owner_predicate_count}" -lt 3 ]; then
+if [ "${owner_predicate_count}" -lt 4 ]; then
     echo "managed instance queries lack explicit owner predicates" >&2
     exit 1
 fi
@@ -222,6 +222,47 @@ if ! grep -Fq "PG_CATCH()" <<<"${reindex_tracking_body}" ||
     [ "$(grep -Fc "MemoryContextDelete(context)" \
         <<<"${reindex_tracking_body}")" -lt 2 ]; then
     echo "REINDEX tracking construction does not clean up on error" >&2
+    exit 1
+fi
+tracking_try_line="$(
+    grep -n "PG_TRY()" <<<"${reindex_tracking_body}" | head -1 | cut -d: -f1
+)"
+tracking_alloc_line="$(
+    grep -n "MemoryContextAllocZero" <<<"${reindex_tracking_body}" |
+        head -1 | cut -d: -f1
+)"
+if [[ -z "${tracking_try_line}" || -z "${tracking_alloc_line}" ||
+      "${tracking_try_line}" -ge "${tracking_alloc_line}" ]]; then
+    echo "REINDEX tracking allocates outside its cleanup boundary" >&2
+    exit 1
+fi
+
+ensure_lineage_body="$(
+    sed -n \
+        '/^tp_ensure_index_compaction_lineage(Oid indexoid, bool \*created)/,/^}/p' \
+        "${REQUEST_SOURCE}"
+)"
+if ! grep -Fq "ShareUpdateExclusiveLock" <<<"${ensure_lineage_body}"; then
+    echo "legacy lineage backfill lacks its required relation lock" >&2
+    exit 1
+fi
+if grep -Fq "tp_alter_index_ensure_lineage" "${MODULE_SOURCE}"; then
+    echo "ALTER still injects a legacy lineage before serialized activation" \
+        >&2
+    exit 1
+fi
+
+if grep -Fq "SET_LOCKTAG_ADVISORY" "${REQUEST_SOURCE}" ||
+    ! grep -Fq "LockDatabaseObject" "${REQUEST_SOURCE}" ||
+    ! grep -Fq "AccessMethodRelationId" "${REQUEST_SOURCE}"; then
+    echo "internal lineage locks share PostgreSQL's advisory-lock namespace" \
+        >&2
+    exit 1
+fi
+
+if ! grep -Fq "RangeVarCallbackOwnsRelation" "${MODULE_SOURCE}"; then
+    echo "CREATE INDEX locking does not preserve core authorization ordering" \
+        >&2
     exit 1
 fi
 

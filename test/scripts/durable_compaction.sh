@@ -1030,6 +1030,31 @@ ${create_output}"
         "$(active_jobs_for_index "${index_oid}")"
 }
 
+test_reindex_nonrelation_passthrough() {
+    sql_super -c "
+        CREATE SCHEMA lifecycle_reindex_scope
+          AUTHORIZATION durable_owner;
+        CREATE TABLE lifecycle_reindex_scope.documents
+          (id integer PRIMARY KEY, body text);
+        INSERT INTO lifecycle_reindex_scope.documents
+        VALUES (1, 'one'), (2, 'two');" >/dev/null
+
+    log "Running REINDEX SCHEMA passthrough"
+    sql_super -c \
+        "REINDEX SCHEMA lifecycle_reindex_scope;" >/dev/null
+    log "PASS: REINDEX SCHEMA passes through without relation tracking"
+
+    log "Running REINDEX DATABASE passthrough"
+    sql_super -c "REINDEX DATABASE ${TEST_DB};" >/dev/null
+    assert_eq "REINDEX DATABASE passes through and leaves server responsive" \
+        "2" \
+        "$(sql_super -c "SELECT count(*)
+          FROM lifecycle_reindex_scope.documents;")"
+
+    sql_as durable_owner -c \
+        "DROP SCHEMA lifecycle_reindex_scope CASCADE;" >/dev/null
+}
+
 test_partitioned_create_activation() {
     local create_output leaf_jobs parent_oid
 
@@ -2204,6 +2229,73 @@ second: $(cat "${second_output}")"
     sql_super -c "DROP TABLE public.lifecycle_legacy_race_docs;"
 }
 
+test_internal_lock_namespace() {
+    local gate_pid index_oid lock_key owner_error
+
+    sql_as durable_owner <<'SQL' >/dev/null 2>&1
+CREATE TABLE public.lifecycle_private_lock_docs (body text);
+CREATE INDEX lifecycle_private_lock_idx
+    ON public.lifecycle_private_lock_docs USING bm25(body)
+    WITH (text_config = 'english',
+          compaction = 'background',
+          compaction_schedule = '0 0 1 1 *');
+SQL
+    index_oid="$(sql_super -c "SELECT
+        'public.lifecycle_private_lock_idx'::regclass::oid;")"
+    remove_index_lineage public.lifecycle_private_lock_idx
+    lock_key="$((1885828211 * 4294967296 + index_oid))"
+
+    PGAPPNAME=lifecycle-public-advisory-lock sql_super -c \
+        "SELECT pg_catalog.pg_advisory_lock(${lock_key});
+         SELECT pg_catalog.pg_sleep(120);" \
+        >"${DATA_DIR}/public-advisory-lock.out" 2>&1 &
+    gate_pid=$!
+    for _ in $(seq 1 100); do
+        if [ "$(sql_super -c "SELECT pg_catalog.count(*)
+              FROM pg_catalog.pg_locks
+              WHERE locktype = 'advisory'
+                AND classid = 1885828211
+                AND objid = ${index_oid}
+                AND granted;")" = "1" ]; then
+            break
+        fi
+        sleep 0.1
+    done
+    assert_eq "public advisory collision gate is held" "1" \
+        "$(sql_super -c "SELECT pg_catalog.count(*)
+          FROM pg_catalog.pg_locks
+          WHERE locktype = 'advisory'
+            AND classid = 1885828211
+            AND objid = ${index_oid}
+            AND granted;")"
+
+    if ! owner_error="$(sql_super -c "
+        SET statement_timeout = '2s';
+        ALTER TABLE public.lifecycle_private_lock_docs
+          OWNER TO durable_owner_two;" 2>&1)"; then
+        error "public advisory lock blocked internal lineage serialization: \
+${owner_error}"
+    fi
+    assert_eq "public advisory lock does not block internal lineage lock" \
+        "durable_owner_two:32" \
+        "$(sql_super -c "SELECT
+            pg_catalog.pg_get_userbyid(relation.relowner) || ':' ||
+            pg_catalog.length(pg_catalog.substr(
+              option, pg_catalog.length('compaction_lineage=') + 1))
+          FROM pg_catalog.pg_class AS relation,
+               LATERAL pg_catalog.unnest(relation.reloptions) AS option
+          WHERE relation.oid = ${index_oid}
+            AND option OPERATOR(pg_catalog.~~)
+                'compaction_lineage=%';")"
+
+    sql_super -c "SELECT pg_catalog.pg_terminate_backend(pid)
+      FROM pg_catalog.pg_stat_activity
+      WHERE application_name =
+            'lifecycle-public-advisory-lock';" >/dev/null
+    wait "${gate_pid}" || true
+    sql_super -c "DROP TABLE public.lifecycle_private_lock_docs;"
+}
+
 test_lineage_ddl_guards() {
     local duplicate_error lineage replay_error reset_error set_error
 
@@ -2292,6 +2384,128 @@ ${duplicate_error}"
                              public.lifecycle_lineage_duplicate_docs;"
 }
 
+test_partitioned_lineage_history() {
+    local lineage replay_error
+
+    sql_as durable_owner <<'SQL' >/dev/null 2>&1
+CREATE TABLE public.lifecycle_partition_history_docs
+    (id integer, body text)
+    PARTITION BY RANGE (id);
+CREATE TABLE public.lifecycle_partition_history_low
+    PARTITION OF public.lifecycle_partition_history_docs
+    FOR VALUES FROM (0) TO (100);
+CREATE TABLE public.lifecycle_partition_history_high
+    PARTITION OF public.lifecycle_partition_history_docs
+    FOR VALUES FROM (100) TO (200);
+CREATE INDEX lifecycle_partition_history_idx
+    ON public.lifecycle_partition_history_docs USING bm25(body)
+    WITH (text_config = 'english',
+          compaction = 'background',
+          compaction_schedule = '0 0 1 1 *');
+SQL
+    lineage="$(index_lineage public.lifecycle_partition_history_idx)"
+    sql_as durable_owner -c "SELECT df.cancel(
+        instance.id, 'partition lineage history test')
+      FROM df.instances AS instance
+      JOIN pg_catalog.pg_inherits AS inheritance
+        ON instance.label OPERATOR(pg_catalog.~~)
+           ('pg_textsearch:bg:v1:%:' ||
+            inheritance.inhrelid::pg_catalog.text || ':%')
+      WHERE inheritance.inhparent =
+            'public.lifecycle_partition_history_idx'::regclass
+        AND instance.status OPERATOR(pg_catalog.=)
+            ANY (ARRAY['pending', 'running']::pg_catalog.text[]);" \
+        >/dev/null
+    sql_as durable_owner -c \
+        "DROP INDEX public.lifecycle_partition_history_idx;" >/dev/null
+
+    if replay_error="$(sql_as durable_owner -c "
+        CREATE INDEX lifecycle_partition_history_idx
+          ON public.lifecycle_partition_history_docs USING bm25(body)
+          WITH (text_config = 'english',
+                compaction = 'background',
+                compaction_schedule = '0 0 1 1 *',
+                compaction_lineage = '${lineage}');" 2>&1)"; then
+        error "partitioned drop/recreate reused retained leaf lineage"
+    fi
+    if ! grep -Fq "background compaction lineage is already in use" \
+        <<<"${replay_error}"; then
+        error "partitioned retained history failed unexpectedly: \
+${replay_error}"
+    fi
+    log "PASS: partition root rejects retained physical-leaf lineage"
+
+    sql_super -c \
+        "DROP TABLE public.lifecycle_partition_history_docs;"
+}
+
+test_forged_lineage_submitter() {
+    local create_error foreign_instance forged_label lineage new_index_oid
+    local new_instance original_instance
+
+    sql_as durable_owner <<'SQL' >/dev/null 2>&1
+CREATE TABLE public.lifecycle_forged_history_docs (body text);
+CREATE INDEX lifecycle_forged_history_idx
+    ON public.lifecycle_forged_history_docs USING bm25(body)
+    WITH (text_config = 'english',
+          compaction = 'background',
+          compaction_schedule = '0 0 1 1 *');
+SQL
+    new_index_oid="$(sql_super -c "SELECT
+        'public.lifecycle_forged_history_idx'::regclass::oid;")"
+    lineage="$(index_lineage public.lifecycle_forged_history_idx)"
+    original_instance="$(current_generation_job_id "${new_index_oid}")"
+    wait_for_signal_node "${original_instance}" 30
+    forged_label="$(sql_super -c "SELECT label
+      FROM df.instances WHERE id = '${original_instance}';")"
+    sql_as durable_owner -c "SELECT df.cancel(
+        '${original_instance}', 'forge submitter test');" >/dev/null
+    wait_for_terminal "${original_instance}" 30
+    sql_super -c "UPDATE df.instances
+      SET label = 'retired-forged-source-' || id
+      WHERE id = '${original_instance}';"
+    sql_as durable_owner -c \
+        "DROP INDEX public.lifecycle_forged_history_idx;" >/dev/null
+
+    foreign_instance="$(sql_as durable_owner_two -c "
+      SELECT df.start(
+        df.wait_for_signal('hold', 300),
+        '${forged_label}',
+        pg_catalog.current_database(),
+        'caller');")"
+    wait_for_signal_node "${foreign_instance}" 30
+
+    if ! create_error="$(sql_as durable_owner -c "
+        CREATE INDEX lifecycle_forged_history_idx
+          ON public.lifecycle_forged_history_docs USING bm25(body)
+          WITH (text_config = 'english',
+                compaction = 'background',
+                compaction_schedule = '0 0 1 1 *',
+                compaction_lineage = '${lineage}');" 2>&1)"; then
+        error "foreign-submitter forged label blocked legitimate lineage \
+reuse: ${create_error}"
+    fi
+    new_index_oid="$(sql_super -c "SELECT
+        'public.lifecycle_forged_history_idx'::regclass::oid;")"
+    new_instance="$(current_generation_job_id "${new_index_oid}")"
+    if [ -z "${new_instance}" ]; then
+        error "foreign-submitter forged label prevented owner activation"
+    fi
+    assert_eq "forged label remains owned by its foreign submitter" \
+        "durable_owner_two" \
+        "$(sql_super -c "SELECT submitted_by::pg_catalog.text
+          FROM df.instances WHERE id = '${foreign_instance}';")"
+    assert_eq "owner may reuse lineage present only in forged history" \
+        "${lineage}" \
+        "$(index_lineage public.lifecycle_forged_history_idx)"
+
+    sql_as durable_owner_two -c "SELECT df.cancel(
+        '${foreign_instance}', 'forge submitter test complete');" >/dev/null
+    sql_as durable_owner -c "SELECT df.cancel(
+        '${new_instance}', 'forge submitter test complete');" >/dev/null
+    sql_super -c "DROP TABLE public.lifecycle_forged_history_docs;"
+}
+
 test_concurrent_supplied_lineage_create() {
     local first_output first_pid first_status=0 gate_pid
     local second_output second_pid second_status=0 successes
@@ -2363,7 +2577,7 @@ SQL
               WHERE application_name IN (
                 'lifecycle-lineage-create-first',
                 'lifecycle-lineage-create-second')
-                AND wait_event = 'advisory';")" = "2" ]; then
+                    AND wait_event_type = 'Lock';")" = "2" ]; then
             break
         fi
         sleep 0.1
@@ -2374,7 +2588,7 @@ SQL
           WHERE application_name IN (
             'lifecycle-lineage-create-first',
             'lifecycle-lineage-create-second')
-            AND wait_event = 'advisory';")"
+            AND wait_event_type = 'Lock';")"
 
     sql_super -c "SELECT pg_catalog.pg_terminate_backend(pid)
       FROM pg_catalog.pg_stat_activity
@@ -2695,6 +2909,67 @@ ${partition_error}"
 
     sql_super -c "DROP TABLE public.lifecycle_auth_docs,
                              public.lifecycle_auth_partitioned_docs;"
+}
+
+test_create_authorization_ordering() {
+    local blocker_pid create_error jobs_before
+    local lock_output="${DATA_DIR}/create-auth-lock.out"
+
+    sql_as durable_owner -c "
+        CREATE TABLE public.lifecycle_create_auth_docs (body text);" \
+        >/dev/null
+    jobs_before="$(managed_job_count)"
+    PGAPPNAME=lifecycle-create-auth-lock sql_as durable_owner -c \
+        "BEGIN;
+         LOCK TABLE public.lifecycle_create_auth_docs
+           IN ACCESS EXCLUSIVE MODE;
+         SELECT pg_catalog.pg_sleep(120);" >"${lock_output}" 2>&1 &
+    blocker_pid=$!
+    for _ in $(seq 1 100); do
+        if [ "$(sql_super -c "SELECT pg_catalog.count(*)
+              FROM pg_catalog.pg_locks
+              WHERE relation =
+                    'public.lifecycle_create_auth_docs'::regclass
+                AND mode = 'AccessExclusiveLock'
+                AND granted;")" = "1" ]; then
+            break
+        fi
+        sleep 0.1
+    done
+    assert_eq "CREATE authorization blocker holds the table lock" "1" \
+        "$(sql_super -c "SELECT pg_catalog.count(*)
+          FROM pg_catalog.pg_locks
+          WHERE relation =
+                'public.lifecycle_create_auth_docs'::regclass
+            AND mode = 'AccessExclusiveLock'
+            AND granted;")"
+
+    if create_error="$(sql_as durable_writer -c "
+        SET statement_timeout = '1s';
+        CREATE INDEX lifecycle_create_auth_idx
+          ON public.lifecycle_create_auth_docs USING bm25(body)
+          WITH (text_config = 'english',
+                compaction = 'background');" 2>&1)"; then
+        error "unauthorized CREATE INDEX unexpectedly succeeded"
+    fi
+    if ! grep -Fq "must be owner of table lifecycle_create_auth_docs" \
+        <<<"${create_error}"; then
+        error "unauthorized CREATE waited on the custom strong lock: \
+${create_error}"
+    fi
+    log "PASS: unauthorized CREATE fails before custom strong locking"
+
+    sql_super -c "SELECT pg_catalog.pg_terminate_backend(pid)
+      FROM pg_catalog.pg_stat_activity
+      WHERE application_name =
+            'lifecycle-create-auth-lock';" >/dev/null
+    wait "${blocker_pid}" || true
+    assert_eq "unauthorized CREATE leaves no index" "" \
+        "$(sql_super -c "SELECT pg_catalog.to_regclass(
+          'public.lifecycle_create_auth_idx');")"
+    assert_eq "unauthorized CREATE creates no workflow" \
+        "${jobs_before}" "$(managed_job_count)"
+    sql_super -c "DROP TABLE public.lifecycle_create_auth_docs;"
 }
 
 test_reindex_authorization_resolution_race() {
@@ -4088,16 +4363,23 @@ test_rollback_in_fresh_database() {
     partition_lineage="$(
         index_lineage public.lifecycle_dump_partitioned_idx
     )"
-    assert_eq "partitioned source indexes share one lineage" "1" \
-        "$(sql_super -c "SELECT count(DISTINCT pg_catalog.substr(
-            option, pg_catalog.length('compaction_lineage=') + 1))
-          FROM pg_catalog.pg_inherits AS inheritance
+    assert_eq "partitioned source parent has a 128-bit lineage" "32" \
+        "${#partition_lineage}"
+    assert_eq "every partitioned source leaf matches parent lineage" "2:2" \
+        "$(sql_super -c "SELECT
+            count(*) || ':' ||
+            count(*) FILTER (
+              WHERE pg_catalog.substr(
+                option, pg_catalog.length('compaction_lineage=') + 1)
+                    OPERATOR(pg_catalog.=) '${partition_lineage}')
+          FROM pg_catalog.pg_partition_tree(
+                 'public.lifecycle_dump_partitioned_idx'::regclass) AS tree
           JOIN pg_catalog.pg_class AS relation
-            ON relation.oid = inheritance.inhrelid
+            ON relation.oid = tree.relid
           CROSS JOIN LATERAL
             pg_catalog.unnest(relation.reloptions) AS option
-          WHERE inheritance.inhparent =
-                'public.lifecycle_dump_partitioned_idx'::regclass
+          WHERE tree.isleaf
+            AND relation.relkind = 'i'
             AND option OPERATOR(pg_catalog.~~)
                 'compaction_lineage=%';")"
     "${PGBINDIR}/pg_dump" -h "${SOCKET_DIR}" -p "${TEST_PORT}" \
@@ -4223,16 +4505,26 @@ ${restore_output}"
     assert_eq "partitioned pg_dump restore preserves shared lineage" \
         "${partition_lineage}" \
         "$(index_lineage public.lifecycle_dump_partitioned_idx)"
-    assert_eq "partitioned restore keeps one lineage across leaf heaps" "1" \
-        "$(sql_super -c "SELECT count(DISTINCT pg_catalog.substr(
-            option, pg_catalog.length('compaction_lineage=') + 1))
-          FROM pg_catalog.pg_inherits AS inheritance
+    restored_lineage="$(
+        index_lineage public.lifecycle_dump_partitioned_idx
+    )"
+    assert_eq "partitioned restored parent has a 128-bit lineage" "32" \
+        "${#restored_lineage}"
+    assert_eq "every restored physical leaf matches parent lineage" "2:2" \
+        "$(sql_super -c "SELECT
+            count(*) || ':' ||
+            count(*) FILTER (
+              WHERE pg_catalog.substr(
+                option, pg_catalog.length('compaction_lineage=') + 1)
+                    OPERATOR(pg_catalog.=) '${restored_lineage}')
+          FROM pg_catalog.pg_partition_tree(
+                 'public.lifecycle_dump_partitioned_idx'::regclass) AS tree
           JOIN pg_catalog.pg_class AS relation
-            ON relation.oid = inheritance.inhrelid
+            ON relation.oid = tree.relid
           CROSS JOIN LATERAL
             pg_catalog.unnest(relation.reloptions) AS option
-          WHERE inheritance.inhparent =
-                'public.lifecycle_dump_partitioned_idx'::regclass
+          WHERE tree.isleaf
+            AND relation.relkind = 'i'
             AND option OPERATOR(pg_catalog.~~)
                 'compaction_lineage=%';")"
     assert_eq "partitioned restore activates every physical leaf" "2" \
@@ -4282,6 +4574,7 @@ stage_durable_package
 setup_cluster
 run_test test_missing_durable_cic
 initialize_database
+run_test test_reindex_nonrelation_passthrough
 run_test test_cic_preflight_rejections
 run_test test_cic_owner_privilege_preflight
 run_test test_alter_preflight_rejections
@@ -4297,10 +4590,14 @@ run_test test_reindex_tracking_reentry
 run_test test_ordinary_inheritance_reindex_scope
 run_test test_legacy_lineage_backfill
 run_test test_concurrent_legacy_lineage_backfill
+run_test test_internal_lock_namespace
 run_test test_lineage_ddl_guards
+run_test test_partitioned_lineage_history
+run_test test_forged_lineage_submitter
 run_test test_concurrent_supplied_lineage_create
 run_test test_reindex_lineage_replacement_isolation
 run_test test_reindex_authorization_ordering
+run_test test_create_authorization_ordering
 run_test test_reindex_authorization_resolution_race
 run_test test_prior_generation_spill_adoption
 run_test test_request_queue_runtime

@@ -900,60 +900,6 @@ tp_reject_user_lineage_alter(AlterTableStmt *stmt)
 						"lineage")));
 }
 
-static void
-tp_alter_index_ensure_lineage(AlterTableStmt *stmt)
-{
-	AlterTableCmd *cmd;
-	char		  *lineage;
-	Oid			   indexoid;
-	Relation	   index_rel;
-	ListCell	  *lc;
-	Oid			   heap_oid;
-	Oid			   owner_oid;
-
-	foreach (lc, stmt->cmds)
-	{
-		AlterTableCmd *existing_cmd = lfirst_node(AlterTableCmd, lc);
-		ListCell	  *option_lc;
-
-		if (existing_cmd->subtype != AT_SetRelOptions &&
-			existing_cmd->subtype != AT_ResetRelOptions &&
-			existing_cmd->subtype != AT_ReplaceRelOptions)
-			continue;
-
-		foreach (option_lc, castNode(List, existing_cmd->def))
-		{
-			DefElem *option = lfirst_node(DefElem, option_lc);
-
-			if (strcmp(option->defname, "compaction_lineage") == 0)
-				return;
-		}
-	}
-
-	indexoid = RangeVarGetRelid(stmt->relation, AccessShareLock, true);
-	if (!OidIsValid(indexoid))
-		return;
-	index_rel = relation_open(indexoid, NoLock);
-	if (index_rel->rd_indam == NULL ||
-		index_rel->rd_indam->ambuild != tp_build ||
-		tp_index_compaction_lineage(index_rel) != NULL)
-	{
-		relation_close(index_rel, AccessShareLock);
-		return;
-	}
-	heap_oid  = index_rel->rd_index->indrelid;
-	owner_oid = index_rel->rd_rel->relowner;
-	relation_close(index_rel, AccessShareLock);
-
-	lineage		  = tp_new_available_compaction_lineage(heap_oid, owner_oid);
-	cmd			  = makeNode(AlterTableCmd);
-	cmd->subtype  = AT_SetRelOptions;
-	cmd->def	  = (Node *)list_make1(makeDefElem(
-			 "compaction_lineage", (Node *)makeString(lineage), -1));
-	cmd->behavior = DROP_RESTRICT;
-	stmt->cmds	  = lappend(stmt->cmds, cmd);
-}
-
 static bool
 tp_background_cic_needs_preflight(IndexStmt *stmt, Relation heap_rel)
 {
@@ -1250,16 +1196,17 @@ tp_reindex_tracking_begin(List *indexoids)
 {
 	MemoryContext	caller_context = CurrentMemoryContext;
 	MemoryContext	context;
-	TpReindexState *state;
+	TpReindexState *state = NULL;
 	ListCell	   *lc;
 
 	context = AllocSetContextCreate(
 			TopMemoryContext, "pg_textsearch reindex", ALLOCSET_SMALL_SIZES);
-	state			= MemoryContextAllocZero(context, sizeof(*state));
-	state->context	= context;
-	state->previous = tp_reindex_states;
 	PG_TRY();
 	{
+		state			= MemoryContextAllocZero(context, sizeof(*state));
+		state->context	= context;
+		state->previous = tp_reindex_states;
+
 		foreach (lc, indexoids)
 		{
 			Oid				 indexoid = lfirst_oid(lc);
@@ -1571,7 +1518,6 @@ tp_process_utility(
 		{
 			Oid indexoid;
 
-			tp_alter_index_ensure_lineage(stmt);
 			if (prev_process_utility_hook)
 				prev_process_utility_hook(
 						pstmt,
@@ -1610,6 +1556,32 @@ tp_process_utility(
 		List		   *indexoids;
 		bool			tracks_commits;
 		TpReindexState *reindex_state = NULL;
+
+		if (stmt->kind != REINDEX_OBJECT_INDEX &&
+			stmt->kind != REINDEX_OBJECT_TABLE)
+		{
+			if (prev_process_utility_hook)
+				prev_process_utility_hook(
+						pstmt,
+						queryString,
+						readOnlyTree,
+						context,
+						params,
+						queryEnv,
+						dest,
+						qc);
+			else
+				standard_ProcessUtility(
+						pstmt,
+						queryString,
+						readOnlyTree,
+						context,
+						params,
+						queryEnv,
+						dest,
+						qc);
+			return;
+		}
 
 		indexoids = tp_reindex_initial_indexes(stmt, &tracks_commits);
 
@@ -1671,10 +1643,12 @@ tp_process_utility(
 			const char *compaction;
 
 			compaction = tp_index_stmt_option(stmt, "compaction");
-			heapoid	   = RangeVarGetRelid(
+			heapoid	   = RangeVarGetRelidExtended(
 					   stmt->relation,
 					   stmt->concurrent ? ShareUpdateExclusiveLock : ShareLock,
-					   false);
+					   0,
+					   RangeVarCallbackOwnsRelation,
+					   NULL);
 			heap_rel = relation_open(heapoid, NoLock);
 			tp_index_stmt_validate_supplied_lineage(
 					stmt, heapoid, heap_rel->rd_rel->relowner);

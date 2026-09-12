@@ -12,6 +12,7 @@
 #include <access/xact.h>
 #include <catalog/index.h>
 #include <catalog/partition.h>
+#include <catalog/pg_am_d.h>
 #include <catalog/pg_class.h>
 #include <catalog/pg_class_d.h>
 #include <commands/defrem.h>
@@ -20,6 +21,7 @@
 #include <miscadmin.h>
 #include <nodes/makefuncs.h>
 #include <nodes/pg_list.h>
+#include <storage/lmgr.h>
 #include <storage/lock.h>
 #include <utils/lsyscache.h>
 #include <utils/memutils.h>
@@ -46,39 +48,42 @@ static bool	 tp_pending_registered	= false;
 /* True while tp_compaction_flush_requests() is signaling managed jobs. */
 static bool tp_dispatch_active = false;
 
-#define TP_COMPACTION_LOCK_NAMESPACE 0x70677473U
-#define TP_COMPACTION_INDEX_LOCK	 1
-#define TP_COMPACTION_LINEAGE_LOCK	 2
+#define TP_COMPACTION_INDEX_LOCK_MAX 0x7fffU
+#define TP_COMPACTION_LINEAGE_LOCK	 0x8000U
+
+static void
+tp_take_compaction_lock(uint16 discriminator)
+{
+	Oid am_oid = get_am_oid("bm25", false);
+
+	/*
+	 * pg_am has no subobjects, so its object-subid space is private to the
+	 * access method.  LOCKTAG_OBJECT also keeps these locks disjoint from
+	 * SQL-visible advisory locks.
+	 */
+	LockDatabaseObject(
+			AccessMethodRelationId, am_oid, discriminator, ExclusiveLock);
+}
 
 static void
 tp_take_index_lineage_lock(Oid indexoid)
 {
-	LOCKTAG tag;
+	uint16 discriminator;
 
-	SET_LOCKTAG_ADVISORY(
-			tag,
-			MyDatabaseId,
-			TP_COMPACTION_LOCK_NAMESPACE,
-			indexoid,
-			TP_COMPACTION_INDEX_LOCK);
-	(void)LockAcquire(&tag, ExclusiveLock, false, false);
+	discriminator = (uint16)(indexoid % TP_COMPACTION_INDEX_LOCK_MAX) + 1;
+	tp_take_compaction_lock(discriminator);
 }
 
 void
 tp_lock_compaction_lineage(const char *lineage)
 {
-	LOCKTAG tag;
-	uint32	hash;
+	uint16 discriminator;
+	uint32 hash;
 
 	hash = hash_bytes(
 			(const unsigned char *)lineage, TP_COMPACTION_LINEAGE_LENGTH);
-	SET_LOCKTAG_ADVISORY(
-			tag,
-			MyDatabaseId,
-			TP_COMPACTION_LOCK_NAMESPACE,
-			hash,
-			TP_COMPACTION_LINEAGE_LOCK);
-	(void)LockAcquire(&tag, ExclusiveLock, false, false);
+	discriminator = (uint16)(TP_COMPACTION_LINEAGE_LOCK | (hash & 0x7fffU));
+	tp_take_compaction_lock(discriminator);
 }
 
 /*
@@ -280,7 +285,7 @@ tp_ensure_index_compaction_lineage(Oid indexoid, bool *created)
 		*created = false;
 
 	tp_take_index_lineage_lock(indexoid);
-	index_rel = try_index_open(indexoid, AccessShareLock);
+	index_rel = try_index_open(indexoid, ShareUpdateExclusiveLock);
 	if (index_rel == NULL)
 		return NULL;
 	if (index_rel->rd_indam == NULL ||
@@ -288,7 +293,7 @@ tp_ensure_index_compaction_lineage(Oid indexoid, bool *created)
 		index_rel->rd_rel->relkind != RELKIND_INDEX ||
 		tp_index_compaction_mode(index_rel) != TP_COMPACTION_BACKGROUND)
 	{
-		index_close(index_rel, AccessShareLock);
+		index_close(index_rel, ShareUpdateExclusiveLock);
 		return NULL;
 	}
 
@@ -296,7 +301,7 @@ tp_ensure_index_compaction_lineage(Oid indexoid, bool *created)
 	if (existing != NULL)
 	{
 		lineage = pstrdup(existing);
-		index_close(index_rel, AccessShareLock);
+		index_close(index_rel, ShareUpdateExclusiveLock);
 		return lineage;
 	}
 
