@@ -945,7 +945,7 @@ ${create_output}"
     assert_eq "hostile-path activation admits one active owner job" "1" \
         "$(active_jobs_for_index "${index_oid}")"
     canonical_label="$(sql_super -c "SELECT pg_catalog.format(
-        'pg_textsearch:bg:v1:%s:%s:%s:%s:%s:%s',
+        'pg_textsearch:bg:v1:%s:%s:%s:%s:%s:%s:%s:%s',
         database.oid,
         relation.oid,
         coalesce(
@@ -953,13 +953,24 @@ ${create_output}"
             database.dattablespace),
         pg_catalog.pg_relation_filenode(relation.oid),
         relation.relowner,
+        index_catalog.indrelid,
+        pg_catalog.substr(
+            lineage.option,
+            pg_catalog.length('compaction_lineage=') + 1),
         pg_catalog.encode(pg_catalog.convert_to(
             pg_catalog.current_setting(
                 'pg_textsearch.background_compaction_schedule'),
             'UTF8'), 'hex'))
       FROM pg_catalog.pg_class AS relation
+      JOIN pg_catalog.pg_index AS index_catalog
+        ON index_catalog.indexrelid = relation.oid
       JOIN pg_catalog.pg_database AS database
         ON database.datname = pg_catalog.current_database()
+      CROSS JOIN LATERAL (
+        SELECT option
+        FROM pg_catalog.unnest(relation.reloptions) AS option
+        WHERE option OPERATOR(pg_catalog.~~) 'compaction_lineage=%'
+      ) AS lineage
       WHERE relation.oid = 'documents_idx'::regclass;")"
     assert_eq "label captures physical identity and full schedule" \
         "${canonical_label}" \
@@ -1613,6 +1624,234 @@ ${reindex_error}"
         DROP FUNCTION public.lifecycle_reindex_value(text);"
 }
 
+test_partitioned_reindex_rename_reconciliation() {
+    local blocker_pid high_index_oid high_index_name high_file_before
+    local high_file_after high_job_before high_job_after reindex_pid
+    local reindex_output="${DATA_DIR}/partitioned-reindex-rename.out"
+
+    sql_as durable_owner <<'SQL' >/dev/null
+CREATE FUNCTION public.lifecycle_reindex_pause(value text)
+RETURNS text
+LANGUAGE plpgsql
+IMMUTABLE
+SET search_path = pg_catalog, pg_temp
+AS $body$
+BEGIN
+    IF value OPERATOR(pg_catalog.=) 'pause' THEN
+        PERFORM pg_catalog.pg_advisory_xact_lock(478, 3);
+    END IF;
+    RETURN value;
+END
+$body$;
+
+CREATE TABLE public.lifecycle_reindex_rename_docs
+    (id integer, body text)
+    PARTITION BY RANGE (id);
+CREATE TABLE public.lifecycle_reindex_rename_low
+    PARTITION OF public.lifecycle_reindex_rename_docs
+    FOR VALUES FROM (0) TO (100);
+CREATE TABLE public.lifecycle_reindex_rename_high
+    PARTITION OF public.lifecycle_reindex_rename_docs
+    FOR VALUES FROM (100) TO (200);
+INSERT INTO public.lifecycle_reindex_rename_docs
+VALUES (1, 'pause'), (101, 'continue');
+CREATE INDEX lifecycle_reindex_rename_idx
+    ON public.lifecycle_reindex_rename_docs
+    USING bm25 (public.lifecycle_reindex_pause(body))
+    WITH (text_config = 'english',
+          compaction = 'background',
+          compaction_schedule = '0 0 1 1 *');
+SQL
+    high_index_oid="$(sql_super -c "SELECT index_class.oid
+      FROM pg_catalog.pg_inherits AS inheritance
+      JOIN pg_catalog.pg_class AS index_class
+        ON index_class.oid = inheritance.inhrelid
+      JOIN pg_catalog.pg_index AS index_catalog
+        ON index_catalog.indexrelid = index_class.oid
+      WHERE inheritance.inhparent =
+            'public.lifecycle_reindex_rename_idx'::regclass
+        AND index_catalog.indrelid =
+            'public.lifecycle_reindex_rename_high'::regclass;")"
+    high_index_name="$(sql_super -c "SELECT relname
+      FROM pg_catalog.pg_class WHERE oid = ${high_index_oid};")"
+    high_file_before="$(sql_super -c \
+        "SELECT pg_catalog.pg_relation_filenode(${high_index_oid});")"
+    high_job_before="$(current_generation_job_id "${high_index_oid}")"
+
+    sql_super -c \
+        "SELECT pg_catalog.pg_advisory_lock(478, 3);
+         SELECT pg_catalog.pg_sleep(120);" \
+        >"${DATA_DIR}/partitioned-reindex-lock.out" 2>&1 &
+    blocker_pid=$!
+    for _ in $(seq 1 100); do
+        if [ "$(sql_super -c "SELECT pg_catalog.count(*)
+              FROM pg_catalog.pg_locks
+              WHERE locktype = 'advisory'
+                AND classid = 478
+                AND objid = 3
+                AND granted;")" = "1" ]; then
+            break
+        fi
+        sleep 0.1
+    done
+
+    PGAPPNAME=lifecycle-reindex-rename \
+        "${PGBINDIR}/psql" -h "${SOCKET_DIR}" -p "${TEST_PORT}" \
+        -U durable_owner -d "${TEST_DB}" -qAt -v ON_ERROR_STOP=1 \
+        -c "REINDEX INDEX public.lifecycle_reindex_rename_idx;" \
+        >"${reindex_output}" 2>&1 &
+    reindex_pid=$!
+    for _ in $(seq 1 100); do
+        if [ "$(sql_super -c "SELECT pg_catalog.count(*)
+              FROM pg_catalog.pg_stat_activity
+              WHERE application_name = 'lifecycle-reindex-rename'
+                AND wait_event = 'advisory';")" = "1" ]; then
+            break
+        fi
+        sleep 0.1
+    done
+    assert_eq "partitioned REINDEX pauses before the second leaf" "1" \
+        "$(sql_super -c "SELECT pg_catalog.count(*)
+          FROM pg_catalog.pg_stat_activity
+          WHERE application_name = 'lifecycle-reindex-rename'
+            AND wait_event = 'advisory';")"
+
+    sql_as durable_owner -c "ALTER INDEX public.${high_index_name}
+      RENAME TO lifecycle_reindex_rename_high_renamed_idx;"
+    sql_super -c "SELECT pg_catalog.pg_terminate_backend(pid)
+      FROM pg_catalog.pg_stat_activity
+      WHERE pid <> pg_catalog.pg_backend_pid()
+        AND query OPERATOR(pg_catalog.~~)
+            'SELECT pg_catalog.pg_advisory_lock(478, 3)%';" >/dev/null
+    wait "${blocker_pid}" || true
+    if ! wait "${reindex_pid}"; then
+        error "partitioned REINDEX with leaf rename failed: \
+$(cat "${reindex_output}")"
+    fi
+
+    high_file_after="$(sql_super -c \
+        "SELECT pg_catalog.pg_relation_filenode(${high_index_oid});")"
+    high_job_after="$(current_generation_job_id "${high_index_oid}")"
+    if [ "${high_file_after}" = "${high_file_before}" ]; then
+        error "partitioned REINDEX did not rebuild the renamed leaf"
+    fi
+    if [ -z "${high_job_after}" ] ||
+        [ "${high_job_after}" = "${high_job_before}" ]; then
+        error "renamed pending leaf was not reconciled by original OID"
+    fi
+
+    sql_as durable_owner -c "
+        DROP TABLE public.lifecycle_reindex_rename_docs;
+        DROP FUNCTION public.lifecycle_reindex_pause(text);"
+}
+
+test_reindex_tracking_reentry() {
+    local leaf_jobs reindex_output
+
+    sql_as durable_owner <<'SQL' >/dev/null
+CREATE TABLE public.lifecycle_reentry_outer_docs
+    (id integer, body text)
+    PARTITION BY RANGE (id);
+CREATE TABLE public.lifecycle_reentry_outer_low
+    PARTITION OF public.lifecycle_reentry_outer_docs
+    FOR VALUES FROM (0) TO (100);
+CREATE TABLE public.lifecycle_reentry_outer_high
+    PARTITION OF public.lifecycle_reentry_outer_docs
+    FOR VALUES FROM (100) TO (200);
+INSERT INTO public.lifecycle_reentry_outer_docs
+VALUES (1, 'low'), (101, 'high');
+CREATE INDEX lifecycle_reentry_outer_idx
+    ON public.lifecycle_reentry_outer_docs USING bm25(body)
+    WITH (text_config = 'english',
+          compaction = 'background',
+          compaction_schedule = '0 0 1 1 *');
+
+CREATE TABLE public.lifecycle_reentry_inner_docs (body text);
+INSERT INTO public.lifecycle_reentry_inner_docs VALUES ('inner');
+CREATE INDEX lifecycle_reentry_inner_idx
+    ON public.lifecycle_reentry_inner_docs USING bm25(body)
+    WITH (text_config = 'english',
+          compaction = 'background',
+          compaction_schedule = '0 0 1 1 *');
+SQL
+    sql_super <<'SQL' >/dev/null
+CREATE TABLE public.lifecycle_reentry_before AS
+SELECT child.oid AS index_oid,
+       pg_catalog.pg_relation_filenode(child.oid) AS filenumber,
+       (
+         SELECT instance.id
+         FROM df.instances AS instance
+         WHERE instance.label OPERATOR(pg_catalog.~~)
+               ('pg_textsearch:bg:v1:%:' || child.oid::text || ':%')
+           AND instance.status OPERATOR(pg_catalog.=)
+               ANY (ARRAY['pending', 'running']::pg_catalog.text[])
+         ORDER BY instance.created_at DESC, instance.id DESC
+         LIMIT 1
+       ) AS instance_id
+FROM pg_catalog.pg_inherits AS inheritance
+JOIN pg_catalog.pg_class AS child
+  ON child.oid = inheritance.inhrelid
+WHERE inheritance.inhparent =
+      'public.lifecycle_reentry_outer_idx'::regclass;
+
+CREATE FUNCTION public.lifecycle_reindex_reenter()
+RETURNS event_trigger
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = pg_catalog, pg_temp
+AS $body$
+BEGIN
+    IF pg_catalog.current_setting(
+           'lifecycle.reindex_reentry', true)
+           OPERATOR(pg_catalog.=) 'outer' THEN
+        PERFORM pg_catalog.set_config(
+            'lifecycle.reindex_reentry', 'inner', false);
+        EXECUTE 'REINDEX INDEX public.lifecycle_reentry_inner_idx';
+    END IF;
+END
+$body$;
+
+CREATE EVENT TRIGGER lifecycle_reindex_reenter
+    ON ddl_command_start
+    WHEN TAG IN ('REINDEX')
+    EXECUTE FUNCTION public.lifecycle_reindex_reenter();
+SQL
+    sql_super -c "ALTER ROLE durable_owner IN DATABASE ${TEST_DB}
+      SET lifecycle.reindex_reentry = 'outer';"
+    if ! reindex_output="$(sql_as durable_owner -c "
+        REINDEX INDEX public.lifecycle_reentry_outer_idx;" 2>&1)"; then
+        error "nested ordinary REINDEX broke outer tracking: ${reindex_output}"
+    fi
+    sql_super -c "ALTER ROLE durable_owner IN DATABASE ${TEST_DB}
+      RESET lifecycle.reindex_reentry;"
+    sql_super -c "DROP EVENT TRIGGER lifecycle_reindex_reenter;
+      DROP FUNCTION public.lifecycle_reindex_reenter();"
+
+    leaf_jobs="$(sql_super -c "SELECT pg_catalog.count(*)
+      FROM public.lifecycle_reentry_before AS before
+      JOIN pg_catalog.pg_class AS current
+        ON current.oid = before.index_oid
+      JOIN df.instances AS instance
+        ON instance.label OPERATOR(pg_catalog.~~)
+           pg_catalog.format(
+             'pg_textsearch:bg:v1:%%:%s:%%:%s:%s:%%',
+             current.oid,
+             pg_catalog.pg_relation_filenode(current.oid),
+             current.relowner)
+       AND instance.status OPERATOR(pg_catalog.=)
+           ANY (ARRAY['pending', 'running']::pg_catalog.text[])
+      WHERE pg_catalog.pg_relation_filenode(current.oid)
+            OPERATOR(pg_catalog.<>) before.filenumber
+        AND instance.id OPERATOR(pg_catalog.<>) before.instance_id;")"
+    assert_eq "nested ordinary REINDEX preserves outer tracking" \
+        "2" "${leaf_jobs}"
+
+    sql_super -c "DROP TABLE public.lifecycle_reentry_before;"
+    sql_as durable_owner -c "
+        DROP TABLE public.lifecycle_reentry_outer_docs,
+                   public.lifecycle_reentry_inner_docs;"
+}
+
 test_ordinary_inheritance_reindex_scope() {
     local child_file_before child_file_after child_job_before
     local child_job_after parent_file_before parent_file_after
@@ -1669,7 +1908,9 @@ test_ordinary_inheritance_reindex_scope() {
 }
 
 test_prior_generation_spill_adoption() {
-    local index_oid old_instance current_instance replacement_instance
+    local index_oid index_oid_before old_instance current_instance
+    local invalid_lineage_error lineage_after lineage_before
+    local replacement_instance reuse_output reused_instance reused_lineage
     local threshold_before
 
     install_signal_probe
@@ -1677,7 +1918,21 @@ test_prior_generation_spill_adoption() {
         CREATE TABLE public.lifecycle_adopt_docs (id integer, body text);
         INSERT INTO public.lifecycle_adopt_docs
           SELECT i, pg_catalog.format('seed document %s filler', i)
-          FROM generate_series(1, 100) AS i;
+          FROM generate_series(1, 100) AS i;" >/dev/null
+    if invalid_lineage_error="$(sql_as durable_owner -c "
+        CREATE INDEX lifecycle_adopt_invalid_idx
+          ON public.lifecycle_adopt_docs USING bm25(body)
+          WITH (text_config = 'english',
+                compaction = 'background',
+                compaction_lineage = 'bad');" 2>&1)"; then
+        error "background CREATE accepted an invalid lineage"
+    fi
+    if ! grep -Fq "invalid background compaction lineage" \
+        <<<"${invalid_lineage_error}"; then
+        error "invalid lineage failed for the wrong reason: \
+${invalid_lineage_error}"
+    fi
+    sql_as durable_owner -c "
         CREATE INDEX lifecycle_adopt_idx
           ON public.lifecycle_adopt_docs USING bm25(body)
           WITH (text_config = 'english',
@@ -1685,13 +1940,33 @@ test_prior_generation_spill_adoption() {
                 compaction_schedule = '0 0 1 1 *');
         GRANT INSERT ON public.lifecycle_adopt_docs TO durable_writer;" \
         >/dev/null 2>&1
-    index_oid="$(sql_super -c \
+    index_oid_before="$(sql_super -c \
         "SELECT 'public.lifecycle_adopt_idx'::regclass::oid;")"
-    old_instance="$(current_generation_job_id "${index_oid}")"
+    lineage_before="$(sql_super -c "SELECT pg_catalog.substr(
+        option, pg_catalog.length('compaction_lineage=') + 1)
+      FROM pg_catalog.pg_class AS relation,
+           LATERAL pg_catalog.unnest(relation.reloptions) AS option
+      WHERE relation.oid = ${index_oid_before}
+        AND option OPERATOR(pg_catalog.~~) 'compaction_lineage=%';")"
+    old_instance="$(current_generation_job_id "${index_oid_before}")"
     wait_for_signal_node "${old_instance}" 30
 
     sql_as durable_owner -c \
-        "REINDEX INDEX public.lifecycle_adopt_idx;" >/dev/null 2>&1
+        "REINDEX INDEX CONCURRENTLY
+           public.lifecycle_adopt_idx;" >/dev/null 2>&1
+    index_oid="$(sql_super -c \
+        "SELECT 'public.lifecycle_adopt_idx'::regclass::oid;")"
+    if [ "${index_oid}" = "${index_oid_before}" ]; then
+        error "spill adoption setup did not replace the index OID"
+    fi
+    lineage_after="$(sql_super -c "SELECT pg_catalog.substr(
+        option, pg_catalog.length('compaction_lineage=') + 1)
+      FROM pg_catalog.pg_class AS relation,
+           LATERAL pg_catalog.unnest(relation.reloptions) AS option
+      WHERE relation.oid = ${index_oid}
+        AND option OPERATOR(pg_catalog.~~) 'compaction_lineage=%';")"
+    assert_eq "concurrent REINDEX preserves logical lineage" \
+        "${lineage_before}" "${lineage_after}"
     current_instance="$(current_generation_job_id "${index_oid}")"
     if [ -n "${current_instance}" ] &&
         [ "${current_instance}" != "${old_instance}" ]; then
@@ -1750,6 +2025,57 @@ test_prior_generation_spill_adoption() {
         "$(helper_privileges_for_role durable_owner)"
     assert_eq "spill adoption preserves the durable dependency" "1" \
         "$(dependency_count)"
+
+    sql_as durable_owner -c "SELECT df.cancel(
+        '${replacement_instance}', 'lineage reuse test');" >/dev/null
+    wait_for_terminal "${replacement_instance}" 30
+    sql_as durable_owner -c "
+        DROP INDEX public.lifecycle_adopt_idx;
+        CREATE INDEX lifecycle_adopt_idx
+          ON public.lifecycle_adopt_docs USING bm25(body)
+          WITH (text_config = 'english',
+                compaction = 'background',
+                compaction_schedule = '5 4 3 2 *');" >/dev/null 2>&1
+    index_oid="$(sql_super -c \
+        "SELECT 'public.lifecycle_adopt_idx'::regclass::oid;")"
+    reused_lineage="$(sql_super -c "SELECT pg_catalog.substr(
+        option, pg_catalog.length('compaction_lineage=') + 1)
+      FROM pg_catalog.pg_class AS relation,
+           LATERAL pg_catalog.unnest(relation.reloptions) AS option
+      WHERE relation.oid = ${index_oid}
+        AND option OPERATOR(pg_catalog.~~) 'compaction_lineage=%';")"
+    if [ "${reused_lineage}" = "${lineage_before}" ]; then
+        error "recreated index reused the dropped index lineage"
+    fi
+    reused_instance="$(current_generation_job_id "${index_oid}")"
+    wait_for_signal_node "${reused_instance}" 30
+    sql_as durable_owner -c "SELECT df.cancel(
+        '${reused_instance}', 'hide replacement lineage history');" \
+        >/dev/null
+    wait_for_terminal "${reused_instance}" 30
+    sql_super -c "UPDATE df.instances
+      SET label = 'retired-reused-index-' || id
+      WHERE id = '${reused_instance}';"
+
+    reset_signal_probe
+    reuse_output="$(sql_as durable_writer -c "
+      INSERT INTO public.lifecycle_adopt_docs
+      SELECT 2000 + document_number,
+             (SELECT pg_catalog.string_agg(
+                         pg_catalog.format(
+                           'reuse%sterm%s',
+                           document_number, term_number),
+                         ' ')
+              FROM generate_series(1, 200) AS term_number)
+      FROM generate_series(1, 6) AS document_number;" 2>&1)"
+    if ! grep -Fq "requires explicit adoption" <<<"${reuse_output}"; then
+        error "recreated index did not reject unrelated lineage history: \
+${reuse_output}"
+    fi
+    assert_eq "recreated index does not signal an unrelated workflow" \
+        "0" "$(signal_attempt_count)"
+    assert_eq "recreated index does not adopt an unrelated schedule" \
+        "" "$(current_generation_job_id "${index_oid}")"
 
     sql_super -c "ALTER SYSTEM SET
         pg_textsearch.memtable_pages_threshold = '${threshold_before}';" \
@@ -2964,6 +3290,8 @@ run_test test_reindex_reconciliation
 run_test test_concurrent_reindex_reconciliation
 run_test test_partitioned_reindex_reconciliation
 run_test test_partitioned_reindex_failure_reconciliation
+run_test test_partitioned_reindex_rename_reconciliation
+run_test test_reindex_tracking_reentry
 run_test test_ordinary_inheritance_reindex_scope
 run_test test_prior_generation_spill_adoption
 run_test test_request_queue_runtime
