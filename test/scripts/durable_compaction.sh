@@ -82,7 +82,88 @@ assert_eq() {
 }
 
 test_cic_owner_privilege_preflight() {
-    local create_error jobs_before
+    local create_error jobs_before schema_error
+
+    schema_error='Role "durable_no_textsearch_schema" lacks USAGE privilege'
+    schema_error+=' on schema public.'
+
+    sql_super -c "REVOKE CONNECT ON DATABASE durable_compaction_test
+                   FROM PUBLIC;
+                   GRANT CONNECT ON DATABASE durable_compaction_test
+                   TO postgres, durable_owner, durable_usage_only,
+                      durable_read_only, durable_bypass, durable_actor,
+                      durable_writer;"
+
+    jobs_before="$(managed_job_count)"
+    sql_super -c "CREATE TABLE no_connect_docs (body text);
+                   ALTER TABLE no_connect_docs OWNER TO durable_no_connect;"
+    if create_error="$(sql_as durable_actor -c "
+        CREATE INDEX CONCURRENTLY no_connect_docs_idx
+          ON no_connect_docs USING bm25(body)
+          WITH (text_config = 'english', compaction = 'background');" \
+        2>&1)"; then
+        error "background CIC accepted an owner without database CONNECT"
+    fi
+    assert_eq "rejected no-CONNECT CIC leaves no relation" "t" \
+        "$(sql_super -c "SELECT
+            pg_catalog.to_regclass('no_connect_docs_idx') IS NULL;")"
+    if ! grep -Fq \
+        "index owner cannot connect for background compaction" \
+        <<<"${create_error}"; then
+        error "no-CONNECT owner did not fail deterministic CIC preflight: \
+${create_error}"
+    fi
+    assert_eq "no-CONNECT CIC creates no probe workflow" "${jobs_before}" \
+        "$(managed_job_count)"
+    sql_super -c "DROP TABLE no_connect_docs;"
+
+    sql_super -c "GRANT CONNECT ON DATABASE durable_compaction_test
+                   TO durable_no_textsearch_schema;
+                   REVOKE USAGE ON SCHEMA public FROM PUBLIC;
+                   GRANT USAGE ON SCHEMA public
+                   TO postgres, durable_owner, durable_nologin,
+                      durable_usage_only, durable_read_only, durable_bypass,
+                      durable_no_connect, durable_actor, durable_writer;"
+
+    jobs_before="$(managed_job_count)"
+    sql_super -c "CREATE TABLE no_textsearch_schema_docs (body text);
+                   ALTER TABLE no_textsearch_schema_docs
+                     OWNER TO durable_no_textsearch_schema;"
+    if create_error="$(sql_as durable_writer -c "
+        CREATE INDEX CONCURRENTLY no_textsearch_schema_docs_idx
+          ON no_textsearch_schema_docs USING bm25(body)
+          WITH (text_config = 'english', compaction = 'background');" \
+        2>&1)"; then
+        error "background CIC accepted an owner without pg_textsearch \
+schema USAGE"
+    fi
+    assert_eq "rejected no-schema-USAGE CIC leaves no relation" "t" \
+        "$(sql_super -c "SELECT pg_catalog.to_regclass(
+            'no_textsearch_schema_docs_idx') IS NULL;")"
+    if ! grep -Fq "index owner lacks required pg_durable privileges" \
+        <<<"${create_error}"; then
+        error "no-schema-USAGE owner did not fail stable privilege check: \
+${create_error}"
+    fi
+    if ! grep -Fq "${schema_error}" <<<"${create_error}"; then
+        error "no-schema-USAGE owner error did not identify public: \
+${create_error}"
+    fi
+    assert_eq "no-schema-USAGE CIC creates no probe workflow" \
+        "${jobs_before}" "$(managed_job_count)"
+    assert_eq "no-schema-USAGE CIC leaves no sticky dependency" "0" \
+        "$(dependency_count)"
+    assert_eq "no-schema-USAGE CIC leaves no private-helper grant" "f" \
+        "$(sql_super -c "SELECT
+            pg_catalog.has_function_privilege(
+                'durable_no_textsearch_schema',
+                'bm25_compact_step_if_current(oid,oid,oid,oid,oid)',
+                'EXECUTE')
+            OR pg_catalog.has_function_privilege(
+                'durable_no_textsearch_schema',
+                'bm25_background_target_is_current(oid,oid,oid,oid,oid)',
+                'EXECUTE');")"
+    sql_super -c "DROP TABLE no_textsearch_schema_docs;"
 
     assert_eq "usage-only owner can resolve df.start" "t" \
         "$(sql_super -c "SELECT pg_catalog.has_function_privilege(
@@ -414,9 +495,12 @@ initialize_database() {
     sql_super -c "CREATE EXTENSION pg_textsearch;"
     sql_super -c "GRANT CREATE ON SCHEMA public
                    TO durable_owner, durable_usage_only, durable_read_only,
-                      durable_bypass;"
+                      durable_bypass, durable_actor, durable_writer;"
     sql_super -c "SELECT df.grant_usage('durable_owner');" >/dev/null
     sql_super -c "SELECT df.grant_usage('durable_bypass');" >/dev/null
+    sql_super -c "SELECT df.grant_usage('durable_no_connect');" >/dev/null
+    sql_super -c \
+        "SELECT df.grant_usage('durable_no_textsearch_schema');" >/dev/null
     sql_super -c "GRANT USAGE ON SCHEMA df
                    TO durable_usage_only, durable_read_only;
                    GRANT SELECT ON df.instances, df.vars
@@ -599,6 +683,12 @@ setup_cluster() {
     sql_super -c "CREATE ROLE durable_usage_only LOGIN;"
     sql_super -c "CREATE ROLE durable_read_only LOGIN;"
     sql_super -c "CREATE ROLE durable_bypass LOGIN BYPASSRLS;"
+    sql_super -c "CREATE ROLE durable_no_connect LOGIN;"
+    sql_super -c "CREATE ROLE durable_no_textsearch_schema LOGIN;"
+    sql_super -c "CREATE ROLE durable_actor LOGIN;"
+    sql_super -c "CREATE ROLE durable_writer LOGIN;"
+    sql_super -c "GRANT durable_no_connect TO durable_actor;
+                   GRANT durable_no_textsearch_schema TO durable_writer;"
 }
 
 test_missing_durable_cic() {
