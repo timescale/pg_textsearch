@@ -15,6 +15,7 @@
 #include <catalog/indexing.h>
 #include <catalog/namespace.h>
 #include <catalog/objectaddress.h>
+#include <catalog/partition.h>
 #include <catalog/pg_am_d.h>
 #include <catalog/pg_authid.h>
 #include <catalog/pg_database_d.h>
@@ -405,6 +406,26 @@ tp_extension_owner(Oid extension_oid)
 }
 
 static bool
+tp_history_heap_matches(Oid label_heap_oid, Oid heap_oid)
+{
+	List *ancestors;
+	bool  matches;
+
+	if (label_heap_oid == heap_oid)
+		return true;
+	if (get_rel_relkind(heap_oid) != RELKIND_PARTITIONED_TABLE ||
+		!SearchSysCacheExists1(RELOID, ObjectIdGetDatum(label_heap_oid)) ||
+		!get_rel_relispartition(label_heap_oid) ||
+		get_rel_relkind(label_heap_oid) == RELKIND_PARTITIONED_TABLE)
+		return false;
+
+	ancestors = get_partition_ancestors(label_heap_oid);
+	matches	  = list_member_oid(ancestors, heap_oid);
+	list_free(ancestors);
+	return matches;
+}
+
+static bool
 tp_label_has_lineage(
 		const char *label, const char *lineage, Oid heap_oid, Oid owner_oid)
 {
@@ -416,20 +437,25 @@ tp_label_has_lineage(
 	unsigned int label_heap_oid;
 	char		 parsed[TP_COMPACTION_LINEAGE_LENGTH + 1];
 	int			 consumed = 0;
+	bool		 heap_matches;
 
-	return sscanf(label,
-				  TP_JOB_LABEL_PREFIX "%u:%u:%u:%u:%u:%u:%32[0-9a-f]:%n",
-				  &database_oid,
-				  &index_oid,
-				  &tablespace_oid,
-				  &relfilenumber,
-				  &label_owner_oid,
-				  &label_heap_oid,
-				  parsed,
-				  &consumed) == 7 &&
-		   consumed > 0 && database_oid == MyDatabaseId &&
-		   label_owner_oid == owner_oid && label_heap_oid == heap_oid &&
-		   strcmp(parsed, lineage) == 0;
+	if (sscanf(label,
+			   TP_JOB_LABEL_PREFIX "%u:%u:%u:%u:%u:%u:%32[0-9a-f]:%n",
+			   &database_oid,
+			   &index_oid,
+			   &tablespace_oid,
+			   &relfilenumber,
+			   &label_owner_oid,
+			   &label_heap_oid,
+			   parsed,
+			   &consumed) != 7 ||
+		consumed <= 0 || database_oid != MyDatabaseId ||
+		label_owner_oid != owner_oid || strcmp(parsed, lineage) != 0)
+		return false;
+
+	heap_matches = tp_history_heap_matches(label_heap_oid, heap_oid);
+
+	return heap_matches;
 }
 
 bool
@@ -446,8 +472,8 @@ tp_compaction_job_lineage_exists(
 	bool		   spi_connected = false;
 	bool		   found		 = false;
 	StringInfoData sql;
-	Oid			   argtypes[1] = {TEXTOID};
-	Datum		   values[1];
+	Oid			   argtypes[2] = {TEXTOID, OIDOID};
+	Datum		   values[2];
 	char		  *schema;
 	char		  *relation;
 	char		  *prefix;
@@ -472,12 +498,15 @@ tp_compaction_job_lineage_exists(
 
 	prefix	  = psprintf(TP_JOB_LABEL_PREFIX "%u:", MyDatabaseId);
 	values[0] = CStringGetTextDatum(prefix);
+	values[1] = ObjectIdGetDatum(owner_oid);
 	initStringInfo(&sql);
 	appendStringInfo(
 			&sql,
-			"SELECT label FROM %s "
-			"WHERE label OPERATOR(pg_catalog.~~) "
-			"($1 OPERATOR(pg_catalog.||) '%%')",
+			"SELECT instance.label FROM %s AS instance "
+			"WHERE instance.label OPERATOR(pg_catalog.~~) "
+			"($1 OPERATOR(pg_catalog.||) '%%') "
+			"AND instance.submitted_by::pg_catalog.oid "
+			"OPERATOR(pg_catalog.=) $2",
 			quote_qualified_identifier(schema, relation));
 
 	/* RLS must not hide a retained lineage from this internal collision check.
@@ -503,7 +532,7 @@ tp_compaction_job_lineage_exists(
 			elog(ERROR, "SPI_connect failed");
 		spi_connected = true;
 		rc			  = SPI_execute_with_args(
-				   sql.data, 1, argtypes, values, NULL, true, 0);
+				   sql.data, 2, argtypes, values, NULL, true, 0);
 		if (rc != SPI_OK_SELECT)
 			elog(ERROR, "could not inspect pg_durable lineage history");
 
