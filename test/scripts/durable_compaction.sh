@@ -943,7 +943,8 @@ ${create_output}"
 test_actor_writer_worker_identity() {
     local audit_rows_before index_oid instance_id memtable_threshold_before
 
-    sql_super -c "GRANT durable_owner TO durable_actor;
+    sql_super -c "REVOKE durable_no_textsearch_schema FROM durable_writer;
+                   GRANT durable_owner TO durable_actor;
                    REVOKE CREATE ON SCHEMA public FROM durable_writer;
                    CREATE TABLE identity_docs (id integer, body text);
                    ALTER TABLE identity_docs OWNER TO durable_owner;
@@ -984,11 +985,95 @@ AS $body$
 BEGIN
     INSERT INTO public.worker_identity_audit(role_name)
     VALUES (current_user);
-    RETURN public.bm25_compact_step_if_current_test_c(
-        index_oid, database_oid, tablespace_oid, relfilenumber, owner_oid);
+    RETURN false;
 END
 $body$;
 SQL
+
+    assert_eq "writer is not a member of a pg_durable-enabled role" "f" \
+        "$(sql_super -c "SELECT pg_catalog.pg_has_role(
+            'durable_writer', 'durable_no_textsearch_schema', 'MEMBER');")"
+    assert_eq "writer lacks effective df schema access" "f" \
+        "$(sql_super -c "SELECT pg_catalog.has_schema_privilege(
+            'durable_writer', 'df', 'USAGE');")"
+    assert_eq "writer lacks effective df.start access" "t" \
+        "$(sql_super -c "SELECT NOT (
+            pg_catalog.has_schema_privilege(
+                'durable_writer', 'df', 'USAGE')
+            AND pg_catalog.has_function_privilege(
+                'durable_writer', procedure.oid, 'EXECUTE'))
+          FROM pg_catalog.pg_proc AS procedure
+          JOIN pg_catalog.pg_namespace AS namespace
+            ON namespace.oid = procedure.pronamespace
+          JOIN pg_catalog.pg_depend AS dependency
+            ON dependency.classid = 'pg_catalog.pg_proc'::regclass
+           AND dependency.objid = procedure.oid
+           AND dependency.deptype = 'e'
+          JOIN pg_catalog.pg_extension AS extension
+            ON extension.oid = dependency.refobjid
+          WHERE namespace.nspname = 'df'
+            AND procedure.proname = 'start'
+            AND extension.extname = 'pg_durable';")"
+    assert_eq "writer lacks privileges on required df tables" "t" \
+        "$(sql_super -c "SELECT
+            NOT pg_catalog.has_any_column_privilege(
+                'durable_writer', 'df.instances', 'SELECT')
+            AND NOT pg_catalog.has_any_column_privilege(
+                'durable_writer', 'df.instances', 'INSERT')
+            AND NOT pg_catalog.has_any_column_privilege(
+                'durable_writer', 'df.nodes', 'INSERT')
+            AND NOT pg_catalog.has_any_column_privilege(
+                'durable_writer', 'df.vars', 'SELECT');")"
+    assert_eq "writer lacks private helper EXECUTE" "t" \
+        "$(sql_super -c "SELECT
+            NOT pg_catalog.has_function_privilege(
+                'durable_writer',
+                'bm25_compact_step_if_current(oid,oid,oid,oid,oid)',
+                'EXECUTE')
+            AND NOT pg_catalog.has_function_privilege(
+                'durable_writer',
+                'bm25_background_target_is_current(oid,oid,oid,oid,oid)',
+                'EXECUTE');")"
+    assert_eq "writer has only INSERT table privilege" "t" \
+        "$(sql_super -c "SELECT
+            pg_catalog.has_table_privilege(
+                'durable_writer', 'identity_docs', 'INSERT')
+            AND NOT pg_catalog.has_table_privilege(
+                'durable_writer', 'identity_docs',
+                'SELECT, UPDATE, DELETE, TRUNCATE, REFERENCES, TRIGGER, ' ||
+                'MAINTAIN')
+            AND NOT pg_catalog.has_any_column_privilege(
+                'durable_writer', 'identity_docs', 'SELECT')
+            AND NOT pg_catalog.has_any_column_privilege(
+                'durable_writer', 'identity_docs', 'UPDATE')
+            AND NOT pg_catalog.has_any_column_privilege(
+                'durable_writer', 'identity_docs', 'REFERENCES');")"
+    memtable_threshold_before="$(sql_super -c \
+        "SHOW pg_textsearch.memtable_pages_threshold;")"
+    sql_super -c "ALTER SYSTEM SET
+                     pg_textsearch.memtable_pages_threshold = 1;" >/dev/null
+    sql_super -c "SELECT pg_catalog.pg_reload_conf();" >/dev/null
+    assert_eq "writer spill threshold is active" "1" \
+        "$(sql_super -c \
+            "SHOW pg_textsearch.memtable_pages_threshold;")"
+    sql_as durable_writer -c "INSERT INTO public.identity_docs
+        SELECT document_number,
+               (SELECT pg_catalog.string_agg(
+                           pg_catalog.format(
+                               'writer%sterm%s', document_number, term_number),
+                           ' ')
+                FROM generate_series(1, 200) AS term_number)
+        FROM generate_series(1, 6) AS document_number;" >/dev/null
+    sql_super -c "ALTER SYSTEM RESET
+                     pg_textsearch.memtable_pages_threshold;" >/dev/null
+    sql_super -c "SELECT pg_catalog.pg_reload_conf();" >/dev/null
+    assert_eq "writer spill threshold is restored" \
+        "${memtable_threshold_before}" \
+        "$(sql_super -c \
+            "SHOW pg_textsearch.memtable_pages_threshold;")"
+    assert_eq "insert-only writer creates compaction debt" "t" \
+        "$(sql_super -c "SELECT bm25_needs_compaction(
+                              'identity_docs_idx'::regclass);")"
 
     assert_eq "actor command starts without SET ROLE" \
         "durable_actor:durable_actor" \
@@ -1010,36 +1095,37 @@ SQL
                           WHERE id = '${instance_id}';")"
 
     wait_for_audit_rows 1 30
-    wait_for_signal_node "${instance_id}" 30
+    wait_for_signal_node "${instance_id}" 90
+    assert_eq "initial owner-managed cascade preserves writer debt" "t" \
+        "$(sql_super -c "SELECT bm25_needs_compaction(
+                              'identity_docs_idx'::regclass);")"
+    sql_super <<'SQL'
+CREATE OR REPLACE FUNCTION bm25_compact_step_if_current(
+    index_oid oid, database_oid oid, tablespace_oid oid,
+    relfilenumber oid, owner_oid oid)
+RETURNS boolean
+LANGUAGE plpgsql
+VOLATILE
+STRICT
+SET search_path = pg_catalog, pg_temp
+AS $body$
+BEGIN
+    INSERT INTO public.worker_identity_audit(role_name)
+    VALUES (current_user);
+    RETURN public.bm25_compact_step_if_current_test_c(
+        index_oid, database_oid, tablespace_oid, relfilenumber, owner_oid);
+END
+$body$;
+SQL
     audit_rows_before="$(sql_super -c \
         "SELECT count(*) FROM worker_identity_audit;")"
-    assert_eq "writer has only INSERT table privilege" "t" \
-        "$(sql_super -c "SELECT
-            pg_catalog.has_table_privilege(
-                'durable_writer', 'identity_docs', 'INSERT')
-            AND NOT pg_catalog.has_table_privilege(
-                'durable_writer', 'identity_docs',
-                'SELECT, UPDATE, DELETE, TRUNCATE, REFERENCES, TRIGGER');")"
-    memtable_threshold_before="$(sql_super -c \
-        "SHOW pg_textsearch.memtable_pages_threshold;")"
-    sql_super -c "ALTER SYSTEM SET
-                     pg_textsearch.memtable_pages_threshold = 1;" >/dev/null
-    sql_super -c "SELECT pg_catalog.pg_reload_conf();" >/dev/null
-    assert_eq "writer spill threshold is active" "1" \
-        "$(sql_super -c \
-            "SHOW pg_textsearch.memtable_pages_threshold;")"
-    sql_as durable_writer -c "INSERT INTO public.identity_docs
-        SELECT i, 'writer spill document ' || i || ' ' ||
-                  repeat('filler ', 50)
-        FROM generate_series(1, 200) AS i;" >/dev/null
+    sql_as durable_owner -c \
+        "SELECT df.signal('${instance_id}', 'compact', '{}');" >/dev/null
     wait_for_audit_rows "$((audit_rows_before + 1))" 30
-    sql_super -c "ALTER SYSTEM RESET
-                     pg_textsearch.memtable_pages_threshold;" >/dev/null
-    sql_super -c "SELECT pg_catalog.pg_reload_conf();" >/dev/null
-    assert_eq "writer spill threshold is restored" \
-        "${memtable_threshold_before}" \
-        "$(sql_super -c \
-            "SHOW pg_textsearch.memtable_pages_threshold;")"
+    wait_for_no_debt identity_docs_idx 60
+    assert_eq "owner signal consumes writer-created debt" "f" \
+        "$(sql_super -c "SELECT bm25_needs_compaction(
+                              'identity_docs_idx'::regclass);")"
     assert_eq "every worker step executes as the index owner" "t" \
         "$(sql_super -c "SELECT count(*) >= 2
                                 AND pg_catalog.bool_and(
@@ -1211,7 +1297,7 @@ SQL
 
 test_cross_owner_helper_isolation() {
     local current_error index_one_oid index_two_oid instance_one instance_two
-    local level_counts_before step_error workflow_state_before
+    local debt_before level_counts_before step_error workflow_state_before
     local database_oid tablespace_oid relfilenumber owner_oid
 
     sql_super -c "CREATE ROLE durable_owner_two LOGIN;
@@ -1235,24 +1321,83 @@ test_cross_owner_helper_isolation() {
         CREATE INDEX isolation_two_idx
           ON public.isolation_two_docs USING bm25(body)
           WITH (text_config = 'english', compaction = 'manual',
-                compaction_schedule = '0 0 1 1 *');
-        ALTER INDEX public.isolation_two_idx
-          SET (compaction = 'background');" >/dev/null 2>&1
+                compaction_schedule = '0 0 1 1 *');" >/dev/null 2>&1
 
     index_one_oid="$(sql_super -c \
         "SELECT 'isolation_one_idx'::regclass::oid;")"
-    index_two_oid="$(sql_super -c \
-        "SELECT 'isolation_two_idx'::regclass::oid;")"
     instance_one="$(active_job_id_for_owner \
         "${index_one_oid}" durable_owner)"
-    instance_two="$(active_job_id_for_owner \
-        "${index_two_oid}" durable_owner_two)"
     [ -n "${instance_one}" ] ||
         error "first isolation owner has no managed workflow"
+    wait_for_signal_node "${instance_one}" 30
+
+    sql_as durable_owner_two <<'SQL' >/dev/null
+BEGIN;
+DO $body$
+BEGIN
+    FOR n IN 1..2 LOOP
+        INSERT INTO isolation_two_docs (body)
+        SELECT format(
+            'second owner round %s document %s filler', n, i)
+        FROM generate_series(1, 20) AS i;
+        PERFORM bm25_spill_index('isolation_two_idx');
+    END LOOP;
+END
+$body$;
+COMMIT;
+SQL
+    assert_eq "manual second-owner target starts with compaction debt" "t" \
+        "$(sql_super -c "SELECT bm25_needs_compaction(
+                              'isolation_two_idx'::regclass);")"
+
+    sql_super <<'SQL'
+CREATE OR REPLACE FUNCTION bm25_compact_step_if_current(
+    index_oid oid, database_oid oid, tablespace_oid oid,
+    relfilenumber oid, owner_oid oid)
+RETURNS boolean
+LANGUAGE sql
+VOLATILE
+STRICT
+SET search_path = pg_catalog, pg_temp
+AS $body$
+    SELECT false
+$body$;
+SQL
+    sql_as durable_owner_two -c "
+        ALTER INDEX public.isolation_two_idx
+          SET (compaction = 'background');" >/dev/null 2>&1
+    index_two_oid="$(sql_super -c \
+        "SELECT 'isolation_two_idx'::regclass::oid;")"
+    instance_two="$(active_job_id_for_owner \
+        "${index_two_oid}" durable_owner_two)"
     [ -n "${instance_two}" ] ||
         error "second isolation owner has no managed workflow"
-    wait_for_signal_node "${instance_one}" 30
     wait_for_signal_node "${instance_two}" 30
+    sql_as durable_owner_two -c \
+        "SELECT df.cancel('${instance_two}', 'hold isolation debt');" \
+        >/dev/null
+    wait_for_terminal "${instance_two}" 30
+
+    sql_super <<'SQL'
+CREATE OR REPLACE FUNCTION bm25_compact_step_if_current(
+    index_oid oid, database_oid oid, tablespace_oid oid,
+    relfilenumber oid, owner_oid oid)
+RETURNS boolean
+AS '$libdir/pg_textsearch', 'tp_compact_index_step_if_current'
+LANGUAGE C VOLATILE STRICT;
+SQL
+    assert_eq "cross-owner step helper is restored before rejection" \
+        "c:tp_compact_index_step_if_current:true" \
+        "$(sql_super -c "SELECT language.lanname || ':' ||
+                                procedure.prosrc || ':' ||
+                                (procedure.proconfig IS NULL)
+                          FROM pg_catalog.pg_proc AS procedure
+                          JOIN pg_catalog.pg_language AS language
+                            ON language.oid = procedure.prolang
+                          WHERE procedure.oid =
+                            pg_catalog.to_regprocedure(
+                              'bm25_compact_step_if_current' ||
+                              '(oid,oid,oid,oid,oid)');")"
     assert_eq "both owners receive private helper EXECUTE" "t" \
         "$(sql_super -c "SELECT
             pg_catalog.has_function_privilege(
@@ -1284,6 +1429,15 @@ test_cross_owner_helper_isolation() {
                       WHERE relation.oid =
                             'isolation_two_idx'::regclass;"
     )
+    assert_eq "second owner's physical target remains current" "t" \
+        "$(sql_as durable_owner_two -c "
+            SELECT public.bm25_background_target_is_current(
+                ${index_two_oid}, ${database_oid}, ${tablespace_oid},
+                ${relfilenumber}, ${owner_oid});")"
+    debt_before="$(sql_super -c "SELECT bm25_needs_compaction(
+                                      'isolation_two_idx'::regclass);")"
+    assert_eq "second owner's target has compaction debt" "t" \
+        "${debt_before}"
     level_counts_before="$(sql_super -c \
         "SELECT bm25_level_counts('isolation_two_idx'::regclass);")"
     workflow_state_before="$(sql_super -c \
@@ -1303,6 +1457,10 @@ test_cross_owner_helper_isolation() {
         "${level_counts_before}" \
         "$(sql_super -c \
             "SELECT bm25_level_counts('isolation_two_idx'::regclass);")"
+    assert_eq "rejected cross-owner step preserves compaction debt" \
+        "${debt_before}" \
+        "$(sql_super -c "SELECT bm25_needs_compaction(
+                              'isolation_two_idx'::regclass);")"
     assert_eq "rejected cross-owner step preserves workflow state" \
         "${workflow_state_before}" \
         "$(sql_super -c "SELECT id || ':' || status FROM df.instances
@@ -1322,6 +1480,10 @@ ${current_error}"
         "${level_counts_before}" \
         "$(sql_super -c \
             "SELECT bm25_level_counts('isolation_two_idx'::regclass);")"
+    assert_eq "rejected cross-owner current check preserves debt" \
+        "${debt_before}" \
+        "$(sql_super -c "SELECT bm25_needs_compaction(
+                              'isolation_two_idx'::regclass);")"
     assert_eq "rejected cross-owner current check preserves workflow state" \
         "${workflow_state_before}" \
         "$(sql_super -c "SELECT id || ':' || status FROM df.instances
@@ -1329,9 +1491,6 @@ ${current_error}"
 
     sql_as durable_owner -c \
         "SELECT df.cancel('${instance_one}', 'isolation test complete');" \
-        >/dev/null
-    sql_as durable_owner_two -c \
-        "SELECT df.cancel('${instance_two}', 'isolation test complete');" \
         >/dev/null
     wait_for_terminal "${instance_one}" 30
     wait_for_terminal "${instance_two}" 30
