@@ -1799,19 +1799,6 @@ tp_compaction_job_preflight(Oid owner_oid, const char *schedule)
 }
 
 void
-tp_compaction_job_preflight_index(Oid indexoid)
-{
-	TpCompactionJobTarget  target;
-	TpCompactionJobObjects objects;
-
-	tp_capture_target(indexoid, true, &target);
-	tp_discover_job_objects(&objects);
-	tp_require_owner_superuser_policy(target.owner_oid);
-	tp_require_owner_durable_privileges(&objects, target.owner_oid);
-	tp_validate_graph_as_owner(&objects, &target);
-}
-
-void
 tp_compaction_job_activate(Oid indexoid, bool refresh_default)
 {
 	TpCompactionJobTarget  target;

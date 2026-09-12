@@ -10,6 +10,7 @@
 #include <access/reloptions.h>
 #include <access/xact.h>
 #include <catalog/dependency.h>
+#include <catalog/index.h>
 #include <catalog/namespace.h>
 #include <catalog/objectaccess.h>
 #include <catalog/pg_class_d.h>
@@ -22,6 +23,7 @@
 #include <nodes/pg_list.h>
 #include <pg_config.h>
 #include <storage/ipc.h>
+#include <storage/lmgr.h>
 #include <storage/shmem.h>
 #include <tcop/utility.h>
 #include <utils/acl.h>
@@ -143,6 +145,30 @@ static shmem_request_hook_type prev_shmem_request_hook = NULL;
 /* Previous ProcessUtility hook */
 static ProcessUtility_hook_type prev_process_utility_hook = NULL;
 
+typedef struct TpReindexTarget
+{
+	Oid			  heap_oid;
+	Oid			  namespace_oid;
+	char		 *index_name;
+	Oid			  index_oid;
+	Oid			  tablespace_oid;
+	RelFileNumber relfilenumber;
+} TpReindexTarget;
+
+typedef struct TpReindexState
+{
+	MemoryContext context;
+	List		 *targets;
+	bool		  reconciling;
+} TpReindexState;
+
+/*
+ * Concurrent and partitioned REINDEX commit inside ProcessUtility.  Keep
+ * logical target names across those commits so each replacement can be
+ * reconciled in the transaction that publishes it.
+ */
+static TpReindexState *tp_reindex_state = NULL;
+
 /* Shared memory size calculation */
 static void tp_shmem_request(void);
 
@@ -177,6 +203,7 @@ static void tp_process_utility(
 		QueryEnvironment	 *queryEnv,
 		DestReceiver		 *dest,
 		QueryCompletion		 *qc);
+static void tp_reconcile_reindex_state(void);
 
 /*
  * Extension entry point - called when the extension is loaded
@@ -608,9 +635,9 @@ tp_shmem_startup(void)
 }
 
 /*
- * Transaction callback - release index locks at transaction end, check
- * for bulk load auto-spill at pre-commit, and dispatch any compaction
- * requests those spills registered.
+ * Transaction callback - reconcile REINDEX replacements, release index
+ * locks at transaction end, check for bulk load auto-spill at pre-commit,
+ * and dispatch any compaction requests those spills registered.
  *
  * The spill check runs first: a spill can register a request, so
  * flushing afterwards is what lets that request reach the callback in
@@ -623,6 +650,8 @@ tp_xact_callback(XactEvent event, void *arg pg_attribute_unused())
 	switch (event)
 	{
 	case XACT_EVENT_PRE_COMMIT:
+		tp_reconcile_reindex_state();
+
 		/*
 		 * Check for bulk load auto-spill before commit.
 		 * If any index had a large number of terms added this transaction,
@@ -765,6 +794,24 @@ tp_alter_index_refreshes_background(AlterTableStmt *stmt)
 }
 
 static bool
+tp_is_background_index_relation(Relation index_rel)
+{
+	return index_rel->rd_rel->relkind == RELKIND_INDEX &&
+		   index_rel->rd_indam != NULL &&
+		   index_rel->rd_indam->ambuild == tp_build &&
+		   index_rel->rd_index != NULL &&
+		   tp_index_compaction_mode(index_rel) == TP_COMPACTION_BACKGROUND;
+}
+
+static bool
+tp_is_background_physical_index_relation(Relation index_rel)
+{
+	return tp_is_background_index_relation(index_rel) &&
+		   index_rel->rd_index->indisvalid &&
+		   index_rel->rd_index->indisready && index_rel->rd_index->indislive;
+}
+
+static bool
 tp_is_background_physical_index(Oid indexoid)
 {
 	Relation index_rel;
@@ -774,42 +821,41 @@ tp_is_background_physical_index(Oid indexoid)
 	if (index_rel == NULL)
 		return false;
 
-	background = index_rel->rd_rel->relkind == RELKIND_INDEX &&
-				 index_rel->rd_indam != NULL &&
-				 index_rel->rd_indam->ambuild == tp_build &&
-				 index_rel->rd_index != NULL &&
-				 index_rel->rd_index->indisvalid &&
-				 index_rel->rd_index->indisready &&
-				 index_rel->rd_index->indislive &&
-				 tp_index_compaction_mode(index_rel) ==
-						 TP_COMPACTION_BACKGROUND;
+	background = tp_is_background_physical_index_relation(index_rel);
 	index_close(index_rel, AccessShareLock);
 	return background;
 }
 
 static List *
-tp_relation_indexes(Oid relation_oid)
+tp_relation_indexes_locked(Oid relation_oid, LOCKMODE lockmode)
 {
 	Relation relation;
 	List	*indexes;
 
-	relation = relation_open(relation_oid, AccessShareLock);
+	relation = relation_open(relation_oid, lockmode);
 	indexes	 = list_copy(RelationGetIndexList(relation));
 	relation_close(relation, NoLock);
 	return indexes;
 }
 
 static List *
-tp_relation_tree_indexes(Oid relation_oid)
+tp_relation_tree_indexes_locked(Oid relation_oid, LOCKMODE lockmode)
 {
 	Relation  root;
 	List	 *relations;
 	List	 *indexes = NIL;
 	ListCell *lc;
 
-	root	  = relation_open(relation_oid, AccessShareLock);
-	relations = find_all_inheritors(relation_oid, AccessShareLock, NULL);
+	root = relation_open(relation_oid, NoLock);
+	if (root->rd_rel->relkind != RELKIND_PARTITIONED_TABLE)
+	{
+		indexes = list_copy(RelationGetIndexList(root));
+		relation_close(root, NoLock);
+		return indexes;
+	}
 	relation_close(root, NoLock);
+
+	relations = find_all_inheritors(relation_oid, lockmode, NULL);
 	foreach (lc, relations)
 	{
 		Oid		 child_oid = lfirst_oid(lc);
@@ -826,25 +872,139 @@ tp_relation_tree_indexes(Oid relation_oid)
 }
 
 static List *
-tp_index_tree(Oid indexoid)
+tp_index_tree_locked(Oid indexoid, LOCKMODE lockmode)
 {
-	return find_all_inheritors(indexoid, AccessShareLock, NULL);
+	Relation index_rel;
+	List	*indexes;
+
+	index_rel = index_open(indexoid, NoLock);
+	if (index_rel->rd_rel->relkind == RELKIND_PARTITIONED_INDEX)
+		indexes = find_all_inheritors(indexoid, lockmode, NULL);
+	else
+		indexes = list_make1_oid(indexoid);
+	index_close(index_rel, NoLock);
+	return indexes;
+}
+
+static bool
+tp_reindex_concurrently(ReindexStmt *stmt)
+{
+	ListCell *lc;
+
+	foreach (lc, stmt->params)
+	{
+		DefElem *option = lfirst_node(DefElem, lc);
+
+		if (strcmp(option->defname, "concurrently") == 0)
+			return defGetBoolean(option);
+	}
+
+	return false;
+}
+
+typedef struct TpReindexIndexLookupState
+{
+	LOCKMODE table_lockmode;
+	Oid		 locked_table_oid;
+} TpReindexIndexLookupState;
+
+static void
+tp_reindex_index_lookup_callback(
+		const RangeVar *relation, Oid relid, Oid old_relid, void *arg)
+{
+	TpReindexIndexLookupState *state = arg;
+	Oid						   table_oid;
+	char					   relkind;
+
+	(void)relation;
+
+	if (relid != old_relid && OidIsValid(old_relid) &&
+		OidIsValid(state->locked_table_oid))
+	{
+		UnlockRelationOid(state->locked_table_oid, state->table_lockmode);
+		state->locked_table_oid = InvalidOid;
+	}
+
+	if (!OidIsValid(relid))
+		return;
+
+	relkind = get_rel_relkind(relid);
+	if (relkind != RELKIND_INDEX && relkind != RELKIND_PARTITIONED_INDEX)
+		return;
+
+	table_oid = IndexGetRelation(relid, true);
+	if (relid != old_relid && OidIsValid(table_oid))
+	{
+		LockRelationOid(table_oid, state->table_lockmode);
+		state->locked_table_oid = table_oid;
+	}
 }
 
 static List *
-tp_reindex_target_indexes(ReindexStmt *stmt)
+tp_reindex_initial_indexes(ReindexStmt *stmt, bool *tracks_commits)
 {
-	Oid relation_oid;
+	TpReindexIndexLookupState lookup_state;
+	LOCKMODE				  relation_lockmode;
+	Oid						  relation_oid;
+	char					  relkind;
+	bool					  concurrently = tp_reindex_concurrently(stmt);
+	List					 *indexoids;
 
 	if (stmt->kind != REINDEX_OBJECT_INDEX &&
 		stmt->kind != REINDEX_OBJECT_TABLE)
+	{
+		*tracks_commits = false;
+		return NIL;
+	}
+
+	relation_oid = RangeVarGetRelid(stmt->relation, NoLock, false);
+	relkind		 = get_rel_relkind(relation_oid);
+	if ((stmt->kind == REINDEX_OBJECT_INDEX && relkind != RELKIND_INDEX &&
+		 relkind != RELKIND_PARTITIONED_INDEX) ||
+		(stmt->kind == REINDEX_OBJECT_TABLE && relkind != RELKIND_RELATION &&
+		 relkind != RELKIND_MATVIEW && relkind != RELKIND_PARTITIONED_TABLE))
+	{
+		*tracks_commits = false;
+		return NIL;
+	}
+	*tracks_commits = concurrently || relkind == RELKIND_PARTITIONED_INDEX ||
+					  relkind == RELKIND_PARTITIONED_TABLE;
+	if (!*tracks_commits)
 		return NIL;
 
-	relation_oid = RangeVarGetRelid(stmt->relation, AccessShareLock, false);
 	if (stmt->kind == REINDEX_OBJECT_INDEX)
-		return tp_index_tree(relation_oid);
+	{
+		lookup_state.table_lockmode	  = concurrently ? ShareUpdateExclusiveLock
+													 : ShareLock;
+		lookup_state.locked_table_oid = InvalidOid;
+		relation_lockmode			  = concurrently ? ShareUpdateExclusiveLock
+													 : AccessExclusiveLock;
+		relation_oid				  = RangeVarGetRelidExtended(
+				 stmt->relation,
+				 relation_lockmode,
+				 0,
+				 tp_reindex_index_lookup_callback,
+				 &lookup_state);
 
-	return tp_relation_tree_indexes(relation_oid);
+		if (get_rel_relkind(relation_oid) == RELKIND_PARTITIONED_INDEX)
+			return tp_index_tree_locked(relation_oid, ShareLock);
+		return list_make1_oid(relation_oid);
+	}
+
+	relation_lockmode = concurrently ? ShareUpdateExclusiveLock : ShareLock;
+	relation_oid = RangeVarGetRelid(stmt->relation, relation_lockmode, false);
+	if (get_rel_relkind(relation_oid) == RELKIND_PARTITIONED_TABLE)
+		return tp_relation_tree_indexes_locked(relation_oid, ShareLock);
+
+	indexoids = tp_relation_indexes_locked(relation_oid, NoLock);
+	if (concurrently)
+	{
+		ListCell *lc;
+
+		foreach (lc, indexoids)
+			LockRelationOid(lfirst_oid(lc), ShareUpdateExclusiveLock);
+	}
+	return indexoids;
 }
 
 static void
@@ -862,43 +1022,132 @@ tp_activate_background_indexes(List *indexoids, bool refresh_default)
 }
 
 static void
-tp_preflight_background_indexes(List *indexoids)
+tp_reindex_tracking_begin(List *indexoids)
 {
-	ListCell *lc;
+	MemoryContext	context;
+	TpReindexState *state;
+	ListCell	   *lc;
 
+	Assert(tp_reindex_state == NULL);
+	context = AllocSetContextCreate(
+			TopMemoryContext, "pg_textsearch reindex", ALLOCSET_SMALL_SIZES);
+	state			 = MemoryContextAllocZero(context, sizeof(*state));
+	state->context	 = context;
+	tp_reindex_state = state;
 	foreach (lc, indexoids)
 	{
-		Oid indexoid = lfirst_oid(lc);
+		Oid				 indexoid = lfirst_oid(lc);
+		Relation		 index_rel;
+		TpReindexTarget *target;
+		MemoryContext	 old_context;
 
-		if (tp_is_background_physical_index(indexoid))
-			tp_compaction_job_preflight_index(indexoid);
+		index_rel = try_index_open(indexoid, AccessShareLock);
+		if (index_rel == NULL)
+			continue;
+		if (!tp_is_background_index_relation(index_rel))
+		{
+			index_close(index_rel, AccessShareLock);
+			continue;
+		}
+
+		old_context			   = MemoryContextSwitchTo(context);
+		target				   = palloc0(sizeof(*target));
+		target->heap_oid	   = index_rel->rd_index->indrelid;
+		target->namespace_oid  = RelationGetNamespace(index_rel);
+		target->index_name	   = pstrdup(RelationGetRelationName(index_rel));
+		target->index_oid	   = indexoid;
+		target->tablespace_oid = index_rel->rd_locator.spcOid;
+		target->relfilenumber  = index_rel->rd_locator.relNumber;
+		state->targets		   = lappend(state->targets, target);
+		MemoryContextSwitchTo(old_context);
+		index_close(index_rel, AccessShareLock);
+	}
+
+	if (state->targets == NIL)
+	{
+		tp_reindex_state = NULL;
+		MemoryContextDelete(context);
 	}
 }
 
 static void
-tp_preflight_background_indexes_as_owner(List *indexoids, Oid owner_oid)
+tp_reconcile_reindex_state(void)
 {
 	ListCell *lc;
 
-	foreach (lc, indexoids)
+	if (tp_reindex_state == NULL || tp_reindex_state->reconciling)
+		return;
+
+	tp_reindex_state->reconciling = true;
+	PG_TRY();
 	{
-		Oid			indexoid = lfirst_oid(lc);
-		Relation	index_rel;
-		const char *configured_schedule;
-		char	   *schedule;
+		foreach (lc, tp_reindex_state->targets)
+		{
+			TpReindexTarget *target = lfirst(lc);
+			Relation		 index_rel;
+			Oid				 indexoid;
+			Oid				 tablespace_oid;
+			RelFileNumber	 relfilenumber;
 
-		if (!tp_is_background_physical_index(indexoid))
-			continue;
+			indexoid = get_relname_relid(
+					target->index_name, target->namespace_oid);
+			if (!OidIsValid(indexoid))
+				continue;
 
-		index_rel			= index_open(indexoid, AccessShareLock);
-		configured_schedule = tp_index_compaction_schedule(index_rel);
-		if (configured_schedule == NULL)
-			configured_schedule = tp_background_compaction_schedule;
-		schedule = pstrdup(configured_schedule);
-		index_close(index_rel, NoLock);
-		tp_compaction_job_preflight(owner_oid, schedule);
-		pfree(schedule);
+			index_rel = try_index_open(indexoid, AccessShareLock);
+			if (index_rel == NULL)
+				continue;
+			if (!tp_is_background_physical_index_relation(index_rel) ||
+				index_rel->rd_index->indrelid != target->heap_oid)
+			{
+				index_close(index_rel, AccessShareLock);
+				continue;
+			}
+
+			tablespace_oid = index_rel->rd_locator.spcOid;
+			relfilenumber  = index_rel->rd_locator.relNumber;
+			index_close(index_rel, AccessShareLock);
+			if (indexoid == target->index_oid &&
+				tablespace_oid == target->tablespace_oid &&
+				relfilenumber == target->relfilenumber)
+				continue;
+
+			tp_compaction_job_activate(indexoid, true);
+			target->index_oid	   = indexoid;
+			target->tablespace_oid = tablespace_oid;
+			target->relfilenumber  = relfilenumber;
+		}
 	}
+	PG_FINALLY();
+	{
+		tp_reindex_state->reconciling = false;
+	}
+	PG_END_TRY();
+}
+
+static void
+tp_reindex_tracking_end(void)
+{
+	MemoryContext context;
+
+	if (tp_reindex_state == NULL)
+		return;
+
+	context			 = tp_reindex_state->context;
+	tp_reindex_state = NULL;
+	MemoryContextDelete(context);
+}
+
+static List *
+tp_reindex_current_indexes(ReindexStmt *stmt)
+{
+	Oid relation_oid;
+
+	relation_oid = RangeVarGetRelid(stmt->relation, AccessShareLock, false);
+	if (stmt->kind == REINDEX_OBJECT_INDEX)
+		return list_make1_oid(relation_oid);
+
+	return tp_relation_indexes_locked(relation_oid, NoLock);
 }
 
 static RoleSpec *
@@ -944,26 +1193,10 @@ tp_process_utility(
 
 		new_owner = tp_alter_new_owner(stmt);
 		if (new_owner != NULL &&
-			(stmt->objtype == OBJECT_INDEX || stmt->objtype == OBJECT_TABLE ||
-			 stmt->objtype == OBJECT_MATVIEW))
+			(stmt->objtype == OBJECT_TABLE || stmt->objtype == OBJECT_MATVIEW))
 		{
 			Oid	  relation_oid;
 			List *indexoids;
-
-			relation_oid = RangeVarGetRelid(
-					stmt->relation, AccessShareLock, stmt->missing_ok);
-			if (!OidIsValid(relation_oid))
-				return;
-
-			if (stmt->objtype == OBJECT_INDEX)
-				indexoids = tp_index_tree(relation_oid);
-			else
-				indexoids = tp_relation_indexes(relation_oid);
-
-			if (object_ownercheck(
-						RelationRelationId, relation_oid, GetUserId()))
-				tp_preflight_background_indexes_as_owner(
-						indexoids, get_rolespec_oid(new_owner, false));
 
 			if (prev_process_utility_hook)
 				prev_process_utility_hook(
@@ -986,6 +1219,11 @@ tp_process_utility(
 						dest,
 						qc);
 
+			relation_oid =
+					RangeVarGetRelid(stmt->relation, NoLock, stmt->missing_ok);
+			if (!OidIsValid(relation_oid))
+				return;
+			indexoids = tp_relation_indexes_locked(relation_oid, NoLock);
 			tp_activate_background_indexes(indexoids, true);
 			list_free(indexoids);
 			return;
@@ -1029,34 +1267,53 @@ tp_process_utility(
 
 	if (IsA(parsetree, ReindexStmt))
 	{
-		ReindexStmt *stmt	   = (ReindexStmt *)parsetree;
-		List		*indexoids = tp_reindex_target_indexes(stmt);
+		ReindexStmt *stmt = (ReindexStmt *)parsetree;
+		List		*indexoids;
+		bool		 tracks_commits;
 
-		tp_preflight_background_indexes(indexoids);
+		indexoids = tp_reindex_initial_indexes(stmt, &tracks_commits);
 
-		if (prev_process_utility_hook)
-			prev_process_utility_hook(
-					pstmt,
-					queryString,
-					readOnlyTree,
-					context,
-					params,
-					queryEnv,
-					dest,
-					qc);
-		else
-			standard_ProcessUtility(
-					pstmt,
-					queryString,
-					readOnlyTree,
-					context,
-					params,
-					queryEnv,
-					dest,
-					qc);
+		PG_TRY();
+		{
+			if (tracks_commits)
+				tp_reindex_tracking_begin(indexoids);
+			list_free(indexoids);
 
-		tp_activate_background_indexes(indexoids, true);
-		list_free(indexoids);
+			if (prev_process_utility_hook)
+				prev_process_utility_hook(
+						pstmt,
+						queryString,
+						readOnlyTree,
+						context,
+						params,
+						queryEnv,
+						dest,
+						qc);
+			else
+				standard_ProcessUtility(
+						pstmt,
+						queryString,
+						readOnlyTree,
+						context,
+						params,
+						queryEnv,
+						dest,
+						qc);
+
+			if (tracks_commits)
+				tp_reconcile_reindex_state();
+			else
+			{
+				indexoids = tp_reindex_current_indexes(stmt);
+				tp_activate_background_indexes(indexoids, true);
+				list_free(indexoids);
+			}
+		}
+		PG_FINALLY();
+		{
+			tp_reindex_tracking_end();
+		}
+		PG_END_TRY();
 		return;
 	}
 
@@ -1072,7 +1329,10 @@ tp_process_utility(
 			List	*indexes_after;
 			List	*created_indexes;
 
-			heapoid = RangeVarGetRelid(stmt->relation, AccessShareLock, false);
+			heapoid = RangeVarGetRelid(
+					stmt->relation,
+					stmt->concurrent ? ShareUpdateExclusiveLock : ShareLock,
+					false);
 			heap_rel = relation_open(heapoid, NoLock);
 
 			/*
@@ -1093,7 +1353,9 @@ tp_process_utility(
 						heap_rel->rd_rel->relowner, schedule);
 			}
 
-			indexes_before = tp_relation_tree_indexes(heapoid);
+			indexes_before = tp_relation_tree_indexes_locked(
+					heapoid,
+					stmt->concurrent ? ShareUpdateExclusiveLock : ShareLock);
 			relation_close(heap_rel, NoLock);
 
 			tp_build_progress_begin();
@@ -1126,7 +1388,9 @@ tp_process_utility(
 			 * inside standard_ProcessUtility, so reacquire the heap lock
 			 * before consulting its post-command relcache state.
 			 */
-			indexes_after = tp_relation_tree_indexes(heapoid);
+			heapoid = RangeVarGetRelid(stmt->relation, AccessShareLock, false);
+			indexes_after =
+					tp_relation_tree_indexes_locked(heapoid, AccessShareLock);
 			created_indexes =
 					list_difference_oid(indexes_after, indexes_before);
 
