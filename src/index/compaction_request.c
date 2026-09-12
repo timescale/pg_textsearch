@@ -284,7 +284,6 @@ tp_ensure_index_compaction_lineage(Oid indexoid, bool *created)
 	if (created != NULL)
 		*created = false;
 
-	tp_take_index_lineage_lock(indexoid);
 	index_rel = try_index_open(indexoid, ShareUpdateExclusiveLock);
 	if (index_rel == NULL)
 		return NULL;
@@ -297,11 +296,21 @@ tp_ensure_index_compaction_lineage(Oid indexoid, bool *created)
 		return NULL;
 	}
 
+	tp_take_index_lineage_lock(indexoid);
+	if (index_rel->rd_indam == NULL ||
+		index_rel->rd_indam->ambuild != tp_build ||
+		index_rel->rd_rel->relkind != RELKIND_INDEX ||
+		tp_index_compaction_mode(index_rel) != TP_COMPACTION_BACKGROUND)
+	{
+		index_close(index_rel, NoLock);
+		return NULL;
+	}
+
 	existing = tp_index_compaction_lineage(index_rel);
 	if (existing != NULL)
 	{
 		lineage = pstrdup(existing);
-		index_close(index_rel, ShareUpdateExclusiveLock);
+		index_close(index_rel, NoLock);
 		return lineage;
 	}
 
@@ -334,6 +343,116 @@ tp_ensure_index_compaction_lineage(Oid indexoid, bool *created)
 	if (created != NULL)
 		*created = true;
 	return lineage;
+}
+
+void
+tp_reconcile_index_compaction_options(
+		Oid indexoid, const char *schedule, const char *lineage)
+{
+	AlterTableCmd *cmd;
+	Relation	   index_rel;
+	const char	  *existing_lineage;
+	const char	  *existing_schedule;
+	List		  *commands	   = NIL;
+	List		  *set_options = NIL;
+	Oid			   owner_oid;
+	Oid			   save_userid;
+	int			   save_sec_context;
+	bool		   schedule_matches;
+	bool		   reset_schedule;
+
+	index_rel = try_index_open(indexoid, ShareUpdateExclusiveLock);
+	if (index_rel == NULL)
+		ereport(ERROR,
+				(errcode(ERRCODE_UNDEFINED_OBJECT),
+				 errmsg("partition index with OID %u disappeared", indexoid)));
+	tp_take_index_lineage_lock(indexoid);
+
+	if (index_rel->rd_indam == NULL ||
+		index_rel->rd_indam->ambuild != tp_build ||
+		index_rel->rd_rel->relkind != RELKIND_INDEX ||
+		index_rel->rd_index == NULL || !index_rel->rd_index->indisvalid ||
+		!index_rel->rd_index->indisready || !index_rel->rd_index->indislive)
+	{
+		char *index_name = pstrdup(RelationGetRelationName(index_rel));
+
+		index_close(index_rel, ShareUpdateExclusiveLock);
+		ereport(ERROR,
+				(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
+				 errmsg("cannot reconcile partition index \"%s\" for "
+						"background compaction",
+						index_name),
+				 errdetail(
+						 "The attached index is not a valid, ready "
+						 "physical BM25 index."),
+				 errhint("Drop or rebuild the incompatible child index before "
+						 "creating the partitioned background index.")));
+	}
+
+	existing_lineage  = tp_index_compaction_lineage(index_rel);
+	existing_schedule = tp_index_compaction_schedule(index_rel);
+	schedule_matches  = schedule == NULL ? existing_schedule == NULL
+										 : existing_schedule != NULL &&
+												   strcmp(existing_schedule,
+														  schedule) == 0;
+	reset_schedule	  = schedule == NULL && existing_schedule != NULL;
+	if (tp_index_compaction_mode(index_rel) == TP_COMPACTION_BACKGROUND &&
+		existing_lineage != NULL && strcmp(existing_lineage, lineage) == 0 &&
+		schedule_matches)
+	{
+		index_close(index_rel, NoLock);
+		return;
+	}
+
+	owner_oid = index_rel->rd_rel->relowner;
+	index_close(index_rel, NoLock);
+
+	set_options = lappend(
+			set_options,
+			makeDefElem("compaction", (Node *)makeString("background"), -1));
+	set_options =
+			lappend(set_options,
+					makeDefElem(
+							"compaction_lineage",
+							(Node *)makeString(pstrdup(lineage)),
+							-1));
+	if (schedule != NULL)
+		set_options =
+				lappend(set_options,
+						makeDefElem(
+								"compaction_schedule",
+								(Node *)makeString(pstrdup(schedule)),
+								-1));
+
+	cmd			  = makeNode(AlterTableCmd);
+	cmd->subtype  = AT_SetRelOptions;
+	cmd->def	  = (Node *)set_options;
+	cmd->behavior = DROP_RESTRICT;
+	commands	  = lappend(commands, cmd);
+
+	if (reset_schedule)
+	{
+		cmd			 = makeNode(AlterTableCmd);
+		cmd->subtype = AT_ResetRelOptions;
+		cmd->def	 = (Node *)list_make1(
+				makeDefElem("compaction_schedule", NULL, -1));
+		cmd->behavior = DROP_RESTRICT;
+		commands	  = lappend(commands, cmd);
+	}
+
+	GetUserIdAndSecContext(&save_userid, &save_sec_context);
+	SetUserIdAndSecContext(
+			owner_oid, save_sec_context | SECURITY_LOCAL_USERID_CHANGE);
+	PG_TRY();
+	{
+		AlterTableInternal(indexoid, commands, false);
+		CommandCounterIncrement();
+	}
+	PG_FINALLY();
+	{
+		SetUserIdAndSecContext(save_userid, save_sec_context);
+	}
+	PG_END_TRY();
 }
 
 static void

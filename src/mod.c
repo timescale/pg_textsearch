@@ -1401,6 +1401,78 @@ tp_activate_background_indexes(List *indexoids, bool refresh_default)
 	}
 }
 
+static List *
+tp_created_index_tree_locked(List *created_indexes)
+{
+	List	 *result = NIL;
+	ListCell *lc;
+
+	foreach (lc, created_indexes)
+	{
+		Oid		 indexoid = lfirst_oid(lc);
+		Relation index_rel;
+		List	*index_tree;
+
+		index_rel = try_index_open(indexoid, AccessShareLock);
+		if (index_rel == NULL)
+			ereport(ERROR,
+					(errcode(ERRCODE_UNDEFINED_OBJECT),
+					 errmsg("newly created index with OID %u disappeared",
+							indexoid)));
+
+		if (index_rel->rd_rel->relkind == RELKIND_PARTITIONED_INDEX)
+			index_tree = find_all_inheritors(indexoid, AccessShareLock, NULL);
+		else if (index_rel->rd_rel->relkind == RELKIND_INDEX)
+			index_tree = list_make1_oid(indexoid);
+		else
+		{
+			char *index_name = pstrdup(RelationGetRelationName(index_rel));
+
+			index_close(index_rel, AccessShareLock);
+			ereport(ERROR,
+					(errcode(ERRCODE_WRONG_OBJECT_TYPE),
+					 errmsg("\"%s\" is not an index", index_name)));
+		}
+
+		index_close(index_rel, NoLock);
+		result = list_concat_unique_oid(result, index_tree);
+	}
+	return result;
+}
+
+static void
+tp_reconcile_created_background_indexes(
+		List *created_indexes, const char *schedule, const char *lineage)
+{
+	List	 *index_tree;
+	ListCell *lc;
+
+	if (lineage == NULL)
+		elog(ERROR, "background index has no compaction lineage");
+
+	index_tree = tp_created_index_tree_locked(created_indexes);
+	list_sort(index_tree, list_oid_cmp);
+	foreach (lc, index_tree)
+	{
+		Oid indexoid = lfirst_oid(lc);
+
+		if (get_rel_relkind(indexoid) == RELKIND_INDEX)
+			LockRelationOid(indexoid, ShareUpdateExclusiveLock);
+	}
+
+	foreach (lc, index_tree)
+	{
+		Oid indexoid = lfirst_oid(lc);
+
+		if (get_rel_relkind(indexoid) != RELKIND_INDEX)
+			continue;
+
+		tp_reconcile_index_compaction_options(indexoid, schedule, lineage);
+		tp_compaction_job_activate(indexoid, true);
+	}
+	list_free(index_tree);
+}
+
 static TpReindexState *
 tp_reindex_tracking_begin(List *indexoids)
 {
@@ -2003,14 +2075,17 @@ call_next_process_utility(
 			List	   *created_indexes;
 			const char *compaction;
 
+			heapoid = RangeVarGetRelidExtended(
+					stmt->relation,
+					stmt->concurrent ? ShareUpdateExclusiveLock : ShareLock,
+					0,
+					RangeVarCallbackOwnsRelation,
+					NULL);
+			heap_rel	   = relation_open(heapoid, NoLock);
+			indexes_before = tp_relation_tree_indexes_locked(
+					heapoid,
+					stmt->concurrent ? ShareUpdateExclusiveLock : ShareLock);
 			compaction = tp_index_stmt_option(stmt, "compaction");
-			heapoid	   = RangeVarGetRelidExtended(
-					   stmt->relation,
-					   stmt->concurrent ? ShareUpdateExclusiveLock : ShareLock,
-					   0,
-					   RangeVarCallbackOwnsRelation,
-					   NULL);
-			heap_rel = relation_open(heapoid, NoLock);
 			tp_index_stmt_validate_supplied_lineage(
 					stmt, heapoid, heap_rel->rd_rel->relowner);
 			if (compaction != NULL && strcmp(compaction, "background") == 0)
@@ -2035,9 +2110,6 @@ call_next_process_utility(
 						heap_rel->rd_rel->relowner, schedule);
 			}
 
-			indexes_before = tp_relation_tree_indexes_locked(
-					heapoid,
-					stmt->concurrent ? ShareUpdateExclusiveLock : ShareLock);
 			relation_close(heap_rel, NoLock);
 
 			tp_build_progress_begin();
@@ -2076,7 +2148,13 @@ call_next_process_utility(
 			created_indexes =
 					list_difference_oid(indexes_after, indexes_before);
 
-			tp_activate_background_indexes(created_indexes, true);
+			if (compaction != NULL && strcmp(compaction, "background") == 0)
+				tp_reconcile_created_background_indexes(
+						created_indexes,
+						tp_index_stmt_option(stmt, "compaction_schedule"),
+						tp_index_stmt_option(stmt, "compaction_lineage"));
+			else
+				tp_activate_background_indexes(created_indexes, true);
 
 			list_free(created_indexes);
 			list_free(indexes_after);
