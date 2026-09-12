@@ -117,6 +117,11 @@ if ! grep -Fq "objects->explain_function" <<<"${validation_body}"; then
     exit 1
 fi
 
+if grep -Eq 'cancel_function|tp_cancel_' <<<"${job_code}"; then
+    echo "transactional reconciliation still calls df.cancel" >&2
+    exit 1
+fi
+
 if ! grep -Fq "candidate->nargs - candidate->ndargs == 4" \
     <<<"${job_code}"; then
     echo "df.start resolution ignores trailing defaulted arguments" >&2
@@ -242,11 +247,16 @@ ensure_lineage_body="$(
         '/^tp_ensure_index_compaction_lineage(Oid indexoid, bool \*created)/,/^}/p' \
         "${REQUEST_SOURCE}"
 )"
-if ! grep -Fq "ShareUpdateExclusiveLock" <<<"${ensure_lineage_body}"; then
-    echo "legacy lineage backfill lacks its required relation lock" >&2
+if ! grep -Fq "AccessShareLock" <<<"${ensure_lineage_body}" ||
+    ! grep -Fq "ShareUpdateExclusiveLock" <<<"${ensure_lineage_body}"; then
+    echo "lineage lookup/backfill lacks its required relation locks" >&2
     exit 1
 fi
-ensure_relation_line="$(
+ensure_read_line="$(
+    grep -n "try_index_open(indexoid, AccessShareLock)" \
+        <<<"${ensure_lineage_body}" | head -1 | cut -d: -f1
+)"
+ensure_write_line="$(
     grep -n "try_index_open(indexoid, ShareUpdateExclusiveLock)" \
         <<<"${ensure_lineage_body}" | head -1 | cut -d: -f1
 )"
@@ -256,10 +266,12 @@ ensure_private_line="$(
 )"
 ensure_recheck_line="$(
     grep -n "existing = tp_index_compaction_lineage(index_rel)" \
-        <<<"${ensure_lineage_body}" | head -1 | cut -d: -f1
+        <<<"${ensure_lineage_body}" | tail -1 | cut -d: -f1
 )"
-if [[ -z "${ensure_relation_line}" || -z "${ensure_private_line}" ||
-      "${ensure_relation_line}" -ge "${ensure_private_line}" ]]; then
+if [[ -z "${ensure_read_line}" || -z "${ensure_write_line}" ||
+      -z "${ensure_private_line}" ||
+      "${ensure_read_line}" -ge "${ensure_write_line}" ||
+      "${ensure_write_line}" -ge "${ensure_private_line}" ]]; then
     echo "legacy lineage backfill takes its private lock before the relation" \
         >&2
     exit 1
@@ -268,6 +280,17 @@ if [[ -z "${ensure_recheck_line}" ||
       "${ensure_private_line}" -ge "${ensure_recheck_line}" ]]; then
     echo "legacy lineage backfill does not recheck options under both locks" \
         >&2
+    exit 1
+fi
+
+prelock_requests_body="$(
+    sed -n '/^tp_prelock_requests(List \*pending)/,/^}/p' "${REQUEST_SOURCE}"
+)"
+if ! grep -Fq "list_sort(sorted, list_oid_cmp)" \
+    <<<"${prelock_requests_body}" ||
+    ! grep -Fq "ConditionalLockRelationOid" \
+    <<<"${prelock_requests_body}"; then
+    echo "pending requests are not safely prelocked in OID order" >&2
     exit 1
 fi
 if grep -Fq "tp_alter_index_ensure_lineage" "${MODULE_SOURCE}"; then
@@ -290,6 +313,36 @@ if ! grep -Fq "RangeVarCallbackOwnsRelation" "${MODULE_SOURCE}"; then
     exit 1
 fi
 
+lineage_guard_body="$(
+    sed -n '/^tp_reject_user_lineage_alter(/,/^}/p' "${MODULE_SOURCE}"
+)"
+for required in \
+    "AlterTableGetLockLevel" \
+    "RangeVarGetRelidExtended" \
+    "RangeVarCallbackOwnsRelation" \
+    "try_relation_open(indexoid, NoLock)"; do
+    if ! grep -Fq "${required}" <<<"${lineage_guard_body}"; then
+        echo "lineage mutation guard does not retain the resolved target" >&2
+        exit 1
+    fi
+done
+
+if ! grep -Fq "OAT_POST_CREATE" "${MODULE_SOURCE}" ||
+    ! grep -Fq "tp_create_index_tracking_begin" "${MODULE_SOURCE}" ||
+    grep -Fq "list_difference_oid(indexes_after" "${MODULE_SOURCE}"; then
+    echo "CREATE INDEX tracking is not invocation-owned" >&2
+    exit 1
+fi
+
+prelock_call_count="$(
+    grep -Fc "tp_prelock_compaction_indexes" "${MODULE_SOURCE}" || true
+)"
+if [ "${prelock_call_count}" -lt 4 ]; then
+    echo "multi-index lifecycle paths do not share sorted relation locking" \
+        >&2
+    exit 1
+fi
+
 # A spill caused during dispatch must compact inline: its request would land
 # in a list the running dispatch has already stopped reading.
 if ! grep -Fq "tp_dispatch_active = true" "${REQUEST_SOURCE}" ||
@@ -305,10 +358,15 @@ revalidate_line="$(grep -n "SearchSysCacheExists1" <<<"${flush_body}" |
     cut -d: -f1)"
 signal_line="$(grep -n "tp_run_request(indexoid)" \
     <<<"${flush_body}" | cut -d: -f1)"
+prelock_line="$(grep -n "tp_prelock_requests(pending)" \
+    <<<"${flush_body}" | cut -d: -f1)"
 
-if [[ -z "${revalidate_line}" || -z "${signal_line}" ||
+if [[ -z "${prelock_line}" || -z "${revalidate_line}" ||
+      -z "${signal_line}" ||
+      "${prelock_line}" -ge "${revalidate_line}" ||
       "${revalidate_line}" -ge "${signal_line}" ]]; then
-    echo "pending requests are not revalidated before signaling" >&2
+    echo "pending requests are not prelocked and revalidated before signaling" \
+        >&2
     exit 1
 fi
 

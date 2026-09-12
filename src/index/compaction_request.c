@@ -8,6 +8,7 @@
 
 #include <access/genam.h>
 #include <access/parallel.h>
+#include <access/relation.h>
 #include <access/table.h>
 #include <access/xact.h>
 #include <catalog/index.h>
@@ -84,6 +85,29 @@ tp_lock_compaction_lineage(const char *lineage)
 			(const unsigned char *)lineage, TP_COMPACTION_LINEAGE_LENGTH);
 	discriminator = (uint16)(TP_COMPACTION_LINEAGE_LOCK | (hash & 0x7fffU));
 	tp_take_compaction_lock(discriminator);
+}
+
+List *
+tp_prelock_compaction_indexes(List *indexoids)
+{
+	List	 *sorted = list_copy(indexoids);
+	List	 *locked = NIL;
+	ListCell *lc;
+	Oid		  previous = InvalidOid;
+
+	list_sort(sorted, list_oid_cmp);
+	foreach (lc, sorted)
+	{
+		Oid indexoid = lfirst_oid(lc);
+
+		if (!OidIsValid(indexoid) || indexoid == previous)
+			continue;
+		LockRelationOid(indexoid, ShareUpdateExclusiveLock);
+		locked	 = lappend_oid(locked, indexoid);
+		previous = indexoid;
+	}
+	list_free(sorted);
+	return locked;
 }
 
 /*
@@ -284,7 +308,7 @@ tp_ensure_index_compaction_lineage(Oid indexoid, bool *created)
 	if (created != NULL)
 		*created = false;
 
-	index_rel = try_index_open(indexoid, ShareUpdateExclusiveLock);
+	index_rel = try_index_open(indexoid, AccessShareLock);
 	if (index_rel == NULL)
 		return NULL;
 	if (index_rel->rd_indam == NULL ||
@@ -292,10 +316,22 @@ tp_ensure_index_compaction_lineage(Oid indexoid, bool *created)
 		index_rel->rd_rel->relkind != RELKIND_INDEX ||
 		tp_index_compaction_mode(index_rel) != TP_COMPACTION_BACKGROUND)
 	{
-		index_close(index_rel, ShareUpdateExclusiveLock);
+		index_close(index_rel, AccessShareLock);
 		return NULL;
 	}
 
+	existing = tp_index_compaction_lineage(index_rel);
+	if (existing != NULL)
+	{
+		lineage = pstrdup(existing);
+		index_close(index_rel, NoLock);
+		return lineage;
+	}
+	index_close(index_rel, AccessShareLock);
+
+	index_rel = try_index_open(indexoid, ShareUpdateExclusiveLock);
+	if (index_rel == NULL)
+		return NULL;
 	tp_take_index_lineage_lock(indexoid);
 	if (index_rel->rd_indam == NULL ||
 		index_rel->rd_indam->ambuild != tp_build ||
@@ -557,11 +593,86 @@ tp_run_request(Oid indexoid)
 	CurrentResourceOwner = oldowner;
 }
 
+static bool
+tp_request_target_is_background(Oid indexoid)
+{
+	Relation index_rel;
+	bool	 background;
+
+	index_rel = try_relation_open(indexoid, NoLock);
+	if (index_rel == NULL)
+		return false;
+	background = index_rel->rd_rel->relkind == RELKIND_INDEX &&
+				 index_rel->rd_indam != NULL &&
+				 index_rel->rd_indam->ambuild == tp_build &&
+				 index_rel->rd_index != NULL &&
+				 index_rel->rd_index->indisvalid &&
+				 index_rel->rd_index->indisready &&
+				 index_rel->rd_index->indislive &&
+				 tp_index_compaction_mode(index_rel) ==
+						 TP_COMPACTION_BACKGROUND;
+	relation_close(index_rel, NoLock);
+	return background;
+}
+
+static List *
+tp_prelock_requests(List *pending)
+{
+	List	 *sorted  = list_copy(pending);
+	List	 *targets = NIL;
+	ListCell *lc;
+	Oid		  previous = InvalidOid;
+
+	list_sort(sorted, list_oid_cmp);
+	foreach (lc, sorted)
+	{
+		Oid		 indexoid = lfirst_oid(lc);
+		Relation index_rel;
+		bool	 needs_lineage_lock;
+
+		if (!OidIsValid(indexoid) || indexoid == previous)
+			continue;
+		previous = indexoid;
+
+		if (!ConditionalLockRelationOid(indexoid, AccessShareLock))
+			continue;
+		index_rel = try_relation_open(indexoid, NoLock);
+		if (index_rel == NULL || index_rel->rd_rel->relkind != RELKIND_INDEX ||
+			index_rel->rd_indam == NULL ||
+			index_rel->rd_indam->ambuild != tp_build ||
+			index_rel->rd_index == NULL || !index_rel->rd_index->indisvalid ||
+			!index_rel->rd_index->indisready ||
+			!index_rel->rd_index->indislive ||
+			tp_index_compaction_mode(index_rel) != TP_COMPACTION_BACKGROUND)
+		{
+			if (index_rel != NULL)
+				relation_close(index_rel, NoLock);
+			UnlockRelationOid(indexoid, AccessShareLock);
+			continue;
+		}
+
+		needs_lineage_lock = tp_index_compaction_lineage(index_rel) == NULL;
+		relation_close(index_rel, NoLock);
+		if (needs_lineage_lock)
+		{
+			UnlockRelationOid(indexoid, AccessShareLock);
+			if (!ConditionalLockRelationOid(
+						indexoid, ShareUpdateExclusiveLock))
+				continue;
+		}
+
+		targets = lappend_oid(targets, indexoid);
+	}
+	list_free(sorted);
+	return targets;
+}
+
 void
 tp_compaction_flush_requests(void)
 {
 	ListCell *lc;
 	List	 *pending;
+	List	 *targets = NIL;
 
 	if (tp_pending_compactions == NIL)
 		return;
@@ -591,11 +702,13 @@ tp_compaction_flush_requests(void)
 
 	PG_TRY();
 	{
-		foreach (lc, pending)
+		targets = tp_prelock_requests(pending);
+		foreach (lc, targets)
 		{
 			Oid indexoid = lfirst_oid(lc);
 
-			if (!SearchSysCacheExists1(RELOID, ObjectIdGetDatum(indexoid)))
+			if (!SearchSysCacheExists1(RELOID, ObjectIdGetDatum(indexoid)) ||
+				!tp_request_target_is_background(indexoid))
 				continue;
 			tp_run_request(indexoid);
 		}
@@ -603,6 +716,7 @@ tp_compaction_flush_requests(void)
 	PG_FINALLY();
 	{
 		tp_dispatch_active = false;
+		list_free(targets);
 		list_free(pending);
 	}
 	PG_END_TRY();

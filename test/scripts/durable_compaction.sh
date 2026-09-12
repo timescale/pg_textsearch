@@ -763,6 +763,23 @@ current_generation_job_count() {
         AND instance.status IN ('pending', 'running');"
 }
 
+background_target_is_current() {
+    local index_oid=$1 relfilenumber=$2 owner=$3
+
+    sql_as "${owner}" -c "SELECT
+          bm25_background_target_is_current(
+            relation.oid,
+            database.oid,
+            coalesce(nullif(relation.reltablespace, 0),
+                     database.dattablespace),
+            ${relfilenumber}::pg_catalog.oid,
+            '${owner}'::pg_catalog.regrole::pg_catalog.oid)
+        FROM pg_catalog.pg_class AS relation
+        JOIN pg_catalog.pg_database AS database
+          ON database.datname = pg_catalog.current_database()
+        WHERE relation.oid = ${index_oid};"
+}
+
 managed_job_count() {
     sql_super -c "SELECT count(*) FROM df.instances
       WHERE label LIKE 'pg_textsearch:bg:v1:%';"
@@ -1222,28 +1239,36 @@ SQL
             ON index_catalog.indexrelid = relation.oid
           WHERE tree.isleaf
             AND relation.relkind = 'i';")"
-    assert_eq "attached leaves retain no stale active physical workflow" "2" \
+    assert_eq "attached leaves select the parent workflow as current" "2" \
         "$(sql_super -c "SELECT count(*)
           FROM pg_catalog.pg_partition_tree(${parent_oid}) AS tree
           JOIN pg_catalog.pg_class AS relation
             ON relation.oid = tree.relid
           JOIN pg_catalog.pg_database AS database
             ON database.datname = pg_catalog.current_database()
-          JOIN df.instances AS instance
-            ON instance.label OPERATOR(pg_catalog.~~)
-               pg_catalog.format(
-                 'pg_textsearch:bg:v1:%s:%s:%s:%s:%s:%%',
-                 database.oid,
-                 relation.oid,
-                 coalesce(nullif(relation.reltablespace, 0),
-                          database.dattablespace),
-                 pg_catalog.pg_relation_filenode(relation.oid),
-                 relation.relowner)
-           AND instance.submitted_by::pg_catalog.oid = relation.relowner
-           AND instance.status OPERATOR(pg_catalog.=)
-               ANY (ARRAY['pending', 'running']::pg_catalog.text[])
           WHERE tree.isleaf
-            AND relation.relkind = 'i';")"
+            AND relation.relkind = 'i'
+            AND (
+              SELECT instance.label
+              FROM df.instances AS instance
+              WHERE instance.label OPERATOR(pg_catalog.~~)
+                    pg_catalog.format(
+                      'pg_textsearch:bg:v1:%s:%s:%s:%s:%s:%%',
+                      database.oid,
+                      relation.oid,
+                      coalesce(nullif(relation.reltablespace, 0),
+                               database.dattablespace),
+                      pg_catalog.pg_relation_filenode(relation.oid),
+                      relation.relowner)
+                AND instance.submitted_by::pg_catalog.oid =
+                    relation.relowner
+                AND instance.status OPERATOR(pg_catalog.=)
+                    ANY (ARRAY['pending', 'running']
+                         ::pg_catalog.text[])
+              ORDER BY instance.created_at DESC, instance.id DESC
+              LIMIT 1
+            ) OPERATOR(pg_catalog.~~)
+              ('%:' || '${parent_lineage}' || ':%');")"
 
     sql_as durable_owner -c "SELECT df.cancel(
         instance.id, 'existing leaf reconciliation complete')
@@ -1263,6 +1288,273 @@ SQL
                'pg_textsearch:bg:v1:%:${high_oid}:%');" >/dev/null
     sql_super -c \
         "DROP TABLE public.lifecycle_existing_leaf_docs;"
+}
+
+test_create_tracking_reentry() {
+    local nested_oid outer_oid
+
+    sql_as durable_owner <<'SQL' >/dev/null
+CREATE TABLE public.lifecycle_create_reentry_docs
+    (body_a text, body_b text);
+CREATE FUNCTION public.lifecycle_create_reenter()
+RETURNS event_trigger
+LANGUAGE plpgsql
+SET search_path = pg_catalog, pg_temp
+AS $body$
+BEGIN
+    IF pg_catalog.current_setting('application_name')
+           OPERATOR(pg_catalog.=) 'lifecycle-create-reentry'
+       AND pg_catalog.to_regclass(
+             'public.lifecycle_create_reentry_nested_idx') IS NULL THEN
+        EXECUTE
+            'CREATE INDEX lifecycle_create_reentry_nested_idx '
+            'ON public.lifecycle_create_reentry_docs USING bm25(body_b) '
+            'WITH (text_config = ''english'', compaction = ''manual'')';
+    END IF;
+END
+$body$;
+SQL
+    sql_super -c "
+        CREATE EVENT TRIGGER lifecycle_create_reenter
+          ON ddl_command_end
+          WHEN TAG IN ('CREATE INDEX')
+          EXECUTE FUNCTION public.lifecycle_create_reenter();" >/dev/null
+
+    PGAPPNAME=lifecycle-create-reentry sql_as durable_owner -c "
+        CREATE INDEX lifecycle_create_reentry_outer_idx
+          ON public.lifecycle_create_reentry_docs USING bm25(body_a)
+          WITH (text_config = 'english',
+                compaction = 'background',
+                compaction_schedule = '0 0 1 1 *');" >/dev/null 2>&1
+
+    sql_super -c "DROP EVENT TRIGGER lifecycle_create_reenter;
+                   DROP FUNCTION public.lifecycle_create_reenter();" \
+        >/dev/null
+    outer_oid="$(sql_super -c "SELECT
+        'public.lifecycle_create_reentry_outer_idx'::regclass::oid;")"
+    nested_oid="$(sql_super -c "SELECT
+        'public.lifecycle_create_reentry_nested_idx'::regclass::oid;")"
+    assert_eq "nested CREATE retains its own manual configuration" "t" \
+        "$(sql_super -c "SELECT reloptions @> ARRAY['compaction=manual']
+          FROM pg_catalog.pg_class WHERE oid = ${nested_oid};")"
+    assert_eq "outer CREATE activates only its own index" "1:0" \
+        "$(active_jobs_for_index "${outer_oid}"):$(
+            active_jobs_for_index "${nested_oid}")"
+
+    sql_super -c "DROP TABLE public.lifecycle_create_reentry_docs;"
+}
+
+test_create_tracking_concurrent() {
+    local blocker_pid concurrent_oid outer_oid outer_output outer_pid
+    local outer_status=0
+
+    sql_as durable_owner <<'SQL' >/dev/null
+CREATE TABLE public.lifecycle_create_concurrent_docs
+    (body_a text, body_b text);
+INSERT INTO public.lifecycle_create_concurrent_docs
+VALUES ('pause', 'other'), ('continue', 'other');
+CREATE FUNCTION public.lifecycle_create_concurrent_pause(value text)
+RETURNS text
+LANGUAGE plpgsql
+IMMUTABLE
+SET search_path = pg_catalog, pg_temp
+AS $body$
+BEGIN
+    IF value OPERATOR(pg_catalog.=) 'pause' THEN
+        PERFORM pg_catalog.pg_advisory_xact_lock(478, 8);
+    END IF;
+    RETURN value;
+END
+$body$;
+SQL
+
+    PGAPPNAME=lifecycle-create-concurrent-gate sql_super -c \
+        "SELECT pg_catalog.pg_advisory_lock(478, 8);
+         SELECT pg_catalog.pg_sleep(120);" \
+        >"${DATA_DIR}/create-concurrent-gate.out" 2>&1 &
+    blocker_pid=$!
+    for _ in $(seq 1 100); do
+        if [ "$(sql_super -c "SELECT pg_catalog.count(*)
+              FROM pg_catalog.pg_locks
+              WHERE locktype = 'advisory'
+                AND classid = 478
+                AND objid = 8
+                AND granted;")" = "1" ]; then
+            break
+        fi
+        sleep 0.1
+    done
+
+    outer_output="${DATA_DIR}/create-concurrent-outer.out"
+    PGAPPNAME=lifecycle-create-concurrent-outer \
+        "${PGBINDIR}/psql" -h "${SOCKET_DIR}" -p "${TEST_PORT}" \
+        -U durable_owner -d "${TEST_DB}" -qAt -v ON_ERROR_STOP=1 \
+        -c "CREATE INDEX lifecycle_create_concurrent_outer_idx
+            ON public.lifecycle_create_concurrent_docs
+            USING bm25(public.lifecycle_create_concurrent_pause(body_a))
+            WITH (text_config = 'english',
+                  compaction = 'background',
+                  compaction_schedule = '0 0 1 1 *');" \
+        >"${outer_output}" 2>&1 &
+    outer_pid=$!
+    for _ in $(seq 1 100); do
+        if [ "$(sql_super -c "SELECT pg_catalog.count(*)
+              FROM pg_catalog.pg_stat_activity
+              WHERE application_name =
+                    'lifecycle-create-concurrent-outer'
+                AND wait_event = 'advisory';")" = "1" ]; then
+            break
+        fi
+        sleep 0.1
+    done
+    assert_eq "first CREATE pauses during its index build" "1" \
+        "$(sql_super -c "SELECT pg_catalog.count(*)
+          FROM pg_catalog.pg_stat_activity
+          WHERE application_name = 'lifecycle-create-concurrent-outer'
+            AND wait_event = 'advisory';")"
+
+    sql_as durable_owner -c "
+        SET statement_timeout = '10s';
+        CREATE INDEX lifecycle_create_concurrent_other_idx
+          ON public.lifecycle_create_concurrent_docs USING bm25(body_b)
+          WITH (text_config = 'english', compaction = 'manual');" \
+        >/dev/null
+    sql_super -c "SELECT pg_catalog.pg_terminate_backend(pid)
+      FROM pg_catalog.pg_stat_activity
+      WHERE application_name =
+            'lifecycle-create-concurrent-gate';" >/dev/null
+    wait "${blocker_pid}" || true
+    wait "${outer_pid}" || outer_status=$?
+    if [ "${outer_status}" -ne 0 ]; then
+        error "tracked concurrent CREATE failed: $(cat "${outer_output}")"
+    fi
+
+    outer_oid="$(sql_super -c "SELECT
+        'public.lifecycle_create_concurrent_outer_idx'::regclass::oid;")"
+    concurrent_oid="$(sql_super -c "SELECT
+        'public.lifecycle_create_concurrent_other_idx'::regclass::oid;")"
+    assert_eq "concurrent CREATE retains its manual configuration" "t" \
+        "$(sql_super -c "SELECT reloptions @> ARRAY['compaction=manual']
+          FROM pg_catalog.pg_class WHERE oid = ${concurrent_oid};")"
+    assert_eq "tracked CREATE does not absorb a concurrent index" "1:0" \
+        "$(active_jobs_for_index "${outer_oid}"):$(
+            active_jobs_for_index "${concurrent_oid}")"
+
+    sql_super -c "DROP TABLE public.lifecycle_create_concurrent_docs;
+                   DROP FUNCTION
+                     public.lifecycle_create_concurrent_pause(text);"
+}
+
+test_create_tracking_table_rename() {
+    local heap_oid outer_oid outer_output outer_pid outer_status=0
+    local rename_output rename_pid rename_status=0 snapshot_pid
+
+    sql_as durable_owner <<'SQL' >/dev/null
+CREATE TABLE public.lifecycle_create_rename_docs (body text);
+INSERT INTO public.lifecycle_create_rename_docs
+SELECT pg_catalog.format('document %s filler', value)
+FROM pg_catalog.generate_series(1, 1000) AS value;
+SQL
+    heap_oid="$(sql_super -c "SELECT
+        'public.lifecycle_create_rename_docs'::regclass::oid;")"
+
+    PGAPPNAME=lifecycle-create-rename-snapshot sql_super -c \
+        "BEGIN ISOLATION LEVEL REPEATABLE READ;
+         SELECT count(*) FROM public.lifecycle_create_rename_docs;
+         SELECT pg_catalog.pg_sleep(120);" \
+        >"${DATA_DIR}/create-rename-snapshot.out" 2>&1 &
+    snapshot_pid=$!
+    for _ in $(seq 1 100); do
+        if [ "$(sql_super -c "SELECT pg_catalog.count(*)
+              FROM pg_catalog.pg_stat_activity
+              WHERE application_name = 'lifecycle-create-rename-snapshot'
+                AND wait_event = 'PgSleep';")" = "1" ]; then
+            break
+        fi
+        sleep 0.1
+    done
+
+    outer_output="${DATA_DIR}/create-rename-outer.out"
+    PGAPPNAME=lifecycle-create-rename-outer \
+        "${PGBINDIR}/psql" -h "${SOCKET_DIR}" -p "${TEST_PORT}" \
+        -U durable_owner -d "${TEST_DB}" -qAt -v ON_ERROR_STOP=1 \
+        -c "CREATE INDEX CONCURRENTLY lifecycle_create_rename_idx
+            ON public.lifecycle_create_rename_docs USING bm25(body)
+            WITH (text_config = 'english',
+                  compaction = 'background',
+                  compaction_schedule = '0 0 1 1 *');" \
+        >"${outer_output}" 2>&1 &
+    outer_pid=$!
+    for _ in $(seq 1 100); do
+        if [ "$(sql_super -c "SELECT pg_catalog.count(*)
+              FROM pg_catalog.pg_stat_progress_create_index AS progress
+              JOIN pg_catalog.pg_stat_activity AS activity
+                ON activity.pid = progress.pid
+              WHERE activity.application_name =
+                    'lifecycle-create-rename-outer'
+                AND progress.phase = 'waiting for old snapshots';")" = "1" ];
+        then
+            break
+        fi
+        sleep 0.1
+    done
+    assert_eq "concurrent CREATE waits for the old snapshot" "1" \
+        "$(sql_super -c "SELECT pg_catalog.count(*)
+          FROM pg_catalog.pg_stat_progress_create_index AS progress
+          JOIN pg_catalog.pg_stat_activity AS activity
+            ON activity.pid = progress.pid
+          WHERE activity.application_name =
+                'lifecycle-create-rename-outer'
+            AND progress.phase = 'waiting for old snapshots';")"
+
+    rename_output="${DATA_DIR}/create-rename-other.out"
+    PGAPPNAME=lifecycle-create-rename-other \
+        "${PGBINDIR}/psql" -h "${SOCKET_DIR}" -p "${TEST_PORT}" \
+        -U durable_owner -d "${TEST_DB}" -qAt -v ON_ERROR_STOP=1 \
+        -c "ALTER TABLE public.lifecycle_create_rename_docs
+              RENAME TO lifecycle_create_renamed_docs;" \
+        >"${rename_output}" 2>&1 &
+    rename_pid=$!
+    for _ in $(seq 1 100); do
+        if [ "$(sql_super -c "SELECT pg_catalog.count(*)
+              FROM pg_catalog.pg_stat_activity
+              WHERE application_name = 'lifecycle-create-rename-other'
+                AND wait_event_type = 'Lock';")" = "1" ]; then
+            break
+        fi
+        sleep 0.1
+    done
+    assert_eq "table rename queues behind concurrent CREATE" "1" \
+        "$(sql_super -c "SELECT pg_catalog.count(*)
+          FROM pg_catalog.pg_stat_activity
+          WHERE application_name = 'lifecycle-create-rename-other'
+            AND wait_event_type = 'Lock';")"
+
+    sql_super -c "SELECT pg_catalog.pg_terminate_backend(pid)
+      FROM pg_catalog.pg_stat_activity
+      WHERE application_name =
+            'lifecycle-create-rename-snapshot';" >/dev/null
+    wait "${snapshot_pid}" || true
+    wait "${outer_pid}" || outer_status=$?
+    wait "${rename_pid}" || rename_status=$?
+    if [ "${rename_status}" -ne 0 ]; then
+        error "queued table rename failed: $(cat "${rename_output}")"
+    fi
+    if [ "${outer_status}" -ne 0 ]; then
+        error "CREATE lost its original heap after rename: \
+$(cat "${outer_output}")"
+    fi
+
+    outer_oid="$(sql_super -c "SELECT
+        'public.lifecycle_create_rename_idx'::regclass::oid;")"
+    assert_eq "tracked CREATE retains the original heap OID" \
+        "${heap_oid}" \
+        "$(sql_super -c "SELECT indrelid
+          FROM pg_catalog.pg_index WHERE indexrelid = ${outer_oid};")"
+    assert_eq "renamed-table CREATE activates its created index" "1" \
+        "$(active_jobs_for_index "${outer_oid}")"
+
+    sql_super -c "DROP TABLE public.lifecycle_create_renamed_docs;"
 }
 
 test_owner_reconciliation() {
@@ -1803,6 +2095,21 @@ ${reindex_error}"
         [ "${first_job_after}" = "${first_job_before}" ]; then
         error "committed partition leaf replacement was not reconciled"
     fi
+    assert_eq "failed partitioned REINDEX selects the admitted earlier leaf" \
+        "${first_job_after}" \
+        "$(current_generation_job_id "${first_index_oid}")"
+    assert_eq "earlier leaf reconciliation does not eagerly cancel history" \
+        "t" \
+        "$(sql_super -c "SELECT status OPERATOR(pg_catalog.=)
+            ANY (ARRAY['pending', 'running']::pg_catalog.text[])
+          FROM df.instances WHERE id = '${first_job_before}';")"
+    assert_eq "old physical helper rejects the committed replacement" "f" \
+        "$(background_target_is_current \
+            "${first_index_oid}" "${first_file_before}" durable_owner)"
+    sql_as durable_owner -c "SELECT df.signal(
+        '${first_job_before}', 'compact', '{}');" >/dev/null
+    wait_for_terminal "${first_job_before}" 30
+    log "PASS: stale earlier-leaf workflow retires through its guard"
 
     sql_super -c "ALTER ROLE durable_owner IN DATABASE ${TEST_DB}
         RESET lifecycle.reindex_failure;"
@@ -2096,6 +2403,7 @@ test_ordinary_inheritance_reindex_scope() {
 
 test_legacy_lineage_backfill() {
     local legacy_instance legacy_lineage legacy_oid owner_job
+    local replacement_instance
     local owner_lineage reindex_lineage reindex_oid_before reindex_oid_after
 
     install_signal_probe
@@ -2177,11 +2485,19 @@ SQL
         "${#legacy_lineage}"
     assert_eq "legacy signal dispatches the replacement workflow" "1" \
         "$(signal_attempt_count)"
-    assert_eq "legacy signal retires the unscoped workflow" "cancelled" \
-        "$(sql_super -c "SELECT status FROM df.instances
-                          WHERE id = '${legacy_instance}';")"
-    assert_eq "legacy signal leaves one active physical workflow" "1" \
-        "$(current_generation_job_count "${legacy_oid}")"
+    replacement_instance="$(sql_super -c "SELECT instance_id
+      FROM public.compaction_signal_audit;")"
+    assert_eq "legacy signal selects the replacement workflow" \
+        "${replacement_instance}" \
+        "$(current_generation_job_id "${legacy_oid}")"
+    assert_eq "legacy migration does not eagerly cancel history" "t" \
+        "$(sql_super -c "SELECT status OPERATOR(pg_catalog.=)
+            ANY (ARRAY['pending', 'running']::pg_catalog.text[])
+          FROM df.instances WHERE id = '${legacy_instance}';")"
+    sql_as durable_owner -c "SELECT df.signal_v028(
+        '${legacy_instance}', 'compact', '{}');" >/dev/null
+    wait_for_terminal "${legacy_instance}" 30
+    log "PASS: stale legacy workflow retires through its current guard"
 
     remove_index_lineage public.lifecycle_legacy_owner_idx
     sql_super -c "ALTER TABLE public.lifecycle_legacy_owner_docs
@@ -2219,6 +2535,87 @@ SQL
     sql_super -c "DROP TABLE public.lifecycle_legacy_signal_docs,
                              public.lifecycle_legacy_owner_docs,
                              public.lifecycle_legacy_reindex_docs;"
+}
+
+test_refresh_selects_requested_workflow() {
+    local first_instance index_oid second_instance selected_instance
+    local rollback_error
+
+    sql_as durable_owner <<'SQL' >/dev/null 2>&1
+CREATE TABLE public.lifecycle_refresh_docs (body text);
+CREATE INDEX lifecycle_refresh_idx
+    ON public.lifecycle_refresh_docs USING bm25(body)
+    WITH (text_config = 'english',
+          compaction = 'background',
+          compaction_schedule = '0 0 1 1 *');
+SQL
+    index_oid="$(sql_super -c "SELECT
+        'public.lifecycle_refresh_idx'::regclass::oid;")"
+    first_instance="$(current_generation_job_id "${index_oid}")"
+    sql_super -c "REVOKE EXECUTE ON FUNCTION df.cancel(text, text)
+                   FROM durable_owner;"
+
+    if rollback_error="$(sql_as durable_owner <<'SQL' 2>&1
+BEGIN;
+ALTER INDEX public.lifecycle_refresh_idx
+  SET (compaction_schedule = '5 4 3 2 *');
+DO $body$
+BEGIN
+    RAISE EXCEPTION 'force admitted refresh rollback';
+END
+$body$;
+COMMIT;
+SQL
+    )"; then
+        error "admitted workflow refresh unexpectedly committed"
+    fi
+    if ! grep -Fq "force admitted refresh rollback" \
+        <<<"${rollback_error}"; then
+        error "workflow refresh failed before the rollback probe: \
+${rollback_error}"
+    fi
+    assert_eq "rolled-back refresh preserves the prior current workflow" \
+        "${first_instance}" \
+        "$(current_generation_job_id "${index_oid}")"
+
+    sql_as durable_owner -c "ALTER INDEX public.lifecycle_refresh_idx
+      SET (compaction_schedule = '5 4 3 2 *');" >/dev/null 2>&1
+    second_instance="$(current_generation_job_id "${index_oid}")"
+    if [ -z "${second_instance}" ] ||
+        [ "${second_instance}" = "${first_instance}" ]; then
+        error "schedule refresh did not publish a new current workflow"
+    fi
+    assert_eq "schedule refresh keeps prior workflow for guard retirement" \
+        "t" \
+        "$(sql_super -c "SELECT status OPERATOR(pg_catalog.=)
+            ANY (ARRAY['pending', 'running']::pg_catalog.text[])
+          FROM df.instances WHERE id = '${first_instance}';")"
+
+    sql_as durable_owner -c "ALTER INDEX public.lifecycle_refresh_idx
+      SET (compaction_schedule = '0 0 1 1 *');" >/dev/null 2>&1
+    selected_instance="$(current_generation_job_id "${index_oid}")"
+    if [ -z "${selected_instance}" ] ||
+        [ "${selected_instance}" = "${first_instance}" ] ||
+        [ "${selected_instance}" = "${second_instance}" ]; then
+        error "schedule rollback did not republish the requested workflow"
+    fi
+    assert_eq "latest workflow carries the requested schedule" "t" \
+        "$(sql_super -c "SELECT label OPERATOR(pg_catalog.~~)
+            ('%:' || pg_catalog.encode(
+              pg_catalog.convert_to('0 0 1 1 *', 'UTF8'), 'hex'))
+          FROM df.instances WHERE id = '${selected_instance}';")"
+
+    sql_super -c "GRANT EXECUTE ON FUNCTION df.cancel(text, text)
+                   TO durable_owner;"
+    sql_as durable_owner -c "SELECT df.cancel(
+        instance.id, 'schedule refresh test complete')
+      FROM df.instances AS instance
+      WHERE instance.label OPERATOR(pg_catalog.~~)
+            'pg_textsearch:bg:v1:%:${index_oid}:%'
+        AND instance.status OPERATOR(pg_catalog.=)
+            ANY (ARRAY['pending', 'running']::pg_catalog.text[]);" \
+        >/dev/null
+    sql_super -c "DROP TABLE public.lifecycle_refresh_docs;"
 }
 
 test_concurrent_legacy_lineage_backfill() {
@@ -2355,8 +2752,26 @@ second: $(cat "${second_output}")"
     final_lineage="$(index_lineage public.lifecycle_legacy_race_idx)"
     assert_eq "concurrent legacy writers converge on one 128-bit lineage" \
         "32" "${#final_lineage}"
-    assert_eq "concurrent legacy writers leave one managed workflow" "1" \
-        "$(current_generation_job_count "${index_oid}")"
+    assert_eq "concurrent legacy writers leave one lineage workflow" "1" \
+        "$(sql_super -c "SELECT count(*)
+          FROM df.instances AS instance
+          JOIN pg_catalog.pg_class AS relation
+            ON relation.oid = ${index_oid}
+          JOIN pg_catalog.pg_database AS database
+            ON database.datname = pg_catalog.current_database()
+          WHERE instance.label OPERATOR(pg_catalog.~~)
+                pg_catalog.format(
+                  'pg_textsearch:bg:v1:%s:%s:%s:%s:%s:%%:%s:%%',
+                  database.oid,
+                  relation.oid,
+                  coalesce(nullif(relation.reltablespace, 0),
+                           database.dattablespace),
+                  pg_catalog.pg_relation_filenode(relation.oid),
+                  relation.relowner,
+                  '${final_lineage}')
+            AND instance.submitted_by::pg_catalog.oid = relation.relowner
+            AND instance.status OPERATOR(pg_catalog.=)
+                ANY (ARRAY['pending', 'running']::pg_catalog.text[]);")"
 
     sql_as durable_owner -c "SELECT df.cancel(
         instance.id, 'legacy race test complete')
@@ -2493,22 +2908,16 @@ SQL
                 AND relation_lock.locktype = 'relation'
                 AND relation_lock.relation = ${target_oid}
                 AND relation_lock.mode = 'ShareUpdateExclusiveLock'
-                AND NOT relation_lock.granted;")" = "1" ]; then
+                AND NOT relation_lock.granted;")" = "1" ] ||
+            [ "$(sql_super -c "SELECT count(*)
+              FROM pg_catalog.pg_stat_activity
+              WHERE application_name =
+                    'lifecycle-legacy-lock-spill';")" = "0" ]; then
             break
         fi
         sleep 0.1
     done
-    assert_eq "legacy spill waits behind tracked REINDEX" "1" \
-        "$(sql_super -c "SELECT count(*)
-          FROM pg_catalog.pg_stat_activity AS activity
-          JOIN pg_catalog.pg_locks AS relation_lock
-            ON relation_lock.pid = activity.pid
-          WHERE activity.application_name = 'lifecycle-legacy-lock-spill'
-            AND relation_lock.locktype = 'relation'
-            AND relation_lock.relation = ${target_oid}
-            AND relation_lock.mode = 'ShareUpdateExclusiveLock'
-            AND NOT relation_lock.granted;")"
-    assert_eq "waiting legacy spill does not hold the private index lock" \
+    assert_eq "contended legacy spill does not hold the private index lock" \
         "0" \
         "$(sql_super -c "SELECT count(*)
           FROM pg_catalog.pg_stat_activity AS activity
@@ -3343,6 +3752,138 @@ ${malformed_error}"
     sql_super -c "DROP TABLE public.lifecycle_create_auth_docs;"
 }
 
+test_lineage_guard_name_race() {
+    local alter_output alter_pid alter_status=0 blocker_pid
+    local lineage rename_output rename_pid rename_status=0 replacement_oid
+
+    sql_as durable_owner <<'SQL' >/dev/null 2>&1
+CREATE TABLE public.lifecycle_lineage_guard_old_docs (body text);
+CREATE INDEX lifecycle_lineage_guard_idx
+    ON public.lifecycle_lineage_guard_old_docs USING btree(body);
+CREATE TABLE public.lifecycle_lineage_guard_new_docs (body text);
+CREATE INDEX lifecycle_lineage_guard_replacement_idx
+    ON public.lifecycle_lineage_guard_new_docs USING bm25(body)
+    WITH (text_config = 'english',
+          compaction = 'background',
+          compaction_schedule = '0 0 1 1 *');
+CREATE FUNCTION public.lifecycle_lineage_guard_pause()
+RETURNS event_trigger
+LANGUAGE plpgsql
+SET search_path = pg_catalog, pg_temp
+AS $body$
+BEGIN
+    IF pg_catalog.current_setting('application_name')
+           OPERATOR(pg_catalog.=) 'lifecycle-lineage-guard-alter' THEN
+        PERFORM pg_catalog.pg_advisory_xact_lock_shared(478, 10);
+    END IF;
+END
+$body$;
+SQL
+    sql_super -c "
+        CREATE EVENT TRIGGER lifecycle_lineage_guard_pause
+          ON ddl_command_start
+          WHEN TAG IN ('ALTER INDEX')
+          EXECUTE FUNCTION public.lifecycle_lineage_guard_pause();" \
+        >/dev/null
+    lineage="$(
+        index_lineage public.lifecycle_lineage_guard_replacement_idx
+    )"
+    replacement_oid="$(sql_super -c "SELECT
+        'public.lifecycle_lineage_guard_replacement_idx'::regclass::oid;")"
+
+    PGAPPNAME=lifecycle-lineage-guard-gate sql_super -c \
+        "SELECT pg_catalog.pg_advisory_lock(478, 10);
+         SELECT pg_catalog.pg_sleep(120);" \
+        >"${DATA_DIR}/lineage-guard-gate.out" 2>&1 &
+    blocker_pid=$!
+    for _ in $(seq 1 100); do
+        if [ "$(sql_super -c "SELECT pg_catalog.count(*)
+              FROM pg_catalog.pg_locks
+              WHERE locktype = 'advisory'
+                AND classid = 478
+                AND objid = 10
+                AND granted;")" = "1" ]; then
+            break
+        fi
+        sleep 0.1
+    done
+
+    alter_output="${DATA_DIR}/lineage-guard-alter.out"
+    PGAPPNAME=lifecycle-lineage-guard-alter \
+        "${PGBINDIR}/psql" -h "${SOCKET_DIR}" -p "${TEST_PORT}" \
+        -U durable_owner -d "${TEST_DB}" -qAt -v ON_ERROR_STOP=1 \
+        -c "ALTER INDEX public.lifecycle_lineage_guard_idx
+              RESET (compaction_lineage);" >"${alter_output}" 2>&1 &
+    alter_pid=$!
+    for _ in $(seq 1 100); do
+        if [ "$(sql_super -c "SELECT pg_catalog.count(*)
+              FROM pg_catalog.pg_stat_activity
+              WHERE application_name = 'lifecycle-lineage-guard-alter'
+                AND wait_event = 'advisory';")" = "1" ]; then
+            break
+        fi
+        sleep 0.1
+    done
+    assert_eq "lineage guard pauses after inspecting its target" "1" \
+        "$(sql_super -c "SELECT pg_catalog.count(*)
+          FROM pg_catalog.pg_stat_activity
+          WHERE application_name = 'lifecycle-lineage-guard-alter'
+            AND wait_event = 'advisory';")"
+
+    rename_output="${DATA_DIR}/lineage-guard-rename.out"
+    PGAPPNAME=lifecycle-lineage-guard-rename \
+        "${PGBINDIR}/psql" -h "${SOCKET_DIR}" -p "${TEST_PORT}" \
+        -U durable_owner -d "${TEST_DB}" -qAt -v ON_ERROR_STOP=1 \
+        -c "BEGIN;
+            ALTER INDEX public.lifecycle_lineage_guard_idx
+              RENAME TO lifecycle_lineage_guard_retired_idx;
+            ALTER INDEX public.lifecycle_lineage_guard_replacement_idx
+              RENAME TO lifecycle_lineage_guard_idx;
+            COMMIT;" >"${rename_output}" 2>&1 &
+    rename_pid=$!
+    for _ in $(seq 1 100); do
+        if [ "$(sql_super -c "SELECT
+              CASE
+                WHEN 'public.lifecycle_lineage_guard_idx'::regclass::oid =
+                     ${replacement_oid}
+                  THEN 1
+                ELSE 0
+              END;" 2>/dev/null || printf '0')" = "1" ] ||
+            [ "$(sql_super -c "SELECT pg_catalog.count(*)
+              FROM pg_catalog.pg_stat_activity
+              WHERE application_name = 'lifecycle-lineage-guard-rename'
+                AND wait_event_type = 'Lock';")" = "1" ]; then
+            break
+        fi
+        sleep 0.1
+    done
+
+    sql_super -c "SELECT pg_catalog.pg_terminate_backend(pid)
+      FROM pg_catalog.pg_stat_activity
+      WHERE application_name =
+            'lifecycle-lineage-guard-gate';" >/dev/null
+    wait "${blocker_pid}" || true
+    wait "${alter_pid}" || alter_status=$?
+    wait "${rename_pid}" || rename_status=$?
+    if [ "${rename_status}" -ne 0 ]; then
+        error "lineage guard name swap failed: $(cat "${rename_output}")"
+    fi
+    if [ "${alter_status}" -ne 0 ] &&
+        ! grep -Fq "compaction_lineage" "${alter_output}"; then
+        error "lineage guard failed for an unexpected reason: \
+$(cat "${alter_output}")"
+    fi
+    assert_eq "name-swapped BM25 replacement keeps its lineage" \
+        "${lineage}" \
+        "$(index_lineage public.lifecycle_lineage_guard_idx)"
+
+    sql_super -c "
+        DROP EVENT TRIGGER lifecycle_lineage_guard_pause;
+        DROP FUNCTION public.lifecycle_lineage_guard_pause();
+        DROP TABLE public.lifecycle_lineage_guard_old_docs,
+                   public.lifecycle_lineage_guard_new_docs;" >/dev/null
+}
+
 test_reindex_authorization_resolution_race() {
     local gate_pid lock_output locker_pid rename_output rename_pid
     local reindex_error reindex_pid
@@ -3698,6 +4239,8 @@ BEGIN
     ELSIF injected_fault OPERATOR(pg_catalog.=) 'cancel' THEN
         RAISE EXCEPTION 'probe query cancellation'
             USING ERRCODE = '57014';
+    ELSIF injected_fault OPERATOR(pg_catalog.=) 'gate' THEN
+        PERFORM pg_catalog.pg_advisory_xact_lock_shared(478, 11);
     END IF;
 
     INSERT INTO public.compaction_signal_audit(
@@ -3763,8 +4306,10 @@ signal_attempt_count() {
 
 test_request_queue_runtime() {
     local abort_instance cancel_error cancel_instance dedup_a_instance
-    local dedup_b_instance drop_instance failure_a_instance
-    local failure_b_instance failure_output savepoint_instance
+    local dedup_b_instance drop_instance failure_a_instance failure_b_instance
+    local failure_output lock_a_instance lock_b_instance lock_a_output
+    local lock_a_pid lock_a_status=0 lock_b_output lock_b_pid lock_b_status=0
+    local lock_gate_pid savepoint_instance
 
     sql_as durable_owner -c "
         CREATE TABLE public.queue_below_docs (id integer, body text);
@@ -3820,6 +4365,18 @@ test_request_queue_runtime() {
           ON public.queue_cancel_docs USING bm25(body)
           WITH (text_config = 'english',
                 compaction = 'background',
+                compaction_schedule = '0 0 1 1 *');
+        CREATE TABLE public.queue_lock_a_docs (id integer, body text);
+        CREATE INDEX queue_lock_a_idx
+          ON public.queue_lock_a_docs USING bm25(body)
+          WITH (text_config = 'english',
+                compaction = 'background',
+                compaction_schedule = '0 0 1 1 *');
+        CREATE TABLE public.queue_lock_b_docs (id integer, body text);
+        CREATE INDEX queue_lock_b_idx
+          ON public.queue_lock_b_docs USING bm25(body)
+          WITH (text_config = 'english',
+                compaction = 'background',
                 compaction_schedule = '0 0 1 1 *');" >/dev/null 2>&1
 
     abort_instance="$(current_generation_job_id \
@@ -3846,6 +4403,12 @@ test_request_queue_runtime() {
     cancel_instance="$(current_generation_job_id \
         "$(sql_super -c \
             "SELECT 'public.queue_cancel_idx'::regclass::oid;")")"
+    lock_a_instance="$(current_generation_job_id \
+        "$(sql_super -c \
+            "SELECT 'public.queue_lock_a_idx'::regclass::oid;")")"
+    lock_b_instance="$(current_generation_job_id \
+        "$(sql_super -c \
+            "SELECT 'public.queue_lock_b_idx'::regclass::oid;")")"
 
     install_signal_probe
 
@@ -3981,6 +4544,97 @@ SQL
         "$(sql_super -c \
             "SELECT count(*) FROM public.queue_cancel_docs;")"
 
+    reset_signal_probe
+    sql_super -c "INSERT INTO public.compaction_signal_fault
+        VALUES ('${lock_a_instance}', 'gate'),
+               ('${lock_b_instance}', 'gate');"
+    PGAPPNAME=queue-lock-gate sql_super -c \
+        "SELECT pg_catalog.pg_advisory_lock(478, 11);
+         SELECT pg_catalog.pg_sleep(120);" \
+        >"${DATA_DIR}/queue-lock-gate.out" 2>&1 &
+    lock_gate_pid=$!
+    for _ in $(seq 1 100); do
+        if [ "$(sql_super -c "SELECT pg_catalog.count(*)
+              FROM pg_catalog.pg_locks
+              WHERE locktype = 'advisory'
+                AND classid = 478
+                AND objid = 11
+                AND granted;")" = "1" ]; then
+            break
+        fi
+        sleep 0.1
+    done
+
+    lock_a_output="${DATA_DIR}/queue-lock-a.out"
+    lock_b_output="${DATA_DIR}/queue-lock-b.out"
+    PGAPPNAME=queue-lock-a \
+        "${PGBINDIR}/psql" -h "${SOCKET_DIR}" -p "${TEST_PORT}" \
+        -U durable_owner -d "${TEST_DB}" -qAt -v ON_ERROR_STOP=1 \
+        -c "BEGIN;
+            SELECT public.queue_force_spills(
+              'public.queue_lock_a_docs'::regclass,
+              'public.queue_lock_a_idx'::regclass, 9000, 2);
+            SELECT public.queue_force_spills(
+              'public.queue_lock_b_docs'::regclass,
+              'public.queue_lock_b_idx'::regclass, 10000, 2);
+            COMMIT;" >"${lock_a_output}" 2>&1 &
+    lock_a_pid=$!
+    PGAPPNAME=queue-lock-b \
+        "${PGBINDIR}/psql" -h "${SOCKET_DIR}" -p "${TEST_PORT}" \
+        -U durable_owner -d "${TEST_DB}" -qAt -v ON_ERROR_STOP=1 \
+        -c "BEGIN;
+            SELECT public.queue_force_spills(
+              'public.queue_lock_b_docs'::regclass,
+              'public.queue_lock_b_idx'::regclass, 11000, 2);
+            SELECT public.queue_force_spills(
+              'public.queue_lock_a_docs'::regclass,
+              'public.queue_lock_a_idx'::regclass, 12000, 2);
+            COMMIT;" >"${lock_b_output}" 2>&1 &
+    lock_b_pid=$!
+    for _ in $(seq 1 100); do
+        if [ "$(sql_super -c "SELECT pg_catalog.count(*)
+              FROM pg_catalog.pg_stat_activity
+              WHERE application_name IN ('queue-lock-a', 'queue-lock-b')
+                AND wait_event_type = 'Lock';")" = "2" ]; then
+            break
+        fi
+        sleep 0.1
+    done
+    assert_eq "reverse-order request flush reaches both lock waits" "2" \
+        "$(sql_super -c "SELECT pg_catalog.count(*)
+          FROM pg_catalog.pg_stat_activity
+          WHERE application_name IN ('queue-lock-a', 'queue-lock-b')
+            AND wait_event_type = 'Lock';")"
+
+    sql_super -c "SELECT pg_catalog.pg_terminate_backend(pid)
+      FROM pg_catalog.pg_stat_activity
+      WHERE application_name = 'queue-lock-gate';" >/dev/null
+    wait "${lock_gate_pid}" || true
+    wait "${lock_a_pid}" || lock_a_status=$?
+    wait "${lock_b_pid}" || lock_b_status=$?
+    if [ "${lock_a_status}" -ne 0 ] || [ "${lock_b_status}" -ne 0 ]; then
+        error "reverse-order request flush deadlocked:
+first: $(cat "${lock_a_output}")
+second: $(cat "${lock_b_output}")"
+    fi
+    if grep -Fq "deadlock detected" "${lock_a_output}" ||
+        grep -Fq "deadlock detected" "${lock_b_output}"; then
+        error "reverse-order request flush reported a caught deadlock"
+    fi
+    assert_eq "reverse-order request flush commits both writers" "80:80" \
+        "$(sql_super -c "SELECT
+            (SELECT count(*) FROM public.queue_lock_a_docs)
+            || ':' ||
+            (SELECT count(*) FROM public.queue_lock_b_docs);")"
+    assert_eq "reverse-order request flush signals both workflows twice" \
+        "2:2" \
+        "$(sql_super -c "SELECT
+            count(*) FILTER (
+              WHERE instance_id = '${lock_a_instance}') || ':' ||
+            count(*) FILTER (
+              WHERE instance_id = '${lock_b_instance}')
+          FROM public.compaction_signal_audit;")"
+
     restore_signal_probe
     sql_super -c "DROP TABLE public.queue_below_docs,
                               public.queue_abort_docs,
@@ -3990,7 +4644,9 @@ SQL
                               public.queue_drop_docs,
                               public.queue_failure_a_docs,
                               public.queue_failure_b_docs,
-                              public.queue_cancel_docs;"
+                              public.queue_cancel_docs,
+                              public.queue_lock_a_docs,
+                              public.queue_lock_b_docs;"
 }
 
 test_actor_writer_worker_identity() {
@@ -4952,6 +5608,9 @@ run_test test_alter_preflight_rejections
 run_test test_defaulted_start_arity
 run_test test_partitioned_create_activation
 run_test test_partitioned_existing_leaf_reconciliation
+run_test test_create_tracking_reentry
+run_test test_create_tracking_concurrent
+run_test test_create_tracking_table_rename
 run_test test_owner_reconciliation
 run_test test_reindex_reconciliation
 run_test test_concurrent_reindex_reconciliation
@@ -4961,6 +5620,7 @@ run_test test_partitioned_reindex_rename_reconciliation
 run_test test_reindex_tracking_reentry
 run_test test_ordinary_inheritance_reindex_scope
 run_test test_legacy_lineage_backfill
+run_test test_refresh_selects_requested_workflow
 run_test test_concurrent_legacy_lineage_backfill
 run_test test_legacy_reindex_spill_lock_order
 run_test test_internal_lock_namespace
@@ -4971,6 +5631,7 @@ run_test test_concurrent_supplied_lineage_create
 run_test test_reindex_lineage_replacement_isolation
 run_test test_reindex_authorization_ordering
 run_test test_create_authorization_ordering
+run_test test_lineage_guard_name_race
 run_test test_reindex_authorization_resolution_race
 run_test test_prior_generation_spill_adoption
 run_test test_request_queue_runtime

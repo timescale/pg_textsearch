@@ -84,7 +84,6 @@ typedef struct TpCompactionJobObjects
 	Oid	  start_function_oid;
 	Oid	  explain_function_oid;
 	Oid	  signal_function_oid;
-	Oid	  cancel_function_oid;
 	Oid	  step_function_oid;
 	Oid	  current_function_oid;
 	Oid	  instances_relation_oid;
@@ -96,7 +95,6 @@ typedef struct TpCompactionJobObjects
 	char *start_function;
 	char *explain_function;
 	char *signal_function;
-	char *cancel_function;
 	char *wait_signal_function;
 	char *wait_schedule_function;
 	char *loop_function;
@@ -693,10 +691,6 @@ tp_discover_job_objects(TpCompactionJobObjects *objects)
 			durable_oid, durable_schema, "signal", 3, signal_args);
 	objects->signal_function = tp_qualified_function_name(
 			objects->signal_function_oid);
-	objects->cancel_function_oid = tp_resolve_extension_function(
-			durable_oid, durable_schema, "cancel", 2, text_args);
-	objects->cancel_function = tp_qualified_function_name(
-			objects->cancel_function_oid);
 	objects->wait_signal_function = tp_qualified_function_name(
 			tp_resolve_extension_function(
 					durable_oid,
@@ -987,9 +981,6 @@ tp_require_owner_durable_privileges(
 			objects->explain_function);
 	tp_require_owner_function_privilege(
 			owner_oid, objects->signal_function_oid, objects->signal_function);
-	tp_require_owner_function_privilege(
-			owner_oid, objects->cancel_function_oid, objects->cancel_function);
-
 	tp_require_owner_column_privileges(
 			objects->instances_relation_oid,
 			owner_oid,
@@ -1588,6 +1579,48 @@ tp_find_family_instance(
 }
 
 static char *
+tp_find_current_family_instance(
+		const TpCompactionJobObjects *objects,
+		const TpCompactionJobTarget	 *target,
+		MemoryContext				  result_context)
+{
+	StringInfoData sql;
+	Oid			   argtypes[2] = {TEXTOID, OIDOID};
+	Datum		   values[2] =
+			{CStringGetTextDatum(target->family_prefix),
+			 ObjectIdGetDatum(target->owner_oid)};
+	char *instance_id = NULL;
+	int	  rc;
+
+	initStringInfo(&sql);
+	appendStringInfo(
+			&sql,
+			"SELECT instance.id::pg_catalog.text "
+			"FROM %s AS instance "
+			"WHERE instance.label OPERATOR(pg_catalog.~~) "
+			"($1 OPERATOR(pg_catalog.||) '%%') "
+			"AND instance.submitted_by::pg_catalog.oid "
+			"OPERATOR(pg_catalog.=) $2 "
+			"AND instance.status OPERATOR(pg_catalog.=) "
+			"ANY (ARRAY['pending', 'running']::pg_catalog.text[]) "
+			"ORDER BY instance.created_at DESC, instance.id DESC "
+			"LIMIT 1",
+			objects->instances_relation);
+	rc = SPI_execute_with_args(sql.data, 2, argtypes, values, NULL, true, 1);
+	pfree(sql.data);
+	if (rc != SPI_OK_SELECT)
+		elog(ERROR, "could not select current pg_durable instance");
+
+	if (SPI_processed > 0)
+		instance_id = tp_copy_spi_text(
+				SPI_tuptable->vals[0],
+				SPI_tuptable->tupdesc,
+				1,
+				result_context);
+	return instance_id;
+}
+
+static char *
 tp_find_legacy_family_instance(
 		const TpCompactionJobObjects *objects,
 		const TpCompactionJobTarget	 *target,
@@ -2015,79 +2048,6 @@ tp_validate_graph_as_owner(
 	pfree(explanation);
 }
 
-static void
-tp_cancel_instance(
-		const TpCompactionJobObjects *objects, const char *instance_id)
-{
-	StringInfoData sql;
-	Oid			   argtypes[2] = {TEXTOID, TEXTOID};
-	Datum		   values[2] =
-			{CStringGetTextDatum(instance_id),
-			 CStringGetTextDatum("migrated to lineage-scoped workflow")};
-	int rc;
-
-	initStringInfo(&sql);
-	appendStringInfo(
-			&sql,
-			"SELECT %s($1::pg_catalog.text, $2::pg_catalog.text)",
-			objects->cancel_function);
-	rc = SPI_execute_with_args(sql.data, 2, argtypes, values, NULL, false, 1);
-	pfree(sql.data);
-	if (rc != SPI_OK_SELECT || SPI_processed != 1)
-		elog(ERROR, "could not retire legacy pg_durable compaction workflow");
-}
-
-static void
-tp_cancel_other_active_family_instances(
-		const TpCompactionJobObjects *objects,
-		const TpCompactionJobTarget	 *target,
-		const char					 *keep_instance_id)
-{
-	StringInfoData sql;
-	Oid			   argtypes[2] = {TEXTOID, OIDOID};
-	Datum		   values[2] =
-			{CStringGetTextDatum(target->family_prefix),
-			 ObjectIdGetDatum(target->owner_oid)};
-	List	 *instance_ids = NIL;
-	ListCell *lc;
-	int		  rc;
-
-	initStringInfo(&sql);
-	appendStringInfo(
-			&sql,
-			"SELECT instance.id::pg_catalog.text "
-			"FROM %s AS instance "
-			"WHERE instance.label OPERATOR(pg_catalog.~~) "
-			"($1 OPERATOR(pg_catalog.||) '%%') "
-			"AND instance.submitted_by::pg_catalog.oid "
-			"OPERATOR(pg_catalog.=) $2 "
-			"AND instance.status OPERATOR(pg_catalog.=) "
-			"ANY (ARRAY['pending', 'running']::pg_catalog.text[])",
-			objects->instances_relation);
-	rc = SPI_execute_with_args(sql.data, 2, argtypes, values, NULL, true, 0);
-	pfree(sql.data);
-	if (rc != SPI_OK_SELECT)
-		elog(ERROR, "could not search active pg_durable instance history");
-
-	for (uint64 i = 0; i < SPI_processed; i++)
-	{
-		char *instance_id = tp_copy_spi_text(
-				SPI_tuptable->vals[i],
-				SPI_tuptable->tupdesc,
-				1,
-				CurrentMemoryContext);
-
-		if (strcmp(instance_id, keep_instance_id) == 0)
-			pfree(instance_id);
-		else
-			instance_ids = lappend(instance_ids, instance_id);
-	}
-
-	foreach (lc, instance_ids)
-		tp_cancel_instance(objects, lfirst(lc));
-	list_free_deep(instance_ids);
-}
-
 static char *
 tp_reconcile_job(
 		const TpCompactionJobObjects *objects,
@@ -2096,18 +2056,28 @@ tp_reconcile_job(
 		MemoryContext				  result_context)
 {
 	char *instance_id;
-	char *schedule = NULL;
-	char *label	   = NULL;
+	char *current_instance_id = NULL;
+	char *schedule			  = NULL;
+	char *label				  = NULL;
+	bool  publish_new		  = false;
 
 	if (refresh_default)
 	{
 		label = tp_build_label(target, target->schedule);
 		instance_id =
 				tp_find_exact_instance(objects, target, label, result_context);
-		if (instance_id == NULL)
+		current_instance_id = tp_find_current_family_instance(
+				objects, target, result_context);
+		if (instance_id == NULL || current_instance_id == NULL ||
+			strcmp(instance_id, current_instance_id) != 0)
+		{
+			if (instance_id != NULL)
+				pfree(instance_id);
 			instance_id = tp_start_job(
 					objects, target, target->schedule, label, result_context);
-		tp_cancel_other_active_family_instances(objects, target, instance_id);
+		}
+		if (current_instance_id != NULL)
+			pfree(current_instance_id);
 		pfree(label);
 		return instance_id;
 	}
@@ -2116,52 +2086,67 @@ tp_reconcile_job(
 			objects, target, false, &schedule, result_context);
 	if (instance_id != NULL)
 	{
-		pfree(schedule);
-		return instance_id;
-	}
-
-	instance_id = tp_find_family_instance(
-			objects, target, true, &schedule, result_context);
-	if (instance_id == NULL)
-	{
-		if (target->lineage_backfilled)
+		current_instance_id = tp_find_current_family_instance(
+				objects, target, result_context);
+		if (current_instance_id != NULL &&
+			strcmp(instance_id, current_instance_id) == 0)
 		{
-			instance_id = tp_find_legacy_family_instance(
-					objects, target, false, &schedule, result_context);
-			if (instance_id != NULL)
-			{
-				tp_cancel_instance(objects, instance_id);
-				pfree(instance_id);
-				instance_id = NULL;
-			}
-			else
-				instance_id = tp_find_legacy_family_instance(
-						objects, target, true, &schedule, result_context);
+			pfree(current_instance_id);
+			pfree(schedule);
+			return instance_id;
 		}
-
-		if (instance_id != NULL)
-			pfree(instance_id);
-		if (schedule == NULL)
-			schedule = tp_find_prior_generation_schedule(
-					objects, target, result_context);
-		if (schedule == NULL && target->lineage_backfilled)
-			schedule = MemoryContextStrdup(result_context, target->schedule);
-		if (schedule == NULL)
-			ereport(ERROR,
-					(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
-					 errmsg("background compaction for index \"%s\" requires "
-							"explicit adoption",
-							target->index_name)));
+		if (current_instance_id != NULL)
+			pfree(current_instance_id);
+		pfree(instance_id);
+		instance_id = NULL;
+		publish_new = true;
 	}
 	else
-		pfree(instance_id);
+	{
+		instance_id = tp_find_family_instance(
+				objects, target, true, &schedule, result_context);
+		if (instance_id == NULL)
+		{
+			if (target->lineage_backfilled)
+			{
+				instance_id = tp_find_legacy_family_instance(
+						objects, target, false, &schedule, result_context);
+				if (instance_id == NULL)
+					instance_id = tp_find_legacy_family_instance(
+							objects, target, true, &schedule, result_context);
+			}
+
+			if (instance_id != NULL)
+				pfree(instance_id);
+			if (schedule == NULL)
+				schedule = tp_find_prior_generation_schedule(
+						objects, target, result_context);
+			if (schedule == NULL && target->lineage_backfilled)
+				schedule =
+						MemoryContextStrdup(result_context, target->schedule);
+			if (schedule == NULL)
+				ereport(ERROR,
+						(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
+						 errmsg("background compaction for index \"%s\" "
+								"requires explicit adoption",
+								target->index_name)));
+		}
+		else
+			pfree(instance_id);
+	}
 
 	label = tp_build_label(target, schedule);
-	instance_id =
-			tp_find_exact_instance(objects, target, label, result_context);
-	if (instance_id == NULL)
+	if (publish_new)
 		instance_id =
 				tp_start_job(objects, target, schedule, label, result_context);
+	else
+	{
+		instance_id =
+				tp_find_exact_instance(objects, target, label, result_context);
+		if (instance_id == NULL)
+			instance_id = tp_start_job(
+					objects, target, schedule, label, result_context);
+	}
 	pfree(label);
 	pfree(schedule);
 	return instance_id;
