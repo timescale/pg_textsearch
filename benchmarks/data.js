@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789198087044,
+  "lastUpdate": 1789198092066,
   "repoUrl": "https://github.com/timescale/pg_textsearch",
   "entries": {
     "cranfield Benchmarks": [
@@ -174916,6 +174916,93 @@ window.BENCHMARK_DATA = {
           {
             "name": "wikipedia_insert (0 docs) - Weighted Throughput (avg ms/query)",
             "value": 1,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia_insert (0 docs) - Index Size",
+            "value": 214.45,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tjgreen@gmail.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "3c77689e5186ada21d79312066b01661f5e7fa7f",
+          "message": "docs: streamline user and developer documentation (#483)\n\nStreamline the README and developer guides, add a source-accurate\narchitecture guide and complete release history, and replace the stale\ntest guide.\n\nAlso remove superseded docs, correct examples and operational guidance,\ninclude the canonical guides in source packages, and stop version bumps\nfrom editing the README.",
+          "timestamp": "2026-09-10T03:52:26Z",
+          "url": "https://github.com/timescale/pg_textsearch/commit/3c77689e5186ada21d79312066b01661f5e7fa7f"
+        },
+        "date": 1789198091322,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "wikipedia_insert (0 docs) - Index Build Time",
+            "value": 1.167,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia_insert (0 docs) - Insert Time",
+            "value": 22311.948,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia_insert (0 docs) - 1 Token Query (p50)",
+            "value": 0.27,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia_insert (0 docs) - 2 Token Query (p50)",
+            "value": 0.47,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia_insert (0 docs) - 3 Token Query (p50)",
+            "value": 0.67,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia_insert (0 docs) - 4 Token Query (p50)",
+            "value": 0.81,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia_insert (0 docs) - 5 Token Query (p50)",
+            "value": 0.93,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia_insert (0 docs) - 6 Token Query (p50)",
+            "value": 1.04,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia_insert (0 docs) - 7 Token Query (p50)",
+            "value": 1.18,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia_insert (0 docs) - 8+ Token Query (p50)",
+            "value": 1.73,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia_insert (0 docs) - Weighted Latency (p50, ms)",
+            "value": 0.75,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia_insert (0 docs) - Weighted Throughput (avg ms/query)",
+            "value": 0.76,
             "unit": "ms"
           },
           {
