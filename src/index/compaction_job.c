@@ -405,14 +405,15 @@ tp_extension_owner(Oid extension_oid)
 }
 
 static bool
-tp_label_has_lineage(const char *label, const char *lineage)
+tp_label_has_lineage(
+		const char *label, const char *lineage, Oid heap_oid, Oid owner_oid)
 {
 	unsigned int database_oid;
 	unsigned int index_oid;
 	unsigned int tablespace_oid;
 	unsigned int relfilenumber;
-	unsigned int owner_oid;
-	unsigned int heap_oid;
+	unsigned int label_owner_oid;
+	unsigned int label_heap_oid;
 	char		 parsed[TP_COMPACTION_LINEAGE_LENGTH + 1];
 	int			 consumed = 0;
 
@@ -422,16 +423,18 @@ tp_label_has_lineage(const char *label, const char *lineage)
 				  &index_oid,
 				  &tablespace_oid,
 				  &relfilenumber,
-				  &owner_oid,
-				  &heap_oid,
+				  &label_owner_oid,
+				  &label_heap_oid,
 				  parsed,
 				  &consumed) == 7 &&
 		   consumed > 0 && database_oid == MyDatabaseId &&
+		   label_owner_oid == owner_oid && label_heap_oid == heap_oid &&
 		   strcmp(parsed, lineage) == 0;
 }
 
 bool
-tp_compaction_job_lineage_exists(const char *lineage)
+tp_compaction_job_lineage_exists(
+		const char *lineage, Oid heap_oid, Oid owner_oid)
 {
 	Oid			   durable_oid;
 	Oid			   durable_owner;
@@ -512,7 +515,7 @@ tp_compaction_job_lineage_exists(const char *lineage)
 					1,
 					CurrentMemoryContext);
 
-			found = tp_label_has_lineage(label, lineage);
+			found = tp_label_has_lineage(label, lineage, heap_oid, owner_oid);
 			pfree(label);
 			if (found)
 				break;

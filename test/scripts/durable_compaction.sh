@@ -2056,6 +2056,154 @@ SQL
                              public.lifecycle_legacy_reindex_docs;"
 }
 
+test_concurrent_legacy_lineage_backfill() {
+    local final_lineage first_output first_pid first_status=0
+    local gate_pid index_oid legacy_instance
+    local second_output second_pid second_status=0
+
+    first_output="${DATA_DIR}/legacy-backfill-first.out"
+    second_output="${DATA_DIR}/legacy-backfill-second.out"
+    sql_as durable_owner <<'SQL' >/dev/null 2>&1
+CREATE TABLE public.lifecycle_legacy_race_docs
+    (id integer, body text);
+CREATE INDEX lifecycle_legacy_race_idx
+    ON public.lifecycle_legacy_race_docs USING bm25(body)
+    WITH (text_config = 'english',
+          compaction = 'background',
+          compaction_schedule = '0 0 1 1 *');
+SQL
+    index_oid="$(sql_super -c "SELECT
+        'public.lifecycle_legacy_race_idx'::regclass::oid;")"
+    legacy_instance="$(current_generation_job_id "${index_oid}")"
+    wait_for_signal_node "${legacy_instance}" 30
+    sql_super -c "UPDATE df.instances AS instance
+      SET label = pg_catalog.format(
+        'pg_textsearch:bg:v1:%s:%s:%s:%s:%s:%s',
+        database.oid,
+        relation.oid,
+        coalesce(nullif(relation.reltablespace, 0),
+                 database.dattablespace),
+        pg_catalog.pg_relation_filenode(relation.oid),
+        relation.relowner,
+        pg_catalog.encode(
+          pg_catalog.convert_to('0 0 1 1 *', 'UTF8'), 'hex'))
+      FROM pg_catalog.pg_class AS relation,
+           pg_catalog.pg_database AS database
+      WHERE instance.id = '${legacy_instance}'
+        AND relation.oid = ${index_oid}
+        AND database.datname = pg_catalog.current_database();"
+    remove_index_lineage public.lifecycle_legacy_race_idx
+
+    PGAPPNAME=lifecycle-legacy-race-gate sql_super -c \
+        "SELECT pg_catalog.pg_advisory_lock(478, 6);
+         SELECT pg_catalog.pg_sleep(120);" \
+        >"${DATA_DIR}/legacy-backfill-gate.out" 2>&1 &
+    gate_pid=$!
+    for _ in $(seq 1 100); do
+        if [ "$(sql_super -c "SELECT pg_catalog.count(*)
+              FROM pg_catalog.pg_locks
+              WHERE locktype = 'advisory'
+                AND classid = 478
+                AND objid = 6
+                AND granted;")" = "1" ]; then
+            break
+        fi
+        sleep 0.1
+    done
+
+    PGAPPNAME=lifecycle-legacy-race-first \
+        "${PGBINDIR}/psql" -h "${SOCKET_DIR}" -p "${TEST_PORT}" \
+        -U durable_owner -d "${TEST_DB}" -qAt -v ON_ERROR_STOP=1 \
+        -c "BEGIN;
+            INSERT INTO public.lifecycle_legacy_race_docs
+            SELECT 1000 + document_number,
+                   pg_catalog.format(
+                     'first writer document %s filler', document_number)
+            FROM generate_series(1, 20) AS document_number;
+            SELECT bm25_spill_index(
+              'public.lifecycle_legacy_race_idx');
+            INSERT INTO public.lifecycle_legacy_race_docs
+            SELECT 2000 + document_number,
+                   pg_catalog.format(
+                     'first writer second %s filler', document_number)
+            FROM generate_series(1, 20) AS document_number;
+            SELECT bm25_spill_index(
+              'public.lifecycle_legacy_race_idx');
+            SELECT pg_catalog.pg_advisory_xact_lock_shared(478, 6);
+            COMMIT;" >"${first_output}" 2>&1 &
+    first_pid=$!
+    PGAPPNAME=lifecycle-legacy-race-second \
+        "${PGBINDIR}/psql" -h "${SOCKET_DIR}" -p "${TEST_PORT}" \
+        -U durable_owner -d "${TEST_DB}" -qAt -v ON_ERROR_STOP=1 \
+        -c "BEGIN;
+            INSERT INTO public.lifecycle_legacy_race_docs
+            SELECT 3000 + document_number,
+                   pg_catalog.format(
+                     'second writer document %s filler', document_number)
+            FROM generate_series(1, 20) AS document_number;
+            SELECT bm25_spill_index(
+              'public.lifecycle_legacy_race_idx');
+            INSERT INTO public.lifecycle_legacy_race_docs
+            SELECT 4000 + document_number,
+                   pg_catalog.format(
+                     'second writer second %s filler', document_number)
+            FROM generate_series(1, 20) AS document_number;
+            SELECT bm25_spill_index(
+              'public.lifecycle_legacy_race_idx');
+            SELECT pg_catalog.pg_advisory_xact_lock_shared(478, 6);
+            COMMIT;" >"${second_output}" 2>&1 &
+    second_pid=$!
+    for _ in $(seq 1 100); do
+        if [ "$(sql_super -c "SELECT pg_catalog.count(*)
+              FROM pg_catalog.pg_stat_activity
+              WHERE application_name IN (
+                'lifecycle-legacy-race-first',
+                'lifecycle-legacy-race-second')
+                AND wait_event = 'advisory';")" = "2" ]; then
+            break
+        fi
+        sleep 0.1
+    done
+    assert_eq "concurrent legacy writers reach the commit gate" "2" \
+        "$(sql_super -c "SELECT pg_catalog.count(*)
+          FROM pg_catalog.pg_stat_activity
+          WHERE application_name IN (
+            'lifecycle-legacy-race-first',
+            'lifecycle-legacy-race-second')
+            AND wait_event = 'advisory';")"
+
+    sql_super -c "SELECT pg_catalog.pg_terminate_backend(pid)
+      FROM pg_catalog.pg_stat_activity
+      WHERE application_name =
+            'lifecycle-legacy-race-gate';" >/dev/null
+    wait "${gate_pid}" || true
+    wait "${first_pid}" || first_status=$?
+    wait "${second_pid}" || second_status=$?
+    if [ "${first_status}" -ne 0 ] || [ "${second_status}" -ne 0 ]; then
+        error "concurrent legacy backfill failed:
+first: $(cat "${first_output}")
+second: $(cat "${second_output}")"
+    fi
+    assert_eq "both concurrent legacy writers commit" "80" \
+        "$(sql_super -c "SELECT count(*)
+          FROM public.lifecycle_legacy_race_docs;")"
+    final_lineage="$(index_lineage public.lifecycle_legacy_race_idx)"
+    assert_eq "concurrent legacy writers converge on one 128-bit lineage" \
+        "32" "${#final_lineage}"
+    assert_eq "concurrent legacy writers leave one managed workflow" "1" \
+        "$(current_generation_job_count "${index_oid}")"
+
+    sql_as durable_owner -c "SELECT df.cancel(
+        instance.id, 'legacy race test complete')
+      FROM df.instances AS instance
+      WHERE instance.label OPERATOR(pg_catalog.~~)
+            'pg_textsearch:bg:v1:%:${index_oid}:%'
+        AND instance.status OPERATOR(pg_catalog.=)
+            ANY (ARRAY['pending', 'running']::pg_catalog.text[]);" \
+        >/dev/null
+    sql_super -c "DROP TABLE public.lifecycle_legacy_race_docs;"
+}
+
 test_lineage_ddl_guards() {
     local duplicate_error lineage replay_error reset_error set_error
 
@@ -2142,6 +2290,145 @@ ${duplicate_error}"
 
     sql_super -c "DROP TABLE public.lifecycle_lineage_source_docs,
                              public.lifecycle_lineage_duplicate_docs;"
+}
+
+test_concurrent_supplied_lineage_create() {
+    local first_output first_pid first_status=0 gate_pid
+    local second_output second_pid second_status=0 successes
+    local supplied_lineage=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+
+    first_output="${DATA_DIR}/lineage-create-first.out"
+    second_output="${DATA_DIR}/lineage-create-second.out"
+    sql_as durable_owner <<'SQL' >/dev/null 2>&1
+CREATE FUNCTION public.lifecycle_lineage_create_pause(value text)
+RETURNS text
+LANGUAGE plpgsql
+IMMUTABLE
+SET search_path = pg_catalog, pg_temp
+AS $body$
+BEGIN
+    PERFORM pg_catalog.pg_advisory_xact_lock_shared(478, 7);
+    RETURN value;
+END
+$body$;
+
+CREATE TABLE public.lifecycle_lineage_create_docs (body text);
+INSERT INTO public.lifecycle_lineage_create_docs VALUES ('one'), ('two');
+SQL
+
+    PGAPPNAME=lifecycle-lineage-create-gate sql_super -c \
+        "SELECT pg_catalog.pg_advisory_lock(478, 7);
+         SELECT pg_catalog.pg_sleep(120);" \
+        >"${DATA_DIR}/lineage-create-gate.out" 2>&1 &
+    gate_pid=$!
+    for _ in $(seq 1 100); do
+        if [ "$(sql_super -c "SELECT pg_catalog.count(*)
+              FROM pg_catalog.pg_locks
+              WHERE locktype = 'advisory'
+                AND classid = 478
+                AND objid = 7
+                AND granted;")" = "1" ]; then
+            break
+        fi
+        sleep 0.1
+    done
+
+    PGAPPNAME=lifecycle-lineage-create-first \
+        "${PGBINDIR}/psql" -h "${SOCKET_DIR}" -p "${TEST_PORT}" \
+        -U durable_owner -d "${TEST_DB}" -qAt -v ON_ERROR_STOP=1 \
+        -c "CREATE INDEX lifecycle_lineage_create_first_idx
+            ON public.lifecycle_lineage_create_docs
+            USING bm25 (
+              public.lifecycle_lineage_create_pause(body))
+            WITH (text_config = 'english',
+                  compaction = 'background',
+                  compaction_lineage = '${supplied_lineage}');" \
+        >"${first_output}" 2>&1 &
+    first_pid=$!
+    PGAPPNAME=lifecycle-lineage-create-second \
+        "${PGBINDIR}/psql" -h "${SOCKET_DIR}" -p "${TEST_PORT}" \
+        -U durable_owner -d "${TEST_DB}" -qAt -v ON_ERROR_STOP=1 \
+        -c "CREATE INDEX lifecycle_lineage_create_second_idx
+            ON public.lifecycle_lineage_create_docs
+            USING bm25 (
+              public.lifecycle_lineage_create_pause(body))
+            WITH (text_config = 'english',
+                  compaction = 'background',
+                  compaction_lineage = '${supplied_lineage}');" \
+        >"${second_output}" 2>&1 &
+    second_pid=$!
+    for _ in $(seq 1 100); do
+        if [ "$(sql_super -c "SELECT pg_catalog.count(*)
+              FROM pg_catalog.pg_stat_activity
+              WHERE application_name IN (
+                'lifecycle-lineage-create-first',
+                'lifecycle-lineage-create-second')
+                AND wait_event = 'advisory';")" = "2" ]; then
+            break
+        fi
+        sleep 0.1
+    done
+    assert_eq "concurrent lineage CREATE reaches serialization gates" "2" \
+        "$(sql_super -c "SELECT pg_catalog.count(*)
+          FROM pg_catalog.pg_stat_activity
+          WHERE application_name IN (
+            'lifecycle-lineage-create-first',
+            'lifecycle-lineage-create-second')
+            AND wait_event = 'advisory';")"
+
+    sql_super -c "SELECT pg_catalog.pg_terminate_backend(pid)
+      FROM pg_catalog.pg_stat_activity
+      WHERE application_name =
+            'lifecycle-lineage-create-gate';" >/dev/null
+    wait "${gate_pid}" || true
+    wait "${first_pid}" || first_status=$?
+    wait "${second_pid}" || second_status=$?
+    successes=0
+    if [ "${first_status}" -eq 0 ]; then
+        successes=$((successes + 1))
+    elif ! grep -Fq "background compaction lineage is already in use" \
+        "${first_output}"; then
+        error "first concurrent CREATE failed unexpectedly: \
+$(cat "${first_output}")"
+    fi
+    if [ "${second_status}" -eq 0 ]; then
+        successes=$((successes + 1))
+    elif ! grep -Fq "background compaction lineage is already in use" \
+        "${second_output}"; then
+        error "second concurrent CREATE failed unexpectedly: \
+$(cat "${second_output}")"
+    fi
+    assert_eq "one concurrent same-heap lineage CREATE succeeds" "1" \
+        "${successes}"
+    assert_eq "same-heap lineage remains unique after concurrent CREATE" \
+        "1" \
+        "$(sql_super -c "SELECT count(*)
+          FROM pg_catalog.pg_class AS relation
+          JOIN pg_catalog.pg_index AS index_catalog
+            ON index_catalog.indexrelid = relation.oid
+          CROSS JOIN LATERAL
+            pg_catalog.unnest(relation.reloptions) AS option
+          WHERE index_catalog.indrelid =
+                'public.lifecycle_lineage_create_docs'::regclass
+            AND option OPERATOR(pg_catalog.=)
+                'compaction_lineage=${supplied_lineage}';")"
+    assert_eq "concurrent same-heap CREATE leaves one workflow" "1" \
+        "$(sql_super -c "SELECT count(*)
+          FROM df.instances AS instance
+          JOIN pg_catalog.pg_class AS relation
+            ON instance.label OPERATOR(pg_catalog.~~)
+               ('pg_textsearch:bg:v1:%:' ||
+                relation.oid::pg_catalog.text || ':%')
+          JOIN pg_catalog.pg_index AS index_catalog
+            ON index_catalog.indexrelid = relation.oid
+          WHERE index_catalog.indrelid =
+                'public.lifecycle_lineage_create_docs'::regclass
+            AND instance.status OPERATOR(pg_catalog.=)
+                ANY (ARRAY['pending', 'running']::pg_catalog.text[]);")"
+
+    sql_super -c "DROP TABLE public.lifecycle_lineage_create_docs;
+                   DROP FUNCTION
+                     public.lifecycle_lineage_create_pause(text);"
 }
 
 test_reindex_lineage_replacement_isolation() {
@@ -2408,6 +2695,128 @@ ${partition_error}"
 
     sql_super -c "DROP TABLE public.lifecycle_auth_docs,
                              public.lifecycle_auth_partitioned_docs;"
+}
+
+test_reindex_authorization_resolution_race() {
+    local gate_pid lock_output locker_pid rename_output rename_pid
+    local reindex_error reindex_pid
+
+    lock_output="${DATA_DIR}/reindex-auth-race-lock.out"
+    rename_output="${DATA_DIR}/reindex-auth-race-rename.out"
+    sql_as durable_owner <<'SQL' >/dev/null 2>&1
+CREATE TABLE public.lifecycle_auth_race_old_docs (body text);
+CREATE INDEX lifecycle_auth_race_idx
+    ON public.lifecycle_auth_race_old_docs USING bm25(body)
+    WITH (text_config = 'english',
+          compaction = 'background',
+          compaction_schedule = '0 0 1 1 *');
+CREATE TABLE public.lifecycle_auth_race_new_docs (body text);
+CREATE INDEX lifecycle_auth_race_replacement_idx
+    ON public.lifecycle_auth_race_new_docs USING bm25(body)
+    WITH (text_config = 'english',
+          compaction = 'background',
+          compaction_schedule = '0 0 1 1 *');
+GRANT MAINTAIN ON public.lifecycle_auth_race_old_docs TO durable_writer;
+SQL
+
+    PGAPPNAME=lifecycle-auth-race-new-lock sql_as durable_owner -c \
+        "BEGIN;
+         LOCK TABLE public.lifecycle_auth_race_new_docs IN SHARE MODE;
+         SELECT pg_catalog.pg_sleep(120);" >"${lock_output}" 2>&1 &
+    locker_pid=$!
+    PGAPPNAME=lifecycle-auth-race-gate sql_super -c \
+        "SELECT pg_catalog.pg_advisory_lock(478, 5);
+         SELECT pg_catalog.pg_sleep(120);" >"${lock_output}.gate" 2>&1 &
+    gate_pid=$!
+    for _ in $(seq 1 100); do
+        if [ "$(sql_super -c "SELECT pg_catalog.count(*)
+              FROM pg_catalog.pg_locks
+              WHERE locktype = 'advisory'
+                AND classid = 478
+                AND objid = 5
+                AND granted;")" = "1" ] &&
+            [ "$(sql_super -c "SELECT pg_catalog.count(*)
+              FROM pg_catalog.pg_locks
+              WHERE relation =
+                    'public.lifecycle_auth_race_new_docs'::regclass
+                AND mode = 'ShareLock'
+                AND granted;")" = "1" ]; then
+            break
+        fi
+        sleep 0.1
+    done
+
+    PGAPPNAME=lifecycle-auth-race-rename sql_as durable_owner -c \
+        "BEGIN;
+         LOCK TABLE public.lifecycle_auth_race_old_docs
+           IN ACCESS EXCLUSIVE MODE;
+         SELECT pg_catalog.pg_advisory_lock(478, 5);
+         ALTER INDEX public.lifecycle_auth_race_idx
+           RENAME TO lifecycle_auth_race_retired_idx;
+         ALTER INDEX public.lifecycle_auth_race_replacement_idx
+           RENAME TO lifecycle_auth_race_idx;
+         COMMIT;" >"${rename_output}" 2>&1 &
+    rename_pid=$!
+    for _ in $(seq 1 100); do
+        if [ "$(sql_super -c "SELECT pg_catalog.count(*)
+              FROM pg_catalog.pg_locks
+              WHERE relation =
+                    'public.lifecycle_auth_race_old_docs'::regclass
+                AND mode = 'AccessExclusiveLock'
+                AND granted;")" = "1" ]; then
+            break
+        fi
+        sleep 0.1
+    done
+
+    PGAPPNAME=lifecycle-auth-race-reindex \
+        "${PGBINDIR}/psql" -h "${SOCKET_DIR}" -p "${TEST_PORT}" \
+        -U durable_writer -d "${TEST_DB}" -qAt -v ON_ERROR_STOP=1 \
+        -c "SET statement_timeout = '5s';
+            REINDEX INDEX CONCURRENTLY
+              public.lifecycle_auth_race_idx;" \
+        >"${lock_output}.reindex" 2>&1 &
+    reindex_pid=$!
+    for _ in $(seq 1 100); do
+        if [ "$(sql_super -c "SELECT pg_catalog.count(*)
+              FROM pg_catalog.pg_stat_activity
+              WHERE application_name = 'lifecycle-auth-race-reindex'
+                AND wait_event_type = 'Lock';")" = "1" ]; then
+            break
+        fi
+        sleep 0.1
+    done
+    assert_eq "authorization race reaches the original heap lock" "1" \
+        "$(sql_super -c "SELECT pg_catalog.count(*)
+          FROM pg_catalog.pg_stat_activity
+          WHERE application_name = 'lifecycle-auth-race-reindex'
+            AND wait_event_type = 'Lock';")"
+
+    sql_super -c "SELECT pg_catalog.pg_terminate_backend(pid)
+      FROM pg_catalog.pg_stat_activity
+      WHERE application_name = 'lifecycle-auth-race-gate';" >/dev/null
+    wait "${gate_pid}" || true
+    if ! wait "${rename_pid}"; then
+        error "authorization race rename failed: $(cat "${rename_output}")"
+    fi
+    if wait "${reindex_pid}"; then
+        error "authorization race REINDEX unexpectedly succeeded"
+    fi
+    reindex_error="$(cat "${lock_output}.reindex")"
+    if ! grep -Fq "permission denied for index lifecycle_auth_race_idx" \
+        <<<"${reindex_error}"; then
+        error "authorization followed a stale relation after rename: \
+${reindex_error}"
+    fi
+    log "PASS: REINDEX authorizes the relation resolved under lock"
+
+    sql_super -c "SELECT pg_catalog.pg_terminate_backend(pid)
+      FROM pg_catalog.pg_stat_activity
+      WHERE application_name =
+            'lifecycle-auth-race-new-lock';" >/dev/null
+    wait "${locker_pid}" || true
+    sql_super -c "DROP TABLE public.lifecycle_auth_race_old_docs,
+                             public.lifecycle_auth_race_new_docs;"
 }
 
 test_prior_generation_spill_adoption() {
@@ -3650,8 +4059,8 @@ SQL
 }
 
 test_rollback_in_fresh_database() {
-    local alter_error dump_file dump_lineage nologin_error restored_lineage
-    local restore_output
+    local alter_error dump_file dump_lineage nologin_error
+    local partition_lineage restore_output restored_lineage
 
     dump_file="${DATA_DIR}/lineage-dump.sql"
     sql_as durable_owner -c "
@@ -3660,11 +4069,43 @@ test_rollback_in_fresh_database() {
           ON public.lifecycle_dump_docs USING bm25(body)
           WITH (text_config = 'english',
                 compaction = 'background',
+                compaction_schedule = '0 0 1 1 *');
+        CREATE TABLE public.lifecycle_dump_partitioned_docs
+          (id integer, body text)
+          PARTITION BY RANGE (id);
+        CREATE TABLE public.lifecycle_dump_partitioned_low
+          PARTITION OF public.lifecycle_dump_partitioned_docs
+          FOR VALUES FROM (0) TO (100);
+        CREATE TABLE public.lifecycle_dump_partitioned_high
+          PARTITION OF public.lifecycle_dump_partitioned_docs
+          FOR VALUES FROM (100) TO (200);
+        CREATE INDEX lifecycle_dump_partitioned_idx
+          ON public.lifecycle_dump_partitioned_docs USING bm25(body)
+          WITH (text_config = 'english',
+                compaction = 'background',
                 compaction_schedule = '0 0 1 1 *');" >/dev/null 2>&1
     dump_lineage="$(index_lineage public.lifecycle_dump_idx)"
+    partition_lineage="$(
+        index_lineage public.lifecycle_dump_partitioned_idx
+    )"
+    assert_eq "partitioned source indexes share one lineage" "1" \
+        "$(sql_super -c "SELECT count(DISTINCT pg_catalog.substr(
+            option, pg_catalog.length('compaction_lineage=') + 1))
+          FROM pg_catalog.pg_inherits AS inheritance
+          JOIN pg_catalog.pg_class AS relation
+            ON relation.oid = inheritance.inhrelid
+          CROSS JOIN LATERAL
+            pg_catalog.unnest(relation.reloptions) AS option
+          WHERE inheritance.inhparent =
+                'public.lifecycle_dump_partitioned_idx'::regclass
+            AND option OPERATOR(pg_catalog.~~)
+                'compaction_lineage=%';")"
     "${PGBINDIR}/pg_dump" -h "${SOCKET_DIR}" -p "${TEST_PORT}" \
         -U durable_owner -d "${TEST_DB}" --schema-only --no-owner \
-        --table=public.lifecycle_dump_docs >"${dump_file}"
+        --table=public.lifecycle_dump_docs \
+        --table=public.lifecycle_dump_partitioned_docs \
+        --table=public.lifecycle_dump_partitioned_low \
+        --table=public.lifecycle_dump_partitioned_high >"${dump_file}"
     if ! grep -Fq "compaction_lineage" "${dump_file}"; then
         error "pg_dump omitted the managed lineage reloption"
     fi
@@ -3779,8 +4220,39 @@ ${restore_output}"
     restored_lineage="$(index_lineage public.lifecycle_dump_idx)"
     assert_eq "pg_dump restore preserves a fresh-database lineage" \
         "${dump_lineage}" "${restored_lineage}"
+    assert_eq "partitioned pg_dump restore preserves shared lineage" \
+        "${partition_lineage}" \
+        "$(index_lineage public.lifecycle_dump_partitioned_idx)"
+    assert_eq "partitioned restore keeps one lineage across leaf heaps" "1" \
+        "$(sql_super -c "SELECT count(DISTINCT pg_catalog.substr(
+            option, pg_catalog.length('compaction_lineage=') + 1))
+          FROM pg_catalog.pg_inherits AS inheritance
+          JOIN pg_catalog.pg_class AS relation
+            ON relation.oid = inheritance.inhrelid
+          CROSS JOIN LATERAL
+            pg_catalog.unnest(relation.reloptions) AS option
+          WHERE inheritance.inhparent =
+                'public.lifecycle_dump_partitioned_idx'::regclass
+            AND option OPERATOR(pg_catalog.~~)
+                'compaction_lineage=%';")"
+    assert_eq "partitioned restore activates every physical leaf" "2" \
+        "$(sql_super -c "SELECT count(*)
+          FROM pg_catalog.pg_inherits AS inheritance
+          JOIN pg_catalog.pg_class AS relation
+            ON relation.oid = inheritance.inhrelid
+          WHERE inheritance.inhparent =
+                'public.lifecycle_dump_partitioned_idx'::regclass
+            AND relation.relkind = 'i'
+            AND EXISTS (
+              SELECT 1 FROM df.instances AS instance
+              WHERE instance.label OPERATOR(pg_catalog.~~)
+                    ('pg_textsearch:bg:v1:%:' ||
+                     relation.oid::pg_catalog.text || ':%')
+                AND instance.status OPERATOR(pg_catalog.=)
+                    ANY (ARRAY['pending', 'running']::pg_catalog.text[]));")"
     sql_as durable_owner -c \
-        "DROP TABLE public.lifecycle_dump_docs;" >/dev/null
+        "DROP TABLE public.lifecycle_dump_docs,
+                    public.lifecycle_dump_partitioned_docs;" >/dev/null
 }
 
 test_sticky_dependency() {
@@ -3824,9 +4296,12 @@ run_test test_partitioned_reindex_rename_reconciliation
 run_test test_reindex_tracking_reentry
 run_test test_ordinary_inheritance_reindex_scope
 run_test test_legacy_lineage_backfill
+run_test test_concurrent_legacy_lineage_backfill
 run_test test_lineage_ddl_guards
+run_test test_concurrent_supplied_lineage_create
 run_test test_reindex_lineage_replacement_isolation
 run_test test_reindex_authorization_ordering
+run_test test_reindex_authorization_resolution_race
 run_test test_prior_generation_spill_adoption
 run_test test_request_queue_runtime
 run_test test_actor_writer_worker_identity

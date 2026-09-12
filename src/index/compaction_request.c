@@ -10,13 +10,17 @@
 #include <access/parallel.h>
 #include <access/table.h>
 #include <access/xact.h>
+#include <catalog/index.h>
+#include <catalog/partition.h>
 #include <catalog/pg_class.h>
 #include <catalog/pg_class_d.h>
 #include <commands/defrem.h>
 #include <commands/tablecmds.h>
+#include <common/hashfn.h>
 #include <miscadmin.h>
 #include <nodes/makefuncs.h>
 #include <nodes/pg_list.h>
+#include <storage/lock.h>
 #include <utils/lsyscache.h>
 #include <utils/memutils.h>
 #include <utils/resowner.h>
@@ -41,6 +45,41 @@ static bool	 tp_pending_registered	= false;
 
 /* True while tp_compaction_flush_requests() is signaling managed jobs. */
 static bool tp_dispatch_active = false;
+
+#define TP_COMPACTION_LOCK_NAMESPACE 0x70677473U
+#define TP_COMPACTION_INDEX_LOCK	 1
+#define TP_COMPACTION_LINEAGE_LOCK	 2
+
+static void
+tp_take_index_lineage_lock(Oid indexoid)
+{
+	LOCKTAG tag;
+
+	SET_LOCKTAG_ADVISORY(
+			tag,
+			MyDatabaseId,
+			TP_COMPACTION_LOCK_NAMESPACE,
+			indexoid,
+			TP_COMPACTION_INDEX_LOCK);
+	(void)LockAcquire(&tag, ExclusiveLock, false, false);
+}
+
+void
+tp_lock_compaction_lineage(const char *lineage)
+{
+	LOCKTAG tag;
+	uint32	hash;
+
+	hash = hash_bytes(
+			(const unsigned char *)lineage, TP_COMPACTION_LINEAGE_LENGTH);
+	SET_LOCKTAG_ADVISORY(
+			tag,
+			MyDatabaseId,
+			TP_COMPACTION_LOCK_NAMESPACE,
+			hash,
+			TP_COMPACTION_LINEAGE_LOCK);
+	(void)LockAcquire(&tag, ExclusiveLock, false, false);
+}
 
 /*
  * Can this process hand a compaction request off at commit?  Callers
@@ -112,7 +151,33 @@ tp_new_compaction_lineage(void)
 }
 
 static bool
-tp_live_compaction_lineage_exists(const char *lineage)
+tp_heaps_share_partition_family(Oid first_heap_oid, Oid second_heap_oid)
+{
+	List *ancestors;
+	Oid	  first_root  = first_heap_oid;
+	Oid	  second_root = second_heap_oid;
+
+	if (get_rel_relispartition(first_heap_oid))
+	{
+		ancestors = get_partition_ancestors(first_heap_oid);
+		if (ancestors != NIL)
+			first_root = llast_oid(ancestors);
+		list_free(ancestors);
+	}
+	if (get_rel_relispartition(second_heap_oid))
+	{
+		ancestors = get_partition_ancestors(second_heap_oid);
+		if (ancestors != NIL)
+			second_root = llast_oid(ancestors);
+		list_free(ancestors);
+	}
+
+	return first_root == second_root &&
+		   get_rel_relkind(first_root) == RELKIND_PARTITIONED_TABLE;
+}
+
+static bool
+tp_live_compaction_lineage_conflicts(const char *lineage, Oid heap_oid)
 {
 	Relation	class_rel;
 	SysScanDesc scan;
@@ -149,8 +214,17 @@ tp_live_compaction_lineage_exists(const char *lineage)
 			if (strcmp(option->defname, "compaction_lineage") == 0 &&
 				strcmp(defGetString(option), lineage) == 0)
 			{
-				found = true;
-				break;
+				Oid existing_heap_oid =
+						IndexGetRelation(class_form->oid, true);
+
+				if (!OidIsValid(existing_heap_oid) ||
+					existing_heap_oid == heap_oid ||
+					!tp_heaps_share_partition_family(
+							existing_heap_oid, heap_oid))
+				{
+					found = true;
+					break;
+				}
 			}
 		}
 		list_free_deep(options);
@@ -163,21 +237,28 @@ tp_live_compaction_lineage_exists(const char *lineage)
 }
 
 bool
-tp_compaction_lineage_in_use(const char *lineage)
+tp_compaction_lineage_in_use(const char *lineage, Oid heap_oid, Oid owner_oid)
 {
-	return tp_live_compaction_lineage_exists(lineage) ||
-		   tp_compaction_job_lineage_exists(lineage);
+	return tp_live_compaction_lineage_conflicts(lineage, heap_oid) ||
+		   tp_compaction_job_lineage_exists(lineage, heap_oid, owner_oid);
 }
 
-static char *
-tp_new_available_compaction_lineage(void)
+char *
+tp_new_available_compaction_lineage(Oid heap_oid, Oid owner_oid)
 {
 	char *lineage;
 
 	do
 	{
 		lineage = tp_new_compaction_lineage();
-		if (!tp_compaction_lineage_in_use(lineage))
+		if (tp_compaction_lineage_in_use(lineage, heap_oid, owner_oid))
+		{
+			pfree(lineage);
+			continue;
+		}
+
+		tp_lock_compaction_lineage(lineage);
+		if (!tp_compaction_lineage_in_use(lineage, heap_oid, owner_oid))
 			return lineage;
 		pfree(lineage);
 	} while (true);
@@ -190,6 +271,7 @@ tp_ensure_index_compaction_lineage(Oid indexoid, bool *created)
 	Relation	   index_rel;
 	const char	  *existing;
 	char		  *lineage;
+	Oid			   heap_oid;
 	Oid			   owner_oid;
 	Oid			   save_userid;
 	int			   save_sec_context;
@@ -197,6 +279,7 @@ tp_ensure_index_compaction_lineage(Oid indexoid, bool *created)
 	if (created != NULL)
 		*created = false;
 
+	tp_take_index_lineage_lock(indexoid);
 	index_rel = try_index_open(indexoid, AccessShareLock);
 	if (index_rel == NULL)
 		return NULL;
@@ -218,9 +301,10 @@ tp_ensure_index_compaction_lineage(Oid indexoid, bool *created)
 	}
 
 	/* Upgrade a pre-lineage background index under its physical owner. */
+	heap_oid  = index_rel->rd_index->indrelid;
 	owner_oid = index_rel->rd_rel->relowner;
 	index_close(index_rel, NoLock);
-	lineage = tp_new_available_compaction_lineage();
+	lineage = tp_new_available_compaction_lineage(heap_oid, owner_oid);
 
 	cmd			  = makeNode(AlterTableCmd);
 	cmd->subtype  = AT_SetRelOptions;
