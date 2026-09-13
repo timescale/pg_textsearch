@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789282950588,
+  "lastUpdate": 1789282953913,
   "repoUrl": "https://github.com/timescale/pg_textsearch",
   "entries": {
     "cranfield Benchmarks": [
@@ -258771,6 +258771,88 @@ window.BENCHMARK_DATA = {
           {
             "name": "paradedb_msmarco_insert (8.8M docs) - Index Size",
             "value": 964.75,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tjgreen@gmail.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "3c77689e5186ada21d79312066b01661f5e7fa7f",
+          "message": "docs: streamline user and developer documentation (#483)\n\nStreamline the README and developer guides, add a source-accurate\narchitecture guide and complete release history, and replace the stale\ntest guide.\n\nAlso remove superseded docs, correct examples and operational guidance,\ninclude the canonical guides in source packages, and stop version bumps\nfrom editing the README.",
+          "timestamp": "2026-09-10T03:52:26Z",
+          "url": "https://github.com/timescale/pg_textsearch/commit/3c77689e5186ada21d79312066b01661f5e7fa7f"
+        },
+        "date": 1789282953365,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "paradedb_msmarco_insert (8.8M docs) - Index Build Time",
+            "value": 3687.766,
+            "unit": "ms"
+          },
+          {
+            "name": "paradedb_msmarco_insert (8.8M docs) - Insert Time",
+            "value": 284630.492,
+            "unit": "ms"
+          },
+          {
+            "name": "paradedb_msmarco_insert (8.8M docs) - 1 Token Query (p50)",
+            "value": 111.36,
+            "unit": "ms"
+          },
+          {
+            "name": "paradedb_msmarco_insert (8.8M docs) - 2 Token Query (p50)",
+            "value": 103.99,
+            "unit": "ms"
+          },
+          {
+            "name": "paradedb_msmarco_insert (8.8M docs) - 3 Token Query (p50)",
+            "value": 115.03,
+            "unit": "ms"
+          },
+          {
+            "name": "paradedb_msmarco_insert (8.8M docs) - 4 Token Query (p50)",
+            "value": 116.83,
+            "unit": "ms"
+          },
+          {
+            "name": "paradedb_msmarco_insert (8.8M docs) - 5 Token Query (p50)",
+            "value": 116.04,
+            "unit": "ms"
+          },
+          {
+            "name": "paradedb_msmarco_insert (8.8M docs) - 6 Token Query (p50)",
+            "value": 121.29,
+            "unit": "ms"
+          },
+          {
+            "name": "paradedb_msmarco_insert (8.8M docs) - 7 Token Query (p50)",
+            "value": 118.78,
+            "unit": "ms"
+          },
+          {
+            "name": "paradedb_msmarco_insert (8.8M docs) - 8+ Token Query (p50)",
+            "value": 120.19,
+            "unit": "ms"
+          },
+          {
+            "name": "paradedb_msmarco_insert (8.8M docs) - Throughput (avg ms/query)",
+            "value": 75.34,
+            "unit": "ms"
+          },
+          {
+            "name": "paradedb_msmarco_insert (8.8M docs) - Index Size",
+            "value": 958.81,
             "unit": "MB"
           }
         ]
