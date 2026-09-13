@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789282965089,
+  "lastUpdate": 1789282968930,
   "repoUrl": "https://github.com/timescale/pg_textsearch",
   "entries": {
     "cranfield Benchmarks": [
@@ -292949,6 +292949,43 @@ window.BENCHMARK_DATA = {
           {
             "name": "paradedb_wikipedia_concurrent - Concurrent Insert Time",
             "value": 19485.89748,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tjgreen@gmail.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "3c77689e5186ada21d79312066b01661f5e7fa7f",
+          "message": "docs: streamline user and developer documentation (#483)\n\nStreamline the README and developer guides, add a source-accurate\narchitecture guide and complete release history, and replace the stale\ntest guide.\n\nAlso remove superseded docs, correct examples and operational guidance,\ninclude the canonical guides in source packages, and stop version bumps\nfrom editing the README.",
+          "timestamp": "2026-09-10T03:52:26Z",
+          "url": "https://github.com/timescale/pg_textsearch/commit/3c77689e5186ada21d79312066b01661f5e7fa7f"
+        },
+        "date": 1789282968368,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "paradedb_wikipedia_concurrent - Index Build Time",
+            "value": 4.82,
+            "unit": "ms"
+          },
+          {
+            "name": "paradedb_wikipedia_concurrent - Insert Time",
+            "value": 21.581,
+            "unit": "ms"
+          },
+          {
+            "name": "paradedb_wikipedia_concurrent - Concurrent Insert Time",
+            "value": 19556.285656,
             "unit": "ms"
           }
         ]
