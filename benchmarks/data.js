@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789369457283,
+  "lastUpdate": 1789371140600,
   "repoUrl": "https://github.com/timescale/pg_textsearch",
   "entries": {
     "cranfield Benchmarks": [
@@ -142679,6 +142679,48 @@ window.BENCHMARK_DATA = {
           {
             "name": "cranfield_insert (0 docs) - Throughput (avg ms/query)",
             "value": 2.47,
+            "unit": "ms"
+          },
+          {
+            "name": "cranfield_insert (0 docs) - Index Size",
+            "value": 1.7,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tjgreen@gmail.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "8f480d6478edc7d36da06187ac3d9cbbf6c7373f",
+          "message": "Add PostgreSQL 19 (beta) support (#460)\n\nAdd best-effort PostgreSQL 19 beta compatibility and experimental CI coverage while keeping PostgreSQL 17 and 18 required.",
+          "timestamp": "2026-09-14T02:01:04Z",
+          "url": "https://github.com/timescale/pg_textsearch/commit/8f480d6478edc7d36da06187ac3d9cbbf6c7373f"
+        },
+        "date": 1789371067507,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "cranfield_insert (0 docs) - Index Build Time",
+            "value": 1.32,
+            "unit": "ms"
+          },
+          {
+            "name": "cranfield_insert (0 docs) - Insert Time",
+            "value": 424.05,
+            "unit": "ms"
+          },
+          {
+            "name": "cranfield_insert (0 docs) - Throughput (avg ms/query)",
+            "value": 1.99,
             "unit": "ms"
           },
           {
