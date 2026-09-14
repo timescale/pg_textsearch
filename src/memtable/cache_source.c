@@ -254,10 +254,9 @@ compute_corpus_totals(
  * number of retries on RETRY or NOT_INITIALIZED races.  Returns
  * true iff the cache is current and serveable after the call.
  *
- * Per docs/memtable_cache.md:507-536, even after `cold_build`
- * returns OK we must call `apply_to_tail` again to catch records
- * appended to the chain while the cold walk was running.  We
- * `continue` (not return) in that case.
+ * Even after `cold_build` returns OK we must call `apply_to_tail`
+ * again to catch records appended to the chain while the cold
+ * walk was running.  We `continue` (not return) in that case.
  *
  * Caller must hold the per-index LWLock SHARED.
  */

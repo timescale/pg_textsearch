@@ -675,8 +675,7 @@ tp_memtable_append(
  * GenericXLog record.  GenericXLog allows up to 4 buffers; we
  * use at most 2 (meta + segment header).
  *
- * In-memory memtable cache integration (docs/memtable_cache.md
- * §"Spill detection", §"Spill consumption from cache"):
+ * In-memory memtable cache integration:
  *
  *   1. Before touching the metapage we bump
  *      `state->shared->spill_generation` so that any reader
@@ -706,7 +705,8 @@ tp_spill_finalize(
 		Relation		   rel,
 		BlockNumber		   new_segment_root,
 		uint64			   docs_delta,
-		uint64			   len_delta)
+		uint64			   len_delta,
+		uint32			   segment_capacity)
 {
 	Buffer			  metabuf;
 	Buffer			  seg_buf = InvalidBuffer;
@@ -717,6 +717,7 @@ tp_spill_finalize(
 	TpMemtable		 *memtable = NULL;
 
 	Assert(rel != NULL);
+	Assert(segment_capacity > 0 && segment_capacity <= PG_UINT16_MAX);
 
 	/*
 	 * Step 1: bump the cache's spill-generation token BEFORE we
@@ -753,6 +754,11 @@ tp_spill_finalize(
 		Page			 seg_page;
 		TpSegmentHeader *seg_header;
 
+		if (metap->level_counts[0] >= segment_capacity)
+			ereport(ERROR,
+					(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
+					 errmsg("bm25 segment count limit reached at level 0")));
+
 		seg_buf = ReadBuffer(rel, new_segment_root);
 		LockBuffer(seg_buf, BUFFER_LOCK_EXCLUSIVE);
 		seg_page = GenericXLogRegisterBuffer(state, seg_buf, 0);
@@ -778,7 +784,7 @@ tp_spill_finalize(
 	/*
 	 * Step 2: drop the in-memory cache's dshash tables.
 	 *
-	 * Lock order (docs/memtable_cache.md §"Lock order"):
+	 * Lock order:
 	 *   per-index LWLock EXCL  (held by the caller, blocks all
 	 *                           readers / catchup paths)
 	 *     -> cache.apply_lock  (no other holder is possible, since
@@ -885,8 +891,9 @@ tp_memtable_mark_continuation_chain_dead(
 
 /*
  * Mark every page in the spilled memtable chain DEAD (outer walk +
- * fragment continuation sub-chains).  See docs/memtable_v2.md spill
- * step 4.  Does not free blocks; amvacuumcleanup recycles later.
+ * fragment continuation sub-chains) after spill publication.  Does
+ * not free blocks; amvacuumcleanup recycles them later.  See
+ * ARCHITECTURE.md, "Spill and Compaction".
  */
 void
 tp_memtable_mark_chain_dead(
@@ -1658,7 +1665,8 @@ bm25_memtable_chain(PG_FUNCTION_ARGS)
 
 /*
  * Dead-orphan SRF.  Scans index blocks after the metapage and
- * returns one row per memtable page stamped DEAD by spill (step 4).
+ * returns one row per memtable page stamped DEAD after spill
+ * publication.
  */
 PG_FUNCTION_INFO_V1(bm25_memtable_dead_pages);
 

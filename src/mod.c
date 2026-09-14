@@ -25,6 +25,8 @@
 
 #include "access/am.h"
 #include "constants.h"
+#include "index/compaction_request.h"
+#include "index/metapage.h"
 #include "index/registry.h"
 #include "index/state.h"
 #include "planner/hooks.h"
@@ -63,6 +65,15 @@ int tp_memtable_pages_threshold = TP_DEFAULT_MEMTABLE_PAGES_THRESHOLD;
 /* Global variable for segments per level before compaction */
 int tp_segments_per_level = TP_DEFAULT_SEGMENTS_PER_LEVEL;
 
+/* Conservative size budget for newly merged multi-source segments. */
+int tp_max_segment_size_mb = TP_DEFAULT_SEGMENT_SIZE_MB;
+
+static const relopt_enum_elt_def compaction_mode_options[] =
+		{{"inline", TP_COMPACTION_INLINE},
+		 {"background", TP_COMPACTION_BACKGROUND},
+		 {"off", TP_COMPACTION_OFF},
+		 {(const char *)NULL, 0}};
+
 /* Global variable for segment compression (on by default - benchmarks show
  * compression improves both size and query performance)
  */
@@ -99,6 +110,9 @@ bool tp_log_cache_state = false;
 
 /* Debug: trigger PANIC after spill finalize for crash-safety testing */
 bool tp_debug_panic_after_spill_finalize = false;
+
+/* Per-level segment capacity; the debug GUC may lower it in tests. */
+int tp_max_segments_per_level = PG_UINT16_MAX;
 
 /*
  * Soft+hard memory budget for the in-memory memtable cache, in
@@ -277,6 +291,36 @@ _PG_init(void)
 			NULL,
 			NULL);
 
+	DefineCustomIntVariable(
+			"pg_textsearch.max_segment_size",
+			"Maximum conservative size of a merged segment.",
+			"Bounds newly merged multi-source segments. A larger existing "
+			"segment remains an uncombinable singleton.",
+			&tp_max_segment_size_mb,
+			TP_DEFAULT_SEGMENT_SIZE_MB,
+			TP_MIN_SEGMENT_SIZE_MB,
+			TP_MAX_SEGMENT_SIZE_MB,
+			PGC_SUSET,
+			GUC_UNIT_MB,
+			NULL,
+			NULL,
+			NULL);
+
+	DefineCustomStringVariable(
+			"pg_textsearch.compaction_request_function",
+			"Function called for background compaction requests",
+			"Names a schema-qualified function taking a single regclass "
+			"argument. For indexes built WITH (compaction='background'), "
+			"pg_textsearch calls this function at transaction pre-commit "
+			"for each index that needs compaction.",
+			&tp_compaction_request_function,
+			"",
+			PGC_SUSET,
+			0,
+			tp_check_compaction_request_function,
+			NULL,
+			NULL);
+
 	DefineCustomBoolVariable(
 			"pg_textsearch.compress_segments",
 			"Enable compression for new segment blocks",
@@ -376,16 +420,31 @@ _PG_init(void)
 			NULL);
 
 	DefineCustomIntVariable(
+			"pg_textsearch.debug_segment_count_limit",
+			"Set the maximum persisted segment count per level.",
+			"Testing-only limit for exercising segment-count overflow.",
+			&tp_max_segments_per_level,
+			PG_UINT16_MAX,
+			1,
+			PG_UINT16_MAX,
+			PGC_SUSET,
+			0,
+			NULL,
+			NULL,
+			NULL);
+
+	DefineCustomIntVariable(
 			"pg_textsearch.memory_limit",
-			"Maximum shared memory used by the in-memory memtable cache.",
-			"Applied as a three-tier budget (see "
-			"docs/memtable_cache.md): per-index soft cap "
-			"(limit/8) returns BUDGET_EXCEEDED to the apply "
-			"protocol so the read falls back to the on-disk "
-			"chain; global soft cap (limit/2) evicts the "
-			"largest non-caller cache via tp_cache_evict_largest; "
-			"global hard cap (limit) refuses cache builds "
-			"entirely.  A value of 0 means no limit.",
+			"Approximate shared-memory budget for the in-memory memtable "
+			"cache.",
+			"Applied as a three-tier budget: the per-index limit/8 "
+			"per-record growth guard returns BUDGET_EXCEEDED and "
+			"falls back to the chain; the global limit/2 threshold "
+			"tries to evict the largest non-caller cache; and limit "
+			"is an approximate admission threshold for catch-up "
+			"and cold builds.  Admitted or concurrent work may "
+			"increase estimated usage past the limit.  A value of "
+			"0 means unlimited.",
 			&tp_memory_limit_kb,
 			TP_DEFAULT_MEMORY_LIMIT_KB,
 			0,
@@ -430,6 +489,19 @@ _PG_init(void)
 			0.0,
 			1.0,
 			NoLock);
+
+	/*
+	 * ShareUpdateExclusiveLock: the value is read after a spill and
+	 * changes no on-disk structure, so ALTER INDEX need not block.
+	 */
+	add_enum_reloption(
+			tp_relopt_kind,
+			"compaction",
+			"Spill-time segment compaction policy",
+			(relopt_enum_elt_def *)compaction_mode_options,
+			TP_COMPACTION_INLINE,
+			"Valid values are \"inline\", \"background\" and \"off\".",
+			ShareUpdateExclusiveLock);
 
 	/*
 	 * Install shared memory hooks (needed for registry)
@@ -524,8 +596,14 @@ tp_shmem_startup(void)
 }
 
 /*
- * Transaction callback - release index locks at transaction end
- * and check for bulk load auto-spill at pre-commit
+ * Transaction callback - release index locks at transaction end, check
+ * for bulk load auto-spill at pre-commit, and dispatch any compaction
+ * requests those spills registered.
+ *
+ * The spill check runs first: a spill can register a request, so
+ * flushing afterwards is what lets that request reach the callback in
+ * the same transaction.  Parallel workers deliberately do not flush;
+ * dispatch runs subtransactions and SPI, which a worker must not do.
  */
 static void
 tp_xact_callback(XactEvent event, void *arg pg_attribute_unused())
@@ -533,12 +611,16 @@ tp_xact_callback(XactEvent event, void *arg pg_attribute_unused())
 	switch (event)
 	{
 	case XACT_EVENT_PRE_COMMIT:
-	case XACT_EVENT_PARALLEL_PRE_COMMIT:
 		/*
 		 * Check for bulk load auto-spill before commit.
 		 * If any index had a large number of terms added this transaction,
 		 * spill to disk to prevent unbounded memory growth.
 		 */
+		tp_bulk_load_spill_check();
+		tp_compaction_flush_requests();
+		break;
+
+	case XACT_EVENT_PARALLEL_PRE_COMMIT:
 		tp_bulk_load_spill_check();
 		break;
 

@@ -1,5 +1,6 @@
 -- Integration coverage for the spill -> cache-invalidate -> rebuild
--- cycle (cache_source.c + log.c; see docs/memtable_cache.md).
+-- cycle (cache_source.c + log.c; see ARCHITECTURE.md,
+-- "Memtable Cache").
 --
 -- tp_spill_finalize (a) bumps the per-index spill_generation atomic
 -- and (b) drops the cache's dshash tables via tp_cache_clear, so a

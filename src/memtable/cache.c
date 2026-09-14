@@ -4,8 +4,8 @@
  *
  * cache.c — lifecycle + apply protocol for the in-memory memtable cache.
  *
- * See cache.h for the public contract and docs/memtable_cache.md
- * for the design.  Three entry points:
+ * See cache.h for the public contract and ARCHITECTURE.md,
+ * "Memtable Cache", for the design.  Three entry points:
  *
  *   tp_cache_cold_build()    cache.apply_lock EXCL +
  *                            cache.lock EXCL.  Allocates dshash
@@ -72,11 +72,10 @@ extern int tp_memory_limit_kb;
 /*
  * Per-index soft cap = global memory limit / 8.
  *
- * Rationale (see docs/memtable_cache.md "Memory cap"): with the
- * default 2 GiB global limit and 8 concurrent indexes, each gets
- * 256 MiB of cache headroom before catchup starts returning
- * BUDGET_EXCEEDED.  The global-cap eviction protocol layers on
- * top.
+ * With the default 2 GiB global limit and 8 concurrent indexes,
+ * each gets 256 MiB of cache headroom before catchup starts
+ * returning BUDGET_EXCEEDED.  The global-cap eviction protocol
+ * layers on top.
  */
 #define TP_CACHE_INDEX_CAP_DIVISOR 8
 
@@ -123,9 +122,8 @@ tp_cache_global_hard_cap_bytes(void)
  * safely.
  *
  * The two atomics are deliberately NOT mutated under a single
- * lock — the global is approximate by design (the hard cap is
- * documented as approximate; see
- * docs/memtable_cache.md §"Memory cap (3 tiers)").
+ * lock — global accounting and therefore hard-cap enforcement
+ * are approximate by design.
  */
 static inline void
 account_bytes_add(TpMemtable *memtable, uint64 delta)
@@ -211,8 +209,7 @@ tp_cache_clear(dsa_area *dsa, TpMemtable *memtable)
 
 	/*
 	 * Drain estimated_bytes and the matching slice of the global
-	 * counter in lockstep so eviction accounting doesn't drift
-	 * (docs/memtable_cache.md §"Memory cap (3 tiers)").
+	 * counter in lockstep so eviction accounting doesn't drift.
 	 */
 	tp_cache_account_bytes_drain(memtable);
 
@@ -395,8 +392,7 @@ tp_cache_evict_largest(Oid caller_oid)
  *
  * Called from tp_cache_apply_to_tail and tp_cache_cold_build
  * BEFORE either acquires cache.apply_lock, so the caller's own
- * cache locks are out of the chain.  See
- * docs/memtable_cache.md §"Memory cap (3 tiers)".
+ * cache locks are out of the chain.
  */
 static bool
 global_cap_check(Oid caller_oid)
@@ -616,8 +612,7 @@ tp_cache_apply_to_tail(TpLocalIndexState *local_state, Relation rel)
 	 * Apply-protocol-entry hook: enforce the global cap before
 	 * we take cache.apply_lock.  If eviction fails to make room
 	 * and we're over the hard cap, return BUDGET_EXCEEDED so
-	 * the caller falls back to chain_source.  See
-	 * docs/memtable_cache.md §"Memory cap (3 tiers)".
+	 * the caller falls back to chain_source.
 	 */
 	if (!global_cap_check(local_state->shared->index_oid))
 		return TP_CACHE_APPLY_BUDGET_EXCEEDED;
@@ -1148,7 +1143,7 @@ bm25_cache_bump_spill_generation(PG_FUNCTION_ARGS)
  *
  * Returns the registry-wide estimated_total_bytes counter.
  * Permanent unit-test scaffold for the memory-cap accounting
- * protocol (docs/memtable_cache.md §"Memory cap (3 tiers)").
+ * protocol.
  * Production callers should not depend on this being precise:
  * it's a soft accounting tracker, not a resource accounting
  * source of truth.

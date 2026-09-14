@@ -75,6 +75,10 @@
 /* Segment hierarchy configuration */
 #define TP_MAX_LEVELS				  8 /* Supports 8^8 = 16M segments */
 #define TP_DEFAULT_SEGMENTS_PER_LEVEL 8
+#define TP_MIN_SEGMENT_SIZE_MB		  1
+#define TP_DEFAULT_SEGMENT_SIZE_MB	  4095
+#define TP_MAX_SEGMENT_SIZE_MB		  4095
+#define TP_BASE_LEVEL_SIZE_BYTES	  ((uint64)8 * 1024 * 1024)
 
 /* BM25 scoring constants */
 #define TP_DEFAULT_K1 1.2
@@ -171,7 +175,7 @@
 #define TP_TRANCHE_POSTING_LOCK 1009
 
 /*
- * In-memory memtable cache LWLocks (see docs/memtable_cache.md).
+ * In-memory memtable cache LWLocks.
  * apply_lock serializes cache mutators (reader catchup, cold build,
  * spill catchup, tp_cache_clear).  lock is the cache lifetime lock,
  * held SHARED for the lifetime of a served TpDataSource and EXCL only
@@ -181,12 +185,11 @@
 #define TP_TRANCHE_CACHE_LOCK		1011
 
 /*
- * Global eviction mutex tranche (see docs/memtable_cache.md
- * §"Memory cap (3 tiers)").  Serializes cache evictions across
- * backends.  Acquired EXCL by evict_largest and by index cleanup
- * (DROP INDEX path) to prevent races between an in-flight victim
- * inspection and a concurrent dsa_free of the victim's shared
- * state.
+ * Global eviction mutex tranche.  Serializes cache evictions
+ * across backends.  Acquired EXCL by evict_largest and by index
+ * cleanup (DROP INDEX path) to prevent races between an in-flight
+ * victim inspection and a concurrent dsa_free of the victim's
+ * shared state.
  */
 #define TP_TRANCHE_EVICTION_MUTEX 1012
 
@@ -199,5 +202,6 @@ extern bool	  tp_log_scores;
 extern int	  tp_bulk_load_threshold;
 extern int	  tp_memtable_pages_threshold;
 extern int	  tp_segments_per_level;
+extern int	  tp_max_segment_size_mb;
 extern bool	  tp_filtered_seed;
 extern double tp_filtered_seed_margin;

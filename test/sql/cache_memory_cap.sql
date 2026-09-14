@@ -1,6 +1,6 @@
 -- Integration coverage for the memory cap and the
 -- cross-index eviction path
--- (docs/memtable_cache.md §"Memory cap (3 tiers)").
+-- (see ARCHITECTURE.md, "Memtable Cache").
 --
 -- We exercise the registry-wide accounting counter and the
 -- `tp_cache_evict_largest` argmax routine directly through

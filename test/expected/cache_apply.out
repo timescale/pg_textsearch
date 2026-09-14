@@ -1,5 +1,5 @@
 -- Unit coverage for the in-memory memtable cache apply protocol
--- (cache.c; see docs/memtable_cache.md).
+-- (cache.c; see ARCHITECTURE.md, "Memtable Cache").
 --
 -- Drives bm25_cache_cold_build / bm25_cache_apply_to_tail directly
 -- so we can observe (result, records_applied, cursor_seq,

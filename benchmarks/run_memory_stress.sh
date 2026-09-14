@@ -1,11 +1,11 @@
 #!/bin/bash
 
-# Memory stress benchmark runner for Tapir extension
+# Memory stress benchmark runner for pg_textsearch
 # This script runs the memory stress test and captures output
 
 set -e
 
-echo "=== Tapir Memory Stress Benchmark ==="
+echo "=== pg_textsearch Memory Stress Benchmark ==="
 echo "Starting at: $(date)"
 echo ""
 
@@ -16,19 +16,20 @@ export PGUSER=${PGUSER:-$(whoami)}
 export PGDATABASE=${PGDATABASE:-postgres}
 
 # Check if pg_textsearch extension is available
-echo "Checking Tapir extension availability..."
+echo "Checking pg_textsearch extension availability..."
 psql -c "CREATE EXTENSION IF NOT EXISTS pg_textsearch;" || {
-    echo "ERROR: Tapir extension not available. Please install it first with 'make install'"
+    echo "ERROR: pg_textsearch extension not available. Please install it first with 'make install'"
     exit 1
 }
 
-echo "Tapir extension loaded successfully."
+echo "pg_textsearch extension loaded successfully."
 echo ""
 
 # Show initial configuration (skip if parameters not available)
 echo "=== Initial Configuration ==="
 psql -c "SHOW pg_textsearch.bulk_load_threshold;" 2>/dev/null || echo "pg_textsearch.bulk_load_threshold: (parameter not visible)"
 psql -c "SHOW pg_textsearch.memtable_pages_threshold;" 2>/dev/null || echo "pg_textsearch.memtable_pages_threshold: (parameter not visible)"
+psql -c "SHOW pg_textsearch.memory_limit;" 2>/dev/null || echo "pg_textsearch.memory_limit: (parameter not visible)"
 echo ""
 
 # Choose benchmark size based on argument
@@ -74,19 +75,19 @@ if psql -f "$(dirname "$0")/$BENCHMARK_FILE" 2>&1; then
             echo "Try 'small' or 'large' sizes for stress testing."
             ;;
         "small"|"large")
-            echo "If benchmark completed without memory errors, try:"
-            echo "- Lowering pg_textsearch.memtable_pages_threshold to"
-            echo "  spill more aggressively (in postgresql.conf)"
+            echo "To exercise on-disk-chain fallback, try:"
+            echo "- Lowering pg_textsearch.memory_limit in postgresql.conf"
+            echo "  and reloading the server configuration"
             echo "- Running 'large' size for maximum stress"
             ;;
     esac
 else
     echo ""
     echo "=== Benchmark Results ==="
-    echo "Benchmark encountered expected memory limitations at: $(date)"
+    echo "Benchmark failed at: $(date)"
     echo ""
-    echo "This demonstrates the extension's behavior under memory pressure."
-    echo "Check the error messages above for specific memory-related failures."
+    echo "Check the errors above. The pg_textsearch.memory_limit cache cap"
+    echo "should cause on-disk-chain fallback rather than query failure."
 fi
 
 echo ""

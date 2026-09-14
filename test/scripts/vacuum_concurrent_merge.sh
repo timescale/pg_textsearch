@@ -137,10 +137,16 @@ writer() {
 # Concurrent spill + force-merge: the LW_EXCLUSIVE segment recycler that
 # races VACUUM.
 merger() {
+    local output
+
     for i in $(seq 1 $(scaled_count 250)); do
-        $PSQL -c "SELECT bm25_spill_index('docs_bm25');
-                  SELECT bm25_force_merge('docs_bm25')" \
-          >>"${ERR_DIR}/merger.log" 2>&1 || return 30
+        if ! output=$($PSQL -c \
+            "SELECT bm25_spill_index('docs_bm25');
+             SELECT bm25_force_merge('docs_bm25')" 2>&1); then
+            printf '%s\n' "$output" >>"${ERR_DIR}/merger.log"
+            return 30
+        fi
+        printf '%s\n' "$output" >>"${ERR_DIR}/merger.log"
     done
 }
 

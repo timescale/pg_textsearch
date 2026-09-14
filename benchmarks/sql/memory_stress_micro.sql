@@ -1,15 +1,15 @@
--- Micro memory stress benchmark for Tapir extension
+-- Micro memory stress benchmark for pg_textsearch
 -- Tests with a very small dataset to demonstrate functionality
 -- and establish baseline performance characteristics
 --
 -- This benchmark:
 -- 1. Creates a small table (1K documents)
--- 2. Creates a Tapir index successfully
+-- 2. Creates a pg_textsearch index successfully
 -- 3. Tests various queries
 -- 4. Provides timing and performance information
 
 \timing on
-\echo 'Starting Tapir micro memory stress benchmark...'
+\echo 'Starting pg_textsearch micro memory stress benchmark...'
 
 -- Create a table for testing
 DROP TABLE IF EXISTS stress_docs_micro CASCADE;
@@ -56,7 +56,7 @@ FROM stress_docs_micro;
 
 
 \echo ''
-\echo 'Creating Tapir index...'
+\echo 'Creating pg_textsearch index...'
 
 CREATE INDEX stress_micro_idx
 ON stress_docs_micro
@@ -143,4 +143,4 @@ DROP TABLE stress_docs_micro CASCADE;
 \echo ''
 \echo 'Micro memory stress benchmark completed.'
 \echo 'This establishes baseline functionality with 1K documents.'
-\echo 'For true stress testing, try larger datasets or reduced memory settings.'
+\echo 'For true stress testing, try larger datasets or a reduced pg_textsearch.memory_limit.'

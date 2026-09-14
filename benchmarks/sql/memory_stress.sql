@@ -1,18 +1,20 @@
--- Memory stress benchmark for Tapir extension
--- Tests behavior when shared memory is exhausted with large document dataset
+-- Memory stress benchmark for pg_textsearch
+-- Tests a large document dataset with a constrained memtable cache
 --
 -- This benchmark:
--- 1. Sets a very small shared memory limit (1MB)
+-- 1. Runs with a small memtable cache limit (1MB is suggested)
 -- 2. Creates a large table with randomly generated documents
--- 3. Attempts to create a Tapir index, expecting failure due to memory limits
--- 4. Demonstrates the extension's memory exhaustion behavior
+-- 3. Creates a pg_textsearch index and runs queries under cache pressure
+-- 4. Reports query behavior and performance under the configured limit
 
-\echo 'Starting Tapir memory stress benchmark...'
+\echo 'Starting pg_textsearch memory stress benchmark...'
 
--- Note: Since shared_memory_size is PGC_POSTMASTER, it requires a server restart
--- For testing purposes, we'll use a large dataset to stress the current memory allocation
-\echo 'Note: To test with minimal memory, set tapir.shared_memory_size=1 in postgresql.conf and restart PostgreSQL'
-\echo 'Current test will use large dataset to stress existing memory allocation'
+-- pg_textsearch.memory_limit is a PGC_SIGHUP setting measured in kB.
+-- Set it in postgresql.conf and reload PostgreSQL before this benchmark.
+\echo 'For a 1MB cache limit, set pg_textsearch.memory_limit = 1MB'
+\echo 'in postgresql.conf and reload PostgreSQL before running this benchmark.'
+SHOW pg_textsearch.memory_limit;
+\echo 'The benchmark uses a large dataset to stress the configured cache limit'
 
 -- Create a table for stress testing
 DROP TABLE IF EXISTS stress_docs CASCADE;
@@ -123,8 +125,8 @@ SELECT COUNT(*) FROM (
 \echo 'Cleaning up stress test resources...'
 DROP TABLE IF EXISTS stress_docs CASCADE;
 
--- Note: Memory settings are PGC_POSTMASTER and require restart to change
+-- pg_textsearch.memory_limit changes take effect after a configuration reload.
 
 \echo ''
 \echo 'Memory stress benchmark completed.'
-\echo 'Check the output above for memory exhaustion behavior and performance characteristics.'
+\echo 'Check the output above for cache-limit behavior and performance characteristics.'
