@@ -135,8 +135,7 @@ test-durable:
 	@echo "Running managed pg_durable compaction tests..."
 	@cd test/scripts && ./durable_compaction.sh
 
-# These guards cover invariants the SQL suite cannot observe, so they must
-# gate every way the suite is run, not just `make test`.
+# Run source-level guards with every regression entry point.
 installcheck: test-compaction-ownercheck test-compaction-request-source \
 	test-segment-io-limits test-boolean-lock test-boolean-memory \
 	test-boolean-rescan
