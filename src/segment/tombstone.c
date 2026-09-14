@@ -234,11 +234,14 @@ tp_tombstone_drain(
 		FullTransactionId		  horizon,
 		bool					  own_lock)
 {
-	uint32		freed	= 0;
-	BlockNumber nblocks = RelationGetNumberOfBlocks(index);
+	uint32 freed = 0;
+
+	/* own_lock=true needs `state` to acquire and release the lock. */
+	Assert(!own_lock || state != NULL);
 
 	for (;;)
 	{
+		BlockNumber	 nblocks;
 		BlockNumber	 prev = InvalidBlockNumber;
 		BlockNumber	 cur;
 		BlockNumber	 victim		   = InvalidBlockNumber;
@@ -254,6 +257,14 @@ tp_tombstone_drain(
 
 		if (own_lock)
 			tp_acquire_index_lock(state, LW_EXCLUSIVE);
+
+		/*
+		 * Re-read under the lock each iteration: the lock is dropped
+		 * between iterations and the relation can shrink.  This only
+		 * keeps the b >= nblocks check below honest; it is not what
+		 * makes the frees safe (see below).
+		 */
+		nblocks = RelationGetNumberOfBlocks(index);
 
 		/* Walk the chain to find the first past-horizon tombstone. */
 		cur = tp_tombstone_read_head(index);
@@ -361,10 +372,22 @@ tp_tombstone_drain(
 		/* Unlink first (corruption-safe; a crash here only leaks). */
 		tombstone_unlink(index, victim_prev, victim, victim_next);
 
-		if (own_lock)
-			tp_release_index_lock(state);
-
-		/* Now free the victim's blocks + its own page, unlocked. */
+		/*
+		 * Free under the same lock as the unlink.  Once unlinked the
+		 * blocks are invisible to tp_tombstone_max_used_block(), so
+		 * tp_truncate_dead_pages() (bm25_force_merge, same lock) could
+		 * truncate below them, leaving these frees to read past EOF or
+		 * to stamp a block that a truncate plus re-extension already
+		 * handed to a live structure.  Freeing before the unlink is no
+		 * better: a still-chained tombstone's blocks could be claimed
+		 * from the FSM, then freed again by a later drain.
+		 *
+		 * No CHECK_FOR_INTERRUPTS here — the tombstone is already
+		 * unlinked, so erroring part-way strands the rest.  The loop
+		 * is bounded by TP_TOMBSTONE_CAPACITY.
+		 */
+		Assert(!own_lock ||
+			   LWLockHeldByMeInMode(&state->shared->lock, LW_EXCLUSIVE));
 		{
 			uint32 k;
 
@@ -373,6 +396,10 @@ tp_tombstone_drain(
 			tp_record_free_index_page(index, victim);
 			freed += victim_count + 1;
 		}
+
+		if (own_lock)
+			tp_release_index_lock(state);
+
 		if (victim_blocks)
 			pfree(victim_blocks);
 	}

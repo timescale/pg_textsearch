@@ -3,7 +3,7 @@
  * Licensed under the PostgreSQL License. See LICENSE for details.
  *
  * posting.c — posting list and doclength table management for
- * the in-memory memtable cache.  See docs/memtable_cache.md.
+ * the in-memory memtable cache.
  */
 #include <postgres.h>
 

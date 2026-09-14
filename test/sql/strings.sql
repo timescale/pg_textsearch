@@ -27,7 +27,7 @@ INSERT INTO long_string_docs (content, category) VALUES
     ('Log file: /var/log/postgresql/tapir-extension/performance-monitoring/bm25-scoring-statistics/daily-reports/2024-08-27-full-text-search-analytics.log', 'logs'),
 
     -- Long technical terms and identifiers
-    ('PostgreSQL extension configuration parameter shared_preload_libraries_tapir_bm25_full_text_search_with_relevance_scoring_enabled', 'config'),
+    ('PostgreSQL extension configuration parameter shared_preload_libraries_pgfts_bm25_full_text_search_with_relevance_scoring_enabled', 'config'),
     ('Function name: tp_calculate_bm25_relevance_score_with_term_frequency_inverse_document_frequency_and_document_length_normalization', 'technical'),
 
     -- Mixed long content with URLs embedded

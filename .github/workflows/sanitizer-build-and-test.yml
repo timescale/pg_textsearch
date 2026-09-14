@@ -330,4 +330,5 @@ jobs:
         path: |
           tmp_sanitizer_test/
           test/scripts/tmp_*
+          test/tmp_*
         retention-days: 7

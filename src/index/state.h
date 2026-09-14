@@ -37,7 +37,7 @@ typedef struct TpDsmSegmentHeader
 } TpDsmSegmentHeader;
 
 /*
- * In-memory memtable cache (see docs/memtable_cache.md).
+ * In-memory memtable cache.
  *
  * The cache is derived state layered on top of the on-disk memtable
  * page chain (which remains the source of truth, per #374).  This
@@ -61,7 +61,7 @@ typedef struct TpDsmSegmentHeader
  *       0 at init.  Maintained by the apply paths under apply_lock;
  *       read lock-free by the 3-tier memory cap.
  *
- * Lock order (see docs/memtable_cache.md "Lock order"):
+ * Lock order:
  *   per-index LWLock (in TpSharedIndexState) → apply_lock → lock
  *     → dshash buckets → TpPostingList.lock
  */
@@ -96,7 +96,7 @@ typedef struct TpMemtable
 	 * cursor_gen_spill_count is the generation token captured from
 	 * TpSharedIndexState.spill_generation at cold-build time; a
 	 * mismatch on a later apply means a spill raced through and the
-	 * cache is stale (see docs/memtable_cache.md "Spill detection").
+	 * cache is stale.
 	 *
 	 * (cursor_next_blkno, cursor_next_off) is the logical position of
 	 * the next chain record to apply; InvalidBlockNumber means "no
@@ -192,7 +192,6 @@ typedef struct TpSharedIndexState
 	 * the moment this counter advances to N+1, even if a new
 	 * chain page happens to be allocated at the same block
 	 * number as the old head (ABA hole on head_blkno alone).
-	 * See docs/memtable_cache.md ("Spill detection").
 	 *
 	 * Not WAL-logged: standby query paths don't use the cache
 	 * (RecoveryInProgress() disables it), so primary-only

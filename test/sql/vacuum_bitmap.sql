@@ -313,6 +313,16 @@ VACUUM vb_alldead;
 -- Both segments should be dropped — merge is a no-op
 SELECT bm25_force_merge('vb_alldead_idx');
 
+DO $$
+DECLARE
+    summary text := bm25_summarize_index('vb_alldead_idx');
+BEGIN
+    IF summary !~ E'Segments:\n  \\(none\\)' THEN
+        RAISE EXCEPTION 'all-dead force merge left a segment: %', summary;
+    END IF;
+END
+$$;
+
 SELECT count(*) FROM (
     SELECT id FROM vb_alldead
     ORDER BY content <@> to_bm25query('alldead', 'vb_alldead_idx')
@@ -346,5 +356,34 @@ SELECT bm25_dump_index('vb_dump_idx') LIKE '%Alive: 10 / 10 docs%'
     AS has_alive_info;
 
 DROP TABLE vb_dump;
+
+-- =============================================================
+-- Test 11: Batched CTID reads across pages and segments
+-- =============================================================
+CREATE TABLE vb_batched (id serial PRIMARY KEY, content text);
+
+INSERT INTO vb_batched (content)
+SELECT 'bounded batch ' || i
+FROM generate_series(1, 3000) i;
+
+CREATE INDEX vb_batched_idx ON vb_batched
+    USING bm25 (content) WITH (text_config = 'english');
+
+INSERT INTO vb_batched (content)
+SELECT 'bounded batch ' || i
+FROM generate_series(3001, 6000) i;
+
+SELECT bm25_spill_index('vb_batched_idx');
+
+DELETE FROM vb_batched WHERE id % 3 = 0;
+VACUUM vb_batched;
+
+SELECT count(*) FROM (
+    SELECT id FROM vb_batched
+    ORDER BY content <@> to_bm25query('bounded', 'vb_batched_idx')
+    LIMIT 6000
+) q;
+
+DROP TABLE vb_batched;
 
 DROP EXTENSION pg_textsearch;

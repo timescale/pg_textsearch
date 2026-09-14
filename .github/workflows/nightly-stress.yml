@@ -267,6 +267,7 @@ jobs:
         name: nightly-failure-debug-pg${{ matrix.pg }}
         path: |
           test/scripts/tmp_*/
+          test/tmp_*/
           tmp_nightly_test/
         retention-days: 7
 

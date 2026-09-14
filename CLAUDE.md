@@ -33,18 +33,17 @@ consider a dedicated `pg_textsearch` schema for cleaner namespace management.
   and running the same test. Even if it does reproduce on main, it
   still needs to be investigated and fixed, not ignored.
 
-- **Physical replication**: All page mutations are WAL-logged via
-  `GenericXLog` records. There is no custom resource manager;
-  pg_textsearch does not register an rmgr. Stock PostgreSQL replay
-  reconstructs every page on a streaming standby or during crash
-  recovery — including the on-disk memtable chain pages, segment
-  pages, and the metapage. This is what lets PostgreSQL's
-  single-page WAL-redo helper (and any other no-extension-load
+- **Physical replication**: In-place and publication mutations are WAL-logged
+  via `GenericXLog`; newly written segment pages use `log_newpage_buffer()`
+  when WAL is required. There is no custom resource manager; pg_textsearch
+  does not register an rmgr. Stock PostgreSQL replay reconstructs every page
+  on a streaming standby or during crash recovery — including the on-disk
+  memtable chain pages, segment pages, and the metapage. This is what lets
+  PostgreSQL's single-page WAL-redo helper (and any other no-extension-load
   replay context) work without loading `pg_textsearch.so`.
-  **The on-disk memtable design is spec'd at
-  [`docs/memtable_v2.md`](docs/memtable_v2.md); read it before
-  changing the write/read/spill flow.** Closes #345, #349,
-  #350, #374.
+  **Read [ARCHITECTURE.md](ARCHITECTURE.md#storage-and-wal) before
+  changing the write/read/spill flow.** Closes #345, #349, #350,
+  #374.
 
 - **Standby-safe segment reclaim (#380)**: A segment merge does not
   free the displaced source pages to the FSM immediately. Doing so is
@@ -69,7 +68,7 @@ The index uses an LSM-like layered storage approach:
   relation itself. Writes append doc records (ctid + length +
   packed bm25vector bytes) to a tail page chained off the
   metapage. Mutations are WAL-logged via `GenericXLog`.
-  See [`docs/memtable_v2.md`](docs/memtable_v2.md).
+  See [ARCHITECTURE.md](ARCHITECTURE.md#storage-and-wal).
 - **Segments**: Immutable disk-based structures using V2 block storage format
   with skip lists for efficient top-k queries
 
@@ -92,8 +91,9 @@ details):
   source abstraction)
 - **Layer 3 (Storage):** `memtable/` (on-disk paged L0 — chain of
   doc-record pages mutated under buffer locks, WAL-logged via
-  `GenericXLog`; see [`docs/memtable_v2.md`](docs/memtable_v2.md)),
-  `segment/` (on-disk segments, merge, compression)
+  `GenericXLog`; see
+  [ARCHITECTURE.md](ARCHITECTURE.md#storage-and-wal)), `segment/`
+  (on-disk segments, merge, compression)
 - **Cross-cutting:** `debug/` (dump utilities), `mod.c` (init)
 
 ### Data Types
@@ -153,13 +153,15 @@ make format-single FILE=path/to/file.c  # format specific file
 | `pg_textsearch.bulk_load_threshold` | Terms/xact to trigger spill (0 = disable) | 100000 |
 | `pg_textsearch.memtable_pages_threshold` | Chain pages before auto-spill (0 = disable) | 64 |
 | `pg_textsearch.segments_per_level` | Segments before compaction | 8 |
+| `pg_textsearch.max_segment_size` | Conservative size budget for newly merged multi-source segments (1-4095MB) | 4095MB |
+| `pg_textsearch.compaction_request_function` | Schema-qualified function taking one `regclass`, invoked for indexes set to `compaction = 'background'` | (empty) |
 | `pg_textsearch.compress_segments` | Enable compression for new segment blocks | true |
 | `pg_textsearch.filtered_seed` | Seed the BM25 internal top-K from estimated filter selectivity so filtered top-k queries (`WHERE ... ORDER BY score LIMIT k`) avoid executor backoff re-drives. Results identical. | true |
 | `pg_textsearch.filtered_seed_margin` | Seed = `ceil(margin * LIMIT / selectivity)`. Higher captures the true top-k in one scoring pass more often, at the cost of scoring deeper. Range [1, 1000] | 3.0 |
 | `pg_textsearch.debug_panic_after_spill_finalize` | Trigger PANIC after spill finalize (testing only, superuser-only) | false |
 | `pg_textsearch.memtable_cache_enabled` | Serve query reads from the in-memory memtable cache instead of the on-disk chain (chain remains source of truth; standbys always use the chain) | true |
 | `pg_textsearch.log_cache_state` | Log in-memory cache apply outcomes (OK / BUDGET_EXCEEDED / cold_build / RETRY / ABORT / fall back to chain) | false |
-| `pg_textsearch.memory_limit` | Max shared memory (KB, `PGC_SIGHUP`) for the in-memory memtable cache. Three-tier budget: per-index soft cap (`limit/8`) → BUDGET_EXCEEDED + chain fallback; global soft cap (`limit/2`) → evict largest non-caller cache; global hard cap (`limit`) → refuse new cache builds. `0` = no limit. See `docs/memtable_cache.md` | 2 GB |
+| `pg_textsearch.memory_limit` | Approximate shared-memory budget (KB, `PGC_SIGHUP`) for the in-memory memtable cache. Three tiers: per-index per-record growth guard (`limit/8`) → BUDGET_EXCEEDED + chain fallback before a record crosses it; global soft cap (`limit/2`) → best-effort eviction of the largest non-caller cache; the global `limit` is an approximate admission threshold → catch-up or cold-build fallback when the entry-time estimate is already at the limit. Admitted or concurrent work may increase estimated usage past the limit. `0` = unlimited. | 2 GB |
 
 
 ### Index Options
@@ -169,6 +171,7 @@ make format-single FILE=path/to/file.c  # format specific file
 | `text_config` | Postgres text search configuration | (required) |
 | `k1` | BM25 term frequency saturation | 1.2 |
 | `b` | BM25 length normalization | 0.75 |
+| `compaction` | Spill-time compaction: `inline`, `background` (dispatch a callback at pre-commit), or `off`. Alterable with `ALTER INDEX ... SET` | inline |
 
 ## Test Structure
 
@@ -285,6 +288,27 @@ See [RELEASING.md](RELEASING.md) for release instructions.
 - `bm25_summarize_index(index_name)` - Shows high-level index statistics
 - `bm25_spill_index(index_name)` - Forces memtable spill to disk segment,
   returns number of entries spilled
+- `bm25_force_merge(index_name)` - Runs one bounded, copy-on-write
+  compaction pass, combining the largest adjacent groups that fit
+  `pg_textsearch.max_segment_size`. It does **not** guarantee a single
+  segment: large indexes may intentionally retain several immutable
+  segments, and an existing segment that already exceeds the budget
+  remains an uncombinable singleton. Published sources stay immutable
+  while replacements are built; displaced pages enter deferred reclaim
+  (see #380) rather than becoming immediately reusable.
+- `bm25_level_counts(idx regclass)` - Segments held at each of the eight
+  LSM levels
+- `bm25_needs_compaction(idx regclass)` - Whether any level holds at
+  least `segments_per_level` segments. Advisory only: a level whose
+  segments all exceed `max_segment_size` cannot be reduced but still
+  counts as full, so this must not be used on its own as a loop
+  condition. Drive loops from `bm25_compact_step()`'s return value.
+- `bm25_compact(idx regclass)` - Run compaction passes to completion
+  under one per-index exclusive lock. Requires index ownership. A
+  published pass is a physical change and is **not** undone by ROLLBACK.
+- `bm25_compact_step(idx regclass)` - Run at most one pass and report
+  whether one ran, letting a caller spread a cascade over several
+  transactions. Requires index ownership.
 - `bm25_pending_free_pages(index_name)` - Count displaced segment pages
   currently parked in the deferred-free tombstone chain (issue #380),
   awaiting standby-safe FSM reclaim
@@ -344,8 +368,8 @@ tables.
 - Wrap all lines at 79 characters
 - The L0 memtable is an on-disk chain of pages in the index relation
   (one chain per index). Mutated under standard buffer locks and
-  WAL-logged via `GenericXLog`. See
-  [`docs/memtable_v2.md`](docs/memtable_v2.md) before changing
+  WAL-logged via `GenericXLog`. Read
+  [ARCHITECTURE.md](ARCHITECTURE.md#storage-and-wal) before changing
   the write/read/spill flow.
 
 ### Pre-Commit Checklist

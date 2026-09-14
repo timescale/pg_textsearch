@@ -8,16 +8,13 @@
 
 #include <access/generic_xlog.h>
 #include <access/relation.h>
+#include <common/int.h>
 #include <miscadmin.h>
 #include <storage/bufmgr.h>
-#include <storage/indexfsm.h>
 #include <utils/memutils.h>
 #include <utils/timestamp.h>
 
-#include "access/am.h"
 #include "constants.h"
-#include "index/metapage.h"
-#include "index/state.h"
 #include "segment/alive_bitset.h"
 #include "segment/compression.h"
 #include "segment/dictionary.h"
@@ -28,7 +25,6 @@
 #include "segment/merge_internal.h"
 #include "segment/pagemapper.h"
 #include "segment/segment.h"
-#include "segment/tombstone.h"
 
 /* Sentinel for dead docs in old_to_new mapping */
 #define TP_MERGE_DOC_DEAD UINT32_MAX
@@ -993,7 +989,8 @@ write_merged_segment_to_sink(
 		int			   num_sources,
 		uint32		   target_level,
 		uint64		   total_tokens,
-		bool		   disjoint_sources)
+		bool		   disjoint_sources,
+		BlockNumber	   next_segment)
 {
 	TpSegmentHeader		header;
 	TpDictionary		dict;
@@ -1042,7 +1039,7 @@ write_merged_segment_to_sink(
 	header.num_pages	= 0;
 	header.num_terms	= num_terms;
 	header.level		= target_level;
-	header.next_segment = InvalidBlockNumber;
+	header.next_segment = next_segment;
 	header.num_docs		= docmap->num_docs;
 	header.total_tokens = total_tokens;
 	header.page_index	= InvalidBlockNumber;
@@ -1425,213 +1422,87 @@ write_merged_segment_to_sink(
 	tp_docmap_destroy(docmap);
 }
 
-/* ----------------------------------------------------------------
- * Level-based merge (uses pages sink)
- * ----------------------------------------------------------------
- */
-
-/*
- * Merge up to max_merge segments from the specified level into a
- * single segment at level+1.  Returns the new segment's header
- * block, or InvalidBlockNumber on failure.
- */
-BlockNumber
-tp_merge_level_segments(Relation index, uint32 level, uint32 max_merge)
+bool
+tp_merge_segment_batch(
+		Relation			   index,
+		const BlockNumber	  *source_roots,
+		uint32				   num_sources,
+		uint32				   output_level,
+		BlockNumber			   next_segment,
+		TpMergedSegmentResult *result)
 {
-	TpIndexMetaPage metap;
-	Buffer			metabuf;
-	Page			metapage;
-	BlockNumber		first_segment;
-	uint32			total_at_level;
-	uint32			segment_count;
-	TpMergeSource  *sources;
-	int				num_sources;
-	int				i;
-	BlockNumber		current;
-	BlockNumber		remainder_head; /* First unmerged segment */
-	TpMergedTerm   *merged_terms	 = NULL;
-	uint32			num_merged_terms = 0;
-	uint32			merged_capacity	 = 0;
-	uint64			total_tokens	 = 0;
-	uint64			src_num_docs_sum = 0; /* Σ source header.num_docs */
-	BlockNumber		new_segment;
-	MemoryContext	merge_ctx;
-	MemoryContext	old_ctx;
+	TpMergeSource *sources;
+	TpMergedTerm  *merged_terms		= NULL;
+	uint32		   num_merged_terms = 0;
+	uint32		   merged_capacity	= 0;
+	uint64		   total_tokens		= 0;
+	bool		   has_live_docs	= false;
+	MemoryContext  merge_ctx;
+	MemoryContext  old_ctx;
+	uint32		   i;
 
-	/* Page reclamation tracking (allocated outside merge context) */
-	BlockNumber **segment_pages		   = NULL; /* Array of page arrays */
-	uint32		 *segment_page_counts  = NULL; /* Count for each segment */
-	uint32		  num_segments_tracked = 0;
-	uint32		  total_pages_to_free  = 0;
+	Assert(num_sources > 0);
+	Assert(result != NULL);
 
-	if (level >= TP_MAX_LEVELS - 1)
-	{
-		elog(WARNING,
-			 "Cannot merge level %u - would exceed TP_MAX_LEVELS",
-			 level);
-		return InvalidBlockNumber;
-	}
+	memset(result, 0, sizeof(*result));
+	result->root = InvalidBlockNumber;
 
-	/*
-	 * Opportunistically return any already-past-horizon displaced
-	 * pages to the FSM so the tombstone chain doesn't grow unbounded
-	 * between vacuums.  The merge caller already holds the per-index
-	 * LWLock EXCLUSIVE end-to-end, so own_lock=false.  Use the most
-	 * conservative (NULL) horizon: it can only over-retain.
-	 */
-	{
-		uint32 drained = tp_tombstone_drain(
-				index, NULL, tp_reclaim_horizon(NULL), /* own_lock */ false);
+	if (num_sources > PG_INT32_MAX)
+		ereport(ERROR,
+				(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
+				 errmsg("cannot merge %u segments in one batch",
+						num_sources)));
 
-		if (drained > 0)
-			IndexFreeSpaceMapVacuum(index);
-	}
-
-	/* Read metapage to get segment chain */
-	metabuf = ReadBuffer(index, 0);
-	LockBuffer(metabuf, BUFFER_LOCK_SHARE);
-	metapage = BufferGetPage(metabuf);
-	metap	 = (TpIndexMetaPage)PageGetContents(metapage);
-
-	first_segment  = metap->level_heads[level];
-	total_at_level = metap->level_counts[level];
-
-	UnlockReleaseBuffer(metabuf);
-
-	if (first_segment == InvalidBlockNumber || total_at_level == 0)
-	{
-		return InvalidBlockNumber;
-	}
-
-	/*
-	 * Merge at most max_merge segments per batch.  For normal
-	 * compaction this is segments_per_level; for post-build
-	 * compaction it can be UINT32_MAX to merge everything.
-	 */
-	segment_count = Min(total_at_level, max_merge);
-
-	elog(DEBUG1,
-		 "Merging %u of %u segments at level %u",
-		 segment_count,
-		 total_at_level,
-		 level);
-
-	/*
-	 * Allocate page tracking arrays in current context (not merge context)
-	 * so they survive the merge context deletion.
-	 */
-	segment_pages = (BlockNumber **)palloc0(
-			sizeof(BlockNumber *) * segment_count);
-	segment_page_counts = palloc0(sizeof(uint32) * segment_count);
-
-	/* Create memory context for merge operation */
 	merge_ctx = AllocSetContextCreate(
-			CurrentMemoryContext, "Segment Merge", ALLOCSET_DEFAULT_SIZES);
+			CurrentMemoryContext,
+			"Segment Merge Batch",
+			ALLOCSET_DEFAULT_SIZES);
 	old_ctx = MemoryContextSwitchTo(merge_ctx);
+	sources = palloc0(sizeof(TpMergeSource) * num_sources);
 
-	/* Allocate array for merge sources */
-	sources		= palloc0(sizeof(TpMergeSource) * segment_count);
-	num_sources = 0;
-
-	/*
-	 * Walk the chain, consuming exactly segment_count segments.
-	 * Track segments_walked separately from num_sources because
-	 * merge_source_init can fail (e.g. empty segment), in which
-	 * case we still consumed the segment from the chain.
-	 */
+	for (i = 0; i < num_sources; i++)
 	{
-		uint32 segments_walked = 0;
+		uint64 source_tokens;
 
-		current = first_segment;
-		while (current != InvalidBlockNumber &&
-			   segments_walked < segment_count)
-		{
-			TpSegmentReader *reader;
-			BlockNumber		 next;
-			uint64			 seg_tokens;
+		if (!merge_source_init(&sources[i], index, source_roots[i]))
+			ereport(ERROR,
+					(errcode(ERRCODE_DATA_CORRUPTED),
+					 errmsg("could not open segment at block %u for merge",
+							source_roots[i])));
 
-			reader = tp_segment_open(index, current);
-			if (reader)
-			{
-				next	   = reader->header->next_segment;
-				seg_tokens = reader->header->total_tokens;
-				tp_segment_close(reader);
+		source_tokens = sources[i].reader->header->total_tokens;
+		if (pg_add_u64_overflow(total_tokens, source_tokens, &total_tokens))
+			ereport(ERROR,
+					(errcode(ERRCODE_DATA_CORRUPTED),
+					 errmsg("segment token count overflow while merging "
+							"index \"%s\"",
+							RelationGetRelationName(index))));
 
-				/*
-				 * Collect pages for later freeing (parent context).
-				 */
-				{
-					MemoryContext save_ctx = MemoryContextSwitchTo(old_ctx);
-					uint32		  page_count;
-
-					page_count = tp_segment_collect_pages(
-							index,
-							current,
-							&segment_pages[num_segments_tracked]);
-					segment_page_counts[num_segments_tracked] = page_count;
-					total_pages_to_free += page_count;
-					num_segments_tracked++;
-
-					MemoryContextSwitchTo(save_ctx);
-				}
-
-				if (merge_source_init(&sources[num_sources], index, current))
-				{
-					total_tokens += seg_tokens;
-					src_num_docs_sum +=
-							sources[num_sources].reader->header->num_docs;
-					num_sources++;
-				}
-
-				current = next;
-			}
-			else
-			{
-				break;
-			}
-			segments_walked++;
-		}
-
-		/* Update segment_count to reflect actual segments consumed */
-		segment_count = segments_walked;
+		if (sources[i].reader->header->alive_count > 0)
+			has_live_docs = true;
 	}
 
-	/* First unmerged segment (may be InvalidBlockNumber) */
-	remainder_head = current;
-
-	if (num_sources == 0)
+	if (!has_live_docs)
 	{
+		for (i = 0; i < num_sources; i++)
+			merge_source_close(&sources[i]);
+
 		MemoryContextSwitchTo(old_ctx);
 		MemoryContextDelete(merge_ctx);
-
-		/* Clean up page tracking arrays */
-		for (i = 0; i < (int)num_segments_tracked; i++)
-		{
-			if (segment_pages[i])
-				pfree(segment_pages[i]);
-		}
-		pfree((void *)segment_pages);
-		pfree(segment_page_counts);
-
-		return InvalidBlockNumber;
+		return false;
 	}
 
-	/* Perform N-way merge */
 	while (true)
 	{
 		int			  min_idx;
 		const char	 *min_term;
 		TpMergedTerm *current_merged;
 
-		/* Find source with smallest term */
-		min_idx = merge_find_min_source(sources, num_sources);
+		min_idx = merge_find_min_source(sources, (int)num_sources);
 		if (min_idx < 0)
-			break; /* All sources exhausted */
+			break;
 
 		min_term = sources[min_idx].current_term;
-
-		/* Grow merged terms array if needed (may exceed 1GB for large
-		 * corpora) */
 		if (num_merged_terms >= merged_capacity)
 		{
 			merged_capacity = merged_capacity == 0 ? 1024
@@ -1645,25 +1516,16 @@ tp_merge_level_segments(Relation index, uint32 level, uint32 max_merge)
 						merged_terms, merged_capacity * sizeof(TpMergedTerm));
 		}
 
-		/* Initialize new merged term */
 		current_merged					 = &merged_terms[num_merged_terms];
 		current_merged->term_len		 = strlen(min_term);
 		current_merged->term			 = pstrdup(min_term);
 		current_merged->segment_refs	 = NULL;
 		current_merged->num_segment_refs = 0;
 		current_merged->segment_refs_capacity = 0;
-		current_merged->posting_offset		  = 0; /* Set during write */
-		current_merged->posting_count		  = 0; /* Set during write */
+		current_merged->posting_offset		  = 0;
+		current_merged->posting_count		  = 0;
 		num_merged_terms++;
 
-		/*
-		 * Record which segments have this term (don't load postings yet).
-		 * IMPORTANT: Use current_merged->term (the pstrdup'd copy) for
-		 * comparison, NOT min_term. When we advance sources[min_idx],
-		 * merge_source_advance() frees sources[min_idx].current_term, which
-		 * min_term points to. Using min_term after that would be
-		 * use-after-free undefined behavior.
-		 */
 		for (i = 0; i < num_sources; i++)
 		{
 			if (sources[i].exhausted)
@@ -1671,23 +1533,27 @@ tp_merge_level_segments(Relation index, uint32 level, uint32 max_merge)
 
 			if (strcmp(sources[i].current_term, current_merged->term) == 0)
 			{
-				/* Record segment ref for later streaming merge */
 				merged_term_add_segment_ref(
-						current_merged, i, &sources[i].current_entry);
-
-				/* Advance this source to next term */
+						current_merged, (int)i, &sources[i].current_entry);
 				merge_source_advance(&sources[i]);
 			}
 		}
 
-		/* Check for interrupt */
 		CHECK_FOR_INTERRUPTS();
 	}
 
-	/* Write merged segment using pages sink */
-	if (num_merged_terms > 0)
+	if (num_merged_terms == 0)
+		ereport(ERROR,
+				(errcode(ERRCODE_DATA_CORRUPTED),
+				 errmsg("live merge sources in index \"%s\" contain no terms",
+						RelationGetRelationName(index))));
+
 	{
-		TpMergeSink sink;
+		TpMergeSink		 sink;
+		BlockNumber		 new_segment;
+		Buffer			 header_buf;
+		Page			 header_page;
+		TpSegmentHeader *header;
 
 		merge_sink_init_pages(&sink, index);
 		if (sink.writer.pages_allocated == 0)
@@ -1699,304 +1565,41 @@ tp_merge_level_segments(Relation index, uint32 level, uint32 max_merge)
 				merged_terms,
 				num_merged_terms,
 				sources,
-				num_sources,
-				level + 1,
+				(int)num_sources,
+				output_level,
 				total_tokens,
-				false);
+				false,
+				next_segment);
 
-		/* Free writer pages array */
-		if (sink.writer.pages)
-			pfree(sink.writer.pages);
+		header_buf = ReadBuffer(index, new_segment);
+		LockBuffer(header_buf, BUFFER_LOCK_SHARE);
+		header_page = BufferGetPage(header_buf);
+		header		= (TpSegmentHeader *)PageGetContents(header_page);
 
-		/* Free merged terms data */
-		for (i = 0; i < (int)num_merged_terms; i++)
+		if (header->magic != TP_SEGMENT_MAGIC ||
+			header->version != TP_SEGMENT_FORMAT_VERSION ||
+			header->level != output_level ||
+			header->next_segment != next_segment)
 		{
-			if (merged_terms[i].term)
-				pfree(merged_terms[i].term);
-			if (merged_terms[i].segment_refs)
-				pfree(merged_terms[i].segment_refs);
+			UnlockReleaseBuffer(header_buf);
+			ereport(ERROR,
+					(errcode(ERRCODE_INTERNAL_ERROR),
+					 errmsg("merged segment header was not finalized before "
+							"publication")));
 		}
-		pfree(merged_terms);
-	}
-	else
-	{
-		new_segment = InvalidBlockNumber;
+
+		result->root		 = new_segment;
+		result->num_pages	 = header->num_pages;
+		result->num_docs	 = header->num_docs;
+		result->total_tokens = header->total_tokens;
+		result->data_size	 = header->data_size;
+		UnlockReleaseBuffer(header_buf);
 	}
 
-	/* Close all sources (after write is done with them) */
 	for (i = 0; i < num_sources; i++)
-	{
 		merge_source_close(&sources[i]);
-	}
-	pfree(sources);
-
-	/*
-	 * Now that all source segment readers are closed (no more pinned buffers),
-	 * flush dirty buffers to ensure merged segment is durable before updating
-	 * the metapage.
-	 */
-	FlushRelationBuffers(index);
 
 	MemoryContextSwitchTo(old_ctx);
 	MemoryContextDelete(merge_ctx);
-
-	if (new_segment == InvalidBlockNumber)
-	{
-		/* Clean up page tracking arrays on failure */
-		for (i = 0; i < (int)num_segments_tracked; i++)
-		{
-			if (segment_pages[i])
-				pfree(segment_pages[i]);
-		}
-		pfree((void *)segment_pages);
-		pfree(segment_page_counts);
-
-		return InvalidBlockNumber;
-	}
-
-	/*
-	 * Update metapage: clear source level, add to target level, and
-	 * apply shrinkage if the merged segment dropped V5-bitset-dead
-	 * docs.  See TpIndexMetaPageData.total_docs in metapage.h for
-	 * the invariant total_docs = Σ segment.num_docs.
-	 *
-	 * Phase 4 unified the WAL-logged and UNLOGGED / TEMP paths
-	 * onto GenericXLog.  The standby's redo replays the page
-	 * bytes directly; serialization against in-flight scans is no
-	 * longer the rmgr's responsibility (#349) -- the chain_source
-	 * read path takes the per-index LWLock around the buffer
-	 * walk, so concurrent backend scans on the standby see a
-	 * consistent metapage snapshot.
-	 */
-	{
-		uint32 merged_docs	 = 0;
-		uint64 merged_tokens = 0;
-		uint64 docs_shrinkage;
-		uint64 tokens_shrinkage;
-
-		/* Read merged segment header for its num_docs / total_tokens. */
-		{
-			Buffer			 b = ReadBuffer(index, new_segment);
-			Page			 p;
-			TpSegmentHeader *h;
-
-			LockBuffer(b, BUFFER_LOCK_SHARE);
-			p			  = BufferGetPage(b);
-			h			  = (TpSegmentHeader *)PageGetContents(p);
-			merged_docs	  = h->num_docs;
-			merged_tokens = h->total_tokens;
-			UnlockReleaseBuffer(b);
-		}
-
-		docs_shrinkage	 = (src_num_docs_sum > (uint64)merged_docs)
-								 ? src_num_docs_sum - (uint64)merged_docs
-								 : 0;
-		tokens_shrinkage = (total_tokens > merged_tokens)
-								 ? total_tokens - merged_tokens
-								 : 0;
-
-		{
-			GenericXLogState *xlog_state;
-			Page			  meta_copy;
-			TpIndexMetaPage	  meta_ptr;
-			Buffer			  seg_buf	  = InvalidBuffer;
-			FullTransactionId merged_fxid = ReadNextFullTransactionId();
-			BlockNumber		  batch_head;
-
-			/*
-			 * Park the displaced pages BEFORE taking the metapage
-			 * lock.  The new tombstone pages are unreferenced until
-			 * we set pending_free_head in the swap record below, so
-			 * a crash here only leaks them (no corruption).  We hold
-			 * the per-index LWLock EXCLUSIVE for the whole merge, so
-			 * no concurrent merge can change pending_free_head
-			 * between this read and the swap record.
-			 */
-			{
-				BlockNumber *flat = palloc(
-						sizeof(BlockNumber) * Max(total_pages_to_free, 1));
-				uint32 n = 0;
-				int	   s;
-
-				for (s = 0; s < (int)num_segments_tracked; s++)
-				{
-					uint32 p;
-
-					for (p = 0; p < segment_page_counts[s]; p++)
-						flat[n++] = segment_pages[s][p];
-				}
-
-				batch_head = tp_tombstone_enqueue(
-						index,
-						flat,
-						n,
-						merged_fxid,
-						tp_tombstone_read_head(index));
-				pfree(flat);
-			}
-
-			metabuf = ReadBuffer(index, 0);
-			LockBuffer(metabuf, BUFFER_LOCK_EXCLUSIVE);
-
-			xlog_state = GenericXLogStart(index);
-			meta_copy  = GenericXLogRegisterBuffer(xlog_state, metabuf, 0);
-			tp_metapage_upgrade_to_current(index, meta_copy);
-			meta_ptr = (TpIndexMetaPage)PageGetContents(meta_copy);
-
-			meta_ptr->level_heads[level]  = remainder_head;
-			meta_ptr->level_counts[level] = total_at_level - segment_count;
-
-			if (meta_ptr->level_heads[level + 1] != InvalidBlockNumber)
-			{
-				Page			 seg_page;
-				TpSegmentHeader *seg_header;
-
-				seg_buf = ReadBuffer(index, new_segment);
-				LockBuffer(seg_buf, BUFFER_LOCK_EXCLUSIVE);
-				seg_page = GenericXLogRegisterBuffer(xlog_state, seg_buf, 0);
-				((PageHeader)seg_page)->pd_lower = BLCKSZ;
-				seg_header = (TpSegmentHeader *)PageGetContents(seg_page);
-				seg_header->next_segment = meta_ptr->level_heads[level + 1];
-			}
-
-			meta_ptr->level_heads[level + 1] = new_segment;
-			meta_ptr->level_counts[level + 1]++;
-
-			meta_ptr->total_docs = (meta_ptr->total_docs >= docs_shrinkage)
-										 ? meta_ptr->total_docs -
-												   docs_shrinkage
-										 : 0;
-			meta_ptr->total_len	 = (meta_ptr->total_len >= tokens_shrinkage)
-										 ? meta_ptr->total_len -
-												   tokens_shrinkage
-										 : 0;
-
-			/*
-			 * Prepend the freshly written batch (head = batch_head,
-			 * tail already chained to the old pending_free_head) to
-			 * the deferred-free chain.  This transitions the
-			 * displaced pages from "referenced by the level chain"
-			 * to "referenced by the tombstone list" atomically with
-			 * the level-swap, with no writes to the displaced data
-			 * pages.
-			 */
-			if (batch_head != InvalidBlockNumber)
-				meta_ptr->pending_free_head = batch_head;
-
-			GenericXLogFinish(xlog_state);
-			if (BufferIsValid(seg_buf))
-				UnlockReleaseBuffer(seg_buf);
-			UnlockReleaseBuffer(metabuf);
-		}
-	}
-
-	/*
-	 * The merged source segments' pages were parked in the tombstone
-	 * chain (set as pending_free_head in the swap record above), not
-	 * freed.  They are returned to the FSM by a later drain once their
-	 * merge horizon is past every standby snapshot.
-	 */
-
-	elog(DEBUG1,
-		 "Merged %u segments from L%u into L%u segment at block %u "
-		 "(%u terms, parked %u pages)",
-		 segment_count,
-		 level,
-		 level + 1,
-		 new_segment,
-		 num_merged_terms,
-		 total_pages_to_free);
-
-	/* Clean up page tracking arrays */
-	for (i = 0; i < (int)num_segments_tracked; i++)
-	{
-		if (segment_pages[i])
-			pfree(segment_pages[i]);
-	}
-	pfree((void *)segment_pages);
-	pfree(segment_page_counts);
-
-	return new_segment;
-}
-
-/*
- * Check if a level needs compaction and trigger merge if so.
- */
-void
-tp_maybe_compact_level(Relation index, uint32 level)
-{
-	TpIndexMetaPage metap;
-	Buffer			metabuf;
-	Page			metapage;
-	uint16			level_count;
-
-	if (level >= TP_MAX_LEVELS - 1)
-		return;
-
-	/* Check if level needs compaction */
-	metabuf = ReadBuffer(index, 0);
-	LockBuffer(metabuf, BUFFER_LOCK_SHARE);
-	metapage = BufferGetPage(metabuf);
-	metap	 = (TpIndexMetaPage)PageGetContents(metapage);
-
-	level_count = metap->level_counts[level];
-
-	UnlockReleaseBuffer(metabuf);
-
-	if (level_count < (uint16)tp_segments_per_level)
-		return; /* Level not full */
-
-	/*
-	 * Merge batches of segments_per_level until the level is
-	 * below threshold.  Each batch produces one segment at
-	 * level+1; after the loop we check if that level also needs
-	 * compaction.
-	 */
-	while (level_count >= (uint16)tp_segments_per_level)
-	{
-		if (tp_merge_level_segments(
-					index, level, (uint32)tp_segments_per_level) ==
-			InvalidBlockNumber)
-			break;
-
-		/* Re-read the level count after merge */
-		metabuf = ReadBuffer(index, 0);
-		LockBuffer(metabuf, BUFFER_LOCK_SHARE);
-		metapage	= BufferGetPage(metabuf);
-		metap		= (TpIndexMetaPage)PageGetContents(metapage);
-		level_count = metap->level_counts[level];
-		UnlockReleaseBuffer(metabuf);
-	}
-
-	/* Check if next level now needs compaction */
-	tp_maybe_compact_level(index, level + 1);
-}
-
-/*
- * Force-merge all segments into a single segment, à la Lucene's
- * forceMerge(1).  Merges ALL segments at each level in a single
- * batch, ignoring the segments_per_level threshold.
- */
-void
-tp_force_merge_all(Relation index)
-{
-	for (uint32 level = 0; level < TP_MAX_LEVELS - 1; level++)
-	{
-		Buffer			metabuf;
-		Page			metapage;
-		TpIndexMetaPage metap;
-		uint16			count;
-
-		metabuf = ReadBuffer(index, 0);
-		LockBuffer(metabuf, BUFFER_LOCK_SHARE);
-		metapage = BufferGetPage(metabuf);
-		metap	 = (TpIndexMetaPage)PageGetContents(metapage);
-		count	 = metap->level_counts[level];
-		UnlockReleaseBuffer(metabuf);
-
-		if (count < 2)
-			break; /* Nothing to merge at this level or above */
-
-		tp_merge_level_segments(index, level, UINT32_MAX);
-	}
+	return true;
 }

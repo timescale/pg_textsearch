@@ -10,7 +10,6 @@
  * records; queried by the cache TpDataSource.  The doclength
  * hash entry (TpDocLengthEntry) is colocated here because the
  * doclength table API + DSA storage are owned by this module.
- * See docs/memtable_cache.md.
  */
 #pragma once
 

@@ -247,8 +247,7 @@ tp_registry_shmem_startup(void)
 		 * In-memory memtable cache fields.  eviction_mutex
 		 * serializes evict_largest invocations across backends;
 		 * estimated_total_bytes is the live sum of per-index
-		 * cache estimated_bytes.  See
-		 * docs/memtable_cache.md §"Memory cap (3 tiers)".
+		 * cache estimated_bytes.
 		 */
 		LWLockInitialize(
 				&tapir_registry->eviction_mutex,
@@ -602,8 +601,7 @@ tp_registry_unregister(Oid index_oid)
 /*
  * Cache memory accounting accessors.  Both return pointers into
  * the shmem registry control struct, valid for the lifetime of
- * the postmaster.  See docs/memtable_cache.md §"Memory cap
- * (3 tiers)".
+ * the postmaster.
  */
 pg_atomic_uint64 *
 tp_registry_estimated_total_bytes(void)

@@ -43,13 +43,13 @@ typedef struct TpRegistryEntry
  * The actual entries are in a dshash stored in DSA.
  *
  * The eviction_mutex and estimated_total_bytes fields are part
- * of the in-memory memtable cache memory-cap protocol; see
- * docs/memtable_cache.md §"Memory cap (3 tiers)".  estimated_total_bytes
- * tracks the sum of TpMemtable.estimated_bytes across all registered
- * caches in this shmem segment; eviction_mutex serializes
- * tp_cache_evict_largest invocations (and DROP-time shared-state
- * teardown) so a victim's TpSharedIndexState cannot be dsa_freed
- * while another backend is inspecting it.
+ * of the in-memory memtable cache memory-cap protocol.
+ * estimated_total_bytes tracks the sum of TpMemtable.estimated_bytes
+ * across all registered caches in this shmem segment;
+ * eviction_mutex serializes tp_cache_evict_largest invocations
+ * (and DROP-time shared-state teardown) so a victim's
+ * TpSharedIndexState cannot be dsa_freed while another backend
+ * is inspecting it.
  */
 typedef struct TpGlobalRegistry
 {

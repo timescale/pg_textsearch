@@ -4,7 +4,7 @@
  *
  * stringtable.h — string interning hash table for the in-memory
  * memtable cache.  Maps interned terms to their DSA-resident
- * posting lists via dshash.  See docs/memtable_cache.md.
+ * posting lists via dshash.
  */
 #pragma once
 

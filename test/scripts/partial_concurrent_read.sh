@@ -112,10 +112,11 @@ writer() {
 }
 
 merger() {
+    local tag=$1
     for i in $(seq 1 200); do
         $PSQL -c "SELECT bm25_spill_index('docs_de_bm25');
                   SELECT bm25_force_merge('docs_de_bm25')" \
-          >>"${ERR_DIR}/merger.log" 2>&1 || return 30
+          >>"${ERR_DIR}/merger_${tag}.log" 2>&1 || return 30
     done
 }
 
@@ -135,16 +136,18 @@ reader() {
 }
 
 run_test() {
-    log "Running concurrent writer + merger + readers (standalone path)..."
+    log "Running concurrent writer + two mergers + readers (standalone path)..."
 
     writer & w_pid=$!
-    merger & m_pid=$!
+    merger a & ma_pid=$!
+    merger b & mb_pid=$!
     reader a & ra_pid=$!
     reader b & rb_pid=$!
 
     local failed=0
     wait $w_pid || { warn "writer failed"; failed=1; }
-    wait $m_pid || { warn "merger failed"; failed=1; }
+    wait $ma_pid || { warn "merger a failed"; failed=1; }
+    wait $mb_pid || { warn "merger b failed"; failed=1; }
     wait $ra_pid || { warn "reader a failed"; failed=1; }
     wait $rb_pid || { warn "reader b failed"; failed=1; }
 

@@ -30,12 +30,10 @@
  * (next_blkno, next_off) and reopening a fresh walker at that
  * position picks up exactly where the previous walker left off
  * — even across concurrent appends that extend the same tail
- * page or chain a new page.  See docs/memtable_cache.md
- * "The apply cursor" for the full rationale, including why
- * fragment-page allocation order (which can produce
- * BlockNumber(Tnew) < BlockNumber(Thead)) does not desync the
- * cursor: the walker follows logical links, never block-number
- * comparisons.
+ * page or chain a new page.  Fragment-page allocation order can
+ * produce BlockNumber(Tnew) < BlockNumber(Thead), but the cursor
+ * stays synchronized because the walker follows logical links,
+ * never block-number comparisons.
  *
  * Lifetime of out->vector_bytes: for inline records, the
  * pointer is into the buffer page the walker currently holds
