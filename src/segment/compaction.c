@@ -149,7 +149,7 @@ tp_estimate_physical_bytes(TpSegmentEstimate *estimate, bool *representable)
 		!tp_u64_add(bytes, contribution, &bytes))
 		return false;
 
-	if (estimate->docs > PG_UINT32_MAX - 7)
+	if (!tp_document_count_fits(estimate->docs))
 		*representable = false;
 	else if (!tp_u64_add(
 					 bytes,
@@ -171,10 +171,11 @@ tp_estimate_physical_bytes(TpSegmentEstimate *estimate, bool *representable)
 		!tp_u64_multiply(total_pages, BLCKSZ, &estimate->bytes))
 		return false;
 
-	if (estimate->docs > PG_UINT32_MAX || estimate->terms > PG_UINT32_MAX ||
-		estimate->string_bytes > PG_UINT32_MAX ||
-		estimate->skip_entries > PG_UINT32_MAX || data_pages > PG_UINT32_MAX ||
-		total_pages >= InvalidBlockNumber)
+	if (!tp_document_count_fits(estimate->docs) ||
+		estimate->terms > TP_MAX_DICTIONARY_TERMS ||
+		estimate->string_bytes > TP_MAX_STRING_POOL_BYTES ||
+		estimate->skip_entries > TP_MAX_GROWABLE_CAPACITY ||
+		data_pages > PG_UINT32_MAX || total_pages >= InvalidBlockNumber)
 		*representable = false;
 
 	return true;

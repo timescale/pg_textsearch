@@ -15,50 +15,56 @@
 
 #include "segment/segment.h"
 
-/*
- * Shared overflow guards for the segment write paths.
- *
- * The segment format stores string-pool offsets as uint32, and the
- * build/merge accumulators size their arrays with uint32 capacities.
- * The same arithmetic is needed by the in-memory build path, the
- * parallel-build BufFile path, the single-segment write path, and the
- * merge write path, so it lives here rather than being copied into
- * each of them (issue #432).
- */
+/* Shared overflow guards for segment writers. */
 
-/*
- * Size of one string-pool entry: a uint32 length prefix, the term
- * bytes, and the uint32 posting-list offset that follows them.
- */
+/* uint32 length, term bytes, and uint32 dictionary offset. */
 static inline uint64
 tp_string_pool_entry_size(uint32 term_len)
 {
 	return (uint64)sizeof(uint32) + term_len + sizeof(uint32);
 }
 
-/*
- * True when appending entry_size bytes at string_pos would push the
- * string pool past the uint32 offsets used by the segment format.
- * The starting offset and the increment are checked separately so a
- * final term crossing the limit cannot wrap past it unnoticed.
- */
+#define TP_MAX_STRING_POOL_BYTES ((uint64)PG_UINT32_MAX + 1)
+
+/* uint32 offsets can address every byte in a 4 GiB string pool. */
 static inline bool
 tp_string_pool_offset_overflows(uint64 string_pos, uint64 entry_size)
 {
 	return string_pos > (uint64)PG_UINT32_MAX ||
-		   entry_size > ((uint64)PG_UINT32_MAX + 1) - string_pos;
+		   entry_size > TP_MAX_STRING_POOL_BYTES - string_pos;
+}
+
+#define TP_MAX_DICTIONARY_TERMS \
+	((uint32)((uint64)PG_UINT32_MAX / sizeof(TpDictEntry) + 1))
+#define TP_MAX_GROWABLE_CAPACITY (PG_UINT32_MAX - 1)
+
+static inline bool
+tp_dictionary_offsets_fit(uint32 num_terms)
+{
+	return num_terms <= TP_MAX_DICTIONARY_TERMS;
+}
+
+static inline uint64
+tp_dictionary_size(uint32 num_terms)
+{
+	return (uint64)num_terms * sizeof(TpDictEntry);
+}
+
+static inline bool
+tp_document_count_fits(uint64 num_docs)
+{
+	return num_docs <= TP_MAX_GROWABLE_CAPACITY;
+}
+
+static inline uint64
+tp_posting_block_count(uint64 postings)
+{
+	return postings / TP_BLOCK_SIZE + (postings % TP_BLOCK_SIZE != 0);
 }
 
 /*
- * Double a uint32 array capacity without wrapping.
- *
- * Doubling a uint32 unchecked wraps to zero once the capacity passes
- * 2^31, which would "grow" the array to a zero-length allocation and
- * let the next indexed write run past its end.  Growth is clamped to
- * PG_UINT32_MAX - 1 instead (PG_UINT32_MAX is reserved as the doc_id
- * sentinel) and errors out once the cap is reached.  A zero capacity
- * starts the array at initial.  what names the elements being counted
- * for the error message.
+ * Double a uint32 capacity without wrapping, stopping at
+ * PG_UINT32_MAX - 1.
  */
 static inline uint32
 tp_grow_capacity(uint32 capacity, uint32 initial, const char *what)
@@ -66,15 +72,15 @@ tp_grow_capacity(uint32 capacity, uint32 initial, const char *what)
 	if (capacity == 0)
 		return initial;
 
-	if (capacity >= PG_UINT32_MAX - 1)
+	if (capacity >= TP_MAX_GROWABLE_CAPACITY)
 		ereport(ERROR,
 				(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
 				 errmsg("pg_textsearch: too many %s in segment (max %u)",
 						what,
-						PG_UINT32_MAX - 1)));
+						TP_MAX_GROWABLE_CAPACITY)));
 
-	if (capacity > (PG_UINT32_MAX - 1) / 2)
-		return PG_UINT32_MAX - 1;
+	if (capacity > TP_MAX_GROWABLE_CAPACITY / 2)
+		return TP_MAX_GROWABLE_CAPACITY;
 
 	return capacity * 2;
 }
@@ -164,7 +170,7 @@ extern void tp_segment_read(
 		TpSegmentReader *reader,
 		uint64			 logical_offset,
 		void			*dest,
-		uint32			 len);
+		uint64			 len);
 extern void tp_segment_close(TpSegmentReader *reader);
 
 /* Lazy CTID lookup for deferred resolution */

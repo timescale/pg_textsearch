@@ -22,6 +22,7 @@
 #include <access/xact.h>
 #include <catalog/index.h>
 #include <commands/progress.h>
+#include <common/int.h>
 #include <executor/executor.h>
 #include <miscadmin.h>
 #include <nodes/execnodes.h>
@@ -632,9 +633,18 @@ tp_build_parallel(
 		results = TpParallelWorkerResults(shared);
 		for (i = 0; i < launched; i++)
 		{
-			total_docs += results[i].total_docs;
+			if (pg_add_u64_overflow(
+						total_docs, results[i].total_docs, &total_docs))
+				ereport(ERROR,
+						(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
+						 errmsg("pg_textsearch: document count overflow")));
 			total_len += results[i].total_len;
 		}
+		if (!tp_document_count_fits(total_docs))
+			ereport(ERROR,
+					(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
+					 errmsg("pg_textsearch: segment exceeds %u documents",
+							TP_MAX_GROWABLE_CAPACITY)));
 	}
 
 	/* Report final tuple count */
@@ -743,6 +753,14 @@ tp_build_parallel(
 
 				min_term = sources[min_idx].current_term;
 
+				if (num_merged_terms >= TP_MAX_DICTIONARY_TERMS)
+					ereport(ERROR,
+							(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
+							 errmsg("pg_textsearch: segment dictionary "
+									"exceeds "
+									"%u terms",
+									TP_MAX_DICTIONARY_TERMS)));
+
 				if (num_merged_terms >= merged_capacity)
 				{
 					merged_capacity =
@@ -789,6 +807,8 @@ tp_build_parallel(
 			}
 
 			MemoryContextSwitchTo(old_ctx);
+
+			tp_validate_merged_terms(merged_terms, num_merged_terms);
 
 			/* Write single merged segment to index pages */
 			merge_sink_init_pages(&sink, index);

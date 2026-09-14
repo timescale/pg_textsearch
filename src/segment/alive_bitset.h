@@ -35,7 +35,7 @@ typedef struct TpAliveBitset
 static inline uint32
 tp_alive_bitset_size(uint32 num_docs)
 {
-	return (num_docs + 7) / 8;
+	return num_docs / 8 + (num_docs % 8 != 0);
 }
 
 /*
