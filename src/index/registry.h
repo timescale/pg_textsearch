@@ -58,6 +58,14 @@ typedef struct TpGlobalRegistry
 	dshash_table_handle registry_handle; /* Handle for the registry dshash */
 	LWLock				eviction_mutex;	 /* Serializes cache eviction */
 	pg_atomic_uint64	estimated_total_bytes; /* Σ per-index est bytes */
+	/*
+	 * PG19+: runtime LWLock tranche IDs, one per fixed TP_TRANCHE_*
+	 * constant, allocated once via LWLockNewTrancheId() at shmem startup
+	 * (LWLockRegisterTranche() no longer exists).  Indexed by
+	 * (fixed_id - TP_TRANCHE_FIRST); see tp_tranche_id().  Unused on
+	 * PG17/18, where fixed IDs are used directly.
+	 */
+	int tranche_ids[TP_TRANCHE_COUNT];
 } TpGlobalRegistry;
 
 /* Registry management functions */

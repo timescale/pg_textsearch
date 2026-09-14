@@ -104,7 +104,8 @@ tp_alloc_posting_list(dsa_area *dsa)
 
 	/* Initialize posting list */
 	memset(posting_list, 0, sizeof(TpPostingList));
-	LWLockInitialize(&posting_list->lock, TP_TRANCHE_POSTING_LOCK);
+	LWLockInitialize(
+			&posting_list->lock, tp_tranche_id(TP_TRANCHE_POSTING_LOCK));
 	posting_list->doc_count	 = 0;
 	posting_list->capacity	 = 0;
 	posting_list->is_sorted	 = false;
@@ -254,7 +255,7 @@ tp_doclength_table_create(dsa_area *area)
 	params.hash_function	= tp_doclength_hash_function;
 	params.compare_function = tp_doclength_compare_function;
 	params.copy_function	= tp_doclength_copy_function;
-	params.tranche_id		= TP_DOCLENGTH_HASH_TRANCHE_ID;
+	params.tranche_id		= tp_tranche_id(TP_DOCLENGTH_HASH_TRANCHE_ID);
 
 	return dshash_create(area, &params, area);
 }
@@ -272,7 +273,7 @@ tp_doclength_table_attach(dsa_area *area, dshash_table_handle handle)
 	params.hash_function	= tp_doclength_hash_function;
 	params.compare_function = tp_doclength_compare_function;
 	params.copy_function	= tp_doclength_copy_function;
-	params.tranche_id		= TP_DOCLENGTH_HASH_TRANCHE_ID;
+	params.tranche_id		= tp_tranche_id(TP_DOCLENGTH_HASH_TRANCHE_ID);
 
 	return dshash_attach(area, &params, handle, area);
 }
