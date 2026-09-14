@@ -14,6 +14,7 @@
  */
 #include <postgres.h>
 
+#include <access/genam.h>
 #include <fmgr.h>
 #include <funcapi.h>
 #include <lib/dshash.h>

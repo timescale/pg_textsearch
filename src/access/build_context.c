@@ -104,12 +104,15 @@ build_term_match(const void *key1, const void *key2, Size keysize)
 static void
 build_context_grow_docs(TpBuildContext *ctx)
 {
-	uint32 new_capacity = ctx->docs_capacity * 2;
+	uint32 new_capacity;
 
-	ctx->fieldnorms =
-			repalloc_huge(ctx->fieldnorms, new_capacity * sizeof(uint8));
-	ctx->ctids =
-			repalloc_huge(ctx->ctids, new_capacity * sizeof(ItemPointerData));
+	new_capacity = tp_grow_capacity(
+			ctx->docs_capacity, TP_BUILD_INITIAL_DOCS, "documents");
+
+	ctx->fieldnorms = repalloc_huge(
+			ctx->fieldnorms, mul_size((Size)new_capacity, sizeof(uint8)));
+	ctx->ctids = repalloc_huge(
+			ctx->ctids, mul_size((Size)new_capacity, sizeof(ItemPointerData)));
 	ctx->docs_capacity = new_capacity;
 }
 
@@ -249,6 +252,40 @@ tp_build_context_get_sorted_terms(TpBuildContext *ctx, uint32 *num_terms)
 	return terms;
 }
 
+static void
+validate_build_terms(TpBuildTermInfo *terms, uint32 num_terms)
+{
+	uint64 string_pos	= 0;
+	uint64 skip_entries = 0;
+	uint32 i;
+
+	if (!tp_dictionary_offsets_fit(num_terms))
+		ereport(ERROR,
+				(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
+				 errmsg("pg_textsearch: segment dictionary exceeds %u terms",
+						TP_MAX_DICTIONARY_TERMS)));
+
+	for (i = 0; i < num_terms; i++)
+	{
+		uint64 entry_size = tp_string_pool_entry_size(terms[i].term_len);
+		uint64 blocks	  = tp_posting_block_count(terms[i].doc_freq);
+
+		if (tp_string_pool_offset_overflows(string_pos, entry_size))
+			ereport(ERROR,
+					(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
+					 errmsg("pg_textsearch: segment string pool exceeds the "
+							"4 GiB format limit")));
+		string_pos += entry_size;
+
+		if (blocks > TP_MAX_GROWABLE_CAPACITY - skip_entries)
+			ereport(ERROR,
+					(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
+					 errmsg("pg_textsearch: segment exceeds %u posting blocks",
+							TP_MAX_GROWABLE_CAPACITY)));
+		skip_entries += blocks;
+	}
+}
+
 /*
  * Write a segment from the build context.
  *
@@ -295,6 +332,7 @@ tp_write_segment_from_build_ctx(TpBuildContext *ctx, Relation index)
 	terms = tp_build_context_get_sorted_terms(ctx, &num_terms);
 	if (num_terms == 0)
 		return InvalidBlockNumber;
+	validate_build_terms(terms, num_terms);
 
 	/* Initialize writer */
 	tp_segment_writer_init(&writer, index);
@@ -335,23 +373,18 @@ tp_write_segment_from_build_ctx(TpBuildContext *ctx, Relation index)
 	string_pos = 0;
 	for (i = 0; i < num_terms; i++)
 	{
-		/*
-		 * String-pool offsets are stored as uint32 in the segment
-		 * format.  Fail loudly before writing rather than silently
-		 * wrapping (issue #432).
-		 */
-		if (string_pos > PG_UINT32_MAX)
+		uint64 entry_size = tp_string_pool_entry_size(terms[i].term_len);
+
+		if (tp_string_pool_offset_overflows(string_pos, entry_size))
 			ereport(ERROR,
 					(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
-					 errmsg("pg_textsearch: segment string pool exceeds "
-							"the %u-byte format limit",
-							PG_UINT32_MAX),
+					 errmsg("pg_textsearch: segment string pool exceeds the "
+							"4 GiB format limit"),
 					 errhint("The corpus vocabulary is too large for a "
 							 "single segment.")));
 
 		string_offsets[i] = (uint32)string_pos;
-		string_pos += (uint64)sizeof(uint32) + terms[i].term_len +
-					  sizeof(uint32);
+		string_pos += entry_size;
 	}
 
 	/* Write string offsets array */
@@ -363,7 +396,7 @@ tp_write_segment_from_build_ctx(TpBuildContext *ctx, Relation index)
 	for (i = 0; i < num_terms; i++)
 	{
 		uint32 length	   = terms[i].term_len;
-		uint32 dict_offset = i * sizeof(TpDictEntry);
+		uint32 dict_offset = (uint32)((uint64)i * sizeof(TpDictEntry));
 
 		tp_segment_writer_write(&writer, &length, sizeof(uint32));
 		tp_segment_writer_write(&writer, terms[i].term, length);
@@ -419,7 +452,7 @@ tp_write_segment_from_build_ctx(TpBuildContext *ctx, Relation index)
 			continue;
 		}
 
-		num_blocks = (doc_count + TP_BLOCK_SIZE - 1) / TP_BLOCK_SIZE;
+		num_blocks				   = (uint32)tp_posting_block_count(doc_count);
 		term_blocks[i].block_count = num_blocks;
 
 		/* Initialize EXPULL reader for this term */
@@ -489,10 +522,13 @@ tp_write_segment_from_build_ctx(TpBuildContext *ctx, Relation index)
 			/* Accumulate skip entry */
 			if (skip_entries_count >= skip_entries_capacity)
 			{
-				skip_entries_capacity *= 2;
+				skip_entries_capacity = tp_grow_capacity(
+						skip_entries_capacity, 1024, "posting blocks");
 				all_skip_entries = repalloc_huge(
 						all_skip_entries,
-						skip_entries_capacity * sizeof(TpSkipEntry));
+						mul_size(
+								(Size)skip_entries_capacity,
+								sizeof(TpSkipEntry)));
 			}
 			all_skip_entries[skip_entries_count++] = skip;
 		}
@@ -781,6 +817,7 @@ tp_write_segment_to_buffile(TpBuildContext *ctx, BufFile *file)
 	terms = tp_build_context_get_sorted_terms(ctx, &num_terms);
 	if (num_terms == 0)
 		return 0;
+	validate_build_terms(terms, num_terms);
 
 	/* Record starting position for later seek-back */
 	BufFileTell(file, &base_fileno, &base_file_offset);
@@ -818,23 +855,18 @@ tp_write_segment_to_buffile(TpBuildContext *ctx, BufFile *file)
 	string_pos = 0;
 	for (i = 0; i < num_terms; i++)
 	{
-		/*
-		 * String-pool offsets are stored as uint32 in the segment
-		 * format.  Fail loudly before writing rather than silently
-		 * wrapping (issue #432).
-		 */
-		if (string_pos > PG_UINT32_MAX)
+		uint64 entry_size = tp_string_pool_entry_size(terms[i].term_len);
+
+		if (tp_string_pool_offset_overflows(string_pos, entry_size))
 			ereport(ERROR,
 					(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
-					 errmsg("pg_textsearch: segment string pool exceeds "
-							"the %u-byte format limit",
-							PG_UINT32_MAX),
+					 errmsg("pg_textsearch: segment string pool exceeds the "
+							"4 GiB format limit"),
 					 errhint("The corpus vocabulary is too large for a "
 							 "single segment.")));
 
 		string_offsets[i] = (uint32)string_pos;
-		string_pos += (uint64)sizeof(uint32) + terms[i].term_len +
-					  sizeof(uint32);
+		string_pos += entry_size;
 	}
 
 	/* Write string offsets array */
@@ -846,7 +878,7 @@ tp_write_segment_to_buffile(TpBuildContext *ctx, BufFile *file)
 	for (i = 0; i < num_terms; i++)
 	{
 		uint32 length	   = terms[i].term_len;
-		uint32 dict_offset = i * sizeof(TpDictEntry);
+		uint32 dict_offset = (uint32)((uint64)i * sizeof(TpDictEntry));
 
 		BufFileWrite(file, &length, sizeof(uint32));
 		BufFileWrite(file, terms[i].term, length);
@@ -901,7 +933,7 @@ tp_write_segment_to_buffile(TpBuildContext *ctx, BufFile *file)
 			continue;
 		}
 
-		num_blocks = (doc_count + TP_BLOCK_SIZE - 1) / TP_BLOCK_SIZE;
+		num_blocks				   = (uint32)tp_posting_block_count(doc_count);
 		term_blocks[i].block_count = num_blocks;
 
 		tp_expull_reader_init(&reader, ctx->arena, terms[i].expull);
@@ -963,10 +995,13 @@ tp_write_segment_to_buffile(TpBuildContext *ctx, BufFile *file)
 
 			if (skip_entries_count >= skip_entries_capacity)
 			{
-				skip_entries_capacity *= 2;
+				skip_entries_capacity = tp_grow_capacity(
+						skip_entries_capacity, 1024, "posting blocks");
 				all_skip_entries = repalloc_huge(
 						all_skip_entries,
-						skip_entries_capacity * sizeof(TpSkipEntry));
+						mul_size(
+								(Size)skip_entries_capacity,
+								sizeof(TpSkipEntry)));
 			}
 			all_skip_entries[skip_entries_count++] = skip;
 		}
@@ -1038,7 +1073,7 @@ tp_write_segment_to_buffile(TpBuildContext *ctx, BufFile *file)
 		BufFileTell(file, &end_fileno, &end_file_offset);
 
 		dict_entries = palloc_extended(
-				num_terms * sizeof(TpDictEntry), MCXT_ALLOC_HUGE);
+				tp_dictionary_size(num_terms), MCXT_ALLOC_HUGE);
 		for (i = 0; i < num_terms; i++)
 		{
 			dict_entries[i].skip_index_offset =
@@ -1062,7 +1097,7 @@ tp_write_segment_to_buffile(TpBuildContext *ctx, BufFile *file)
 					&dict_offset);
 			BufFileSeek(file, dict_fileno, dict_offset, SEEK_SET);
 		}
-		BufFileWrite(file, dict_entries, num_terms * sizeof(TpDictEntry));
+		BufFileWrite(file, dict_entries, tp_dictionary_size(num_terms));
 		pfree(dict_entries);
 
 		/* Seek back to header position */

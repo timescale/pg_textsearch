@@ -13,6 +13,12 @@ Modern ranked text search for Postgres.
 - Fast top-k queries with Block-Max WAND
 - Parallel index builds for large tables
 
+## PostgreSQL Version Compatibility
+
+pg_textsearch supports PostgreSQL 17 and 18. PostgreSQL 19 (beta) is
+supported on a best-effort basis while it is in beta; its CI is allowed
+to fail and prebuilt binaries are not published for it yet.
+
 ## Installation
 
 pg_textsearch supports PostgreSQL 17 and 18.

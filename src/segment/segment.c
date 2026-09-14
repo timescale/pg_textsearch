@@ -547,10 +547,10 @@ tp_segment_close(TpSegmentReader *reader)
 
 void
 tp_segment_read(
-		TpSegmentReader *reader, uint64 logical_offset, void *dest, uint32 len)
+		TpSegmentReader *reader, uint64 logical_offset, void *dest, uint64 len)
 {
 	char  *dest_ptr	  = (char *)dest;
-	uint32 bytes_read = 0;
+	uint64 bytes_read = 0;
 
 	/*
 	 * BufFile fast path: flat byte stream, no page boundaries.
@@ -578,7 +578,9 @@ tp_segment_read(
 		char  *src;
 
 		/* Calculate how much to read from this page */
-		to_read = Min(len - bytes_read, SEGMENT_DATA_PER_PAGE - page_offset);
+		to_read = (uint32)
+				Min(len - bytes_read,
+					(uint64)(SEGMENT_DATA_PER_PAGE - page_offset));
 
 		/* Check if we have the page in cache */
 		if (reader->current_logical_page != logical_page)
@@ -632,10 +634,7 @@ tp_segment_read(
 		/* Lock buffer for reading */
 		LockBuffer(buf, BUFFER_LOCK_SHARE);
 
-		/* Copy data from page
-		 * Data is stored starting at SizeOfPageHeaderData, so we need to add
-		 * that
-		 */
+		/* Segment payload starts after the page header. */
 		page = BufferGetPage(buf);
 		src	 = (char *)page + SizeOfPageHeaderData + page_offset;
 		memcpy(dest_ptr + bytes_read, src, to_read);
@@ -942,6 +941,40 @@ typedef struct TermBlockInfo
 	uint32 skip_entry_start; /* Index into accumulated skip entries array */
 } TermBlockInfo;
 
+static void
+validate_terms(TermInfo *terms, uint32 num_terms)
+{
+	uint64 string_pos	= 0;
+	uint64 skip_entries = 0;
+	uint32 i;
+
+	if (!tp_dictionary_offsets_fit(num_terms))
+		ereport(ERROR,
+				(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
+				 errmsg("pg_textsearch: segment dictionary exceeds %u terms",
+						TP_MAX_DICTIONARY_TERMS)));
+
+	for (i = 0; i < num_terms; i++)
+	{
+		uint64 entry_size = tp_string_pool_entry_size(terms[i].term_len);
+		uint64 blocks	  = tp_posting_block_count(terms[i].count);
+
+		if (tp_string_pool_offset_overflows(string_pos, entry_size))
+			ereport(ERROR,
+					(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
+					 errmsg("pg_textsearch: segment string pool exceeds the "
+							"4 GiB format limit")));
+		string_pos += entry_size;
+
+		if (blocks > TP_MAX_GROWABLE_CAPACITY - skip_entries)
+			ereport(ERROR,
+					(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
+					 errmsg("pg_textsearch: segment exceeds %u posting blocks",
+							TP_MAX_GROWABLE_CAPACITY)));
+		skip_entries += blocks;
+	}
+}
+
 /*
  * Write segment from a pre-built dictionary + docmap, e.g. produced
  * by walking the on-disk memtable chain via the chain source.
@@ -992,6 +1025,7 @@ tp_write_segment(
 
 	if (num_terms == 0)
 		return InvalidBlockNumber;
+	validate_terms(terms, num_terms);
 
 	/* Initialize writer with incremental page allocation */
 	tp_segment_writer_init(&writer, index);
@@ -1044,23 +1078,18 @@ tp_write_segment(
 	string_pos = 0;
 	for (i = 0; i < num_terms; i++)
 	{
-		/*
-		 * String-pool offsets are stored as uint32 in the segment
-		 * format.  Fail loudly before writing rather than silently
-		 * wrapping (issue #432).
-		 */
-		if (string_pos > PG_UINT32_MAX)
+		uint64 entry_size = tp_string_pool_entry_size(terms[i].term_len);
+
+		if (tp_string_pool_offset_overflows(string_pos, entry_size))
 			ereport(ERROR,
 					(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
-					 errmsg("pg_textsearch: segment string pool exceeds "
-							"the %u-byte format limit",
-							PG_UINT32_MAX),
+					 errmsg("pg_textsearch: segment string pool exceeds the "
+							"4 GiB format limit"),
 					 errhint("The corpus vocabulary is too large for a "
 							 "single segment.")));
 
 		string_offsets[i] = (uint32)string_pos;
-		string_pos += (uint64)sizeof(uint32) + terms[i].term_len +
-					  sizeof(uint32);
+		string_pos += entry_size;
 	}
 
 	/* Write string offsets array */
@@ -1072,7 +1101,7 @@ tp_write_segment(
 	for (i = 0; i < num_terms; i++)
 	{
 		uint32 length	   = terms[i].term_len;
-		uint32 dict_offset = i * sizeof(TpDictEntry);
+		uint32 dict_offset = (uint32)((uint64)i * sizeof(TpDictEntry));
 
 		tp_segment_writer_write(&writer, &length, sizeof(uint32));
 		tp_segment_writer_write(&writer, terms[i].term, length);
@@ -1124,8 +1153,7 @@ tp_write_segment(
 			continue;
 		}
 
-		/* Calculate number of blocks (always >= 1 since doc_count > 0 here) */
-		num_blocks = (doc_count + TP_BLOCK_SIZE - 1) / TP_BLOCK_SIZE;
+		num_blocks				   = (uint32)tp_posting_block_count(doc_count);
 		term_blocks[i].block_count = num_blocks;
 
 		/* Convert postings to block format */
@@ -1243,10 +1271,13 @@ tp_write_segment(
 			/* Accumulate skip entry */
 			if (skip_entries_count >= skip_entries_capacity)
 			{
-				skip_entries_capacity *= 2;
+				skip_entries_capacity = tp_grow_capacity(
+						skip_entries_capacity, 1024, "posting blocks");
 				all_skip_entries = repalloc_huge(
 						all_skip_entries,
-						skip_entries_capacity * sizeof(TpSkipEntry));
+						mul_size(
+								(Size)skip_entries_capacity,
+								sizeof(TpSkipEntry)));
 			}
 			all_skip_entries[skip_entries_count++] = skip;
 		}

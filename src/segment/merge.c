@@ -73,10 +73,10 @@ merge_sink_write(TpMergeSink *sink, const void *data, Size size)
  */
 static void
 merge_sink_write_at(
-		TpMergeSink *sink, uint64 offset, const void *data, uint32 size)
+		TpMergeSink *sink, uint64 offset, const void *data, uint64 size)
 {
 	const char *src		  = (const char *)data;
-	uint32		remaining = size;
+	uint64		remaining = size;
 	uint64		pos		  = offset;
 
 	while (remaining > 0)
@@ -84,7 +84,7 @@ merge_sink_write_at(
 		uint32			  logical_pg = tp_logical_page(pos);
 		uint32			  pg_off	 = tp_page_offset(pos);
 		uint32			  avail		 = SEGMENT_DATA_PER_PAGE - pg_off;
-		uint32			  chunk		 = Min(remaining, avail);
+		uint32			  chunk		 = (uint32)Min(remaining, (uint64)avail);
 		BlockNumber		  physical_block;
 		Buffer			  buf;
 		Page			  page;
@@ -693,6 +693,11 @@ build_merged_docmap(
 			continue;
 		}
 
+		if (!tp_document_count_fits((uint64)total_docs + ms->num_docs))
+			ereport(ERROR,
+					(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
+					 errmsg("pg_textsearch: segment exceeds %u documents",
+							TP_MAX_GROWABLE_CAPACITY)));
 		total_docs += ms->num_docs;
 		mapping->old_to_new[i] = palloc_extended(
 				ms->num_docs * sizeof(uint32), MCXT_ALLOC_HUGE);
@@ -971,6 +976,59 @@ free_term_posting_sources(TpPostingMergeSource *psources, int num_psources)
  * ----------------------------------------------------------------
  */
 
+void
+tp_validate_merged_terms(TpMergedTerm *terms, uint32 num_terms)
+{
+	uint64 string_pos	= 0;
+	uint64 skip_entries = 0;
+	uint32 i;
+
+	if (!tp_dictionary_offsets_fit(num_terms))
+		ereport(ERROR,
+				(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
+				 errmsg("pg_textsearch: segment dictionary exceeds %u terms",
+						TP_MAX_DICTIONARY_TERMS)));
+
+	for (i = 0; i < num_terms; i++)
+	{
+		uint64 entry_size	 = tp_string_pool_entry_size(terms[i].term_len);
+		uint64 term_postings = 0;
+		uint64 blocks;
+		uint32 ref;
+
+		if (tp_string_pool_offset_overflows(string_pos, entry_size))
+			ereport(ERROR,
+					(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
+					 errmsg("pg_textsearch: merged string pool exceeds 4 "
+							"GiB")));
+		string_pos += entry_size;
+
+		for (ref = 0; ref < terms[i].num_segment_refs; ref++)
+		{
+			if (pg_add_u64_overflow(
+						term_postings,
+						terms[i].segment_refs[ref].entry.doc_freq,
+						&term_postings))
+				ereport(ERROR,
+						(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
+						 errmsg("pg_textsearch: posting count overflow")));
+		}
+		if (!tp_document_count_fits(term_postings))
+			ereport(ERROR,
+					(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
+					 errmsg("pg_textsearch: term exceeds %u postings",
+							TP_MAX_GROWABLE_CAPACITY)));
+
+		blocks = tp_posting_block_count(term_postings);
+		if (blocks > TP_MAX_GROWABLE_CAPACITY - skip_entries)
+			ereport(ERROR,
+					(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
+					 errmsg("pg_textsearch: segment exceeds %u posting blocks",
+							TP_MAX_GROWABLE_CAPACITY)));
+		skip_entries += blocks;
+	}
+}
+
 /*
  * Write a merged segment to pages via sink.
  *
@@ -1008,6 +1066,11 @@ write_merged_segment_to_sink(
 
 	if (num_terms == 0)
 		return;
+	if (!tp_dictionary_offsets_fit(num_terms))
+		ereport(ERROR,
+				(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
+				 errmsg("pg_textsearch: segment dictionary exceeds %u terms",
+						TP_MAX_DICTIONARY_TERMS)));
 
 	/* Build docmap and direct mapping arrays from source segments */
 	docmap = build_merged_docmap(
@@ -1061,24 +1124,18 @@ write_merged_segment_to_sink(
 	string_pos = 0;
 	for (i = 0; i < num_terms; i++)
 	{
-		/*
-		 * String-pool offsets are stored as uint32 in the segment
-		 * format.  Fail loudly before writing rather than silently
-		 * wrapping and producing a segment that reads from the wrong
-		 * place (issue #432).
-		 */
-		if (string_pos > PG_UINT32_MAX)
+		uint64 entry_size = tp_string_pool_entry_size(terms[i].term_len);
+
+		if (tp_string_pool_offset_overflows(string_pos, entry_size))
 			ereport(ERROR,
 					(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
 					 errmsg("pg_textsearch: merged segment string pool "
-							"exceeds the %u-byte format limit",
-							PG_UINT32_MAX),
+							"exceeds the 4 GiB format limit"),
 					 errhint("The corpus vocabulary is too large for a "
 							 "single segment.")));
 
 		string_offsets[i] = (uint32)string_pos;
-		string_pos += (uint64)sizeof(uint32) + terms[i].term_len +
-					  sizeof(uint32);
+		string_pos += entry_size;
 	}
 
 	/* Write string offsets array */
@@ -1089,7 +1146,7 @@ write_merged_segment_to_sink(
 	for (i = 0; i < num_terms; i++)
 	{
 		uint32 length	   = terms[i].term_len;
-		uint32 dict_offset = i * sizeof(TpDictEntry);
+		uint32 dict_offset = (uint32)((uint64)i * sizeof(TpDictEntry));
 
 		merge_sink_write(sink, &length, sizeof(uint32));
 		merge_sink_write(sink, terms[i].term, length);
@@ -1170,10 +1227,13 @@ write_merged_segment_to_sink(
                                                                                 \
 		if (skip_entries_count >= skip_entries_capacity)                        \
 		{                                                                       \
-			skip_entries_capacity *= 2;                                         \
+			skip_entries_capacity = tp_grow_capacity(                           \
+					skip_entries_capacity, 1024, "posting blocks");             \
 			all_skip_entries = repalloc_huge(                                   \
 					all_skip_entries,                                           \
-					skip_entries_capacity * sizeof(TpSkipEntry));               \
+					mul_size(                                                   \
+							(Size)skip_entries_capacity,                        \
+							sizeof(TpSkipEntry)));                              \
 		}                                                                       \
 		all_skip_entries[skip_entries_count++] = skip_;                         \
 		(num_blocks)++;                                                         \
@@ -1390,7 +1450,7 @@ write_merged_segment_to_sink(
 		TpDictEntry *dict_entries;
 
 		dict_entries = palloc_extended(
-				num_terms * sizeof(TpDictEntry), MCXT_ALLOC_HUGE);
+				tp_dictionary_size(num_terms), MCXT_ALLOC_HUGE);
 		for (i = 0; i < num_terms; i++)
 		{
 			dict_entries[i].skip_index_offset =
@@ -1405,7 +1465,7 @@ write_merged_segment_to_sink(
 				sink,
 				header.entries_offset,
 				dict_entries,
-				num_terms * sizeof(TpDictEntry));
+				tp_dictionary_size(num_terms));
 		pfree(dict_entries);
 	}
 
@@ -1503,17 +1563,24 @@ tp_merge_segment_batch(
 			break;
 
 		min_term = sources[min_idx].current_term;
+		if (num_merged_terms >= TP_MAX_DICTIONARY_TERMS)
+			ereport(ERROR,
+					(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
+					 errmsg("pg_textsearch: segment dictionary exceeds %u "
+							"terms",
+							TP_MAX_DICTIONARY_TERMS)));
+
 		if (num_merged_terms >= merged_capacity)
 		{
-			merged_capacity = merged_capacity == 0 ? 1024
-												   : merged_capacity * 2;
+			merged_capacity = tp_grow_capacity(merged_capacity, 1024, "terms");
 			if (merged_terms == NULL)
 				merged_terms = palloc_extended(
-						merged_capacity * sizeof(TpMergedTerm),
+						mul_size((Size)merged_capacity, sizeof(TpMergedTerm)),
 						MCXT_ALLOC_HUGE);
 			else
 				merged_terms = repalloc_huge(
-						merged_terms, merged_capacity * sizeof(TpMergedTerm));
+						merged_terms,
+						mul_size((Size)merged_capacity, sizeof(TpMergedTerm)));
 		}
 
 		current_merged					 = &merged_terms[num_merged_terms];
@@ -1547,6 +1614,8 @@ tp_merge_segment_batch(
 				(errcode(ERRCODE_DATA_CORRUPTED),
 				 errmsg("live merge sources in index \"%s\" contain no terms",
 						RelationGetRelationName(index))));
+
+	tp_validate_merged_terms(merged_terms, num_merged_terms);
 
 	{
 		TpMergeSink		 sink;
