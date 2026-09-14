@@ -122,11 +122,11 @@ test-segment-io-limits:
 		test/scripts/segment_io_limits_test.c \
 		-o "$$tmp_dir/segment_io_limits_test"; \
 	"$$tmp_dir/segment_io_limits_test"
+
 # Run source-level guards with every regression entry point.
 installcheck: test-compaction-ownercheck test-compaction-request-source \
 	test-segment-io-limits
 test-local: test-compaction-ownercheck test-compaction-request-source \
-	test-segment-io-limits
 	test-segment-io-limits
 
 # Custom local test target with dedicated PostgreSQL instance
