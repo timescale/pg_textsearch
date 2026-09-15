@@ -320,6 +320,8 @@ typedef struct TpReindexState
 {
 	MemoryContext		   context;
 	List				  *targets;
+	ReindexObjectType	   scope_kind;
+	Oid					   scope_oid;
 	bool				   reconciling;
 	bool				   defer_reconciliation;
 	bool				   post_publication;
@@ -341,6 +343,8 @@ typedef struct TpReindexCandidate
 	TpReindexTarget *target;
 	Oid				 index_oid;
 } TpReindexCandidate;
+
+static void tp_reindex_add_targets(TpReindexState *state, List *indexoids);
 
 typedef TpCompactionJobIdentity TpOwnerChangeTarget;
 
@@ -1993,7 +1997,10 @@ tp_reindex_index_lookup_callback(
 
 static List *
 tp_reindex_initial_indexes(
-		ReindexStmt *stmt, bool *tracks_commits, bool is_top_level)
+		ReindexStmt *stmt,
+		bool		*tracks_commits,
+		bool		 is_top_level,
+		Oid			*scope_oid)
 {
 	TpReindexIndexLookupState lookup_state;
 	LOCKMODE				  relation_lockmode;
@@ -2014,6 +2021,7 @@ tp_reindex_initial_indexes(
 			return NIL;
 		}
 		*tracks_commits = true;
+		*scope_oid		= namespace_oid;
 		return tp_namespace_bm25_indexes(namespace_oid);
 	}
 
@@ -2038,6 +2046,7 @@ tp_reindex_initial_indexes(
 			return NIL;
 		}
 		*tracks_commits = true;
+		*scope_oid		= MyDatabaseId;
 		return tp_all_bm25_indexes(InvalidOid, false, NIL, false);
 	}
 
@@ -2695,35 +2704,29 @@ tp_reconcile_attached_index_options(Oid parent_index_oid)
 
 static TpReindexState *
 tp_reindex_tracking_begin(
-		List *indexoids, bool defer_reconciliation, bool post_publication)
+		List			 *indexoids,
+		ReindexObjectType scope_kind,
+		Oid				  scope_oid,
+		bool			  defer_reconciliation,
+		bool			  post_publication)
 {
 	MemoryContext	caller_context = CurrentMemoryContext;
 	MemoryContext	context;
 	TpReindexState *state = NULL;
-	ListCell	   *lc;
 
 	context = AllocSetContextCreate(
 			TopMemoryContext, "pg_textsearch reindex", ALLOCSET_SMALL_SIZES);
 	PG_TRY();
 	{
-		state			= MemoryContextAllocZero(context, sizeof(*state));
-		state->context	= context;
-		state->previous = tp_reindex_states;
+		state			  = MemoryContextAllocZero(context, sizeof(*state));
+		state->context	  = context;
+		state->previous	  = tp_reindex_states;
+		state->scope_kind = scope_kind;
+		state->scope_oid  = scope_oid;
 		state->defer_reconciliation = defer_reconciliation;
 		state->post_publication		= post_publication;
 
-		foreach (lc, indexoids)
-		{
-			Oid				 indexoid = lfirst_oid(lc);
-			TpReindexTarget *target;
-			MemoryContext	 old_context;
-
-			old_context = MemoryContextSwitchTo(context);
-			target		= palloc0(sizeof(*target));
-			tp_compaction_job_capture(indexoid, target);
-			state->targets = lappend(state->targets, target);
-			MemoryContextSwitchTo(old_context);
-		}
+		tp_reindex_add_targets(state, indexoids);
 	}
 	PG_CATCH();
 	{
@@ -2733,7 +2736,7 @@ tp_reindex_tracking_begin(
 	}
 	PG_END_TRY();
 
-	if (state->targets == NIL)
+	if (state->targets == NIL && !OidIsValid(state->scope_oid))
 	{
 		MemoryContextDelete(context);
 		return NULL;
@@ -2741,6 +2744,87 @@ tp_reindex_tracking_begin(
 
 	tp_reindex_states = state;
 	return state;
+}
+
+static bool
+tp_reindex_target_equals(
+		const TpReindexTarget *left, const TpReindexTarget *right)
+{
+	if (left->index_oid == right->index_oid)
+		return true;
+	return left->heap_oid == right->heap_oid && left->lineage != NULL &&
+		   right->lineage != NULL &&
+		   strcmp(left->lineage, right->lineage) == 0;
+}
+
+static void
+tp_reindex_add_targets(TpReindexState *state, List *indexoids)
+{
+	ListCell *lc;
+
+	foreach (lc, indexoids)
+	{
+		Oid				 indexoid = lfirst_oid(lc);
+		TpReindexTarget *target;
+		MemoryContext	 old_context;
+		ListCell		*target_cell;
+		bool			 duplicate = false;
+
+		foreach (target_cell, state->targets)
+		{
+			TpReindexTarget *existing = lfirst(target_cell);
+
+			if (existing->index_oid == indexoid)
+			{
+				duplicate = true;
+				break;
+			}
+		}
+		if (duplicate)
+			continue;
+
+		old_context = MemoryContextSwitchTo(state->context);
+		target		= palloc0(sizeof(*target));
+		tp_compaction_job_capture(indexoid, target);
+		foreach (target_cell, state->targets)
+		{
+			if (tp_reindex_target_equals(lfirst(target_cell), target))
+			{
+				duplicate = true;
+				break;
+			}
+		}
+		if (duplicate)
+		{
+			tp_reset_compaction_identity(target);
+			pfree(target);
+		}
+		else
+			state->targets = lappend(state->targets, target);
+		MemoryContextSwitchTo(old_context);
+	}
+}
+
+static void
+tp_reindex_refresh_scope_targets(TpReindexState *state)
+{
+	List *indexoids;
+	List *candidates;
+
+	if (!OidIsValid(state->scope_oid))
+		return;
+
+	if (state->scope_kind == REINDEX_OBJECT_SCHEMA)
+		indexoids = tp_namespace_bm25_indexes(state->scope_oid);
+	else
+	{
+		Assert(state->scope_kind == REINDEX_OBJECT_DATABASE);
+		indexoids = tp_all_bm25_indexes(InvalidOid, false, NIL, false);
+	}
+	candidates = tp_physical_bm25_indexes(indexoids, true);
+	tp_reindex_add_targets(state, candidates);
+	list_free(candidates);
+	list_free(indexoids);
 }
 
 static Relation
@@ -2907,6 +2991,7 @@ tp_collect_reindex_state_intents(bool include_deferred)
 		if (state->reconciling ||
 			(state->defer_reconciliation && !include_deferred))
 			continue;
+		tp_reindex_refresh_scope_targets(state);
 		if (state->post_publication)
 			tp_post_publication_reconciliation = true;
 		if (tp_reindex_collect_candidates(state, &candidates, &indexoids))
@@ -3479,7 +3564,8 @@ tp_process_tracked_rewrite(
 
 	(void)nowait;
 	candidates	  = tp_physical_bm25_indexes(indexoids, true);
-	rewrite_state = tp_reindex_tracking_begin(candidates, false, false);
+	rewrite_state = tp_reindex_tracking_begin(
+			candidates, REINDEX_OBJECT_INDEX, InvalidOid, false, false);
 	list_free(candidates);
 	list_free(indexoids);
 
@@ -4218,6 +4304,7 @@ tp_process_utility_impl(
 		bool			tracks_commits;
 		TpReindexState *reindex_state = NULL;
 		bool			is_top_level  = context == PROCESS_UTILITY_TOPLEVEL;
+		Oid				scope_oid	  = InvalidOid;
 
 		tp_reindex_preflight(stmt, is_top_level);
 		if (stmt->kind == REINDEX_OBJECT_SCHEMA ||
@@ -4225,7 +4312,7 @@ tp_process_utility_impl(
 			PreventInTransactionBlock(is_top_level, "REINDEX");
 
 		indexoids = tp_reindex_initial_indexes(
-				stmt, &tracks_commits, is_top_level);
+				stmt, &tracks_commits, is_top_level, &scope_oid);
 
 		PG_TRY();
 		{
@@ -4235,8 +4322,9 @@ tp_process_utility_impl(
 
 				reindex_state = tp_reindex_tracking_begin(
 						candidates,
-						stmt->kind == REINDEX_OBJECT_SCHEMA ||
-								stmt->kind == REINDEX_OBJECT_DATABASE,
+						stmt->kind,
+						scope_oid,
+						OidIsValid(scope_oid),
 						true);
 				list_free(candidates);
 			}
