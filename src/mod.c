@@ -322,6 +322,7 @@ typedef struct TpReindexState
 	List				  *targets;
 	bool				   reconciling;
 	bool				   defer_reconciliation;
+	bool				   post_publication;
 	struct TpReindexState *previous;
 } TpReindexState;
 
@@ -411,6 +412,7 @@ static void tp_process_utility_impl(
 		QueryCompletion		 *qc);
 static void tp_collect_reindex_state_intents(bool include_deferred);
 static bool tp_reconcile_managed_intents(void);
+static void tp_reconcile_managed_intents_at_precommit(void);
 
 static void
 tp_validate_compaction_lineage(const char *lineage)
@@ -917,10 +919,16 @@ tp_update_managed_intent(
 	bool current_options_authoritative =
 			(intent->flags & (TP_MANAGED_INTENT_REFRESH_DEFAULT |
 							  TP_MANAGED_INTENT_RECONCILE_OPTIONS)) != 0;
+	bool pending_option_reconciliation =
+			(intent->flags & TP_MANAGED_INTENT_RECONCILE_OPTIONS) != 0;
 	int persistent_flags = (intent->flags | flags) &
 						   TP_MANAGED_INTENT_LINEAGE_SUPPLIED;
+	int new_mode_flags = flags & mode_flags;
 
-	intent->flags = persistent_flags | (flags & mode_flags);
+	if ((flags & TP_MANAGED_INTENT_PRESERVE_SCHEDULE) != 0 &&
+		pending_option_reconciliation)
+		new_mode_flags |= TP_MANAGED_INTENT_RECONCILE_OPTIONS;
+	intent->flags = persistent_flags | new_mode_flags;
 	if ((flags & TP_MANAGED_INTENT_RECONCILE_OPTIONS) != 0)
 	{
 		tp_replace_managed_string(&intent->schedule, schedule);
@@ -937,6 +945,9 @@ tp_update_managed_intent(
 		if (source != NULL)
 		{
 			tp_copy_compaction_identity(&intent->source, source);
+			if (pending_option_reconciliation)
+				tp_replace_managed_string(
+						&intent->source.schedule, intent->schedule);
 			if (current_options_authoritative)
 				intent->source.schedule_resolved = true;
 		}
@@ -944,12 +955,13 @@ tp_update_managed_intent(
 }
 
 static void
-tp_collect_managed_intent(
+tp_collect_managed_intent_internal(
 		Oid							   indexoid,
 		const TpCompactionJobIdentity *source,
 		const char					  *schedule,
 		const char					  *lineage,
-		int							   flags)
+		int							   flags,
+		bool						   validate_relation)
 {
 	MemoryContext		  old_context;
 	SubTransactionId	  subid	 = GetCurrentSubTransactionId();
@@ -960,10 +972,20 @@ tp_collect_managed_intent(
 	if (!OidIsValid(indexoid))
 		return;
 
-	index_rel = try_relation_open(indexoid, AccessShareLock);
-	if (index_rel == NULL)
-		return;
-	if (RelationUsesLocalBuffers(index_rel))
+	if (validate_relation)
+	{
+		index_rel = try_relation_open(indexoid, AccessShareLock);
+		if (index_rel == NULL)
+			return;
+		if (!RelationUsesLocalBuffers(index_rel))
+		{
+			relation_close(index_rel, AccessShareLock);
+			index_rel = NULL;
+		}
+	}
+	else
+		index_rel = NULL;
+	if (index_rel != NULL)
 	{
 		relation_close(index_rel, AccessShareLock);
 		ereport(ERROR,
@@ -971,7 +993,6 @@ tp_collect_managed_intent(
 				 errmsg("background compaction is not supported for "
 						"temporary indexes")));
 	}
-	relation_close(index_rel, AccessShareLock);
 
 	if (tp_managed_intent_context == NULL)
 		tp_managed_intent_context = AllocSetContextCreate(
@@ -1000,6 +1021,30 @@ tp_collect_managed_intent(
 	}
 	tp_update_managed_intent(intent, source, schedule, lineage, flags);
 	MemoryContextSwitchTo(old_context);
+}
+
+static void
+tp_collect_managed_intent(
+		Oid							   indexoid,
+		const TpCompactionJobIdentity *source,
+		const char					  *schedule,
+		const char					  *lineage,
+		int							   flags)
+{
+	tp_collect_managed_intent_internal(
+			indexoid, source, schedule, lineage, flags, true);
+}
+
+static void
+tp_collect_prevalidated_managed_intent(
+		Oid							   indexoid,
+		const TpCompactionJobIdentity *source,
+		const char					  *schedule,
+		const char					  *lineage,
+		int							   flags)
+{
+	tp_collect_managed_intent_internal(
+			indexoid, source, schedule, lineage, flags, false);
 }
 
 static void
@@ -1239,7 +1284,7 @@ tp_xact_callback(XactEvent event, void *arg pg_attribute_unused())
 		 * spill to disk to prevent unbounded memory growth.
 		 */
 		tp_bulk_load_spill_check();
-		tp_reconcile_managed_intents();
+		tp_reconcile_managed_intents_at_precommit();
 		tp_compaction_flush_requests();
 		break;
 
@@ -2294,7 +2339,9 @@ tp_reconcile_managed_intents(void)
 		}
 		list_free(locked);
 		if (tp_managed_intents != NIL)
-			deferred = true;
+			ereport(ERROR,
+					(errmsg("cannot execute DDL during background compaction "
+							"reconciliation")));
 		if (deferred)
 			ereport(WARNING,
 					(errmsg("background compaction lifecycle reconciliation "
@@ -2322,6 +2369,70 @@ tp_reconcile_managed_intents(void)
 	PG_END_TRY();
 
 	return true;
+}
+
+static void
+tp_reconcile_managed_intents_at_precommit(void)
+{
+	MemoryContext old_context = CurrentMemoryContext;
+	ResourceOwner old_owner	  = CurrentResourceOwner;
+	ListCell	 *lc;
+	bool		  post_publication = false;
+
+	foreach (lc, tp_managed_intents)
+	{
+		TpManagedIndexIntent *intent = lfirst(lc);
+
+		if ((intent->flags & TP_MANAGED_INTENT_POST_PUBLICATION) != 0)
+		{
+			post_publication = true;
+			break;
+		}
+	}
+	if (!post_publication)
+	{
+		tp_reconcile_managed_intents();
+		return;
+	}
+
+	BeginInternalSubTransaction(NULL);
+	PG_TRY();
+	{
+		MemoryContextSwitchTo(old_context);
+		tp_reconcile_managed_intents();
+		ReleaseCurrentSubTransaction();
+		MemoryContextSwitchTo(old_context);
+		CurrentResourceOwner = old_owner;
+	}
+	PG_CATCH();
+	{
+		ErrorData *edata;
+
+		MemoryContextSwitchTo(old_context);
+		edata = CopyErrorData();
+		FlushErrorState();
+		RollbackAndReleaseCurrentSubTransaction();
+		MemoryContextSwitchTo(old_context);
+		CurrentResourceOwner = old_owner;
+		tp_reset_managed_intents();
+		if (edata->elevel >= FATAL ||
+			edata->sqlerrcode == ERRCODE_QUERY_CANCELED ||
+			edata->sqlerrcode == ERRCODE_ADMIN_SHUTDOWN ||
+			edata->sqlerrcode == ERRCODE_CRASH_SHUTDOWN ||
+			edata->sqlerrcode == ERRCODE_CANNOT_CONNECT_NOW)
+			ReThrowError(edata);
+		ereport(WARNING,
+				(errmsg("background compaction lifecycle reconciliation was "
+						"deferred"),
+				 errdetail(
+						 "Managed reconciliation failed after core "
+						 "publication: %s.",
+						 edata->message),
+				 errhint("Repeat the managed DDL after correcting the "
+						 "reported condition.")));
+		FreeErrorData(edata);
+	}
+	PG_END_TRY();
 }
 
 static void
@@ -2580,7 +2691,8 @@ tp_reconcile_attached_index_options(Oid parent_index_oid)
 }
 
 static TpReindexState *
-tp_reindex_tracking_begin(List *indexoids, bool defer_reconciliation)
+tp_reindex_tracking_begin(
+		List *indexoids, bool defer_reconciliation, bool post_publication)
 {
 	MemoryContext	caller_context = CurrentMemoryContext;
 	MemoryContext	context;
@@ -2595,6 +2707,7 @@ tp_reindex_tracking_begin(List *indexoids, bool defer_reconciliation)
 		state->context	= context;
 		state->previous = tp_reindex_states;
 		state->defer_reconciliation = defer_reconciliation;
+		state->post_publication		= post_publication;
 
 		foreach (lc, indexoids)
 		{
@@ -2627,6 +2740,31 @@ tp_reindex_tracking_begin(List *indexoids, bool defer_reconciliation)
 	return state;
 }
 
+static Relation
+tp_reindex_try_relation_open(Oid relation_oid, bool *contended)
+{
+	Relation relation;
+
+	if (!ConditionalLockRelationOid(relation_oid, AccessShareLock))
+	{
+		*contended = true;
+		return NULL;
+	}
+	relation = try_relation_open(relation_oid, NoLock);
+	if (relation == NULL)
+		UnlockRelationOid(relation_oid, AccessShareLock);
+	return relation;
+}
+
+static void
+tp_reindex_relation_close(Relation relation)
+{
+	Oid relation_oid = RelationGetRelid(relation);
+
+	relation_close(relation, NoLock);
+	UnlockRelationOid(relation_oid, AccessShareLock);
+}
+
 static void
 tp_reindex_target_refresh_identity(
 		TpReindexState *state, TpReindexTarget *target, Relation index_rel)
@@ -2657,19 +2795,20 @@ tp_reindex_target_live_original(
 		TpReindexTarget *target,
 		Oid				*indexoid,
 		Oid				*tablespace_oid,
-		RelFileNumber	*relfilenumber)
+		RelFileNumber	*relfilenumber,
+		bool			*contended)
 {
 	Relation index_rel;
 
 	*indexoid = InvalidOid;
-	index_rel = try_relation_open(target->index_oid, AccessShareLock);
+	index_rel = tp_reindex_try_relation_open(target->index_oid, contended);
 	if (index_rel == NULL)
 		return false;
 
 	if (index_rel->rd_rel->relkind != RELKIND_INDEX ||
 		!tp_reindex_target_matches(target, index_rel))
 	{
-		relation_close(index_rel, AccessShareLock);
+		tp_reindex_relation_close(index_rel);
 		return false;
 	}
 
@@ -2681,7 +2820,7 @@ tp_reindex_target_live_original(
 	if (!index_rel->rd_index->indisvalid || !index_rel->rd_index->indisready ||
 		!index_rel->rd_index->indislive)
 	{
-		relation_close(index_rel, AccessShareLock);
+		tp_reindex_relation_close(index_rel);
 		return false;
 	}
 
@@ -2692,15 +2831,16 @@ tp_reindex_target_live_original(
 		*tablespace_oid = index_rel->rd_locator.spcOid;
 		*relfilenumber	= index_rel->rd_locator.relNumber;
 	}
-	relation_close(index_rel, AccessShareLock);
+	tp_reindex_relation_close(index_rel);
 	return true;
 }
 
-static void
+static bool
 tp_reindex_collect_candidates(
 		TpReindexState *state, List **candidates, List **indexoids)
 {
 	ListCell *lc;
+	bool	  contended = false;
 
 	foreach (lc, state->targets)
 	{
@@ -2712,25 +2852,30 @@ tp_reindex_collect_candidates(
 		RelFileNumber		relfilenumber;
 
 		if (!tp_reindex_target_live_original(
-					state, target, &indexoid, &tablespace_oid, &relfilenumber))
+					state,
+					target,
+					&indexoid,
+					&tablespace_oid,
+					&relfilenumber,
+					&contended))
 		{
 			indexoid = get_relname_relid(
 					target->index_name, target->namespace_oid);
 			if (!OidIsValid(indexoid))
 				continue;
 
-			index_rel = try_relation_open(indexoid, AccessShareLock);
+			index_rel = tp_reindex_try_relation_open(indexoid, &contended);
 			if (index_rel == NULL)
 				continue;
 			if (!tp_is_background_physical_index_relation(index_rel) ||
 				!tp_reindex_target_matches(target, index_rel))
 			{
-				relation_close(index_rel, AccessShareLock);
+				tp_reindex_relation_close(index_rel);
 				continue;
 			}
 
 			tp_reindex_target_refresh_identity(state, target, index_rel);
-			relation_close(index_rel, AccessShareLock);
+			tp_reindex_relation_close(index_rel);
 		}
 
 		if (!OidIsValid(indexoid))
@@ -2742,6 +2887,7 @@ tp_reindex_collect_candidates(
 		*candidates			 = lappend(*candidates, candidate);
 		*indexoids			 = lappend_oid(*indexoids, indexoid);
 	}
+	return contended;
 }
 
 static void
@@ -2751,20 +2897,31 @@ tp_collect_reindex_state_intents(bool include_deferred)
 	List		   *indexoids  = NIL;
 	ListCell	   *lc;
 	TpReindexState *state;
+	bool			deferred = false;
 
 	for (state = tp_reindex_states; state != NULL; state = state->previous)
 	{
 		if (state->reconciling ||
 			(state->defer_reconciliation && !include_deferred))
 			continue;
-		tp_reindex_collect_candidates(state, &candidates, &indexoids);
+		if (tp_reindex_collect_candidates(state, &candidates, &indexoids))
+		{
+			if (!state->post_publication)
+				ereport(ERROR,
+						(errcode(ERRCODE_LOCK_NOT_AVAILABLE),
+						 errmsg("could not inspect a managed index after "
+								"physical rewrite"),
+						 errhint("Retry the command after the conflicting "
+								 "transaction completes.")));
+			deferred = true;
+		}
 	}
 
 	foreach (lc, candidates)
 	{
 		TpReindexCandidate *candidate = lfirst(lc);
 
-		tp_collect_managed_intent(
+		tp_collect_prevalidated_managed_intent(
 				candidate->index_oid,
 				candidate->target,
 				NULL,
@@ -2774,6 +2931,15 @@ tp_collect_reindex_state_intents(bool include_deferred)
 	}
 	list_free(indexoids);
 	list_free_deep(candidates);
+	if (deferred)
+		ereport(WARNING,
+				(errmsg("background compaction lifecycle reconciliation was "
+						"deferred"),
+				 errdetail(
+						 "A published managed index could not be inspected "
+						 "without waiting."),
+				 errhint("Repeat the managed DDL after the conflicting "
+						 "transaction completes.")));
 }
 
 static void
@@ -3259,7 +3425,7 @@ tp_process_tracked_rewrite(
 
 	(void)nowait;
 	candidates	  = tp_physical_bm25_indexes(indexoids, true);
-	rewrite_state = tp_reindex_tracking_begin(candidates, false);
+	rewrite_state = tp_reindex_tracking_begin(candidates, false, false);
 	list_free(candidates);
 	list_free(indexoids);
 
@@ -3511,6 +3677,11 @@ call_next_process_utility(
 		DestReceiver		 *dest,
 		QueryCompletion		 *qc)
 {
+	if (tp_managed_reconciling && !IsA(pstmt->utilityStmt, GrantStmt))
+		ereport(ERROR,
+				(errmsg("cannot execute DDL during background compaction "
+						"reconciliation")));
+
 	tp_process_utility_depth++;
 	PG_TRY();
 	{
@@ -4010,7 +4181,8 @@ tp_process_utility_impl(
 				reindex_state = tp_reindex_tracking_begin(
 						candidates,
 						stmt->kind == REINDEX_OBJECT_SCHEMA ||
-								stmt->kind == REINDEX_OBJECT_DATABASE);
+								stmt->kind == REINDEX_OBJECT_DATABASE,
+						true);
 				list_free(candidates);
 			}
 			list_free(indexoids);

@@ -85,6 +85,12 @@ tp_compaction_dependency_lock_held(void)
 
 	if (!OidIsValid(bm25_am_oid))
 		return false;
+	return tp_compaction_dependency_oid_lock_held(bm25_am_oid);
+}
+
+bool
+tp_compaction_dependency_oid_lock_held(Oid bm25_am_oid)
+{
 	return tp_compaction_lock_held(bm25_am_oid, 0, ShareRowExclusiveLock);
 }
 
@@ -128,6 +134,12 @@ tp_try_lock_compaction_dependency(void)
 {
 	Oid bm25_am_oid = get_index_am_oid("bm25", false);
 
+	return tp_try_lock_compaction_dependency_oid(bm25_am_oid);
+}
+
+bool
+tp_try_lock_compaction_dependency_oid(Oid bm25_am_oid)
+{
 	return tp_take_compaction_lock(
 			bm25_am_oid, 0, ShareRowExclusiveLock, true);
 }
@@ -137,6 +149,12 @@ tp_unlock_compaction_dependency(void)
 {
 	Oid bm25_am_oid = get_index_am_oid("bm25", false);
 
+	tp_unlock_compaction_dependency_oid(bm25_am_oid);
+}
+
+void
+tp_unlock_compaction_dependency_oid(Oid bm25_am_oid)
+{
 	UnlockDatabaseObject(
 			AccessMethodRelationId, bm25_am_oid, 0, ShareRowExclusiveLock);
 }
