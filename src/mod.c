@@ -159,6 +159,7 @@ typedef struct TpProcessUtilityContext
 	bool							retain_rls_ddl_lock;
 	bool							allow_rls;
 	bool							rls_ddl_lock_acquired;
+	LOCKMODE						rls_ddl_lock_mode;
 	Oid								rls_ddl_lock_object;
 	List						   *altered_relids;
 	List						   *hierarchy_relids;
@@ -183,19 +184,24 @@ tp_rls_note_bm25_build(void)
 }
 
 /*
- * All protected DDL takes the same exclusive lock so nested utility commands
- * cannot deadlock while upgrading from a shared policy lock.  The
- * session-owned lock survives internal commits in concurrent and
- * multi-relation index commands.  After a real protected change completes,
- * a transaction-owned copy covers the interval through the caller's eventual
- * commit.
+ * Commands allowed to create an RLS/BM25 combination take a shared lock;
+ * commands enforcing the restriction take an exclusive lock.  Session
+ * ownership survives internal commits.  After a real protected change
+ * completes, transaction ownership covers the interval through the caller's
+ * eventual commit.
+ *
+ * Nested acquisition without an inherited lock, or an exclusive request while
+ * this backend holds only a shared lock, must not wait.  Either case can
+ * invert lock order with an outer command or deadlock with another backend
+ * upgrading the same lock.
  */
 static Oid
-acquire_rls_ddl_lock(bool dont_wait)
+acquire_rls_ddl_lock(LOCKMODE lockmode, bool nested)
 {
 	LOCKTAG			  tag;
 	LockAcquireResult result;
 	Oid				  extension_oid;
+	bool			  dont_wait;
 
 	extension_oid = get_extension_oid("pg_textsearch", true);
 	if (!OidIsValid(extension_oid))
@@ -203,7 +209,11 @@ acquire_rls_ddl_lock(bool dont_wait)
 
 	SET_LOCKTAG_OBJECT(
 			tag, MyDatabaseId, ExtensionRelationId, extension_oid, 0);
-	result = LockAcquire(&tag, ExclusiveLock, true, dont_wait);
+	dont_wait = (lockmode == ExclusiveLock &&
+				 LockHeldByMe(&tag, ShareLock, false) &&
+				 !LockHeldByMe(&tag, ExclusiveLock, true)) ||
+				(nested && !LockHeldByMe(&tag, lockmode, true));
+	result = LockAcquire(&tag, lockmode, true, dont_wait);
 	if (result == LOCKACQUIRE_NOT_AVAIL)
 		ereport(ERROR,
 				(errcode(ERRCODE_LOCK_NOT_AVAILABLE),
@@ -217,30 +227,16 @@ acquire_rls_ddl_lock(bool dont_wait)
 }
 
 static void
-release_rls_ddl_lock(Oid extension_oid, bool keep_transaction_lock)
+release_rls_ddl_lock(
+		Oid extension_oid, LOCKMODE lockmode, bool keep_transaction_lock)
 {
 	LOCKTAG tag;
 
 	SET_LOCKTAG_OBJECT(
 			tag, MyDatabaseId, ExtensionRelationId, extension_oid, 0);
 	if (keep_transaction_lock)
-		(void)LockAcquire(&tag, ExclusiveLock, false, false);
-	(void)LockRelease(&tag, ExclusiveLock, true);
-}
-
-static bool
-enclosing_utility_holds_rls_ddl_lock(TpProcessUtilityContext *utility_context)
-{
-	TpProcessUtilityContext *enclosing = utility_context->previous;
-
-	while (enclosing != NULL)
-	{
-		if (enclosing->rls_ddl_lock_acquired)
-			return true;
-		enclosing = enclosing->previous;
-	}
-
-	return false;
+		(void)LockAcquire(&tag, lockmode, false, false);
+	(void)LockRelease(&tag, lockmode, true);
 }
 
 /* Shared memory size calculation */
@@ -1011,12 +1007,12 @@ tp_process_utility(
 	{
 		if (utility_context->serialize_rls_ddl)
 		{
-			bool dont_wait = utility_context->previous != NULL &&
-							 !enclosing_utility_holds_rls_ddl_lock(
-									 utility_context);
-
+			utility_context->rls_ddl_lock_mode	 = utility_context->allow_rls
+														 ? ShareLock
+														 : ExclusiveLock;
 			utility_context->rls_ddl_lock_object = acquire_rls_ddl_lock(
-					dont_wait);
+					utility_context->rls_ddl_lock_mode,
+					utility_context->previous != NULL);
 			utility_context->rls_ddl_lock_acquired = OidIsValid(
 					utility_context->rls_ddl_lock_object);
 		}
@@ -1043,6 +1039,7 @@ tp_process_utility(
 		{
 			release_rls_ddl_lock(
 					utility_context->rls_ddl_lock_object,
+					utility_context->rls_ddl_lock_mode,
 					utility_context->retain_rls_ddl_lock);
 			utility_context->rls_ddl_lock_acquired = false;
 		}
@@ -1057,7 +1054,10 @@ tp_process_utility(
 		current_utility_context = utility_context->previous;
 		if (utility_context->rls_ddl_lock_acquired)
 		{
-			release_rls_ddl_lock(utility_context->rls_ddl_lock_object, false);
+			release_rls_ddl_lock(
+					utility_context->rls_ddl_lock_object,
+					utility_context->rls_ddl_lock_mode,
+					false);
 			utility_context->rls_ddl_lock_acquired = false;
 		}
 		pfree(utility_context);

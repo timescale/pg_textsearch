@@ -242,7 +242,7 @@ wait_for_true "
               FROM pg_extension
               WHERE extname = 'pg_textsearch'
           )
-          AND l.mode = 'ExclusiveLock'
+          AND l.mode = 'ShareLock'
           AND l.granted
     );
 " "session A to hold the policy lock"
@@ -258,36 +258,29 @@ PGAPPNAME=rls-upgrade-session-b \
     > "${SESSION_B_OUTPUT}" 2>&1 &
 SESSION_B_PID=$!
 
-wait_for_true "
-    SELECT EXISTS (
-        SELECT 1
-        FROM pg_stat_activity AS a
-        JOIN pg_locks AS l ON l.pid = a.pid
-        WHERE a.application_name = 'rls-upgrade-session-b'
-          AND l.locktype = 'object'
-          AND l.classid = 'pg_extension'::regclass
-          AND l.objid = (
-              SELECT oid
-              FROM pg_extension
-              WHERE extname = 'pg_textsearch'
-          )
-          AND l.mode = 'ExclusiveLock'
-          AND NOT l.granted
-    );
-" "session B to wait on the policy lock"
-
 set +e
-wait "${SESSION_A_PID}"
-session_a_status=$?
-SESSION_A_PID=
 wait "${SESSION_B_PID}"
 session_b_status=$?
 SESSION_B_PID=
+wait "${SESSION_A_PID}"
+session_a_status=$?
+SESSION_A_PID=
 set -e
 
-if [ "${session_a_status}" -ne 0 ] || [ "${session_b_status}" -ne 0 ]; then
+if [ "${session_a_status}" -ne 0 ] || [ "${session_b_status}" -eq 0 ]; then
+    echo "Nested RLS policy lock upgrade did not fail safely" >&2
+    cat "${SESSION_A_OUTPUT}" "${SESSION_B_OUTPUT}" >&2
+    exit 1
+fi
+if grep -q "deadlock detected" "${SESSION_A_OUTPUT}" "${SESSION_B_OUTPUT}"; then
     echo "Nested RLS policy lock upgrade deadlocked" >&2
     cat "${SESSION_A_OUTPUT}" "${SESSION_B_OUTPUT}" >&2
+    exit 1
+fi
+if ! grep -q "could not acquire the pg_textsearch RLS DDL lock" \
+    "${SESSION_B_OUTPUT}"; then
+    echo "Nested RLS policy lock upgrade did not report lock contention" >&2
+    cat "${SESSION_B_OUTPUT}" >&2
     exit 1
 fi
 
@@ -647,7 +640,7 @@ BEGIN
                   FROM pg_extension
                   WHERE extname = 'pg_textsearch'
               )
-              AND mode = 'ExclusiveLock'
+              AND mode = 'ShareLock'
               AND granted
         ) THEN
             RAISE EXCEPTION
