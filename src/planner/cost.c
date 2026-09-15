@@ -184,11 +184,8 @@ tp_costestimate(
 	bool			boolean_full_scan = false;
 	TSQuery			boolean_query	  = NULL;
 
-	/*
-	 * Boolean filtering and ranked scans are separate execution modes.
-	 * Multiple Boolean keys and combined filtering/ranking are follow-ups.
-	 */
-	if ((!has_orderby && !has_boolean) || (has_orderby && has_boolean) ||
+	/* Multiple Boolean keys remain unsupported. */
+	if ((!has_orderby && !has_boolean) ||
 		(has_boolean && list_length(path->indexclauses) != 1))
 	{
 		tp_disable_index_path(
@@ -201,7 +198,7 @@ tp_costestimate(
 		return;
 	}
 
-	if (has_boolean)
+	if (has_boolean && !has_orderby)
 	{
 		if (!tp_boolean_get_constant_query(path, &boolean_query))
 			boolean_full_scan = true;
@@ -295,8 +292,9 @@ tp_costestimate(
 							  ? costs.indexTotalCost +
 										cpu_operator_cost * num_tuples
 							  : costs.indexTotalCost * TP_INDEX_SCAN_COST_FACTOR;
-	*indexStartupCost = has_boolean ? *indexTotalCost
-									: costs.indexStartupCost + 0.01;
+	*indexStartupCost = has_boolean && !has_orderby
+							  ? *indexTotalCost
+							  : costs.indexStartupCost + 0.01;
 
 	/*
 	 * Calculate selectivity based on LIMIT if available, otherwise default
