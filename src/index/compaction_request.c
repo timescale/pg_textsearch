@@ -10,9 +10,13 @@
 #include <access/htup_details.h>
 #include <access/parallel.h>
 #include <access/relation.h>
+#include <access/reloptions.h>
 #include <access/table.h>
 #include <access/xact.h>
+#include <catalog/catalog.h>
 #include <catalog/index.h>
+#include <catalog/indexing.h>
+#include <catalog/objectaccess.h>
 #include <catalog/partition.h>
 #include <catalog/pg_am_d.h>
 #include <catalog/pg_class.h>
@@ -522,6 +526,68 @@ tp_ensure_index_compaction_lineage(Oid indexoid, bool *created)
 	return lineage;
 }
 
+static void
+tp_set_partitioned_index_compaction_options(
+		Relation index_rel, List *set_options, bool reset_schedule)
+{
+	Relation  class_rel;
+	HeapTuple tuple;
+	HeapTuple new_tuple;
+	Datum	  old_options;
+	Datum	  new_options;
+	Datum	  values[Natts_pg_class];
+	bool	  isnull;
+	bool	  nulls[Natts_pg_class];
+	bool	  replaces[Natts_pg_class];
+
+	class_rel = table_open(RelationRelationId, RowExclusiveLock);
+	tuple	  = SearchSysCacheLocked1(
+			RELOID, ObjectIdGetDatum(RelationGetRelid(index_rel)));
+	if (!HeapTupleIsValid(tuple))
+		elog(ERROR,
+			 "cache lookup failed for relation %u",
+			 RelationGetRelid(index_rel));
+
+	old_options =
+			SysCacheGetAttr(RELOID, tuple, Anum_pg_class_reloptions, &isnull);
+	new_options = transformRelOptions(
+			isnull ? (Datum)0 : old_options,
+			set_options,
+			NULL,
+			NULL,
+			false,
+			false);
+	if (reset_schedule)
+		new_options = transformRelOptions(
+				new_options,
+				list_make1(makeDefElem("compaction_schedule", NULL, -1)),
+				NULL,
+				NULL,
+				false,
+				true);
+	(void)index_reloptions(index_rel->rd_indam->amoptions, new_options, true);
+
+	memset(values, 0, sizeof(values));
+	memset(nulls, false, sizeof(nulls));
+	memset(replaces, false, sizeof(replaces));
+	if (new_options != (Datum)0)
+		values[Anum_pg_class_reloptions - 1] = new_options;
+	else
+		nulls[Anum_pg_class_reloptions - 1] = true;
+	replaces[Anum_pg_class_reloptions - 1] = true;
+
+	new_tuple = heap_modify_tuple(
+			tuple, RelationGetDescr(class_rel), values, nulls, replaces);
+	CatalogTupleUpdate(class_rel, &new_tuple->t_self, new_tuple);
+	UnlockTuple(class_rel, &tuple->t_self, InplaceUpdateTupleLock);
+	InvokeObjectPostAlterHook(
+			RelationRelationId, RelationGetRelid(index_rel), 0);
+
+	heap_freetuple(new_tuple);
+	ReleaseSysCache(tuple);
+	table_close(class_rel, RowExclusiveLock);
+}
+
 void
 tp_reconcile_index_compaction_options(
 		Oid indexoid, const char *schedule, const char *lineage)
@@ -546,9 +612,13 @@ tp_reconcile_index_compaction_options(
 
 	if (index_rel->rd_indam == NULL ||
 		index_rel->rd_indam->ambuild != tp_build ||
-		index_rel->rd_rel->relkind != RELKIND_INDEX ||
-		index_rel->rd_index == NULL || !index_rel->rd_index->indisvalid ||
-		!index_rel->rd_index->indisready || !index_rel->rd_index->indislive)
+		(index_rel->rd_rel->relkind != RELKIND_INDEX &&
+		 index_rel->rd_rel->relkind != RELKIND_PARTITIONED_INDEX) ||
+		index_rel->rd_index == NULL ||
+		(index_rel->rd_rel->relkind == RELKIND_INDEX &&
+		 (!index_rel->rd_index->indisvalid ||
+		  !index_rel->rd_index->indisready ||
+		  !index_rel->rd_index->indislive)))
 	{
 		char *index_name = pstrdup(RelationGetRelationName(index_rel));
 
@@ -558,9 +628,7 @@ tp_reconcile_index_compaction_options(
 				 errmsg("cannot reconcile partition index \"%s\" for "
 						"background compaction",
 						index_name),
-				 errdetail(
-						 "The attached index is not a valid, ready "
-						 "physical BM25 index."),
+				 errdetail("The attached index is not a valid BM25 index."),
 				 errhint("Drop or rebuild the incompatible child index before "
 						 "creating the partitioned background index.")));
 	}
@@ -579,9 +647,6 @@ tp_reconcile_index_compaction_options(
 		index_close(index_rel, NoLock);
 		return;
 	}
-
-	owner_oid = index_rel->rd_rel->relowner;
-	index_close(index_rel, NoLock);
 
 	set_options = lappend(
 			set_options,
@@ -615,6 +680,18 @@ tp_reconcile_index_compaction_options(
 		cmd->behavior = DROP_RESTRICT;
 		commands	  = lappend(commands, cmd);
 	}
+
+	if (index_rel->rd_rel->relkind == RELKIND_PARTITIONED_INDEX)
+	{
+		tp_set_partitioned_index_compaction_options(
+				index_rel, set_options, reset_schedule);
+		index_close(index_rel, NoLock);
+		CommandCounterIncrement();
+		return;
+	}
+
+	owner_oid = index_rel->rd_rel->relowner;
+	index_close(index_rel, NoLock);
 
 	GetUserIdAndSecContext(&save_userid, &save_sec_context);
 	SetUserIdAndSecContext(
