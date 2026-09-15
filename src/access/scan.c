@@ -11,6 +11,7 @@
 #include <access/sdir.h>
 #include <access/table.h>
 #include <catalog/namespace.h>
+#include <miscadmin.h>
 #include <pgstat.h>
 #include <storage/bufmgr.h>
 #include <utils/builtins.h>
@@ -126,6 +127,18 @@ tp_rescan_cleanup_results(TpScanOpaque so)
 	{
 		BufFileClose(so->boolean_results);
 		so->boolean_results = NULL;
+	}
+
+	if (so->boolean_matches)
+	{
+		BufFileClose(so->boolean_matches);
+		so->boolean_matches = NULL;
+	}
+
+	if (so->boolean_matched_ctids)
+	{
+		hash_destroy(so->boolean_matched_ctids);
+		so->boolean_matched_ctids = NULL;
 	}
 }
 
@@ -500,17 +513,117 @@ tp_execute_scoring_query(IndexScanDesc scan)
 }
 
 /*
+ * Bound the combined-scan lookup set by work_mem.  dynahash needs roughly
+ * this many bytes for one CTID entry plus its share of the bucket directory.
+ */
+#define TP_BOOLEAN_FILTER_ENTRY_BYTES 32
+
+/*
+ * Load the materialized Boolean matches into a CTID lookup set.
+ *
+ * A match set larger than work_mem keeps the streaming result file only, so
+ * ranked candidates fall back to the heap recheck instead of paying for an
+ * unbounded hash table.
+ */
+static void
+tp_boolean_filter_build(IndexScanDesc scan)
+{
+	TpScanOpaque so = (TpScanOpaque)scan->opaque;
+	HASHCTL		 ctl;
+	long		 max_entries;
+
+	Assert(so->boolean_results != NULL);
+
+	max_entries = (long)work_mem * 1024L / TP_BOOLEAN_FILTER_ENTRY_BYTES;
+	if (so->result_count > max_entries)
+		return;
+
+	memset(&ctl, 0, sizeof(ctl));
+	ctl.keysize	  = sizeof(ItemPointerData);
+	ctl.entrysize = sizeof(ItemPointerData);
+	ctl.hcxt	  = so->scan_context;
+
+	so->boolean_matched_ctids = hash_create(
+			"Tapir Boolean matched ctids",
+			so->result_count,
+			&ctl,
+			HASH_ELEM | HASH_BLOBS | HASH_CONTEXT);
+
+	while (tp_boolean_next(scan))
+		(void)hash_search(
+				so->boolean_matched_ctids,
+				&scan->xs_heaptid,
+				HASH_ENTER,
+				NULL);
+}
+
+/*
+ * Evaluate the Boolean query once for a combined scan.
+ *
+ * The Boolean executor already materializes every matching CTID, so a single
+ * evaluation both rejects ranked candidates inside the index and later
+ * supplies the zero-score Boolean tail.  Returns false when the predicate
+ * matches nothing, which ends the scan.
+ */
+static bool
+tp_boolean_filter_prepare(IndexScanDesc scan)
+{
+	TpScanOpaque	   so = (TpScanOpaque)scan->opaque;
+	TpLocalIndexState *index_state;
+	int				   saved_count = so->result_count;
+	int				   saved_pos   = so->current_pos;
+	bool			   matched;
+
+	index_state = tp_get_local_index_state(
+			RelationGetRelid(scan->indexRelation));
+	if (!index_state)
+		ereport(ERROR,
+				(errcode(ERRCODE_INTERNAL_ERROR),
+				 errmsg("could not get index state for BM25 Boolean search")));
+
+	matched = tp_boolean_execute(scan, index_state);
+	if (matched)
+		tp_boolean_filter_build(scan);
+
+	/* Ranked candidates that were never checked still need the recheck. */
+	if (so->boolean_matched_ctids == NULL)
+		so->boolean_recheck = true;
+
+	/* Keep the matches for the tail and restore the ranked scan position. */
+	so->boolean_matches = so->boolean_results;
+	so->boolean_results = NULL;
+	so->result_count	= saved_count;
+	so->current_pos		= saved_pos;
+
+	return matched;
+}
+
+/*
  * Complete a combined scan with Boolean matches that have no BM25 score.
- * Ranked matches are returned first; the Boolean executor then supplies the
+ * Ranked matches are returned first; the Boolean matches then supply the
  * zero-score tail, with the emitted-CTID set removing ranked duplicates.
  */
 static bool
 tp_begin_combined_boolean_tail(IndexScanDesc scan)
 {
-	TpScanOpaque	   so = (TpScanOpaque)scan->opaque;
+	TpScanOpaque	   so	   = (TpScanOpaque)scan->opaque;
+	BufFile			  *matches = so->boolean_matches;
 	TpLocalIndexState *index_state;
 
+	so->boolean_matches = NULL;
 	tp_rescan_cleanup_results(so);
+
+	if (matches != NULL)
+	{
+		if (BufFileSeek(matches, 0, 0, SEEK_SET) != 0)
+			ereport(ERROR,
+					(errcode_for_file_access(),
+					 errmsg("could not rewind BM25 Boolean result file")));
+
+		so->boolean_results = matches;
+		so->current_pos		= 0;
+		return true;
+	}
 
 	index_state = tp_get_local_index_state(
 			RelationGetRelid(scan->indexRelation));
@@ -525,8 +638,6 @@ tp_begin_combined_boolean_tail(IndexScanDesc scan)
 		return false;
 	}
 
-	/* Combined candidates must always satisfy the original heap predicate. */
-	so->boolean_recheck = true;
 	return true;
 }
 
@@ -638,6 +749,19 @@ tp_gettuple(IndexScanDesc scan, ScanDirection dir)
 				int old_count = so->result_count;
 				int new_limit = so->max_results_used * 2;
 
+				/*
+				 * The batch was consumed without satisfying the query, so
+				 * ranked candidates are being rejected after their heap
+				 * fetch.  Evaluate the Boolean query once and filter every
+				 * later candidate here instead.
+				 */
+				if (combined_scan && so->boolean_matches == NULL &&
+					!tp_boolean_filter_prepare(scan))
+				{
+					so->eof_reached = true;
+					return false;
+				}
+
 				if (new_limit > TP_MAX_QUERY_LIMIT)
 					new_limit = TP_MAX_QUERY_LIMIT;
 
@@ -679,6 +803,18 @@ tp_gettuple(IndexScanDesc scan, ScanDirection dir)
 		blknum = BlockIdGetBlockNumber(
 				&(so->result_ctids[so->current_pos].ip_blkid));
 		if (blknum == InvalidBlockNumber)
+		{
+			so->current_pos++;
+			continue;
+		}
+
+		/* Reject ranked candidates the Boolean executor did not match */
+		if (so->boolean_matched_ctids != NULL &&
+			hash_search(
+					so->boolean_matched_ctids,
+					&so->result_ctids[so->current_pos],
+					HASH_FIND,
+					NULL) == NULL)
 		{
 			so->current_pos++;
 			continue;
