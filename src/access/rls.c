@@ -158,6 +158,29 @@ tp_check_bm25_build_allowed(Relation heap)
 }
 
 void
+tp_check_bm25_hierarchy_allowed(Oid relid)
+{
+	List	 *relations;
+	ListCell *lc;
+
+	if (tp_allow_rls)
+		return;
+
+	relations = find_all_inheritors(relid, AccessShareLock, NULL);
+	foreach (lc, relations)
+	{
+		Relation rel = table_open(lfirst_oid(lc), NoLock);
+
+		if (relation_has_bm25_index(rel))
+			tp_check_bm25_build_allowed(rel);
+
+		table_close(rel, NoLock);
+	}
+
+	list_free(relations);
+}
+
+void
 tp_check_rls_enable_allowed(Oid relid)
 {
 	Oid		 indexed_relid;

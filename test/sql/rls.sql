@@ -15,6 +15,15 @@ SET pg_textsearch.allow_rls = off;
 
 ALTER TABLE IF EXISTS rls_missing ENABLE ROW LEVEL SECURITY;
 
+CREATE INDEX IF NOT EXISTS rls_existing_idx
+    ON rls_existing USING bm25(content)
+    WITH (text_config='english');
+\pset format unaligned
+SELECT indisvalid AS existing_index_valid
+FROM pg_index
+WHERE indexrelid = 'rls_existing_idx'::regclass;
+\pset format aligned
+
 -- Existing combinations remain usable when the GUC changes.
 SELECT content
 FROM rls_existing
@@ -40,6 +49,13 @@ CREATE INDEX CONCURRENTLY rls_concurrent_top_idx
 \pset format unaligned
 SELECT to_regclass('rls_concurrent_top_idx') IS NULL
     AS no_index_catalog_entry;
+\pset format aligned
+CREATE INDEX CONCURRENTLY IF NOT EXISTS rls_concurrent_ifne_idx
+    ON rls_before_index USING bm25(content)
+    WITH (text_config='english');
+\pset format unaligned
+SELECT to_regclass('rls_concurrent_ifne_idx') IS NULL
+    AS no_if_not_exists_catalog_entry;
 \pset format aligned
 CREATE INDEX rls_before_index_idx ON rls_before_index USING bm25(content)
     WITH (text_config='english');
@@ -112,6 +128,45 @@ ALTER TABLE rls_multi_parent_b ENABLE ROW LEVEL SECURITY;
 \set VERBOSITY terse
 CREATE INDEX rls_multi_child_idx ON rls_multi_child USING bm25(content)
     WITH (text_config='english');
+\set VERBOSITY default
+
+-- An existing BM25-indexed table cannot be attached below an RLS ancestor.
+CREATE TABLE rls_attach_parent (id integer, content text);
+ALTER TABLE rls_attach_parent ENABLE ROW LEVEL SECURITY;
+CREATE TABLE rls_attach_child (id integer, content text);
+CREATE INDEX rls_attach_child_idx ON rls_attach_child USING bm25(content)
+    WITH (text_config='english');
+\set VERBOSITY terse
+ALTER TABLE rls_attach_child INHERIT rls_attach_parent;
+\pset format unaligned
+SELECT NOT EXISTS (
+    SELECT 1
+    FROM pg_inherits
+    WHERE inhrelid = 'rls_attach_child'::regclass
+      AND inhparent = 'rls_attach_parent'::regclass
+) AS inherit_not_attached;
+\pset format aligned
+\set VERBOSITY default
+
+-- An existing BM25-indexed table cannot become an RLS parent's partition.
+CREATE TABLE rls_attach_partitioned (id integer, content text)
+    PARTITION BY RANGE (id);
+ALTER TABLE rls_attach_partitioned ENABLE ROW LEVEL SECURITY;
+CREATE TABLE rls_attach_partition (id integer, content text);
+CREATE INDEX rls_attach_partition_idx
+    ON rls_attach_partition USING bm25(content)
+    WITH (text_config='english');
+\set VERBOSITY terse
+ALTER TABLE rls_attach_partitioned ATTACH PARTITION rls_attach_partition
+    FOR VALUES FROM (0) TO (10);
+\pset format unaligned
+SELECT NOT EXISTS (
+    SELECT 1
+    FROM pg_inherits
+    WHERE inhrelid = 'rls_attach_partition'::regclass
+      AND inhparent = 'rls_attach_partitioned'::regclass
+) AS partition_not_attached;
+\pset format aligned
 \set VERBOSITY default
 
 -- Successful checks retain locks on every traversed ancestor.
@@ -192,10 +247,16 @@ DROP TABLE rls_child, rls_parent, index_child, index_parent CASCADE;
 DROP TABLE rls_partitioned, index_partitioned CASCADE;
 DROP TABLE rls_direct_partitioned, rls_partition_top CASCADE;
 DROP TABLE rls_multi_child, rls_multi_parent_a, rls_multi_parent_b CASCADE;
+DROP TABLE rls_attach_child, rls_attach_parent CASCADE;
+DROP TABLE rls_attach_partitioned, rls_attach_partition CASCADE;
 DROP TABLE rls_lock_child, rls_lock_parent, rls_lock_root CASCADE;
 
 CREATE TABLE rls_without_extension (id integer);
 SET pg_textsearch.allow_rls = off;
 DROP EXTENSION pg_textsearch;
 ALTER TABLE rls_without_extension ENABLE ROW LEVEL SECURITY;
+\set VERBOSITY terse
+CREATE INDEX rls_missing_am_idx
+    ON rls_without_extension USING bm25(id);
+\set VERBOSITY default
 DROP TABLE rls_without_extension;

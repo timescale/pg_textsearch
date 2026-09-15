@@ -14,6 +14,7 @@
 #include <catalog/namespace.h>
 #include <catalog/objectaccess.h>
 #include <catalog/pg_class_d.h>
+#include <commands/defrem.h>
 #include <commands/tablecmds.h>
 #include <fmgr.h>
 #include <limits.h>
@@ -25,6 +26,7 @@
 #include <tcop/utility.h>
 #include <utils/guc.h>
 #include <utils/inval.h>
+#include <utils/lsyscache.h>
 
 #include "access/am.h"
 #include "access/rls.h"
@@ -707,7 +709,7 @@ tp_subxact_callback(
 }
 
 static bool
-alter_table_enables_rls(AlterTableStmt *stmt)
+alter_table_needs_rls_check(AlterTableStmt *stmt)
 {
 	ListCell *lc;
 
@@ -715,11 +717,55 @@ alter_table_enables_rls(AlterTableStmt *stmt)
 	{
 		AlterTableCmd *cmd = lfirst_node(AlterTableCmd, lc);
 
-		if (cmd->subtype == AT_EnableRowSecurity)
+		if (cmd->subtype == AT_EnableRowSecurity ||
+			cmd->subtype == AT_AddInherit ||
+			(cmd->subtype == AT_AttachPartition &&
+			 stmt->objtype == OBJECT_TABLE))
 			return true;
 	}
 
 	return false;
+}
+
+static void
+check_altered_rls_hierarchy(AlterTableStmt *stmt, Oid relid)
+{
+	ListCell *lc;
+
+	if (!OidIsValid(relid))
+		return;
+
+	foreach (lc, stmt->cmds)
+	{
+		AlterTableCmd *cmd = lfirst_node(AlterTableCmd, lc);
+
+		switch (cmd->subtype)
+		{
+		case AT_EnableRowSecurity:
+			tp_check_rls_enable_allowed(relid);
+			break;
+
+		case AT_AddInherit:
+			tp_check_bm25_hierarchy_allowed(relid);
+			break;
+
+		case AT_AttachPartition:
+		{
+			PartitionCmd *partcmd = castNode(PartitionCmd, cmd->def);
+			Oid			  partrelid;
+
+			if (stmt->objtype != OBJECT_TABLE)
+				break;
+
+			partrelid = RangeVarGetRelid(partcmd->name, NoLock, false);
+			tp_check_bm25_hierarchy_allowed(partrelid);
+		}
+		break;
+
+		default:
+			break;
+		}
+	}
 }
 
 /*
@@ -748,7 +794,6 @@ tp_process_utility(
 		{
 			LOCKMODE lockmode;
 			Oid		 relid;
-			Relation rel;
 
 			if (stmt->concurrent)
 			{
@@ -766,36 +811,50 @@ tp_process_utility(
 					0,
 					RangeVarCallbackOwnsRelation,
 					NULL);
-			rel = table_open(relid, NoLock);
 
-			tp_check_bm25_build_allowed(rel);
-			table_close(rel, NoLock);
+			if (OidIsValid(get_am_oid(stmt->accessMethod, true)))
+			{
+				Relation rel = table_open(relid, NoLock);
+				bool	 name_exists;
 
-			tp_build_progress_begin();
+				name_exists = stmt->if_not_exists && stmt->idxname != NULL &&
+							  OidIsValid(get_relname_relid(
+									  stmt->idxname,
+									  RelationGetNamespace(rel)));
 
-			if (prev_process_utility_hook)
-				prev_process_utility_hook(
-						pstmt,
-						queryString,
-						readOnlyTree,
-						context,
-						params,
-						queryEnv,
-						dest,
-						qc);
-			else
-				standard_ProcessUtility(
-						pstmt,
-						queryString,
-						readOnlyTree,
-						context,
-						params,
-						queryEnv,
-						dest,
-						qc);
+				if (!name_exists)
+					tp_check_bm25_build_allowed(rel);
+				table_close(rel, NoLock);
 
-			tp_build_progress_end();
-			return;
+				if (!name_exists)
+				{
+					tp_build_progress_begin();
+
+					if (prev_process_utility_hook)
+						prev_process_utility_hook(
+								pstmt,
+								queryString,
+								readOnlyTree,
+								context,
+								params,
+								queryEnv,
+								dest,
+								qc);
+					else
+						standard_ProcessUtility(
+								pstmt,
+								queryString,
+								readOnlyTree,
+								context,
+								params,
+								queryEnv,
+								dest,
+								qc);
+
+					tp_build_progress_end();
+					return;
+				}
+			}
 		}
 	}
 
@@ -803,9 +862,10 @@ tp_process_utility(
 	{
 		AlterTableStmt *stmt = (AlterTableStmt *)parsetree;
 
-		if (alter_table_enables_rls(stmt))
+		if (alter_table_needs_rls_check(stmt))
 		{
-			Oid relid = AlterTableLookupRelation(stmt, AccessExclusiveLock);
+			LOCKMODE lockmode = AlterTableGetLockLevel(stmt->cmds);
+			Oid		 relid	  = AlterTableLookupRelation(stmt, lockmode);
 
 			if (prev_process_utility_hook)
 				prev_process_utility_hook(
@@ -828,8 +888,7 @@ tp_process_utility(
 						dest,
 						qc);
 
-			if (OidIsValid(relid))
-				tp_check_rls_enable_allowed(relid);
+			check_altered_rls_hierarchy(stmt, relid);
 			return;
 		}
 	}
