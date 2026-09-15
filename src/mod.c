@@ -1390,6 +1390,16 @@ tp_is_physical_bm25_index_relation(Relation index_rel)
 }
 
 static bool
+tp_is_bm25_index_node_relation(Relation index_rel)
+{
+	return (index_rel->rd_rel->relkind == RELKIND_INDEX ||
+			index_rel->rd_rel->relkind == RELKIND_PARTITIONED_INDEX) &&
+		   index_rel->rd_indam != NULL &&
+		   index_rel->rd_indam->ambuild == tp_build &&
+		   index_rel->rd_index != NULL;
+}
+
+static bool
 tp_is_background_physical_index_relation(Relation index_rel)
 {
 	return tp_is_physical_bm25_index_relation(index_rel) &&
@@ -1429,6 +1439,29 @@ tp_physical_bm25_indexes(List *indexoids, bool background_only)
 		matches = tp_is_physical_bm25_index_relation(index_rel) &&
 				  (!background_only || tp_index_compaction_mode(index_rel) ==
 											   TP_COMPACTION_BACKGROUND);
+		relation_close(index_rel, AccessShareLock);
+		if (matches)
+			result = list_append_unique_oid(result, indexoid);
+	}
+	return result;
+}
+
+static List *
+tp_bm25_index_nodes(List *indexoids)
+{
+	List	 *result = NIL;
+	ListCell *lc;
+
+	foreach (lc, indexoids)
+	{
+		Oid		 indexoid = lfirst_oid(lc);
+		Relation index_rel;
+		bool	 matches;
+
+		index_rel = try_relation_open(indexoid, AccessShareLock);
+		if (index_rel == NULL)
+			continue;
+		matches = tp_is_bm25_index_node_relation(index_rel);
 		relation_close(index_rel, AccessShareLock);
 		if (matches)
 			result = list_append_unique_oid(result, indexoid);
@@ -1970,11 +2003,12 @@ tp_reconcile_managed_intents(void)
 	List				   *lineages  = NIL;
 	List				   *locked;
 	ListCell			   *lc;
-	TpCompactionJobObjects *objects			 = NULL;
-	bool					deferred		 = false;
-	bool					post_publication = false;
-	bool					snapshot_pushed	 = false;
-	bool					strict_lineage	 = false;
+	TpCompactionJobObjects *objects			  = NULL;
+	bool					deferred		  = false;
+	bool					post_publication  = false;
+	bool					snapshot_pushed	  = false;
+	bool					strict_lineage	  = false;
+	bool					activation_needed = false;
 
 	if (tp_managed_reconciling || tp_managed_intents == NIL)
 		return true;
@@ -2056,8 +2090,20 @@ tp_reconcile_managed_intents(void)
 			tp_reconcile_index_compaction_options(
 					intent->index_oid, intent->schedule, intent->lineage);
 		}
-		if (locked != NIL && (objects = tp_compaction_job_try_lock_objects(
-									  !post_publication)) == NULL)
+		foreach (lc, frozen)
+		{
+			TpManagedIndexIntent *intent = lfirst(lc);
+
+			if (list_member_oid(locked, intent->index_oid) &&
+				(intent->flags & TP_MANAGED_INTENT_DISABLE) == 0 &&
+				tp_is_background_physical_index(intent->index_oid))
+			{
+				activation_needed = true;
+				break;
+			}
+		}
+		if (activation_needed && (objects = tp_compaction_job_try_lock_objects(
+										  !post_publication)) == NULL)
 		{
 			if (strict_lineage)
 				ereport(ERROR,
@@ -2385,27 +2431,33 @@ tp_collect_created_background_indexes(
 		bool		lineage_supplied)
 {
 	List	 *index_tree;
-	List	 *physical_indexes;
+	List	 *bm25_indexes;
 	ListCell *lc;
 
 	if (lineage == NULL)
 		elog(ERROR, "background index has no compaction lineage");
 
-	index_tree		 = tp_created_index_tree_locked(created_indexes, heap_oid);
-	physical_indexes = tp_physical_bm25_indexes(index_tree, false);
+	index_tree	 = tp_created_index_tree_locked(created_indexes, heap_oid);
+	bm25_indexes = tp_bm25_index_nodes(index_tree);
 	list_free(index_tree);
 
-	foreach (lc, physical_indexes)
+	foreach (lc, bm25_indexes)
+	{
+		Oid	 indexoid = lfirst_oid(lc);
+		bool physical = get_rel_relkind(indexoid) == RELKIND_INDEX;
+
 		tp_collect_managed_intent(
-				lfirst_oid(lc),
+				indexoid,
 				NULL,
 				schedule,
 				lineage,
 				TP_MANAGED_INTENT_REFRESH_DEFAULT |
 						TP_MANAGED_INTENT_RECONCILE_OPTIONS |
-						(lineage_supplied ? TP_MANAGED_INTENT_LINEAGE_SUPPLIED
-										  : 0));
-	list_free(physical_indexes);
+						(lineage_supplied && physical
+								 ? TP_MANAGED_INTENT_LINEAGE_SUPPLIED
+								 : 0));
+	}
+	list_free(bm25_indexes);
 }
 
 static void

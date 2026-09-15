@@ -1484,6 +1484,144 @@ SQL
         "DROP TABLE public.lifecycle_direct_attach_docs;" >/dev/null
 }
 
+test_reused_intermediate_partition_options() {
+    local direct_existing_oid direct_intermediate_oid direct_late_oid
+    local direct_lineage table_existing_oid table_intermediate_oid
+    local table_late_oid table_lineage
+
+    sql_as durable_owner <<'SQL' >/dev/null
+CREATE TABLE public.lifecycle_intermediate_table_root
+    (id integer, subid integer, body text)
+    PARTITION BY RANGE (id);
+CREATE INDEX lifecycle_intermediate_table_root_idx
+    ON ONLY public.lifecycle_intermediate_table_root USING bm25(body)
+    WITH (text_config = 'english',
+          compaction = 'background',
+          compaction_schedule = '0 0 1 1 *');
+
+CREATE TABLE public.lifecycle_intermediate_table_branch
+    (id integer, subid integer, body text)
+    PARTITION BY RANGE (subid);
+CREATE TABLE public.lifecycle_intermediate_table_low
+    PARTITION OF public.lifecycle_intermediate_table_branch
+    FOR VALUES FROM (0) TO (100);
+CREATE INDEX lifecycle_intermediate_table_branch_idx
+    ON public.lifecycle_intermediate_table_branch USING bm25(body)
+    WITH (text_config = 'english', compaction = 'manual');
+ALTER TABLE public.lifecycle_intermediate_table_root
+    ATTACH PARTITION public.lifecycle_intermediate_table_branch
+    FOR VALUES FROM (0) TO (100);
+
+CREATE TABLE public.lifecycle_intermediate_direct_root
+    (id integer, subid integer, body text)
+    PARTITION BY RANGE (id);
+CREATE TABLE public.lifecycle_intermediate_direct_branch
+    (id integer, subid integer, body text)
+    PARTITION BY RANGE (subid);
+ALTER TABLE public.lifecycle_intermediate_direct_root
+    ATTACH PARTITION public.lifecycle_intermediate_direct_branch
+    FOR VALUES FROM (0) TO (100);
+CREATE TABLE public.lifecycle_intermediate_direct_low
+    PARTITION OF public.lifecycle_intermediate_direct_branch
+    FOR VALUES FROM (0) TO (100);
+CREATE INDEX lifecycle_intermediate_direct_root_idx
+    ON ONLY public.lifecycle_intermediate_direct_root USING bm25(body)
+    WITH (text_config = 'english',
+          compaction = 'background',
+          compaction_schedule = '0 0 1 1 *');
+CREATE INDEX lifecycle_intermediate_direct_branch_idx
+    ON public.lifecycle_intermediate_direct_branch USING bm25(body)
+    WITH (text_config = 'english', compaction = 'manual');
+ALTER INDEX public.lifecycle_intermediate_direct_root_idx
+    ATTACH PARTITION public.lifecycle_intermediate_direct_branch_idx;
+SQL
+
+    table_intermediate_oid="$(sql_super -c "SELECT
+        'public.lifecycle_intermediate_table_branch_idx'::regclass::oid;")"
+    table_existing_oid="$(sql_super -c "SELECT
+        'public.lifecycle_intermediate_table_low_body_idx'::regclass::oid;")"
+    table_lineage="$(
+        index_lineage public.lifecycle_intermediate_table_root_idx
+    )"
+    assert_eq "table attach aligns reused intermediate options" "t:t:t" \
+        "$(sql_super -c "SELECT pg_catalog.concat_ws(
+            ':',
+            relation.reloptions @> ARRAY['compaction=background'],
+            relation.reloptions @>
+              ARRAY['compaction_schedule=0 0 1 1 *'],
+            relation.reloptions @>
+              ARRAY['compaction_lineage=${table_lineage}'])
+          FROM pg_catalog.pg_class AS relation
+          WHERE relation.oid = ${table_intermediate_oid};")"
+    assert_eq "table attach activates existing physical leaves" "1" \
+        "$(current_generation_job_count "${table_existing_oid}")"
+    sql_as durable_owner -c "
+        CREATE TABLE public.lifecycle_intermediate_table_late
+          PARTITION OF public.lifecycle_intermediate_table_branch
+          FOR VALUES FROM (100) TO (200);" >/dev/null 2>&1
+    table_late_oid="$(sql_super -c "SELECT indexrelid
+      FROM pg_catalog.pg_index
+      WHERE indrelid =
+            'public.lifecycle_intermediate_table_late'::regclass;")"
+    assert_eq "later table-attached leaf inherits aligned options" "t:t:t" \
+        "$(sql_super -c "SELECT pg_catalog.concat_ws(
+            ':',
+            relation.reloptions @> ARRAY['compaction=background'],
+            relation.reloptions @>
+              ARRAY['compaction_schedule=0 0 1 1 *'],
+            relation.reloptions @>
+              ARRAY['compaction_lineage=${table_lineage}'])
+          FROM pg_catalog.pg_class AS relation
+          WHERE relation.oid = ${table_late_oid};")"
+    assert_eq "later table-attached leaf has one workflow" "1" \
+        "$(current_generation_job_count "${table_late_oid}")"
+
+    direct_intermediate_oid="$(sql_super -c "SELECT
+        'public.lifecycle_intermediate_direct_branch_idx'::regclass::oid;")"
+    direct_existing_oid="$(sql_super -c "SELECT
+        'public.lifecycle_intermediate_direct_low_body_idx'::regclass::oid;")"
+    direct_lineage="$(
+        index_lineage public.lifecycle_intermediate_direct_root_idx
+    )"
+    assert_eq "direct attach aligns reused intermediate options" "t:t:t" \
+        "$(sql_super -c "SELECT pg_catalog.concat_ws(
+            ':',
+            relation.reloptions @> ARRAY['compaction=background'],
+            relation.reloptions @>
+              ARRAY['compaction_schedule=0 0 1 1 *'],
+            relation.reloptions @>
+              ARRAY['compaction_lineage=${direct_lineage}'])
+          FROM pg_catalog.pg_class AS relation
+          WHERE relation.oid = ${direct_intermediate_oid};")"
+    assert_eq "direct attach activates existing physical leaves" "1" \
+        "$(current_generation_job_count "${direct_existing_oid}")"
+    sql_as durable_owner -c "
+        CREATE TABLE public.lifecycle_intermediate_direct_late
+          PARTITION OF public.lifecycle_intermediate_direct_branch
+          FOR VALUES FROM (100) TO (200);" >/dev/null 2>&1
+    direct_late_oid="$(sql_super -c "SELECT indexrelid
+      FROM pg_catalog.pg_index
+      WHERE indrelid =
+            'public.lifecycle_intermediate_direct_late'::regclass;")"
+    assert_eq "later directly attached leaf inherits aligned options" \
+        "t:t:t" \
+        "$(sql_super -c "SELECT pg_catalog.concat_ws(
+            ':',
+            relation.reloptions @> ARRAY['compaction=background'],
+            relation.reloptions @>
+              ARRAY['compaction_schedule=0 0 1 1 *'],
+            relation.reloptions @>
+              ARRAY['compaction_lineage=${direct_lineage}'])
+          FROM pg_catalog.pg_class AS relation
+          WHERE relation.oid = ${direct_late_oid};")"
+    assert_eq "later directly attached leaf has one workflow" "1" \
+        "$(current_generation_job_count "${direct_late_oid}")"
+
+    sql_super -c "
+        DROP TABLE public.lifecycle_intermediate_table_root,
+                   public.lifecycle_intermediate_direct_root;" >/dev/null
+}
+
 test_partitioned_existing_leaf_reconciliation() {
     local high_oid low_oid parent_lineage parent_oid
 
@@ -10607,6 +10745,7 @@ run_test test_late_bulk_reindex_target
 run_test test_failed_bulk_reindex_reconciliation
 run_test test_partitioned_create_activation
 run_test test_direct_index_partition_attach
+run_test test_reused_intermediate_partition_options
 run_test test_partitioned_existing_leaf_reconciliation
 run_test test_create_tracking_reentry
 run_test test_cached_create_uses_fresh_lineage
