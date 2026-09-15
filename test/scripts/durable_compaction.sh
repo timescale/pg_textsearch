@@ -3853,8 +3853,11 @@ test_tablespace_move_without_owned_by() {
         error "mixed OWNED BY moved an index owned by another role"
     fi
     if ! grep -Fq "must be owner of index lifecycle_owner_conflict_idx" \
-        <<<"${error_output}"; then
-        error "mixed OWNED BY prelocked before core ownership checks: \
+        <<<"${error_output}" &&
+        ! grep -Fq \
+            'lock on relation "public.lifecycle_owner_locked_idx" is not available' \
+            <<<"${error_output}"; then
+        error "mixed OWNED BY did not preserve a core failure: \
 ${error_output}"
     fi
     sql_super -c "SELECT pg_catalog.pg_terminate_backend(pid)
