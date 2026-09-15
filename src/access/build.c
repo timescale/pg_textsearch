@@ -58,16 +58,20 @@
  * state aggregates statistics across partitions and emits a
  * single summary.
  *
- * Activated by ProcessUtility_hook in mod.c when it detects
- * CREATE INDEX USING bm25.
+ * Activated by the object-access hook after PostgreSQL creates the actual
+ * BM25 index catalog object.
  */
-static struct
+typedef struct TpBuildProgress
 {
-	bool   active;
-	int	   partition_count;
-	uint64 total_docs;
-	uint64 total_len;
-} build_progress;
+	struct TpBuildProgress *previous;
+	const void			   *owner;
+	int						partition_count;
+	uint64					total_docs;
+	uint64					total_len;
+} TpBuildProgress;
+
+static TpBuildProgress *build_progress		 = NULL;
+static const void	   *build_progress_owner = NULL;
 
 typedef struct TpPreparedSpill
 {
@@ -86,40 +90,80 @@ typedef enum TpSpillPostAction
 } TpSpillPostAction;
 
 void
+tp_build_progress_set_owner(const void *owner)
+{
+	build_progress_owner = owner;
+}
+
+void
 tp_build_progress_begin(void)
 {
-	memset(&build_progress, 0, sizeof(build_progress));
-	build_progress.active = true;
+	MemoryContext	 old_context;
+	TpBuildProgress *progress;
+
+	old_context = MemoryContextSwitchTo(TopMemoryContext);
+	progress	= palloc0(sizeof(*progress));
+	MemoryContextSwitchTo(old_context);
+
+	progress->previous = build_progress;
+	progress->owner	   = build_progress_owner;
+	build_progress	   = progress;
 }
 
 void
 tp_build_progress_end(void)
 {
-	double avg_len = 0.0;
+	TpBuildProgress *progress = build_progress;
+	double			 avg_len  = 0.0;
 
-	if (!build_progress.active)
+	if (progress == NULL)
 		return;
 
-	build_progress.active = false;
+	Assert(progress->owner == build_progress_owner);
+	build_progress = progress->previous;
 
-	if (build_progress.total_docs > 0)
-		avg_len = (double)build_progress.total_len /
-				  (double)build_progress.total_docs;
+	if (progress->total_docs > 0)
+		avg_len = (double)progress->total_len / (double)progress->total_docs;
 
-	if (build_progress.partition_count > 1)
+	if (progress->partition_count > 1)
 		elog(NOTICE,
 			 "BM25 index build completed: " UINT64_FORMAT
 			 " documents across %d partitions,"
 			 " avg_length=%.2f",
-			 build_progress.total_docs,
-			 build_progress.partition_count,
+			 progress->total_docs,
+			 progress->partition_count,
 			 avg_len);
 	else
 		elog(NOTICE,
 			 "BM25 index build completed: " UINT64_FORMAT
 			 " documents, avg_length=%.2f",
-			 build_progress.total_docs,
+			 progress->total_docs,
 			 avg_len);
+
+	pfree(progress);
+}
+
+void
+tp_build_progress_abort(void)
+{
+	TpBuildProgress *progress = build_progress;
+
+	if (progress == NULL)
+		return;
+
+	Assert(progress->owner == build_progress_owner);
+	build_progress = progress->previous;
+	pfree(progress);
+}
+
+static TpBuildProgress *
+current_build_progress(void)
+{
+	if (build_progress != NULL &&
+		build_progress->owner == build_progress_owner)
+		return build_progress;
+
+	return NULL;
 }
 
 /*
@@ -1390,10 +1434,12 @@ tp_build(Relation heap, Relation index, IndexInfo *indexInfo)
 	uint64			   total_docs = 0;
 	uint64			   total_len  = 0;
 	TpLocalIndexState *index_state;
+	TpBuildProgress	  *progress;
 	bool			   is_text_array;
 
 	/* Show "started" for first partition only (suppresses duplicates) */
-	if (!build_progress.active || build_progress.partition_count == 0)
+	progress = current_build_progress();
+	if (progress == NULL || progress->partition_count == 0)
 		elog(NOTICE,
 			 "BM25 index build started for relation %s",
 			 RelationGetRelationName(index));
@@ -1427,7 +1473,7 @@ tp_build(Relation heap, Relation index, IndexInfo *indexInfo)
 			index, &text_config_name, &text_config_oid, &k1, &b);
 
 	/* Log configuration (only for first partition when active) */
-	if (!build_progress.active || build_progress.partition_count == 0)
+	if (progress == NULL || progress->partition_count == 0)
 	{
 		if (text_config_name)
 			elog(NOTICE,
@@ -1489,8 +1535,7 @@ tp_build(Relation heap, Relation index, IndexInfo *indexInfo)
 			 * Warn if table is very large but parallelism is limited.
 			 * Suppress during partitioned builds to reduce noise.
 			 */
-			if (!build_progress.active &&
-				reltuples >= TP_WARN_FEW_WORKERS_TUPLES &&
+			if (progress == NULL && reltuples >= TP_WARN_FEW_WORKERS_TUPLES &&
 				nworkers <= TP_WARN_FEW_WORKERS_MIN)
 			{
 				elog(NOTICE,
@@ -1542,16 +1587,16 @@ tp_build(Relation heap, Relation index, IndexInfo *indexInfo)
 						RelationGetRelid(heap),
 						/* reuse_if_exists */ false);
 
-				if (build_progress.active)
+				if (progress != NULL)
 				{
 					metabuf = ReadBuffer(index, TP_METAPAGE_BLKNO);
 					LockBuffer(metabuf, BUFFER_LOCK_SHARE);
 					mpage = BufferGetPage(metabuf);
 					metap = (TpIndexMetaPage)PageGetContents(mpage);
 
-					build_progress.total_docs += (uint64)metap->total_docs;
-					build_progress.total_len += (uint64)metap->total_len;
-					build_progress.partition_count++;
+					progress->total_docs += (uint64)metap->total_docs;
+					progress->total_len += (uint64)metap->total_len;
+					progress->partition_count++;
 
 					UnlockReleaseBuffer(metabuf);
 				}
@@ -1560,8 +1605,8 @@ tp_build(Relation heap, Relation index, IndexInfo *indexInfo)
 			return par_result;
 		}
 
-		if (!build_progress.active &&
-			reltuples >= TP_WARN_NO_PARALLEL_TUPLES && nworkers == 0)
+		if (progress == NULL && reltuples >= TP_WARN_NO_PARALLEL_TUPLES &&
+			nworkers == 0)
 		{
 			/*
 			 * Large table but no parallel workers available.
@@ -1698,12 +1743,12 @@ tp_build(Relation heap, Relation index, IndexInfo *indexInfo)
 		result->heap_tuples	 = reltuples;
 		result->index_tuples = total_docs;
 
-		if (build_progress.active)
+		if (progress != NULL)
 		{
 			/* Accumulate stats for aggregated summary */
-			build_progress.total_docs += total_docs;
-			build_progress.total_len += total_len;
-			build_progress.partition_count++;
+			progress->total_docs += total_docs;
+			progress->total_len += total_len;
+			progress->partition_count++;
 		}
 		else
 		{
