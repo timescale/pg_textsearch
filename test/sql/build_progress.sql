@@ -10,6 +10,14 @@ CREATE INDEX IF NOT EXISTS progress_noop_idx
     ON progress_noop_docs USING bm25(content)
     WITH (text_config = 'english');
 
+CREATE TABLE progress_empty_partitioned (
+    id integer,
+    content text
+) PARTITION BY RANGE (id);
+CREATE INDEX progress_empty_partitioned_idx
+    ON progress_empty_partitioned USING bm25(content)
+    WITH (text_config = 'english');
+
 CREATE TABLE progress_actual_docs (content text);
 CREATE TABLE progress_collision_docs (id integer);
 CREATE INDEX progress_actual_idx ON progress_collision_docs(id);
@@ -142,6 +150,7 @@ DROP FUNCTION progress_fail_build_end();
 DROP EVENT TRIGGER progress_drop_collision_trigger;
 DROP FUNCTION progress_drop_collision();
 DROP TABLE progress_noop_docs;
+DROP TABLE progress_empty_partitioned;
 DROP TABLE progress_actual_docs;
 DROP TABLE progress_collision_docs;
 DROP TABLE progress_abort_docs;

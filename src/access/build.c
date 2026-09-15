@@ -166,6 +166,26 @@ current_build_progress(void)
 	return NULL;
 }
 
+static void
+record_or_report_build_completion(
+		TpBuildProgress *progress, uint64 total_docs, uint64 total_len)
+{
+	if (progress != NULL)
+	{
+		progress->total_docs += total_docs;
+		progress->total_len += total_len;
+		progress->partition_count++;
+	}
+	else
+	{
+		elog(NOTICE,
+			 "BM25 index build completed: " UINT64_FORMAT
+			 " documents, avg_length=%.2f",
+			 total_docs,
+			 total_docs > 0 ? (float4)(total_len / (double)total_docs) : 0.0);
+	}
+}
+
 /*
  * Build phase name for progress reporting
  */
@@ -1587,19 +1607,17 @@ tp_build(Relation heap, Relation index, IndexInfo *indexInfo)
 						RelationGetRelid(heap),
 						/* reuse_if_exists */ false);
 
-				if (progress != NULL)
-				{
-					metabuf = ReadBuffer(index, TP_METAPAGE_BLKNO);
-					LockBuffer(metabuf, BUFFER_LOCK_SHARE);
-					mpage = BufferGetPage(metabuf);
-					metap = (TpIndexMetaPage)PageGetContents(mpage);
+				metabuf = ReadBuffer(index, TP_METAPAGE_BLKNO);
+				LockBuffer(metabuf, BUFFER_LOCK_SHARE);
+				mpage = BufferGetPage(metabuf);
+				metap = (TpIndexMetaPage)PageGetContents(mpage);
 
-					progress->total_docs += (uint64)metap->total_docs;
-					progress->total_len += (uint64)metap->total_len;
-					progress->partition_count++;
+				record_or_report_build_completion(
+						progress,
+						(uint64)metap->total_docs,
+						(uint64)metap->total_len);
 
-					UnlockReleaseBuffer(metabuf);
-				}
+				UnlockReleaseBuffer(metabuf);
 			}
 
 			return par_result;
@@ -1743,22 +1761,7 @@ tp_build(Relation heap, Relation index, IndexInfo *indexInfo)
 		result->heap_tuples	 = reltuples;
 		result->index_tuples = total_docs;
 
-		if (progress != NULL)
-		{
-			/* Accumulate stats for aggregated summary */
-			progress->total_docs += total_docs;
-			progress->total_len += total_len;
-			progress->partition_count++;
-		}
-		else
-		{
-			elog(NOTICE,
-				 "BM25 index build completed: " UINT64_FORMAT
-				 " documents, avg_length=%.2f",
-				 total_docs,
-				 total_docs > 0 ? (float4)(total_len / (double)total_docs)
-								: 0.0);
-		}
+		record_or_report_build_completion(progress, total_docs, total_len);
 
 		/*
 		 * Release the per-index lock before finalizing.

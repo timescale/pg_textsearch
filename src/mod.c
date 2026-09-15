@@ -180,8 +180,7 @@ is_bm25_index_relation(Oid relid)
 		return false;
 
 	relation = relation_open(relid, NoLock);
-	is_bm25	 = (relation->rd_rel->relkind == RELKIND_INDEX ||
-				relation->rd_rel->relkind == RELKIND_PARTITIONED_INDEX) &&
+	is_bm25	 = relation->rd_rel->relkind == RELKIND_INDEX &&
 			  relation->rd_rel->relam == bm25_am;
 	relation_close(relation, NoLock);
 
