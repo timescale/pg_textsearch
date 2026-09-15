@@ -2349,6 +2349,97 @@ test_reindex_reconciliation() {
     sql_as durable_owner -c "DROP TABLE public.lifecycle_reindex_docs;"
 }
 
+test_plain_reindex_preserves_captured_schedule() {
+    local current_after current_before current_oid
+    local legacy_after legacy_before legacy_lineage legacy_oid
+
+    sql_super -c "ALTER ROLE durable_owner IN DATABASE ${TEST_DB}
+      SET pg_textsearch.background_compaction_schedule = '1 2 3 4 *';"
+    sql_as durable_owner -c "
+        CREATE TABLE public.lifecycle_reindex_schedule_index_docs
+          (body text);
+        INSERT INTO public.lifecycle_reindex_schedule_index_docs
+          VALUES ('current');
+        CREATE INDEX lifecycle_reindex_schedule_index_idx
+          ON public.lifecycle_reindex_schedule_index_docs USING bm25(body)
+          WITH (text_config = 'english',
+                compaction = 'background');
+
+        CREATE TABLE public.lifecycle_reindex_schedule_table_docs
+          (body text);
+        INSERT INTO public.lifecycle_reindex_schedule_table_docs
+          VALUES ('legacy');
+        CREATE INDEX lifecycle_reindex_schedule_table_idx
+          ON public.lifecycle_reindex_schedule_table_docs USING bm25(body)
+          WITH (text_config = 'english',
+                compaction = 'background');" >/dev/null 2>&1
+    current_oid="$(sql_super -c "SELECT
+        'public.lifecycle_reindex_schedule_index_idx'::regclass::oid;")"
+    legacy_oid="$(sql_super -c "SELECT
+        'public.lifecycle_reindex_schedule_table_idx'::regclass::oid;")"
+    current_before="$(current_generation_job_id "${current_oid}")"
+    legacy_before="$(current_generation_job_id "${legacy_oid}")"
+
+    sql_super -c "UPDATE df.instances AS instance
+      SET label = pg_catalog.format(
+        'pg_textsearch:bg:v1:%s:%s:%s:%s:%s:%s',
+        database.oid,
+        relation.oid,
+        coalesce(nullif(relation.reltablespace, 0),
+                 database.dattablespace),
+        pg_catalog.pg_relation_filenode(relation.oid),
+        relation.relowner,
+        pg_catalog.encode(
+          pg_catalog.convert_to('1 2 3 4 *', 'UTF8'), 'hex'))
+      FROM pg_catalog.pg_class AS relation,
+           pg_catalog.pg_database AS database
+      WHERE instance.id = '${legacy_before}'
+        AND relation.oid = ${legacy_oid}
+        AND database.datname = pg_catalog.current_database();"
+    remove_index_lineage public.lifecycle_reindex_schedule_table_idx
+
+    sql_super -c "ALTER ROLE durable_owner IN DATABASE ${TEST_DB}
+      SET pg_textsearch.background_compaction_schedule = '5 6 7 8 *';"
+    sql_as durable_owner -c "
+        REINDEX INDEX public.lifecycle_reindex_schedule_index_idx;" \
+        >/dev/null 2>&1
+    current_after="$(current_generation_job_id "${current_oid}")"
+    if [ -z "${current_after}" ] ||
+       [ "${current_after}" = "${current_before}" ]; then
+        error "plain REINDEX INDEX created no replacement workflow"
+    fi
+    assert_eq "plain REINDEX INDEX preserves the captured schedule" "t" \
+        "$(sql_super -c "SELECT label OPERATOR(pg_catalog.~~)
+            ('%:' || pg_catalog.encode(pg_catalog.convert_to(
+                '1 2 3 4 *', 'UTF8'), 'hex'))
+          FROM df.instances WHERE id = '${current_after}';")"
+
+    sql_as durable_owner -c "
+        REINDEX TABLE public.lifecycle_reindex_schedule_table_docs;" \
+        >/dev/null 2>&1
+    legacy_after="$(current_generation_job_id "${legacy_oid}")"
+    if [ -z "${legacy_after}" ] ||
+       [ "${legacy_after}" = "${legacy_before}" ]; then
+        error "plain REINDEX TABLE created no replacement workflow"
+    fi
+    legacy_lineage="$(
+        index_lineage public.lifecycle_reindex_schedule_table_idx
+    )"
+    assert_eq "plain REINDEX TABLE backfills legacy lineage" "32" \
+        "${#legacy_lineage}"
+    assert_eq "plain REINDEX TABLE preserves the legacy schedule" "t" \
+        "$(sql_super -c "SELECT label OPERATOR(pg_catalog.~~)
+            ('%:' || pg_catalog.encode(pg_catalog.convert_to(
+                '1 2 3 4 *', 'UTF8'), 'hex'))
+          FROM df.instances WHERE id = '${legacy_after}';")"
+
+    sql_super -c "ALTER ROLE durable_owner IN DATABASE ${TEST_DB}
+      RESET pg_textsearch.background_compaction_schedule;"
+    sql_super -c "
+        DROP TABLE public.lifecycle_reindex_schedule_index_docs,
+                   public.lifecycle_reindex_schedule_table_docs;"
+}
+
 test_physical_rewrite_reconciliation() {
     local excluded_oid external_oid file_after file_before index_oid
     local job_after job_before
@@ -10526,6 +10617,7 @@ run_test test_owner_reconciliation
 run_test test_owner_change_preserves_captured_schedule
 run_test test_reassign_owned_reconciliation
 run_test test_reindex_reconciliation
+run_test test_plain_reindex_preserves_captured_schedule
 run_test test_physical_rewrite_reconciliation
 run_test test_database_owner_vacuum_full
 run_test test_vacuum_full_skip_locked
