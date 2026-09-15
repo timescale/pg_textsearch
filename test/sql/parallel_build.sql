@@ -56,6 +56,8 @@ CREATE INDEX parallel_test_1worker_idx ON parallel_test_1worker USING bm25(conte
 SELECT COUNT(*) AS database_count FROM (SELECT 1 FROM parallel_test_1worker
 ORDER BY content <@> to_bm25query('database', 'parallel_test_1worker_idx')) sub;
 
+REINDEX INDEX parallel_test_1worker_idx;
+
 --------------------------------------------------------------------------------
 -- Test 3: Two workers (common case)
 --------------------------------------------------------------------------------

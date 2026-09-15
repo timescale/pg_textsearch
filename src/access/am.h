@@ -143,8 +143,10 @@ int tp_tokenize_text(
 		int	   *term_count_out);
 
 /* Build progress tracking for partitioned tables */
+void tp_build_progress_set_owner(const void *owner);
 void tp_build_progress_begin(void);
 void tp_build_progress_end(void);
+void tp_build_progress_abort(void);
 
 /*
  * Scan functions (am/scan.c)
