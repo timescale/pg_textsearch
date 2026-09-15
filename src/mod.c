@@ -12,6 +12,7 @@
 #include <catalog/dependency.h>
 #include <catalog/objectaccess.h>
 #include <catalog/pg_class_d.h>
+#include <commands/defrem.h>
 #include <fmgr.h>
 #include <limits.h>
 #include <miscadmin.h>
@@ -135,6 +136,15 @@ static shmem_request_hook_type prev_shmem_request_hook = NULL;
 /* Previous ProcessUtility hook */
 static ProcessUtility_hook_type prev_process_utility_hook = NULL;
 
+typedef struct TpBuildUtilityContext
+{
+	struct TpBuildUtilityContext *previous;
+	bool						  track_index_build;
+	bool						  build_progress_started;
+} TpBuildUtilityContext;
+
+static TpBuildUtilityContext *current_build_utility_context = NULL;
+
 /* Shared memory size calculation */
 static void tp_shmem_request(void);
 
@@ -158,6 +168,25 @@ static void tp_subxact_callback(
 		SubTransactionId mySubid,
 		SubTransactionId parentSubid,
 		void			*arg);
+
+static bool
+is_bm25_index_relation(Oid relid)
+{
+	Oid		 bm25_am = get_am_oid("bm25", true);
+	Relation relation;
+	bool	 is_bm25;
+
+	if (!OidIsValid(bm25_am))
+		return false;
+
+	relation = relation_open(relid, NoLock);
+	is_bm25	 = (relation->rd_rel->relkind == RELKIND_INDEX ||
+				relation->rd_rel->relkind == RELKIND_PARTITIONED_INDEX) &&
+			  relation->rd_rel->relam == bm25_am;
+	relation_close(relation, NoLock);
+
+	return is_bm25;
+}
 
 /* ProcessUtility hook for tracking CREATE INDEX USING bm25 */
 static void tp_process_utility(
@@ -548,6 +577,18 @@ tp_object_access(
 	if (prev_object_access_hook)
 		prev_object_access_hook(access, classId, objectId, subId, arg);
 
+	if (access == OAT_POST_CREATE && classId == RelationRelationId &&
+		subId == 0 && current_build_utility_context != NULL &&
+		current_build_utility_context->track_index_build &&
+		!current_build_utility_context->build_progress_started)
+	{
+		if (is_bm25_index_relation(objectId))
+		{
+			tp_build_progress_begin();
+			current_build_utility_context->build_progress_started = true;
+		}
+	}
+
 	/* We only care about DROP events on relations (indexes are relations) */
 	if (access == OAT_DROP && classId == RelationRelationId && subId == 0)
 	{
@@ -701,63 +742,69 @@ tp_process_utility(
 		DestReceiver		 *dest,
 		QueryCompletion		 *qc)
 {
-	Node *parsetree = pstmt->utilityStmt;
+	TpBuildUtilityContext *utility_context;
+	Node				  *parsetree = pstmt->utilityStmt;
 
+	utility_context =
+			MemoryContextAllocZero(TopMemoryContext, sizeof(*utility_context));
+	utility_context->previous = current_build_utility_context;
 	if (IsA(parsetree, IndexStmt))
 	{
 		IndexStmt *stmt = (IndexStmt *)parsetree;
 
 		if (stmt->accessMethod && strcmp(stmt->accessMethod, "bm25") == 0)
-		{
-			tp_build_progress_begin();
-
-			if (prev_process_utility_hook)
-				prev_process_utility_hook(
-						pstmt,
-						queryString,
-						readOnlyTree,
-						context,
-						params,
-						queryEnv,
-						dest,
-						qc);
-			else
-				standard_ProcessUtility(
-						pstmt,
-						queryString,
-						readOnlyTree,
-						context,
-						params,
-						queryEnv,
-						dest,
-						qc);
-
-			tp_build_progress_end();
-			return;
-		}
+			utility_context->track_index_build = true;
 	}
 
-	/* Not a bm25 CREATE INDEX - pass through */
-	if (prev_process_utility_hook)
-		prev_process_utility_hook(
-				pstmt,
-				queryString,
-				readOnlyTree,
-				context,
-				params,
-				queryEnv,
-				dest,
-				qc);
-	else
-		standard_ProcessUtility(
-				pstmt,
-				queryString,
-				readOnlyTree,
-				context,
-				params,
-				queryEnv,
-				dest,
-				qc);
+	current_build_utility_context = utility_context;
+	tp_build_progress_set_owner(utility_context);
+
+	PG_TRY();
+	{
+		if (prev_process_utility_hook)
+			prev_process_utility_hook(
+					pstmt,
+					queryString,
+					readOnlyTree,
+					context,
+					params,
+					queryEnv,
+					dest,
+					qc);
+		else
+			standard_ProcessUtility(
+					pstmt,
+					queryString,
+					readOnlyTree,
+					context,
+					params,
+					queryEnv,
+					dest,
+					qc);
+
+		if (utility_context->build_progress_started)
+		{
+			utility_context->build_progress_started = false;
+			tp_build_progress_end();
+		}
+
+		current_build_utility_context = utility_context->previous;
+		tp_build_progress_set_owner(utility_context->previous);
+		pfree(utility_context);
+	}
+	PG_CATCH();
+	{
+		if (utility_context->build_progress_started)
+		{
+			utility_context->build_progress_started = false;
+			tp_build_progress_abort();
+		}
+		current_build_utility_context = utility_context->previous;
+		tp_build_progress_set_owner(utility_context->previous);
+		pfree(utility_context);
+		PG_RE_THROW();
+	}
+	PG_END_TRY();
 }
 
 /*
