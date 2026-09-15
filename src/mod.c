@@ -750,6 +750,7 @@ tp_update_managed_intent(
 {
 	const int mode_flags = TP_MANAGED_INTENT_REFRESH_DEFAULT |
 						   TP_MANAGED_INTENT_RECONCILE_OPTIONS |
+						   TP_MANAGED_INTENT_RECONCILE_LINEAGE |
 						   TP_MANAGED_INTENT_PRESERVE_SCHEDULE |
 						   TP_MANAGED_INTENT_DISABLE |
 						   TP_MANAGED_INTENT_POST_PUBLICATION;
@@ -766,7 +767,8 @@ tp_update_managed_intent(
 		pending_option_reconciliation)
 		new_mode_flags |= TP_MANAGED_INTENT_RECONCILE_OPTIONS;
 	intent->flags = persistent_flags | new_mode_flags;
-	if ((flags & TP_MANAGED_INTENT_RECONCILE_OPTIONS) != 0)
+	if ((flags & (TP_MANAGED_INTENT_RECONCILE_OPTIONS |
+				  TP_MANAGED_INTENT_RECONCILE_LINEAGE)) != 0)
 	{
 		tp_replace_managed_string(&intent->schedule, schedule);
 		tp_replace_managed_string(&intent->lineage, lineage);
@@ -2084,11 +2086,16 @@ tp_reconcile_managed_intents(void)
 
 			if (!list_member_oid(locked, intent->index_oid) ||
 				(intent->flags & TP_MANAGED_INTENT_DISABLE) != 0 ||
-				(intent->flags & TP_MANAGED_INTENT_RECONCILE_OPTIONS) == 0 ||
+				(intent->flags & (TP_MANAGED_INTENT_RECONCILE_OPTIONS |
+								  TP_MANAGED_INTENT_RECONCILE_LINEAGE)) == 0 ||
 				(intent->flags & TP_MANAGED_INTENT_LINEAGE_SUPPLIED) != 0)
 				continue;
-			tp_reconcile_index_compaction_options(
-					intent->index_oid, intent->schedule, intent->lineage);
+			if ((intent->flags & TP_MANAGED_INTENT_RECONCILE_LINEAGE) != 0)
+				tp_reconcile_index_compaction_lineage(
+						intent->index_oid, intent->lineage);
+			else
+				tp_reconcile_index_compaction_options(
+						intent->index_oid, intent->schedule, intent->lineage);
 		}
 		foreach (lc, frozen)
 		{
@@ -2141,8 +2148,9 @@ tp_reconcile_managed_intents(void)
 			relation_close(index_rel, NoLock);
 			if (tp_compaction_lineage_in_use_by_other(
 						intent->lineage, intent->index_oid, heap_oid) ||
-				tp_compaction_job_lineage_exists(
-						objects, intent->lineage, heap_oid, owner_oid))
+				(objects != NULL &&
+				 tp_compaction_job_lineage_exists(
+						 objects, intent->lineage, heap_oid, owner_oid)))
 				ereport(ERROR,
 						(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
 						 errmsg("background compaction lineage is already "
@@ -2153,15 +2161,23 @@ tp_reconcile_managed_intents(void)
 			TpManagedIndexIntent *intent = lfirst(lc);
 
 			if (!list_member_oid(locked, intent->index_oid) ||
-				(intent->flags & TP_MANAGED_INTENT_DISABLE) != 0 ||
-				!tp_is_background_physical_index(intent->index_oid))
+				(intent->flags & TP_MANAGED_INTENT_DISABLE) != 0)
 				continue;
-			if ((intent->flags & (TP_MANAGED_INTENT_RECONCILE_OPTIONS |
-								  TP_MANAGED_INTENT_LINEAGE_SUPPLIED)) ==
-				(TP_MANAGED_INTENT_RECONCILE_OPTIONS |
-				 TP_MANAGED_INTENT_LINEAGE_SUPPLIED))
-				tp_reconcile_index_compaction_options(
-						intent->index_oid, intent->schedule, intent->lineage);
+			if ((intent->flags & TP_MANAGED_INTENT_LINEAGE_SUPPLIED) != 0)
+			{
+				if ((intent->flags & TP_MANAGED_INTENT_RECONCILE_LINEAGE) != 0)
+					tp_reconcile_index_compaction_lineage(
+							intent->index_oid, intent->lineage);
+				else if (
+						(intent->flags &
+						 TP_MANAGED_INTENT_RECONCILE_OPTIONS) != 0)
+					tp_reconcile_index_compaction_options(
+							intent->index_oid,
+							intent->schedule,
+							intent->lineage);
+			}
+			if (!tp_is_background_physical_index(intent->index_oid))
+				continue;
 			if ((intent->flags & TP_MANAGED_INTENT_PRESERVE_SCHEDULE) != 0)
 			{
 				tp_compaction_job_resolve_schedule(
@@ -2537,6 +2553,83 @@ tp_reconcile_attached_index_options(Oid parent_index_oid)
 	if (schedule != NULL)
 		pfree(schedule);
 	pfree(lineage);
+}
+
+static void
+tp_reconcile_detached_partition_lineages(Oid relation_oid)
+{
+	List	 *root_indexes;
+	ListCell *root_lc;
+
+	root_indexes = tp_relation_indexes_locked(relation_oid, AccessShareLock);
+	foreach (root_lc, root_indexes)
+	{
+		Oid		  root_index_oid = lfirst_oid(root_lc);
+		Relation  root_index;
+		List	 *index_tree;
+		List	 *bm25_indexes;
+		ListCell *index_lc;
+		char	 *new_lineage;
+
+		root_index = try_relation_open(root_index_oid, AccessShareLock);
+		if (root_index == NULL)
+			continue;
+		if (!tp_is_bm25_index_node_relation(root_index) ||
+			tp_index_compaction_lineage(root_index) == NULL)
+		{
+			relation_close(root_index, AccessShareLock);
+			continue;
+		}
+		if (root_index->rd_rel->relkind == RELKIND_PARTITIONED_INDEX)
+			index_tree =
+					find_all_inheritors(root_index_oid, AccessShareLock, NULL);
+		else
+			index_tree = list_make1_oid(root_index_oid);
+		relation_close(root_index, AccessShareLock);
+
+		new_lineage	 = tp_new_compaction_lineage();
+		bm25_indexes = tp_bm25_index_nodes(index_tree);
+		list_free(index_tree);
+		foreach (index_lc, bm25_indexes)
+		{
+			Oid						indexoid = lfirst_oid(index_lc);
+			Relation				index_rel;
+			TpCompactionJobIdentity source;
+			bool					physical;
+			bool					background;
+
+			index_rel  = relation_open(indexoid, AccessShareLock);
+			physical   = index_rel->rd_rel->relkind == RELKIND_INDEX;
+			background = tp_index_compaction_mode(index_rel) ==
+						 TP_COMPACTION_BACKGROUND;
+			relation_close(index_rel, AccessShareLock);
+
+			if (physical && background)
+			{
+				tp_compaction_job_capture(indexoid, &source);
+				tp_collect_managed_intent(
+						indexoid,
+						&source,
+						NULL,
+						new_lineage,
+						TP_MANAGED_INTENT_RECONCILE_LINEAGE |
+								TP_MANAGED_INTENT_LINEAGE_SUPPLIED |
+								TP_MANAGED_INTENT_PRESERVE_SCHEDULE);
+				tp_reset_compaction_identity(&source);
+			}
+			else
+				tp_collect_managed_intent(
+						indexoid,
+						NULL,
+						NULL,
+						new_lineage,
+						TP_MANAGED_INTENT_RECONCILE_LINEAGE |
+								TP_MANAGED_INTENT_LINEAGE_SUPPLIED);
+		}
+		list_free(bm25_indexes);
+		pfree(new_lineage);
+	}
+	list_free(root_indexes);
 }
 
 static TpReindexState *
@@ -3263,6 +3356,66 @@ tp_alter_table_attaches_partition(AlterTableStmt *stmt)
 	return false;
 }
 
+static bool
+tp_alter_table_detaches_partition(AlterTableStmt *stmt)
+{
+	ListCell *lc;
+
+	if (stmt->objtype != OBJECT_TABLE)
+		return false;
+
+	foreach (lc, stmt->cmds)
+	{
+		AlterTableCmd *cmd = lfirst_node(AlterTableCmd, lc);
+
+		if (cmd->subtype == AT_DetachPartition ||
+			cmd->subtype == AT_DetachPartitionFinalize)
+			return true;
+	}
+	return false;
+}
+
+static List *
+tp_detached_partition_oids(AlterTableStmt *stmt)
+{
+	List	 *partition_oids = NIL;
+	ListCell *lc;
+
+	foreach (lc, stmt->cmds)
+	{
+		AlterTableCmd *cmd = lfirst_node(AlterTableCmd, lc);
+		PartitionCmd  *partition_cmd;
+		Oid			   partition_oid;
+
+		if (cmd->subtype != AT_DetachPartition &&
+			cmd->subtype != AT_DetachPartitionFinalize)
+			continue;
+		partition_cmd = castNode(PartitionCmd, cmd->def);
+		partition_oid = RangeVarGetRelidExtended(
+				partition_cmd->name, NoLock, RVR_MISSING_OK, NULL, NULL);
+		if (OidIsValid(partition_oid))
+			partition_oids =
+					list_append_unique_oid(partition_oids, partition_oid);
+	}
+	return partition_oids;
+}
+
+static void
+tp_reconcile_completed_partition_detaches(List *partition_oids)
+{
+	ListCell *lc;
+
+	foreach (lc, partition_oids)
+	{
+		Oid partition_oid = lfirst_oid(lc);
+
+		if (!SearchSysCacheExists1(RELOID, ObjectIdGetDatum(partition_oid)) ||
+			get_rel_relispartition(partition_oid))
+			continue;
+		tp_reconcile_detached_partition_lineages(partition_oid);
+	}
+}
+
 static void
 tp_truncate_check_relation(Oid relation_oid, const char *relation_name)
 {
@@ -3832,6 +3985,35 @@ tp_process_utility_impl(
 				tp_create_index_tracking_end(create_state);
 			}
 			PG_END_TRY();
+			return;
+		}
+
+		if (tp_alter_table_detaches_partition(stmt))
+		{
+			List *partition_oids = tp_detached_partition_oids(stmt);
+
+			if (prev_process_utility_hook)
+				prev_process_utility_hook(
+						pstmt,
+						queryString,
+						readOnlyTree,
+						context,
+						params,
+						queryEnv,
+						dest,
+						qc);
+			else
+				standard_ProcessUtility(
+						pstmt,
+						queryString,
+						readOnlyTree,
+						context,
+						params,
+						queryEnv,
+						dest,
+						qc);
+			tp_reconcile_completed_partition_detaches(partition_oids);
+			list_free(partition_oids);
 			return;
 		}
 
