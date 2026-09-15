@@ -223,6 +223,11 @@ tp_try_prelock_compaction_indexes(List *indexoids)
 					 ExclusiveLock)) ||
 			!ConditionalLockRelationOid(indexoid, ShareUpdateExclusiveLock))
 			continue;
+		if (!SearchSysCacheExists1(RELOID, ObjectIdGetDatum(indexoid)))
+		{
+			UnlockRelationOid(indexoid, ShareUpdateExclusiveLock);
+			continue;
+		}
 		locked = lappend_oid(locked, indexoid);
 	}
 	list_free(sorted);
