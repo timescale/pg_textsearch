@@ -225,7 +225,9 @@ RETURNS event_trigger AS $$
 DECLARE
     action text := current_setting('rls_test.action', true);
 BEGIN
-    IF action IS NULL OR action IN ('', 'running', 'done') THEN
+    IF action IS NULL OR action IN
+       ('', 'running', 'done', 'drop_enable', 'drop_inherit',
+        'drop_attach') THEN
         RETURN;
     END IF;
 
@@ -272,7 +274,8 @@ DECLARE
     action text := current_setting('rls_test.action', true);
 BEGIN
     IF action IS NULL OR action NOT IN
-       ('restore_enable', 'restore_inherit', 'restore_attach') THEN
+       ('restore_enable', 'restore_inherit', 'restore_attach',
+        'drop_enable', 'drop_inherit', 'drop_attach') THEN
         RETURN;
     END IF;
 
@@ -292,13 +295,19 @@ BEGIN
                 'RENAME TO rls_evt_inherit_target';
         EXECUTE 'ALTER TABLE rls_evt_inherit_swap '
                 'RENAME TO rls_evt_inherit_guarded';
-    ELSE
+    ELSIF action = 'restore_attach' THEN
         EXECUTE 'ALTER TABLE rls_evt_attach_target '
                 'RENAME TO rls_evt_attach_swap';
         EXECUTE 'ALTER TABLE rls_evt_attach_guarded '
                 'RENAME TO rls_evt_attach_target';
         EXECUTE 'ALTER TABLE rls_evt_attach_swap '
                 'RENAME TO rls_evt_attach_guarded';
+    ELSIF action = 'drop_enable' THEN
+        EXECUTE 'DROP TABLE rls_evt_drop_enable_target CASCADE';
+    ELSIF action = 'drop_inherit' THEN
+        EXECUTE 'DROP TABLE rls_evt_drop_inherit_child CASCADE';
+    ELSE
+        EXECUTE 'DROP TABLE rls_evt_drop_attach_child CASCADE';
     END IF;
 
     PERFORM set_config('rls_test.action', 'done', true);
@@ -373,6 +382,49 @@ SELECT NOT EXISTS (
     WHERE inhrelid = 'rls_evt_attach_guarded'::regclass
       AND inhparent = 'rls_evt_attach_parent'::regclass
 ) AS swapped_attach_rolled_back;
+\pset format aligned
+
+CREATE TABLE rls_evt_drop_enable_target (id integer, content text);
+CREATE INDEX rls_evt_drop_enable_idx
+    ON rls_evt_drop_enable_target USING bm25(content)
+    WITH (text_config='english');
+SET rls_test.action = 'drop_enable';
+ALTER TABLE rls_evt_drop_enable_target ENABLE ROW LEVEL SECURITY;
+RESET rls_test.action;
+\pset format unaligned
+SELECT to_regclass('rls_evt_drop_enable_target') IS NULL
+    AS dropped_enable_target_absent;
+\pset format aligned
+
+CREATE TABLE rls_evt_drop_inherit_parent (id integer, content text);
+ALTER TABLE rls_evt_drop_inherit_parent ENABLE ROW LEVEL SECURITY;
+CREATE TABLE rls_evt_drop_inherit_child (id integer, content text);
+CREATE INDEX rls_evt_drop_inherit_idx
+    ON rls_evt_drop_inherit_child USING bm25(content)
+    WITH (text_config='english');
+SET rls_test.action = 'drop_inherit';
+ALTER TABLE rls_evt_drop_inherit_child
+    INHERIT rls_evt_drop_inherit_parent;
+RESET rls_test.action;
+\pset format unaligned
+SELECT to_regclass('rls_evt_drop_inherit_child') IS NULL
+    AS dropped_inherit_child_absent;
+\pset format aligned
+
+CREATE TABLE rls_evt_drop_attach_parent (id integer, content text)
+    PARTITION BY RANGE (id);
+ALTER TABLE rls_evt_drop_attach_parent ENABLE ROW LEVEL SECURITY;
+CREATE TABLE rls_evt_drop_attach_child (id integer, content text);
+CREATE INDEX rls_evt_drop_attach_idx
+    ON rls_evt_drop_attach_child USING bm25(content)
+    WITH (text_config='english');
+SET rls_test.action = 'drop_attach';
+ALTER TABLE rls_evt_drop_attach_parent
+    ATTACH PARTITION rls_evt_drop_attach_child FOR VALUES FROM (0) TO (10);
+RESET rls_test.action;
+\pset format unaligned
+SELECT to_regclass('rls_evt_drop_attach_child') IS NULL
+    AS dropped_attach_child_absent;
 \pset format aligned
 
 CREATE TABLE rls_evt_ifne_heap (id integer, content text);
@@ -457,6 +509,7 @@ DROP TABLE rls_evt_inherit_target, rls_evt_inherit_guarded,
     rls_evt_inherit_parent CASCADE;
 DROP TABLE rls_evt_attach_target, rls_evt_attach_guarded,
     rls_evt_attach_parent CASCADE;
+DROP TABLE rls_evt_drop_inherit_parent, rls_evt_drop_attach_parent CASCADE;
 DROP TABLE rls_evt_ifne_heap, rls_evt_ifne_collision CASCADE;
 DROP TABLE rls_evt_progress_heap, rls_evt_missing_am_heap CASCADE;
 

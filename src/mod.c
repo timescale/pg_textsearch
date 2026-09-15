@@ -6,10 +6,14 @@
  */
 #include <postgres.h>
 
+#include <access/genam.h>
 #include <access/relation.h>
 #include <access/reloptions.h>
+#include <access/skey.h>
+#include <access/table.h>
 #include <access/xact.h>
 #include <catalog/dependency.h>
+#include <catalog/indexing.h>
 #include <catalog/objectaccess.h>
 #include <catalog/pg_class_d.h>
 #include <catalog/pg_inherits_d.h>
@@ -21,8 +25,10 @@
 #include <storage/ipc.h>
 #include <storage/shmem.h>
 #include <tcop/utility.h>
+#include <utils/fmgroids.h>
 #include <utils/guc.h>
 #include <utils/inval.h>
+#include <utils/snapmgr.h>
 
 #include "access/am.h"
 #include "access/rls.h"
@@ -776,16 +782,51 @@ initialize_utility_context(
 	}
 }
 
+static bool
+relation_exists(Oid relid)
+{
+	Relation	class_rel;
+	ScanKeyData key;
+	SysScanDesc scan;
+	bool		exists;
+
+	/* End triggers can delete the tuple in the current command. */
+	class_rel = table_open(RelationRelationId, AccessShareLock);
+	ScanKeyInit(
+			&key,
+			Anum_pg_class_oid,
+			BTEqualStrategyNumber,
+			F_OIDEQ,
+			ObjectIdGetDatum(relid));
+	scan = systable_beginscan(
+			class_rel, ClassOidIndexId, true, SnapshotSelf, 1, &key);
+	exists = HeapTupleIsValid(systable_getnext(scan));
+	systable_endscan(scan);
+	table_close(class_rel, AccessShareLock);
+
+	return exists;
+}
+
 static void
 validate_utility_context(TpProcessUtilityContext *utility_context)
 {
 	ListCell *lc;
 
 	foreach (lc, utility_context->altered_relids)
-		tp_check_rls_enable_allowed(lfirst_oid(lc));
+	{
+		Oid relid = lfirst_oid(lc);
+
+		if (relation_exists(relid))
+			tp_check_rls_enable_allowed(relid);
+	}
 
 	foreach (lc, utility_context->hierarchy_relids)
-		tp_check_bm25_hierarchy_allowed(lfirst_oid(lc));
+	{
+		Oid relid = lfirst_oid(lc);
+
+		if (relation_exists(relid))
+			tp_check_bm25_hierarchy_allowed(relid);
+	}
 }
 
 static void
