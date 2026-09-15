@@ -363,9 +363,10 @@ static int				   tp_process_utility_depth = 0;
  * Reconciliation is delayed until a terminal barrier so every target can be
  * admitted before any pg_durable dependency or SPI work begins.
  */
-static MemoryContext tp_managed_intent_context = NULL;
-static List			*tp_managed_intents		   = NIL;
-static bool			 tp_managed_reconciling	   = false;
+static MemoryContext tp_managed_intent_context			= NULL;
+static List			*tp_managed_intents					= NIL;
+static bool			 tp_managed_reconciling				= false;
+static bool			 tp_post_publication_reconciliation = false;
 
 /* Shared memory size calculation */
 static void tp_shmem_request(void);
@@ -1052,9 +1053,10 @@ tp_reset_managed_intents(void)
 {
 	if (tp_managed_intent_context != NULL)
 		MemoryContextDelete(tp_managed_intent_context);
-	tp_managed_intent_context = NULL;
-	tp_managed_intents		  = NIL;
-	tp_managed_reconciling	  = false;
+	tp_managed_intent_context		   = NULL;
+	tp_managed_intents				   = NIL;
+	tp_managed_reconciling			   = false;
+	tp_post_publication_reconciliation = false;
 }
 
 static void
@@ -2377,7 +2379,7 @@ tp_reconcile_managed_intents_at_precommit(void)
 	MemoryContext old_context = CurrentMemoryContext;
 	ResourceOwner old_owner	  = CurrentResourceOwner;
 	ListCell	 *lc;
-	bool		  post_publication = false;
+	bool		  post_publication = tp_post_publication_reconciliation;
 
 	foreach (lc, tp_managed_intents)
 	{
@@ -2400,6 +2402,7 @@ tp_reconcile_managed_intents_at_precommit(void)
 	{
 		MemoryContextSwitchTo(old_context);
 		tp_reconcile_managed_intents();
+		tp_post_publication_reconciliation = false;
 		ReleaseCurrentSubTransaction();
 		MemoryContextSwitchTo(old_context);
 		CurrentResourceOwner = old_owner;
@@ -2904,6 +2907,8 @@ tp_collect_reindex_state_intents(bool include_deferred)
 		if (state->reconciling ||
 			(state->defer_reconciliation && !include_deferred))
 			continue;
+		if (state->post_publication)
+			tp_post_publication_reconciliation = true;
 		if (tp_reindex_collect_candidates(state, &candidates, &indexoids))
 		{
 			if (!state->post_publication)
