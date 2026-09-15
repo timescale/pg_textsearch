@@ -34,12 +34,16 @@ extern bool
 tp_compaction_lineage_in_use(const char *lineage, Oid heap_oid, Oid owner_oid);
 extern void	 tp_lock_compaction_index(Oid indexoid);
 extern void	 tp_lock_compaction_dependency(void);
+extern bool	 tp_try_lock_compaction_dependency(void);
+extern bool	 tp_compaction_dependency_lock_held(void);
+extern void	 tp_unlock_compaction_dependency(void);
 extern void	 tp_lock_compaction_lineage(const char *lineage);
 extern void	 tp_require_compaction_index_lock(Oid indexoid);
 extern void	 tp_require_compaction_dependency_lock(void);
 extern List *tp_prelock_compaction_indexes(List *indexoids);
-extern List				*
+extern List *
 tp_prelock_compaction_indexes_nowait(List *indexoids, bool nowait);
-extern bool tp_compaction_dispatch_possible(void);
-extern void tp_compaction_request(Oid indexoid);
-extern void tp_compaction_flush_requests(void);
+extern List *tp_try_prelock_compaction_indexes(List *indexoids);
+extern bool	 tp_compaction_dispatch_possible(void);
+extern void	 tp_compaction_request(Oid indexoid);
+extern void	 tp_compaction_flush_requests(void);

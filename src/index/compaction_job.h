@@ -23,7 +23,26 @@ typedef struct TpCompactionJobIdentity
 	bool  schedule_resolved;
 } TpCompactionJobIdentity;
 
+typedef enum TpManagedIntentFlags
+{
+	TP_MANAGED_INTENT_REFRESH_DEFAULT	= 1 << 0,
+	TP_MANAGED_INTENT_RECONCILE_OPTIONS = 1 << 1,
+	TP_MANAGED_INTENT_PRESERVE_SCHEDULE = 1 << 2,
+	TP_MANAGED_INTENT_LINEAGE_SUPPLIED	= 1 << 3
+} TpManagedIntentFlags;
+
+typedef struct TpManagedIndexIntent
+{
+	Oid						index_oid;
+	TpCompactionJobIdentity source;
+	char				   *schedule;
+	char				   *lineage;
+	int						flags;
+	SubTransactionId		subid;
+} TpManagedIndexIntent;
+
 extern void tp_compaction_job_preflight(Oid owner_oid, const char *schedule);
+extern bool tp_compaction_job_try_lock_objects(void);
 extern void tp_compaction_job_activate(Oid indexoid, bool refresh_default);
 extern void
 tp_compaction_job_activate_with_schedule(Oid indexoid, const char *schedule);
