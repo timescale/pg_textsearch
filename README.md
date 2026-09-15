@@ -429,12 +429,21 @@ LIMIT 10;
 ### Background Compaction
 
 The default `inline` policy compacts synchronously during memtable spills.
-Managed `background` mode uses
+Managed `background` mode currently requires PostgreSQL 17 or 18 and uses
 [pg_durable](https://github.com/microsoft/pg_durable) 0.2.8 or newer rather
 than a built-in worker. pg_durable must be preloaded, initialized in the
 current database, and granted to the index owner. The owner must have `LOGIN`;
 a superuser owner also requires
 `pg_durable.enable_superuser_instances = on`.
+
+Each physical index has one managed workflow scoped to its captured owner. The
+index owner, or a role PostgreSQL permits to act as that owner, may enable
+background mode. A separate insert-only writer may later trigger a spill, but
+pg_textsearch submits the workflow and calls `df.signal` under the index
+owner's identity. The compaction SQL nodes reached through either a spill
+signal or the cron backstop execute in pg_durable connections authenticated as
+the index owner, not as the DML writer; pg_durable's worker role provides only
+the orchestration infrastructure.
 
 ```sql
 CREATE INDEX documents_bm25 ON documents USING bm25(content)

@@ -8,16 +8,23 @@
 
 #include <access/relation.h>
 #include <access/reloptions.h>
+#include <access/table.h>
 #include <access/xact.h>
 #include <catalog/dependency.h>
+#include <catalog/heap.h>
 #include <catalog/index.h>
 #include <catalog/namespace.h>
 #include <catalog/objectaccess.h>
 #include <catalog/partition.h>
+#include <catalog/pg_authid_d.h>
 #include <catalog/pg_class_d.h>
+#include <catalog/pg_database.h>
 #include <catalog/pg_inherits.h>
+#include <catalog/pg_namespace_d.h>
+#include <commands/dbcommands.h>
 #include <commands/defrem.h>
 #include <commands/tablecmds.h>
+#include <commands/tablespace.h>
 #include <fmgr.h>
 #include <limits.h>
 #include <miscadmin.h>
@@ -34,6 +41,8 @@
 #include <utils/inval.h>
 #include <utils/lsyscache.h>
 #include <utils/relcache.h>
+#include <utils/snapmgr.h>
+#include <utils/syscache.h>
 
 #include "access/am.h"
 #include "constants.h"
@@ -157,6 +166,8 @@ typedef struct TpReindexTarget
 	Oid			  tablespace_oid;
 	RelFileNumber relfilenumber;
 	char		 *lineage;
+	char		 *schedule;
+	bool		  lineage_backfilled;
 } TpReindexTarget;
 
 typedef struct TpReindexState
@@ -164,6 +175,7 @@ typedef struct TpReindexState
 	MemoryContext		   context;
 	List				  *targets;
 	bool				   reconciling;
+	bool				   defer_reconciliation;
 	struct TpReindexState *previous;
 } TpReindexState;
 
@@ -182,6 +194,12 @@ typedef struct TpReindexCandidate
 	TpReindexTarget *target;
 	Oid				 index_oid;
 } TpReindexCandidate;
+
+typedef struct TpOwnerChangeTarget
+{
+	Oid	  index_oid;
+	char *schedule;
+} TpOwnerChangeTarget;
 
 /*
  * Concurrent and partitioned REINDEX commit inside ProcessUtility.  Keep a
@@ -240,7 +258,7 @@ static void tp_process_utility_impl(
 		QueryEnvironment	 *queryEnv,
 		DestReceiver		 *dest,
 		QueryCompletion		 *qc);
-static void tp_reconcile_reindex_states(void);
+static void tp_reconcile_reindex_states(bool include_deferred);
 
 static void
 tp_validate_compaction_lineage(const char *lineage)
@@ -773,7 +791,19 @@ tp_xact_callback(XactEvent event, void *arg pg_attribute_unused())
 	switch (event)
 	{
 	case XACT_EVENT_PRE_COMMIT:
-		tp_reconcile_reindex_states();
+		if (tp_reindex_states != NULL)
+		{
+			PushActiveSnapshot(GetLatestSnapshot());
+			PG_TRY();
+			{
+				tp_reconcile_reindex_states(true);
+			}
+			PG_FINALLY();
+			{
+				PopActiveSnapshot();
+			}
+			PG_END_TRY();
+		}
 
 		/*
 		 * Check for bulk load auto-spill before commit.
@@ -883,6 +913,23 @@ tp_index_stmt_option_count(IndexStmt *stmt, const char *option_name)
 }
 
 static void
+tp_index_stmt_remove_option(IndexStmt *stmt, const char *option_name)
+{
+	ListCell *lc;
+
+	foreach (lc, stmt->options)
+	{
+		DefElem *option = lfirst_node(DefElem, lc);
+
+		if (strcmp(option->defname, option_name) == 0)
+		{
+			stmt->options = foreach_delete_current(stmt->options, lc);
+			return;
+		}
+	}
+}
+
+static void
 tp_index_stmt_ensure_lineage(IndexStmt *stmt, Oid heap_oid, Oid owner_oid)
 {
 	char *lineage;
@@ -920,15 +967,34 @@ tp_index_stmt_validate_supplied_lineage(
 		return;
 
 	if (tp_compaction_lineage_in_use(lineage, heap_oid, owner_oid))
+	{
+		/*
+		 * PostgreSQL copies index reloptions while expanding CREATE TABLE
+		 * LIKE.  A nested clone onto an unrelated heap needs a new lineage;
+		 * top-level supplied values still retain strict collision checks.
+		 */
+		if (tp_process_utility_depth > 1)
+		{
+			tp_index_stmt_remove_option(stmt, "compaction_lineage");
+			return;
+		}
 		ereport(ERROR,
 				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
 				 errmsg("background compaction lineage is already in use")));
+	}
 
 	tp_lock_compaction_lineage(lineage);
 	if (tp_compaction_lineage_in_use(lineage, heap_oid, owner_oid))
+	{
+		if (tp_process_utility_depth > 1)
+		{
+			tp_index_stmt_remove_option(stmt, "compaction_lineage");
+			return;
+		}
 		ereport(ERROR,
 				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
 				 errmsg("background compaction lineage is already in use")));
+	}
 }
 
 static bool
@@ -1132,6 +1198,157 @@ tp_physical_bm25_indexes(List *indexoids, bool background_only)
 }
 
 static List *
+tp_all_bm25_indexes(
+		Oid	  tablespace_oid,
+		bool  filter_tablespace,
+		List *owner_oids,
+		bool  require_current_owner)
+{
+	Relation	class_rel;
+	SysScanDesc scan;
+	HeapTuple	tuple;
+	Oid			bm25_am_oid = get_index_am_oid("bm25", false);
+	List	   *indexoids	= NIL;
+
+	class_rel = table_open(RelationRelationId, AccessShareLock);
+	scan = systable_beginscan(class_rel, InvalidOid, false, NULL, 0, NULL);
+	while ((tuple = systable_getnext(scan)) != NULL)
+	{
+		Form_pg_class class_form = (Form_pg_class)GETSTRUCT(tuple);
+
+		if (class_form->relkind != RELKIND_INDEX ||
+			class_form->relam != bm25_am_oid ||
+			(filter_tablespace &&
+			 class_form->reltablespace != tablespace_oid) ||
+			(owner_oids != NIL &&
+			 !list_member_oid(owner_oids, class_form->relowner)) ||
+			(require_current_owner &&
+			 !object_ownercheck(
+					 RelationRelationId, class_form->oid, GetUserId())))
+			continue;
+
+		indexoids = lappend_oid(indexoids, class_form->oid);
+	}
+	systable_endscan(scan);
+	table_close(class_rel, AccessShareLock);
+	return indexoids;
+}
+
+static Oid
+tp_catalog_tablespace_oid(Oid tablespace_oid)
+{
+	HeapTuple		 tuple;
+	Form_pg_database database;
+	Oid				 catalog_oid = tablespace_oid;
+
+	tuple = SearchSysCache1(DATABASEOID, ObjectIdGetDatum(MyDatabaseId));
+	if (!HeapTupleIsValid(tuple))
+		elog(ERROR, "cache lookup failed for database %u", MyDatabaseId);
+	database = (Form_pg_database)GETSTRUCT(tuple);
+	if (tablespace_oid == database->dattablespace)
+		catalog_oid = InvalidOid;
+	ReleaseSysCache(tuple);
+	return catalog_oid;
+}
+
+static List *
+tp_role_oids(List *roles)
+{
+	List	 *owner_oids = NIL;
+	ListCell *lc;
+
+	foreach (lc, roles)
+	{
+		RoleSpec *role		= lfirst_node(RoleSpec, lc);
+		Oid		  owner_oid = get_rolespec_oid(role, false);
+
+		if (!has_privs_of_role(GetUserId(), owner_oid))
+		{
+			list_free(owner_oids);
+			return list_make1_oid(InvalidOid);
+		}
+		owner_oids = list_append_unique_oid(owner_oids, owner_oid);
+	}
+	return owner_oids;
+}
+
+static bool
+tp_can_maintain_relation(Oid relation_oid)
+{
+	return pg_class_aclcheck(relation_oid, GetUserId(), ACL_MAINTAIN) ==
+		   ACLCHECK_OK;
+}
+
+static List *
+tp_maintainable_indexes(List *indexoids, bool maintain_privilege)
+{
+	List	 *eligible = NIL;
+	ListCell *lc;
+
+	foreach (lc, indexoids)
+	{
+		Oid indexoid = lfirst_oid(lc);
+		Oid heap_oid = IndexGetRelation(indexoid, true);
+
+		if (!OidIsValid(heap_oid))
+			continue;
+		if (maintain_privilege
+					? tp_can_maintain_relation(heap_oid)
+					: object_ownercheck(
+							  RelationRelationId, heap_oid, GetUserId()))
+			eligible = lappend_oid(eligible, indexoid);
+	}
+	list_free(indexoids);
+	return eligible;
+}
+
+static List *
+tp_namespace_bm25_indexes(Oid namespace_oid)
+{
+	List	 *all_indexes = tp_all_bm25_indexes(InvalidOid, false, NIL, false);
+	List	 *indexoids	  = NIL;
+	ListCell *lc;
+
+	foreach (lc, all_indexes)
+	{
+		Oid indexoid = lfirst_oid(lc);
+
+		if (get_rel_namespace(indexoid) == namespace_oid)
+			indexoids = lappend_oid(indexoids, indexoid);
+	}
+	list_free(all_indexes);
+	return indexoids;
+}
+
+static List *
+tp_reassign_owned_indexes(ReassignOwnedStmt *stmt)
+{
+	List	 *owner_oids = NIL;
+	List	 *indexoids;
+	ListCell *lc;
+	Oid		  new_owner_oid = get_rolespec_oid(stmt->newrole, false);
+
+	if (!has_privs_of_role(GetUserId(), new_owner_oid))
+		return NIL;
+
+	foreach (lc, stmt->roles)
+	{
+		RoleSpec *role		= lfirst_node(RoleSpec, lc);
+		Oid		  owner_oid = get_rolespec_oid(role, false);
+
+		if (!has_privs_of_role(GetUserId(), owner_oid))
+		{
+			list_free(owner_oids);
+			return NIL;
+		}
+		owner_oids = list_append_unique_oid(owner_oids, owner_oid);
+	}
+	indexoids = tp_all_bm25_indexes(InvalidOid, false, owner_oids, false);
+	list_free(owner_oids);
+	return indexoids;
+}
+
+static List *
 tp_relation_indexes_locked(Oid relation_oid, LOCKMODE lockmode)
 {
 	Relation relation;
@@ -1268,6 +1485,45 @@ tp_reindex_initial_indexes(ReindexStmt *stmt, bool *tracks_commits)
 	bool					  concurrently = tp_reindex_concurrently(stmt);
 	List					 *indexoids;
 
+	if (stmt->kind == REINDEX_OBJECT_SCHEMA)
+	{
+		Oid namespace_oid = get_namespace_oid(stmt->name, false);
+
+		if (!object_ownercheck(
+					NamespaceRelationId, namespace_oid, GetUserId()) &&
+			!has_privs_of_role(GetUserId(), ROLE_PG_MAINTAIN))
+		{
+			*tracks_commits = false;
+			return NIL;
+		}
+		*tracks_commits = true;
+		return tp_namespace_bm25_indexes(namespace_oid);
+	}
+
+	if (stmt->kind == REINDEX_OBJECT_DATABASE)
+	{
+		char *database_name = get_database_name(MyDatabaseId);
+
+		if (database_name == NULL ||
+			(stmt->name != NULL && strcmp(stmt->name, database_name) != 0))
+		{
+			if (database_name != NULL)
+				pfree(database_name);
+			*tracks_commits = false;
+			return NIL;
+		}
+		pfree(database_name);
+		if (!object_ownercheck(
+					DatabaseRelationId, MyDatabaseId, GetUserId()) &&
+			!has_privs_of_role(GetUserId(), ROLE_PG_MAINTAIN))
+		{
+			*tracks_commits = false;
+			return NIL;
+		}
+		*tracks_commits = true;
+		return tp_all_bm25_indexes(InvalidOid, false, NIL, false);
+	}
+
 	if (stmt->kind != REINDEX_OBJECT_INDEX &&
 		stmt->kind != REINDEX_OBJECT_TABLE)
 	{
@@ -1333,6 +1589,85 @@ tp_activate_background_indexes(List *indexoids, bool refresh_default)
 
 		if (tp_is_background_physical_index(indexoid))
 			tp_compaction_job_activate(indexoid, refresh_default);
+	}
+	list_free(targets);
+}
+
+static void
+tp_prelock_owner_change_heaps(List *indexoids)
+{
+	List	 *heap_oids = NIL;
+	ListCell *lc;
+	Oid		  previous = InvalidOid;
+
+	foreach (lc, indexoids)
+	{
+		Oid heap_oid = IndexGetRelation(lfirst_oid(lc), true);
+
+		if (OidIsValid(heap_oid))
+			heap_oids = list_append_unique_oid(heap_oids, heap_oid);
+	}
+	list_sort(heap_oids, list_oid_cmp);
+	foreach (lc, heap_oids)
+	{
+		Oid heap_oid = lfirst_oid(lc);
+
+		if (heap_oid == previous)
+			continue;
+		LockRelationOid(heap_oid, AccessExclusiveLock);
+		previous = heap_oid;
+	}
+	list_free(heap_oids);
+}
+
+static List *
+tp_capture_owner_change_targets(List *indexoids)
+{
+	List	 *targets = NIL;
+	ListCell *lc;
+
+	foreach (lc, indexoids)
+	{
+		Oid					 indexoid = lfirst_oid(lc);
+		TpOwnerChangeTarget *target;
+
+		if (!tp_is_background_physical_index(indexoid))
+			continue;
+
+		target			  = palloc(sizeof(*target));
+		target->index_oid = indexoid;
+		target->schedule  = tp_compaction_job_schedule(indexoid, false);
+		targets			  = lappend(targets, target);
+	}
+	return targets;
+}
+
+static void
+tp_activate_owner_change_targets(List *targets)
+{
+	ListCell *lc;
+
+	foreach (lc, targets)
+	{
+		TpOwnerChangeTarget *target = lfirst(lc);
+
+		if (tp_is_background_physical_index(target->index_oid))
+			tp_compaction_job_activate_with_schedule(
+					target->index_oid, target->schedule);
+	}
+}
+
+static void
+tp_free_owner_change_targets(List *targets)
+{
+	ListCell *lc;
+
+	foreach (lc, targets)
+	{
+		TpOwnerChangeTarget *target = lfirst(lc);
+
+		pfree(target->schedule);
+		pfree(target);
 	}
 	list_free(targets);
 }
@@ -1430,8 +1765,87 @@ tp_reconcile_created_background_indexes(
 	list_free(index_tree);
 }
 
+static void
+tp_reconcile_partition_index_options(Oid relation_oid)
+{
+	List *parent_indexes = tp_relation_indexes_locked(relation_oid, NoLock);
+	ListCell *lc;
+
+	foreach (lc, parent_indexes)
+	{
+		Oid		 parent_index_oid = lfirst_oid(lc);
+		Relation parent_index;
+		List	*index_tree;
+		char	*lineage;
+		char	*schedule = NULL;
+
+		parent_index = try_relation_open(parent_index_oid, AccessShareLock);
+		if (parent_index == NULL)
+			continue;
+		if (parent_index->rd_rel->relkind != RELKIND_PARTITIONED_INDEX ||
+			tp_index_compaction_mode(parent_index) != TP_COMPACTION_BACKGROUND)
+		{
+			relation_close(parent_index, AccessShareLock);
+			continue;
+		}
+		if (tp_index_compaction_lineage(parent_index) == NULL)
+		{
+			relation_close(parent_index, AccessShareLock);
+			continue;
+		}
+
+		lineage = pstrdup(tp_index_compaction_lineage(parent_index));
+		if (tp_index_compaction_schedule(parent_index) != NULL)
+			schedule = pstrdup(tp_index_compaction_schedule(parent_index));
+		index_tree =
+				find_all_inheritors(parent_index_oid, AccessShareLock, NULL);
+		relation_close(parent_index, AccessShareLock);
+		tp_reconcile_created_background_indexes(
+				index_tree, relation_oid, schedule, lineage);
+		list_free(index_tree);
+		if (schedule != NULL)
+			pfree(schedule);
+		pfree(lineage);
+	}
+	list_free(parent_indexes);
+}
+
+static void
+tp_reconcile_attached_index_options(Oid parent_index_oid)
+{
+	Relation parent_index;
+	List	*index_tree;
+	Oid		 heap_oid;
+	char	*lineage;
+	char	*schedule = NULL;
+
+	parent_index = relation_open(parent_index_oid, AccessShareLock);
+	if (parent_index->rd_rel->relkind != RELKIND_PARTITIONED_INDEX ||
+		parent_index->rd_index == NULL ||
+		tp_index_compaction_mode(parent_index) != TP_COMPACTION_BACKGROUND ||
+		tp_index_compaction_lineage(parent_index) == NULL)
+	{
+		relation_close(parent_index, AccessShareLock);
+		return;
+	}
+
+	heap_oid = parent_index->rd_index->indrelid;
+	lineage	 = pstrdup(tp_index_compaction_lineage(parent_index));
+	if (tp_index_compaction_schedule(parent_index) != NULL)
+		schedule = pstrdup(tp_index_compaction_schedule(parent_index));
+	index_tree = find_all_inheritors(parent_index_oid, AccessShareLock, NULL);
+	relation_close(parent_index, AccessShareLock);
+
+	tp_reconcile_created_background_indexes(
+			index_tree, heap_oid, schedule, lineage);
+	list_free(index_tree);
+	if (schedule != NULL)
+		pfree(schedule);
+	pfree(lineage);
+}
+
 static TpReindexState *
-tp_reindex_tracking_begin(List *indexoids)
+tp_reindex_tracking_begin(List *indexoids, bool defer_reconciliation)
 {
 	MemoryContext	caller_context = CurrentMemoryContext;
 	MemoryContext	context;
@@ -1445,6 +1859,7 @@ tp_reindex_tracking_begin(List *indexoids)
 		state			= MemoryContextAllocZero(context, sizeof(*state));
 		state->context	= context;
 		state->previous = tp_reindex_states;
+		state->defer_reconciliation = defer_reconciliation;
 
 		foreach (lc, indexoids)
 		{
@@ -1453,8 +1868,10 @@ tp_reindex_tracking_begin(List *indexoids)
 			TpReindexTarget *target;
 			MemoryContext	 old_context;
 			char			*lineage;
+			bool			 lineage_backfilled = false;
 
-			lineage = tp_ensure_index_compaction_lineage(indexoid, NULL);
+			lineage = tp_ensure_index_compaction_lineage(
+					indexoid, &lineage_backfilled);
 			if (lineage == NULL)
 				continue;
 			index_rel = try_index_open(indexoid, AccessShareLock);
@@ -1479,7 +1896,10 @@ tp_reindex_tracking_begin(List *indexoids)
 			target->tablespace_oid = index_rel->rd_locator.spcOid;
 			target->relfilenumber  = index_rel->rd_locator.relNumber;
 			target->lineage		   = pstrdup(lineage);
-			state->targets		   = lappend(state->targets, target);
+			target->schedule =
+					tp_compaction_job_schedule(indexoid, lineage_backfilled);
+			target->lineage_backfilled = lineage_backfilled;
+			state->targets			   = lappend(state->targets, target);
 			MemoryContextSwitchTo(old_context);
 			index_close(index_rel, AccessShareLock);
 			pfree(lineage);
@@ -1620,7 +2040,7 @@ tp_reindex_collect_candidates(
 }
 
 static void
-tp_reconcile_reindex_states(void)
+tp_reconcile_reindex_states(bool include_deferred)
 {
 	List		   *active_states = NIL;
 	List		   *candidates	  = NIL;
@@ -1631,7 +2051,8 @@ tp_reconcile_reindex_states(void)
 
 	for (state = tp_reindex_states; state != NULL; state = state->previous)
 	{
-		if (state->reconciling)
+		if (state->reconciling ||
+			(state->defer_reconciliation && !include_deferred))
 			continue;
 		state->reconciling = true;
 		active_states	   = lappend(active_states, state);
@@ -1669,13 +2090,16 @@ tp_reconcile_reindex_states(void)
 
 			if (candidate->index_oid == target->index_oid &&
 				tablespace_oid == target->tablespace_oid &&
-				relfilenumber == target->relfilenumber)
+				relfilenumber == target->relfilenumber &&
+				!target->lineage_backfilled)
 				continue;
 
-			tp_compaction_job_activate(candidate->index_oid, true);
-			target->index_oid	   = candidate->index_oid;
-			target->tablespace_oid = tablespace_oid;
-			target->relfilenumber  = relfilenumber;
+			tp_compaction_job_activate_with_schedule(
+					candidate->index_oid, target->schedule);
+			target->index_oid		   = candidate->index_oid;
+			target->tablespace_oid	   = tablespace_oid;
+			target->relfilenumber	   = relfilenumber;
+			target->lineage_backfilled = false;
 		}
 	}
 	PG_FINALLY();
@@ -1714,6 +2138,318 @@ tp_reindex_current_indexes(ReindexStmt *stmt)
 		return list_make1_oid(relation_oid);
 
 	return tp_relation_indexes_locked(relation_oid, NoLock);
+}
+
+static bool
+tp_vacuum_rewrites_storage(VacuumStmt *stmt)
+{
+	ListCell *lc;
+
+	if (!stmt->is_vacuumcmd)
+		return false;
+
+	foreach (lc, stmt->options)
+	{
+		DefElem *option = lfirst_node(DefElem, lc);
+
+		if (strcmp(option->defname, "full") == 0)
+			return defGetBoolean(option);
+	}
+	return false;
+}
+
+static List *
+tp_vacuum_rewrite_indexes(VacuumStmt *stmt)
+{
+	List	 *indexoids = NIL;
+	ListCell *lc;
+
+	if (stmt->rels == NIL)
+		return tp_maintainable_indexes(
+				tp_all_bm25_indexes(InvalidOid, false, NIL, false), true);
+
+	foreach (lc, stmt->rels)
+	{
+		VacuumRelation *vacuum_rel	 = lfirst_node(VacuumRelation, lc);
+		Oid				relation_oid = vacuum_rel->oid;
+		List		   *relation_indexes;
+
+		if (!OidIsValid(relation_oid) && vacuum_rel->relation != NULL)
+			relation_oid = RangeVarGetRelid(
+					vacuum_rel->relation, AccessShareLock, true);
+		if (!OidIsValid(relation_oid))
+			continue;
+		if (!tp_can_maintain_relation(relation_oid))
+			continue;
+
+		relation_indexes = tp_relation_tree_indexes_locked(
+				relation_oid, AccessExclusiveLock);
+		indexoids = list_concat_unique_oid(indexoids, relation_indexes);
+	}
+	return indexoids;
+}
+
+static List *
+tp_cluster_rewrite_indexes(ClusterStmt *stmt, bool *multi_transaction)
+{
+	Oid relation_oid;
+
+	if (stmt->relation == NULL)
+	{
+		*multi_transaction = true;
+		return tp_maintainable_indexes(
+				tp_all_bm25_indexes(InvalidOid, false, NIL, false), true);
+	}
+
+	relation_oid = RangeVarGetRelidExtended(
+			stmt->relation,
+			AccessExclusiveLock,
+			0,
+			RangeVarCallbackMaintainsTable,
+			NULL);
+	*multi_transaction = get_rel_relkind(relation_oid) ==
+						 RELKIND_PARTITIONED_TABLE;
+	return tp_relation_tree_indexes_locked(relation_oid, NoLock);
+}
+
+static bool
+tp_alter_index_sets_tablespace(AlterTableStmt *stmt)
+{
+	ListCell *lc;
+
+	if (stmt->objtype != OBJECT_INDEX)
+		return false;
+
+	foreach (lc, stmt->cmds)
+	{
+		AlterTableCmd *cmd = lfirst_node(AlterTableCmd, lc);
+
+		if (cmd->subtype == AT_SetTableSpace)
+			return true;
+	}
+	return false;
+}
+
+static bool
+tp_alter_table_may_rewrite(AlterTableStmt *stmt)
+{
+	ListCell *lc;
+
+	if (stmt->objtype != OBJECT_TABLE && stmt->objtype != OBJECT_MATVIEW)
+		return false;
+
+	foreach (lc, stmt->cmds)
+	{
+		AlterTableCmd *cmd = lfirst_node(AlterTableCmd, lc);
+
+		switch (cmd->subtype)
+		{
+		case AT_AddColumn:
+		case AT_AlterColumnType:
+		case AT_SetExpression:
+		case AT_SetLogged:
+		case AT_SetUnLogged:
+		case AT_SetAccessMethod:
+			return true;
+		default:
+			break;
+		}
+	}
+	return false;
+}
+
+static bool
+tp_alter_table_attaches_partition(AlterTableStmt *stmt)
+{
+	ListCell *lc;
+
+	if (stmt->objtype != OBJECT_TABLE && stmt->objtype != OBJECT_INDEX)
+		return false;
+
+	foreach (lc, stmt->cmds)
+	{
+		AlterTableCmd *cmd = lfirst_node(AlterTableCmd, lc);
+
+		if (cmd->subtype == AT_AttachPartition)
+			return true;
+	}
+	return false;
+}
+
+static void
+tp_truncate_check_relation(Oid relation_oid, const char *relation_name)
+{
+	HeapTuple	  tuple;
+	Form_pg_class relation_form;
+	AclResult	  aclresult;
+
+	tuple = SearchSysCache1(RELOID, ObjectIdGetDatum(relation_oid));
+	if (!HeapTupleIsValid(tuple))
+		elog(ERROR, "cache lookup failed for relation %u", relation_oid);
+	relation_form = (Form_pg_class)GETSTRUCT(tuple);
+
+	if (relation_form->relkind != RELKIND_RELATION &&
+		relation_form->relkind != RELKIND_PARTITIONED_TABLE &&
+		relation_form->relkind != RELKIND_FOREIGN_TABLE)
+	{
+		ReleaseSysCache(tuple);
+		ereport(ERROR,
+				(errcode(ERRCODE_WRONG_OBJECT_TYPE),
+				 errmsg("\"%s\" is not a table", relation_name)));
+	}
+
+	aclresult = pg_class_aclcheck(relation_oid, GetUserId(), ACL_TRUNCATE);
+	if (aclresult != ACLCHECK_OK)
+	{
+		ObjectType object_type = get_relkind_objtype(relation_form->relkind);
+
+		ReleaseSysCache(tuple);
+		aclcheck_error(aclresult, object_type, relation_name);
+	}
+	ReleaseSysCache(tuple);
+}
+
+static void
+tp_truncate_lookup_callback(
+		const RangeVar *relation,
+		Oid				relid,
+		Oid old_relid	pg_attribute_unused(),
+		void *arg		pg_attribute_unused())
+{
+	if (OidIsValid(relid))
+		tp_truncate_check_relation(relid, relation->relname);
+}
+
+static List *
+tp_truncate_rewrite_indexes(TruncateStmt *stmt)
+{
+	List	 *indexoids		= NIL;
+	List	 *relation_oids = NIL;
+	ListCell *lc;
+
+	foreach (lc, stmt->relations)
+	{
+		RangeVar *relation = lfirst_node(RangeVar, lc);
+		Oid		  relation_oid;
+
+		relation_oid = RangeVarGetRelidExtended(
+				relation,
+				AccessExclusiveLock,
+				0,
+				tp_truncate_lookup_callback,
+				NULL);
+		relation_oids = list_append_unique_oid(relation_oids, relation_oid);
+		if (relation->inh)
+		{
+			List *children = find_all_inheritors(
+					relation_oid, AccessExclusiveLock, NULL);
+
+			relation_oids = list_concat_unique_oid(relation_oids, children);
+		}
+	}
+
+	if (stmt->behavior == DROP_CASCADE)
+	{
+		for (;;)
+		{
+			List *new_relation_oids = heap_truncate_find_FKs(relation_oids);
+
+			if (new_relation_oids == NIL)
+				break;
+			foreach (lc, new_relation_oids)
+			{
+				Oid	  relation_oid = lfirst_oid(lc);
+				char *relation_name;
+
+				LockRelationOid(relation_oid, AccessExclusiveLock);
+				relation_name = get_rel_name(relation_oid);
+				if (relation_name == NULL)
+					continue;
+				tp_truncate_check_relation(relation_oid, relation_name);
+				pfree(relation_name);
+				relation_oids =
+						list_append_unique_oid(relation_oids, relation_oid);
+			}
+			list_free(new_relation_oids);
+		}
+	}
+
+	foreach (lc, relation_oids)
+	{
+		List *relation_indexes =
+				tp_relation_indexes_locked(lfirst_oid(lc), NoLock);
+
+		indexoids = list_concat_unique_oid(indexoids, relation_indexes);
+	}
+	list_free(relation_oids);
+	return indexoids;
+}
+
+static List *
+tp_refresh_matview_rewrite_indexes(RefreshMatViewStmt *stmt)
+{
+	LOCKMODE lockmode = stmt->concurrent ? ExclusiveLock : AccessExclusiveLock;
+	Oid		 relation_oid;
+
+	relation_oid = RangeVarGetRelidExtended(
+			stmt->relation, lockmode, 0, RangeVarCallbackMaintainsTable, NULL);
+	return tp_relation_indexes_locked(relation_oid, NoLock);
+}
+
+static void
+tp_process_tracked_rewrite(
+		PlannedStmt			 *pstmt,
+		const char			 *queryString,
+		bool				  readOnlyTree,
+		ProcessUtilityContext context,
+		ParamListInfo		  params,
+		QueryEnvironment	 *queryEnv,
+		DestReceiver		 *dest,
+		QueryCompletion		 *qc,
+		List				 *indexoids,
+		bool				  nowait)
+{
+	TpReindexState *rewrite_state = NULL;
+	List		   *candidates;
+	List		   *locked;
+
+	candidates = tp_physical_bm25_indexes(indexoids, true);
+	locked	   = tp_prelock_compaction_indexes_nowait(candidates, nowait);
+	list_free(candidates);
+	rewrite_state = tp_reindex_tracking_begin(locked, false);
+	list_free(locked);
+	list_free(indexoids);
+
+	PG_TRY();
+	{
+		if (prev_process_utility_hook)
+			prev_process_utility_hook(
+					pstmt,
+					queryString,
+					readOnlyTree,
+					context,
+					params,
+					queryEnv,
+					dest,
+					qc);
+		else
+			standard_ProcessUtility(
+					pstmt,
+					queryString,
+					readOnlyTree,
+					context,
+					params,
+					queryEnv,
+					dest,
+					qc);
+
+		tp_reconcile_reindex_states(true);
+	}
+	PG_FINALLY();
+	{
+		tp_reindex_tracking_end(rewrite_state);
+	}
+	PG_END_TRY();
 }
 
 static RoleSpec *
@@ -1783,19 +2519,128 @@ tp_process_utility_impl(
 {
 	Node *parsetree = pstmt->utilityStmt;
 
-	if (IsA(parsetree, AlterTableStmt))
+	if (IsA(parsetree, VacuumStmt) &&
+		tp_vacuum_rewrites_storage(castNode(VacuumStmt, parsetree)))
 	{
-		AlterTableStmt *stmt = (AlterTableStmt *)parsetree;
-		RoleSpec	   *new_owner;
+		PreventInTransactionBlock(
+				context == PROCESS_UTILITY_TOPLEVEL, "VACUUM");
+		tp_process_tracked_rewrite(
+				pstmt,
+				queryString,
+				readOnlyTree,
+				context,
+				params,
+				queryEnv,
+				dest,
+				qc,
+				tp_vacuum_rewrite_indexes(castNode(VacuumStmt, parsetree)),
+				false);
+		return;
+	}
 
-		tp_reject_user_lineage_alter(stmt);
-		new_owner = tp_alter_new_owner(stmt);
-		if (new_owner != NULL &&
-			(stmt->objtype == OBJECT_TABLE || stmt->objtype == OBJECT_MATVIEW))
+	if (IsA(parsetree, ClusterStmt))
+	{
+		bool  multi_transaction;
+		List *indexoids = tp_cluster_rewrite_indexes(
+				castNode(ClusterStmt, parsetree), &multi_transaction);
+
+		if (multi_transaction)
+			PreventInTransactionBlock(
+					context == PROCESS_UTILITY_TOPLEVEL, "CLUSTER");
+		tp_process_tracked_rewrite(
+				pstmt,
+				queryString,
+				readOnlyTree,
+				context,
+				params,
+				queryEnv,
+				dest,
+				qc,
+				indexoids,
+				false);
+		return;
+	}
+
+	if (IsA(parsetree, TruncateStmt))
+	{
+		tp_process_tracked_rewrite(
+				pstmt,
+				queryString,
+				readOnlyTree,
+				context,
+				params,
+				queryEnv,
+				dest,
+				qc,
+				tp_truncate_rewrite_indexes(castNode(TruncateStmt, parsetree)),
+				false);
+		return;
+	}
+
+	if (IsA(parsetree, RefreshMatViewStmt))
+	{
+		tp_process_tracked_rewrite(
+				pstmt,
+				queryString,
+				readOnlyTree,
+				context,
+				params,
+				queryEnv,
+				dest,
+				qc,
+				tp_refresh_matview_rewrite_indexes(
+						castNode(RefreshMatViewStmt, parsetree)),
+				false);
+		return;
+	}
+
+	if (IsA(parsetree, AlterTableMoveAllStmt))
+	{
+		AlterTableMoveAllStmt *stmt =
+				castNode(AlterTableMoveAllStmt, parsetree);
+
+		if (stmt->objtype == OBJECT_INDEX)
 		{
-			Oid	  relation_oid;
-			List *indexoids;
+			Oid tablespace_oid =
+					get_tablespace_oid(stmt->orig_tablespacename, false);
+			List *owner_oids			= tp_role_oids(stmt->roles);
+			bool  require_current_owner = stmt->roles == NIL && !superuser();
 
+			tp_process_tracked_rewrite(
+					pstmt,
+					queryString,
+					readOnlyTree,
+					context,
+					params,
+					queryEnv,
+					dest,
+					qc,
+					tp_all_bm25_indexes(
+							tp_catalog_tablespace_oid(tablespace_oid),
+							true,
+							owner_oids,
+							require_current_owner),
+					stmt->nowait);
+			list_free(owner_oids);
+			return;
+		}
+	}
+
+	if (IsA(parsetree, ReassignOwnedStmt))
+	{
+		List *indexoids = tp_reassign_owned_indexes(
+				castNode(ReassignOwnedStmt, parsetree));
+		List *candidates = tp_physical_bm25_indexes(indexoids, true);
+		List *locked;
+		List *owner_targets;
+
+		tp_prelock_owner_change_heaps(candidates);
+		locked		  = tp_prelock_compaction_indexes(candidates);
+		owner_targets = tp_capture_owner_change_targets(locked);
+		list_free(candidates);
+		list_free(indexoids);
+		PG_TRY();
+		{
 			if (prev_process_utility_hook)
 				prev_process_utility_hook(
 						pstmt,
@@ -1817,13 +2662,247 @@ tp_process_utility_impl(
 						dest,
 						qc);
 
-			relation_oid =
-					RangeVarGetRelid(stmt->relation, NoLock, stmt->missing_ok);
+			tp_activate_owner_change_targets(owner_targets);
+		}
+		PG_FINALLY();
+		{
+			tp_free_owner_change_targets(owner_targets);
+			list_free(locked);
+		}
+		PG_END_TRY();
+		return;
+	}
+
+	if (IsA(parsetree, AlterTableStmt))
+	{
+		AlterTableStmt *stmt = (AlterTableStmt *)parsetree;
+		RoleSpec	   *new_owner;
+
+		tp_reject_user_lineage_alter(stmt);
+		if (tp_alter_index_sets_tablespace(stmt))
+		{
+			Oid indexoid = RangeVarGetRelidExtended(
+					stmt->relation,
+					AlterTableGetLockLevel(stmt->cmds),
+					stmt->missing_ok ? RVR_MISSING_OK : 0,
+					RangeVarCallbackOwnsRelation,
+					NULL);
+
+			if (OidIsValid(indexoid))
+				tp_process_tracked_rewrite(
+						pstmt,
+						queryString,
+						readOnlyTree,
+						context,
+						params,
+						queryEnv,
+						dest,
+						qc,
+						tp_index_tree_locked(indexoid, AccessShareLock),
+						false);
+			else if (prev_process_utility_hook)
+				prev_process_utility_hook(
+						pstmt,
+						queryString,
+						readOnlyTree,
+						context,
+						params,
+						queryEnv,
+						dest,
+						qc);
+			else
+				standard_ProcessUtility(
+						pstmt,
+						queryString,
+						readOnlyTree,
+						context,
+						params,
+						queryEnv,
+						dest,
+						qc);
+			return;
+		}
+
+		if (tp_alter_table_attaches_partition(stmt))
+		{
+			TpCreateIndexState *create_state = NULL;
+			LOCKMODE			lockmode = AlterTableGetLockLevel(stmt->cmds);
+			Oid					relation_oid;
+
+			relation_oid = RangeVarGetRelidExtended(
+					stmt->relation,
+					lockmode,
+					stmt->missing_ok ? RVR_MISSING_OK : 0,
+					RangeVarCallbackOwnsRelation,
+					NULL);
 			if (!OidIsValid(relation_oid))
+			{
+				if (prev_process_utility_hook)
+					prev_process_utility_hook(
+							pstmt,
+							queryString,
+							readOnlyTree,
+							context,
+							params,
+							queryEnv,
+							dest,
+							qc);
+				else
+					standard_ProcessUtility(
+							pstmt,
+							queryString,
+							readOnlyTree,
+							context,
+							params,
+							queryEnv,
+							dest,
+							qc);
 				return;
-			indexoids = tp_relation_indexes_locked(relation_oid, NoLock);
-			tp_activate_background_indexes(indexoids, true);
-			list_free(indexoids);
+			}
+
+			PG_TRY();
+			{
+				if (stmt->objtype == OBJECT_TABLE)
+					create_state = tp_create_index_tracking_begin(
+							relation_oid);
+				if (prev_process_utility_hook)
+					prev_process_utility_hook(
+							pstmt,
+							queryString,
+							readOnlyTree,
+							context,
+							params,
+							queryEnv,
+							dest,
+							qc);
+				else
+					standard_ProcessUtility(
+							pstmt,
+							queryString,
+							readOnlyTree,
+							context,
+							params,
+							queryEnv,
+							dest,
+							qc);
+
+				if (stmt->objtype == OBJECT_TABLE)
+					tp_reconcile_partition_index_options(relation_oid);
+				else
+					tp_reconcile_attached_index_options(relation_oid);
+			}
+			PG_FINALLY();
+			{
+				tp_create_index_tracking_end(create_state);
+			}
+			PG_END_TRY();
+			return;
+		}
+
+		if (tp_alter_table_may_rewrite(stmt))
+		{
+			LOCKMODE lockmode = AlterTableGetLockLevel(stmt->cmds);
+			Oid		 relation_oid;
+
+			relation_oid = RangeVarGetRelidExtended(
+					stmt->relation,
+					lockmode,
+					stmt->missing_ok ? RVR_MISSING_OK : 0,
+					RangeVarCallbackOwnsRelation,
+					NULL);
+			if (OidIsValid(relation_oid))
+				tp_process_tracked_rewrite(
+						pstmt,
+						queryString,
+						readOnlyTree,
+						context,
+						params,
+						queryEnv,
+						dest,
+						qc,
+						tp_relation_tree_indexes_locked(relation_oid, NoLock),
+						false);
+			else if (prev_process_utility_hook)
+				prev_process_utility_hook(
+						pstmt,
+						queryString,
+						readOnlyTree,
+						context,
+						params,
+						queryEnv,
+						dest,
+						qc);
+			else
+				standard_ProcessUtility(
+						pstmt,
+						queryString,
+						readOnlyTree,
+						context,
+						params,
+						queryEnv,
+						dest,
+						qc);
+			return;
+		}
+
+		new_owner = tp_alter_new_owner(stmt);
+		if (new_owner != NULL &&
+			(stmt->objtype == OBJECT_TABLE || stmt->objtype == OBJECT_MATVIEW))
+		{
+			Oid	  relation_oid;
+			List *owner_targets = NIL;
+
+			relation_oid = RangeVarGetRelidExtended(
+					stmt->relation,
+					AlterTableGetLockLevel(stmt->cmds),
+					stmt->missing_ok ? RVR_MISSING_OK : 0,
+					RangeVarCallbackOwnsRelation,
+					NULL);
+			if (OidIsValid(relation_oid) &&
+				object_ownercheck(
+						RelationRelationId, relation_oid, GetUserId()))
+			{
+				List *indexoids =
+						tp_relation_indexes_locked(relation_oid, NoLock);
+				List *candidates = tp_physical_bm25_indexes(indexoids, true);
+				List *locked	 = tp_prelock_compaction_indexes(candidates);
+
+				owner_targets = tp_capture_owner_change_targets(locked);
+				list_free(locked);
+				list_free(candidates);
+				list_free(indexoids);
+			}
+
+			PG_TRY();
+			{
+				if (prev_process_utility_hook)
+					prev_process_utility_hook(
+							pstmt,
+							queryString,
+							readOnlyTree,
+							context,
+							params,
+							queryEnv,
+							dest,
+							qc);
+				else
+					standard_ProcessUtility(
+							pstmt,
+							queryString,
+							readOnlyTree,
+							context,
+							params,
+							queryEnv,
+							dest,
+							qc);
+
+				tp_activate_owner_change_targets(owner_targets);
+			}
+			PG_FINALLY();
+			{
+				tp_free_owner_change_targets(owner_targets);
+			}
+			PG_END_TRY();
 			return;
 		}
 
@@ -1870,31 +2949,10 @@ tp_process_utility_impl(
 		bool			tracks_commits;
 		TpReindexState *reindex_state = NULL;
 
-		if (stmt->kind != REINDEX_OBJECT_INDEX &&
-			stmt->kind != REINDEX_OBJECT_TABLE)
-		{
-			if (prev_process_utility_hook)
-				prev_process_utility_hook(
-						pstmt,
-						queryString,
-						readOnlyTree,
-						context,
-						params,
-						queryEnv,
-						dest,
-						qc);
-			else
-				standard_ProcessUtility(
-						pstmt,
-						queryString,
-						readOnlyTree,
-						context,
-						params,
-						queryEnv,
-						dest,
-						qc);
-			return;
-		}
+		if (stmt->kind == REINDEX_OBJECT_SCHEMA ||
+			stmt->kind == REINDEX_OBJECT_DATABASE)
+			PreventInTransactionBlock(
+					context == PROCESS_UTILITY_TOPLEVEL, "REINDEX");
 
 		indexoids = tp_reindex_initial_indexes(stmt, &tracks_commits);
 
@@ -1906,7 +2964,10 @@ tp_process_utility_impl(
 				List *locked	 = tp_prelock_compaction_indexes(candidates);
 
 				list_free(candidates);
-				reindex_state = tp_reindex_tracking_begin(locked);
+				reindex_state = tp_reindex_tracking_begin(
+						locked,
+						stmt->kind == REINDEX_OBJECT_SCHEMA ||
+								stmt->kind == REINDEX_OBJECT_DATABASE);
 				list_free(locked);
 			}
 			list_free(indexoids);
@@ -1933,8 +2994,10 @@ tp_process_utility_impl(
 						qc);
 
 			if (tracks_commits)
-				tp_reconcile_reindex_states();
-			else
+				tp_reconcile_reindex_states(true);
+			else if (
+					stmt->kind == REINDEX_OBJECT_INDEX ||
+					stmt->kind == REINDEX_OBJECT_TABLE)
 			{
 				indexoids = tp_reindex_current_indexes(stmt);
 				tp_activate_background_indexes(indexoids, true);
@@ -1944,6 +3007,45 @@ tp_process_utility_impl(
 		PG_FINALLY();
 		{
 			tp_reindex_tracking_end(reindex_state);
+		}
+		PG_END_TRY();
+		return;
+	}
+
+	if (IsA(parsetree, CreateStmt))
+	{
+		TpCreateIndexState *create_state = NULL;
+
+		PG_TRY();
+		{
+			create_state = tp_create_index_tracking_begin(InvalidOid);
+			if (prev_process_utility_hook)
+				prev_process_utility_hook(
+						pstmt,
+						queryString,
+						readOnlyTree,
+						context,
+						params,
+						queryEnv,
+						dest,
+						qc);
+			else
+				standard_ProcessUtility(
+						pstmt,
+						queryString,
+						readOnlyTree,
+						context,
+						params,
+						queryEnv,
+						dest,
+						qc);
+
+			tp_activate_background_indexes(
+					create_state->created_indexes, true);
+		}
+		PG_FINALLY();
+		{
+			tp_create_index_tracking_end(create_state);
 		}
 		PG_END_TRY();
 		return;
@@ -1959,6 +3061,14 @@ tp_process_utility_impl(
 			Relation			heap_rel;
 			TpCreateIndexState *create_state = NULL;
 			const char		   *compaction;
+
+			if (readOnlyTree)
+			{
+				pstmt		 = copyObject(pstmt);
+				parsetree	 = pstmt->utilityStmt;
+				stmt		 = castNode(IndexStmt, parsetree);
+				readOnlyTree = false;
+			}
 
 			heapoid = RangeVarGetRelidExtended(
 					stmt->relation,

@@ -85,7 +85,7 @@ done
 
 job_code="$(strip_c_comments <"${JOB_SOURCE}")"
 discovery_body="$(
-    sed -n '/^tp_discover_job_objects(/,/^}/p' <<<"${job_code}"
+    sed -n '/^tp_discover_job_objects_as_owner(/,/^}/p' <<<"${job_code}"
 )"
 job_graph_body="$(
     sed -n '/^tp_append_job_graph(/,/^}/p' <<<"${job_code}"
@@ -220,7 +220,7 @@ fi
 # published.  Any construction error must delete that child context explicitly.
 reindex_tracking_body="$(
     sed -n \
-        '/^tp_reindex_tracking_begin(List \*indexoids)/,/^tp_reindex_target_refresh_identity(/p' \
+        '/^tp_reindex_tracking_begin(/,/^tp_reindex_target_refresh_identity(/p' \
         "${MODULE_SOURCE}"
 )"
 if ! grep -Fq "PG_CATCH()" <<<"${reindex_tracking_body}" ||
@@ -261,7 +261,7 @@ ensure_write_line="$(
         <<<"${ensure_lineage_body}" | head -1 | cut -d: -f1
 )"
 ensure_private_line="$(
-    grep -n "tp_take_index_lineage_lock(indexoid)" \
+    grep -n "tp_lock_compaction_index(indexoid)" \
         <<<"${ensure_lineage_body}" | head -1 | cut -d: -f1
 )"
 ensure_recheck_line="$(
@@ -304,6 +304,29 @@ if grep -Fq "SET_LOCKTAG_ADVISORY" "${REQUEST_SOURCE}" ||
     ! grep -Fq "AccessMethodRelationId" "${REQUEST_SOURCE}"; then
     echo "internal lineage locks share PostgreSQL's advisory-lock namespace" \
         >&2
+    exit 1
+fi
+if grep -Fq "pg_advisory_xact_lock" "${JOB_SOURCE}" ||
+    ! grep -Fq "tp_lock_compaction_index(target->index_oid)" \
+        "${JOB_SOURCE}"; then
+    echo "workflow admission shares PostgreSQL's advisory-lock namespace" \
+        >&2
+    exit 1
+fi
+
+if grep -Eq 'indexoid[[:space:]]*%|TP_COMPACTION_INDEX_LOCK_MAX' \
+    "${REQUEST_SOURCE}"; then
+    echo "per-index admission locks must preserve the full index OID" >&2
+    exit 1
+fi
+index_lock_body="$(
+    sed -n '/^tp_lock_compaction_index(Oid indexoid)/,/^}/p' \
+        "${REQUEST_SOURCE}"
+)"
+if ! grep -Fq \
+    "tp_take_compaction_lock(indexoid, TP_COMPACTION_INDEX_LOCK_SUBID)" \
+    <<<"${index_lock_body}"; then
+    echo "per-index admission locks must use indexoid as the object ID" >&2
     exit 1
 fi
 

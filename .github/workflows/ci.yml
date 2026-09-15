@@ -795,6 +795,54 @@ jobs:
           test/tmp_*
         retention-days: 7
 
+  # The coverage job exercises managed compaction on PostgreSQL 17. Run the
+  # same end-to-end lifecycle suite separately on the other required version.
+  managed-compaction-pg18:
+    runs-on: ubuntu-latest
+
+    env:
+      PG_DURABLE_VERSION: 0.2.8
+      PG_DURABLE_PACKAGE: pg-durable-postgresql-18_0.2.8-1_amd64.deb
+      PG_DURABLE_SHA256: 090028f59b003613b150e61ccd5cdbebe70e69e65361913ad29b1f0b6af9e2bb
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Install PostgreSQL 18
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y wget ca-certificates gnupg
+        wget --quiet -O - https://www.postgresql.org/media/keys/ACCC4CF8.asc | sudo gpg --dearmor -o /usr/share/keyrings/postgresql-archive-keyring.gpg
+        echo "deb [signed-by=/usr/share/keyrings/postgresql-archive-keyring.gpg] http://apt.postgresql.org/pub/repos/apt/ $(lsb_release -cs)-pgdg main" | sudo tee /etc/apt/sources.list.d/pgdg.list
+        sudo apt-get update
+        sudo apt-get install -y postgresql-18 postgresql-server-dev-18 \
+          build-essential bc
+
+    - name: Build and install extension
+      run: |
+        export PATH="/usr/lib/postgresql/18/bin:$PATH"
+        make
+        sudo env "PATH=$PATH" make install
+
+    - name: Download pg_durable release package
+      run: |
+        curl -fL --retry 3 \
+          -o "$PG_DURABLE_PACKAGE" \
+          "https://github.com/microsoft/pg_durable/releases/download/v${PG_DURABLE_VERSION}/${PG_DURABLE_PACKAGE}"
+        echo "${PG_DURABLE_SHA256}  ${PG_DURABLE_PACKAGE}" | sha256sum -c -
+        mkdir pg_durable_package
+        dpkg-deb -x "$PG_DURABLE_PACKAGE" pg_durable_package
+
+    - name: Run managed pg_durable compaction test
+      timeout-minutes: 15
+      run: |
+        export PATH="/usr/lib/postgresql/18/bin:$PATH"
+        sudo chown -R "$(id -u):$(id -g)" \
+          /usr/share/postgresql/18/extension
+        export PG_DURABLE_PACKAGE_DIR="$PWD/pg_durable_package"
+        make test-durable \
+          PG_CONFIG=/usr/lib/postgresql/18/bin/pg_config
+
   coverage:
     runs-on: ubuntu-latest
 
@@ -1244,7 +1292,7 @@ jobs:
   # Umbrella job for branch protection rules
   all-tests-passed:
     runs-on: ubuntu-latest
-    needs: [test, build-test-multiple-configs, build-msvc, performance-test, format-check, sanitizer, coverage, pgspot]
+    needs: [test, build-test-multiple-configs, build-msvc, performance-test, format-check, sanitizer, managed-compaction-pg18, coverage, pgspot]
     if: always()
     steps:
       - name: Check all jobs succeeded
