@@ -160,18 +160,7 @@ static shmem_request_hook_type prev_shmem_request_hook = NULL;
 /* Previous ProcessUtility hook */
 static ProcessUtility_hook_type prev_process_utility_hook = NULL;
 
-typedef struct TpReindexTarget
-{
-	Oid			  heap_oid;
-	Oid			  namespace_oid;
-	char		 *index_name;
-	Oid			  index_oid;
-	Oid			  tablespace_oid;
-	RelFileNumber relfilenumber;
-	char		 *lineage;
-	char		 *schedule;
-	bool		  lineage_backfilled;
-} TpReindexTarget;
+typedef TpCompactionJobIdentity TpReindexTarget;
 
 typedef struct TpReindexState
 {
@@ -198,11 +187,7 @@ typedef struct TpReindexCandidate
 	Oid				 index_oid;
 } TpReindexCandidate;
 
-typedef struct TpOwnerChangeTarget
-{
-	Oid	  index_oid;
-	char *schedule;
-} TpOwnerChangeTarget;
+typedef TpCompactionJobIdentity TpOwnerChangeTarget;
 
 /*
  * Concurrent and partitioned REINDEX commit inside ProcessUtility.  Keep a
@@ -1119,16 +1104,6 @@ tp_alter_index_refreshes_background(AlterTableStmt *stmt)
 }
 
 static bool
-tp_is_background_index_relation(Relation index_rel)
-{
-	return index_rel->rd_rel->relkind == RELKIND_INDEX &&
-		   index_rel->rd_indam != NULL &&
-		   index_rel->rd_indam->ambuild == tp_build &&
-		   index_rel->rd_index != NULL &&
-		   tp_index_compaction_mode(index_rel) == TP_COMPACTION_BACKGROUND;
-}
-
-static bool
 tp_is_physical_bm25_index_relation(Relation index_rel)
 {
 	return index_rel->rd_rel->relkind == RELKIND_INDEX &&
@@ -1143,6 +1118,65 @@ tp_is_background_physical_index_relation(Relation index_rel)
 {
 	return tp_is_physical_bm25_index_relation(index_rel) &&
 		   tp_index_compaction_mode(index_rel) == TP_COMPACTION_BACKGROUND;
+}
+
+static bool
+tp_alter_index_finishes_background(AlterTableStmt *stmt, Relation index_rel)
+{
+	ListCell *lc;
+	bool	  background = tp_is_background_physical_index_relation(index_rel);
+
+	foreach (lc, stmt->cmds)
+	{
+		AlterTableCmd *cmd = lfirst_node(AlterTableCmd, lc);
+		ListCell	  *option_lc;
+
+		if (cmd->subtype != AT_SetRelOptions &&
+			cmd->subtype != AT_ResetRelOptions &&
+			cmd->subtype != AT_ReplaceRelOptions)
+			continue;
+
+		foreach (option_lc, castNode(List, cmd->def))
+		{
+			DefElem *option = lfirst_node(DefElem, option_lc);
+
+			if (strcmp(option->defname, "compaction") != 0)
+				continue;
+			background = cmd->subtype != AT_ResetRelOptions &&
+						 strcmp(defGetString(option), "background") == 0;
+		}
+	}
+
+	return background;
+}
+
+static Oid
+tp_prelock_alter_background_index(AlterTableStmt *stmt)
+{
+	Oid		 indexoid;
+	Relation index_rel;
+	bool	 background;
+
+	indexoid = RangeVarGetRelidExtended(
+			stmt->relation,
+			AccessShareLock,
+			stmt->missing_ok ? RVR_MISSING_OK : 0,
+			RangeVarCallbackOwnsRelation,
+			NULL);
+	if (!OidIsValid(indexoid))
+		return InvalidOid;
+
+	index_rel = try_relation_open(indexoid, NoLock);
+	if (index_rel == NULL)
+		return InvalidOid;
+	background = tp_is_physical_bm25_index_relation(index_rel) &&
+				 tp_alter_index_finishes_background(stmt, index_rel);
+	relation_close(index_rel, NoLock);
+	if (!background)
+		return InvalidOid;
+
+	tp_lock_compaction_index(indexoid);
+	return indexoid;
 }
 
 static bool
@@ -1765,10 +1799,9 @@ tp_capture_owner_change_targets(List *indexoids)
 		if (!tp_is_background_physical_index(indexoid))
 			continue;
 
-		target			  = palloc(sizeof(*target));
-		target->index_oid = indexoid;
-		target->schedule  = tp_compaction_job_schedule(indexoid, false);
-		targets			  = lappend(targets, target);
+		target = palloc0(sizeof(*target));
+		tp_compaction_job_capture(indexoid, target);
+		targets = lappend(targets, target);
 	}
 	return targets;
 }
@@ -1777,6 +1810,14 @@ static void
 tp_activate_owner_change_targets(List *targets)
 {
 	ListCell *lc;
+
+	foreach (lc, targets)
+	{
+		TpOwnerChangeTarget *target = lfirst(lc);
+
+		tp_compaction_job_resolve_schedule(
+				target->index_oid, target, CurrentMemoryContext);
+	}
 
 	foreach (lc, targets)
 	{
@@ -1797,6 +1838,8 @@ tp_free_owner_change_targets(List *targets)
 	{
 		TpOwnerChangeTarget *target = lfirst(lc);
 
+		pfree(target->index_name);
+		pfree(target->lineage);
 		pfree(target->schedule);
 		pfree(target);
 	}
@@ -1995,45 +2038,14 @@ tp_reindex_tracking_begin(List *indexoids, bool defer_reconciliation)
 		foreach (lc, indexoids)
 		{
 			Oid				 indexoid = lfirst_oid(lc);
-			Relation		 index_rel;
 			TpReindexTarget *target;
 			MemoryContext	 old_context;
-			char			*lineage;
-			bool			 lineage_backfilled = false;
 
-			lineage = tp_ensure_index_compaction_lineage(
-					indexoid, &lineage_backfilled);
-			if (lineage == NULL)
-				continue;
-			index_rel = try_index_open(indexoid, AccessShareLock);
-			if (index_rel == NULL)
-			{
-				pfree(lineage);
-				continue;
-			}
-			if (!tp_is_background_index_relation(index_rel))
-			{
-				index_close(index_rel, AccessShareLock);
-				pfree(lineage);
-				continue;
-			}
-
-			old_context			  = MemoryContextSwitchTo(context);
-			target				  = palloc0(sizeof(*target));
-			target->heap_oid	  = index_rel->rd_index->indrelid;
-			target->namespace_oid = RelationGetNamespace(index_rel);
-			target->index_name = pstrdup(RelationGetRelationName(index_rel));
-			target->index_oid  = indexoid;
-			target->tablespace_oid = index_rel->rd_locator.spcOid;
-			target->relfilenumber  = index_rel->rd_locator.relNumber;
-			target->lineage		   = pstrdup(lineage);
-			target->schedule =
-					tp_compaction_job_schedule(indexoid, lineage_backfilled);
-			target->lineage_backfilled = lineage_backfilled;
-			state->targets			   = lappend(state->targets, target);
+			old_context = MemoryContextSwitchTo(context);
+			target		= palloc0(sizeof(*target));
+			tp_compaction_job_capture(indexoid, target);
+			state->targets = lappend(state->targets, target);
 			MemoryContextSwitchTo(old_context);
-			index_close(index_rel, AccessShareLock);
-			pfree(lineage);
 		}
 	}
 	PG_CATCH();
@@ -2195,6 +2207,20 @@ tp_reconcile_reindex_states(bool include_deferred)
 			tp_reindex_collect_candidates(lfirst(lc), &candidates, &indexoids);
 
 		locked = tp_prelock_compaction_indexes(indexoids);
+		foreach (lc, candidates)
+		{
+			TpReindexCandidate *candidate = lfirst(lc);
+			TpReindexTarget	   *target	  = candidate->target;
+			MemoryContext		old_context;
+
+			if (target->schedule_resolved)
+				continue;
+			old_context = MemoryContextSwitchTo(candidate->state->context);
+			tp_compaction_job_resolve_schedule(
+					candidate->index_oid, target, candidate->state->context);
+			MemoryContextSwitchTo(old_context);
+		}
+
 		foreach (lc, candidates)
 		{
 			TpReindexCandidate *candidate = lfirst(lc);
@@ -3269,7 +3295,7 @@ tp_process_utility_impl(
 
 		if (tp_alter_index_refreshes_background(stmt))
 		{
-			Oid indexoid;
+			Oid indexoid = tp_prelock_alter_background_index(stmt);
 
 			if (prev_process_utility_hook)
 				prev_process_utility_hook(
@@ -3292,8 +3318,9 @@ tp_process_utility_impl(
 						dest,
 						qc);
 
-			indexoid = RangeVarGetRelid(
-					stmt->relation, AccessShareLock, stmt->missing_ok);
+			if (!OidIsValid(indexoid))
+				indexoid = RangeVarGetRelid(
+						stmt->relation, AccessShareLock, stmt->missing_ok);
 			if (!OidIsValid(indexoid))
 				return;
 

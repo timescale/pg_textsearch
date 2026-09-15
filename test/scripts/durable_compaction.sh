@@ -2179,7 +2179,8 @@ test_reindex_reconciliation() {
           ON public.lifecycle_reindex_docs USING bm25(body_a)
           WITH (text_config = 'english',
                 compaction = 'background',
-                compaction_schedule = '0 0 1 1 *');
+                compaction_schedule = '0 0 1 1 *');" >/dev/null 2>&1
+    sql_as durable_owner -c "
         CREATE INDEX lifecycle_reindex_b_idx
           ON public.lifecycle_reindex_docs USING bm25(body_b)
           WITH (text_config = 'english',
@@ -3574,7 +3575,8 @@ test_reassign_owned_heap_lock_order() {
 }
 
 test_rewrite_preflight_ordering() {
-    local alter_error blocker_pid bulk_error tablespace_dir vacuum_error
+    local alter_error blocker_pid bulk_error private_blocker_pid
+    local tablespace_dir vacuum_error
 
     sql_as durable_owner -c "
         CREATE TABLE public.lifecycle_preflight_a (body text);
@@ -3582,7 +3584,8 @@ test_rewrite_preflight_ordering() {
           ON public.lifecycle_preflight_a USING bm25(body)
           WITH (text_config = 'english',
                 compaction = 'background',
-                compaction_schedule = '0 0 1 1 *');
+                compaction_schedule = '0 0 1 1 *');" >/dev/null 2>&1
+    sql_as durable_owner -c "
         CREATE TABLE public.lifecycle_preflight_b (body text);
         CREATE INDEX lifecycle_preflight_b_idx
           ON public.lifecycle_preflight_b USING bm25(body)
@@ -3610,18 +3613,25 @@ test_rewrite_preflight_ordering() {
         BEGIN;
         ALTER INDEX public.lifecycle_preflight_b_idx
           SET (compaction_schedule = '1 2 3 4 *');
-        ALTER INDEX lifecycle_preflight_private.docs_idx
-          SET (compaction_schedule = '1 2 3 4 *');
         SELECT pg_catalog.pg_sleep(120);" \
         >"${DATA_DIR}/vacuum-preflight-lock.out" 2>&1 &
     blocker_pid=$!
+    PGAPPNAME=lifecycle-private-preflight \
+        sql_as durable_owner -c "
+        BEGIN;
+        ALTER INDEX lifecycle_preflight_private.docs_idx
+          SET (compaction_schedule = '1 2 3 4 *');
+        SELECT pg_catalog.pg_sleep(120);" \
+        >"${DATA_DIR}/private-preflight-lock.out" 2>&1 &
+    private_blocker_pid=$!
     for _ in $(seq 1 100); do
         if [ "$(sql_super -c "SELECT count(*)
               FROM pg_catalog.pg_locks
-              WHERE relation =
-                    'public.lifecycle_preflight_b_idx'::regclass
+              WHERE relation IN (
+                    'public.lifecycle_preflight_b_idx'::regclass,
+                    'lifecycle_preflight_private.docs_idx'::regclass)
                 AND mode = 'AccessExclusiveLock'
-                AND granted;")" = "1" ]; then
+                AND granted;")" = "2" ]; then
             break
         fi
         sleep 0.1
@@ -3713,8 +3723,11 @@ ${bulk_error}"
 
     sql_super -c "SELECT pg_catalog.pg_terminate_backend(pid)
       FROM pg_catalog.pg_stat_activity
-      WHERE application_name = 'lifecycle-vacuum-preflight';" >/dev/null
+      WHERE application_name IN (
+        'lifecycle-vacuum-preflight',
+        'lifecycle-private-preflight');" >/dev/null
     wait "${blocker_pid}" || true
+    wait "${private_blocker_pid}" || true
     sql_super -c "DROP TABLE public.lifecycle_preflight_a,
                              public.lifecycle_preflight_b;
                    DROP SCHEMA lifecycle_preflight_private CASCADE;" \
@@ -3738,7 +3751,8 @@ test_concurrent_reindex_reconciliation() {
           ON public.lifecycle_concurrent_docs USING bm25(body_a)
           WITH (text_config = 'english',
                 compaction = 'background',
-                compaction_schedule = '0 0 1 1 *');
+                compaction_schedule = '0 0 1 1 *');" >/dev/null 2>&1
+    sql_as durable_owner -c "
         CREATE INDEX lifecycle_concurrent_b_idx
           ON public.lifecycle_concurrent_docs USING bm25(body_b)
           WITH (text_config = 'english',
@@ -5186,6 +5200,223 @@ signal: $(cat "${signal_output}")"
           FROM pg_catalog.pg_class WHERE oid = ${index_oid};")"
 
     sql_super -c "DROP TABLE public.lifecycle_managed_lock_docs;"
+}
+
+test_cross_statement_managed_lock_order() {
+    local am_oid first_index_oid first_output first_pid first_status=0
+    local gate_output gate_pid second_index_oid second_output second_pid
+    local second_status=0
+
+    gate_output="${DATA_DIR}/cross-statement-lock-gate.out"
+    first_output="${DATA_DIR}/cross-statement-lock-first.out"
+    second_output="${DATA_DIR}/cross-statement-lock-second.out"
+    sql_as durable_owner <<'SQL' >/dev/null 2>&1
+CREATE TABLE public.lifecycle_cross_statement_first_docs (body text);
+CREATE INDEX lifecycle_cross_statement_first_idx
+    ON public.lifecycle_cross_statement_first_docs USING bm25(body)
+    WITH (text_config = 'english',
+          compaction = 'background',
+          compaction_schedule = '0 0 1 1 *');
+CREATE TABLE public.lifecycle_cross_statement_second_docs (body text);
+CREATE INDEX lifecycle_cross_statement_second_idx
+    ON public.lifecycle_cross_statement_second_docs USING bm25(body)
+    WITH (text_config = 'english',
+          compaction = 'background',
+          compaction_schedule = '0 0 1 1 *');
+SQL
+    first_index_oid="$(sql_super -c "SELECT
+        'public.lifecycle_cross_statement_first_idx'::regclass::oid;")"
+    second_index_oid="$(sql_super -c "SELECT
+        'public.lifecycle_cross_statement_second_idx'::regclass::oid;")"
+    am_oid="$(sql_super -c \
+        "SELECT oid FROM pg_catalog.pg_am WHERE amname = 'bm25';")"
+
+    PGAPPNAME=lifecycle-cross-statement-gate sql_super -c "
+        SELECT pg_catalog.pg_advisory_lock(478, 13);
+        SELECT pg_catalog.pg_sleep(120);" >"${gate_output}" 2>&1 &
+    gate_pid=$!
+    for _ in $(seq 1 100); do
+        if [ "$(sql_super -c "SELECT count(*)
+              FROM pg_catalog.pg_stat_activity AS activity
+              JOIN pg_catalog.pg_locks AS gate
+                ON gate.pid = activity.pid
+              WHERE activity.application_name =
+                    'lifecycle-cross-statement-gate'
+                AND activity.wait_event = 'PgSleep'
+                AND gate.locktype = 'advisory'
+                AND gate.classid = 478
+                AND gate.objid = 13
+                AND gate.mode = 'ExclusiveLock'
+                AND gate.granted;")" = "1" ]; then
+            break
+        fi
+        sleep 0.1
+    done
+    assert_eq "cross-statement gate is held" "1" \
+        "$(sql_super -c "SELECT count(*)
+          FROM pg_catalog.pg_stat_activity AS activity
+          JOIN pg_catalog.pg_locks AS gate ON gate.pid = activity.pid
+          WHERE activity.application_name =
+                'lifecycle-cross-statement-gate'
+            AND activity.wait_event = 'PgSleep'
+            AND gate.locktype = 'advisory'
+            AND gate.classid = 478
+            AND gate.objid = 13
+            AND gate.mode = 'ExclusiveLock'
+            AND gate.granted;")"
+
+    PGAPPNAME=lifecycle-cross-statement-first \
+        "${PGBINDIR}/psql" -h "${SOCKET_DIR}" -p "${TEST_PORT}" \
+        -U postgres -d "${TEST_DB}" -qAt -v ON_ERROR_STOP=0 \
+        -c "SET deadlock_timeout = '100ms';
+            SET statement_timeout = '15s';
+            BEGIN;
+            ALTER INDEX public.lifecycle_cross_statement_first_idx
+              SET (compaction_schedule = '1 0 1 1 *');
+            SELECT pg_catalog.pg_advisory_xact_lock(478, 13);
+            SAVEPOINT second_admission;
+            ALTER INDEX public.lifecycle_cross_statement_second_idx
+              SET (compaction_schedule = '2 0 1 1 *');
+            ROLLBACK TO SAVEPOINT second_admission;
+            ROLLBACK;" >"${first_output}" 2>&1 &
+    first_pid=$!
+    for _ in $(seq 1 100); do
+        if [ "$(sql_super -c "SELECT count(*)
+              FROM pg_catalog.pg_stat_activity
+              WHERE application_name =
+                    'lifecycle-cross-statement-first'
+                AND wait_event_type = 'Lock';")" = "1" ]; then
+            break
+        fi
+        sleep 0.1
+    done
+    assert_eq "first transaction reaches the statement barrier" "1" \
+        "$(sql_super -c "SELECT count(*)
+          FROM pg_catalog.pg_stat_activity
+          WHERE application_name = 'lifecycle-cross-statement-first'
+            AND wait_event_type = 'Lock';")"
+    assert_eq "first transaction holds its admission and dependency" "2" \
+        "$(sql_super -c "SELECT count(*)
+          FROM pg_catalog.pg_stat_activity AS activity
+          JOIN pg_catalog.pg_locks AS managed
+            ON managed.pid = activity.pid
+          WHERE activity.application_name =
+                'lifecycle-cross-statement-first'
+            AND managed.locktype = 'object'
+            AND managed.classid =
+                'pg_catalog.pg_am'::pg_catalog.regclass
+            AND managed.mode IN
+                ('ExclusiveLock', 'ShareRowExclusiveLock')
+            AND managed.granted
+            AND ((managed.objid = ${first_index_oid}
+                  AND managed.objsubid = 1
+                  AND managed.mode = 'ExclusiveLock')
+                 OR
+                 (managed.objid = ${am_oid}
+                  AND managed.objsubid = 0
+                  AND managed.mode = 'ShareRowExclusiveLock'));")"
+
+    PGAPPNAME=lifecycle-cross-statement-second \
+        "${PGBINDIR}/psql" -h "${SOCKET_DIR}" -p "${TEST_PORT}" \
+        -U postgres -d "${TEST_DB}" -qAt -v ON_ERROR_STOP=1 \
+        -c "SET deadlock_timeout = '10s';
+            SET statement_timeout = '15s';
+            BEGIN;
+            ALTER INDEX public.lifecycle_cross_statement_second_idx
+              SET (compaction_schedule = '3 0 1 1 *');
+            COMMIT;" >"${second_output}" 2>&1 &
+    second_pid=$!
+    for _ in $(seq 1 100); do
+        if [ "$(sql_super -c "SELECT count(*)
+              FROM pg_catalog.pg_stat_activity AS activity
+              JOIN pg_catalog.pg_locks AS dependency
+                ON dependency.pid = activity.pid
+              WHERE activity.application_name =
+                    'lifecycle-cross-statement-second'
+                AND dependency.locktype = 'object'
+                AND dependency.classid =
+                    'pg_catalog.pg_am'::pg_catalog.regclass
+                AND dependency.objid = ${am_oid}
+                AND dependency.objsubid = 0
+                AND dependency.mode = 'ShareRowExclusiveLock'
+                AND NOT dependency.granted;")" = "1" ]; then
+            break
+        fi
+        sleep 0.1
+    done
+    assert_eq "second transaction holds the inverse admission" "1" \
+        "$(sql_super -c "SELECT count(*)
+          FROM pg_catalog.pg_stat_activity AS activity
+          JOIN pg_catalog.pg_locks AS admission
+            ON admission.pid = activity.pid
+          WHERE activity.application_name =
+                'lifecycle-cross-statement-second'
+            AND admission.locktype = 'object'
+            AND admission.classid =
+                'pg_catalog.pg_am'::pg_catalog.regclass
+            AND admission.objid = ${second_index_oid}
+            AND admission.objsubid = 1
+            AND admission.mode = 'ExclusiveLock'
+            AND admission.granted;")"
+    assert_eq "second transaction waits on the dependency" "1" \
+        "$(sql_super -c "SELECT count(*)
+          FROM pg_catalog.pg_stat_activity AS activity
+          JOIN pg_catalog.pg_locks AS dependency
+            ON dependency.pid = activity.pid
+          WHERE activity.application_name =
+                'lifecycle-cross-statement-second'
+            AND dependency.locktype = 'object'
+            AND dependency.classid =
+                'pg_catalog.pg_am'::pg_catalog.regclass
+            AND dependency.objid = ${am_oid}
+            AND dependency.objsubid = 0
+            AND dependency.mode = 'ShareRowExclusiveLock'
+            AND NOT dependency.granted;")"
+
+    sql_super -c "SELECT pg_catalog.pg_terminate_backend(pid)
+      FROM pg_catalog.pg_stat_activity
+      WHERE application_name =
+            'lifecycle-cross-statement-gate';" >/dev/null
+    wait "${gate_pid}" || true
+    wait "${first_pid}" || first_status=$?
+    wait "${second_pid}" || second_status=$?
+    if [ "${first_status}" -eq 0 ] || [ "${second_status}" -ne 0 ]; then
+        error "cross-statement managed lock test failed:
+first: $(cat "${first_output}")
+second: $(cat "${second_output}")"
+    fi
+    if grep -Fq "deadlock detected" "${first_output}" ||
+        grep -Fq "deadlock detected" "${second_output}"; then
+        error "cross-statement managed operations deadlocked:
+first: $(cat "${first_output}")
+second: $(cat "${second_output}")"
+    fi
+    if ! grep -Fq \
+        "cannot acquire a new background compaction admission lock after" \
+        "${first_output}"; then
+        error "cross-statement admission failed for the wrong reason:
+$(cat "${first_output}")"
+    fi
+    assert_eq "inverse transaction completes after guarded admission" "t" \
+        "$(sql_super -c "SELECT reloptions @>
+          ARRAY['compaction_schedule=3 0 1 1 *']
+          FROM pg_catalog.pg_class WHERE oid = ${second_index_oid};")"
+
+    sql_super -c "
+        BEGIN;
+        ALTER INDEX public.lifecycle_cross_statement_first_idx
+          SET (compaction_schedule = '4 0 1 1 *');
+        ALTER INDEX public.lifecycle_cross_statement_first_idx
+          SET (compaction_schedule = '5 0 1 1 *');
+        COMMIT;"
+    assert_eq "same-index admission remains reentrant" "t" \
+        "$(sql_super -c "SELECT reloptions @>
+          ARRAY['compaction_schedule=5 0 1 1 *']
+          FROM pg_catalog.pg_class WHERE oid = ${first_index_oid};")"
+
+    sql_super -c "
+        DROP TABLE public.lifecycle_cross_statement_first_docs;
+        DROP TABLE public.lifecycle_cross_statement_second_docs;"
 }
 
 test_internal_lock_namespace() {
@@ -7980,12 +8211,14 @@ test_rollback_in_fresh_database() {
 
     dump_file="${DATA_DIR}/lineage-dump.sql"
     sql_as durable_owner -c "
-        CREATE TABLE public.lifecycle_dump_docs (body text);
+        CREATE TABLE public.lifecycle_dump_docs (body text);" >/dev/null
+    sql_as durable_owner -c "
         CREATE INDEX lifecycle_dump_idx
           ON public.lifecycle_dump_docs USING bm25(body)
           WITH (text_config = 'english',
                 compaction = 'background',
-                compaction_schedule = '0 0 1 1 *');
+                compaction_schedule = '0 0 1 1 *');" >/dev/null 2>&1
+    sql_as durable_owner -c "
         CREATE TABLE public.lifecycle_dump_partitioned_docs
           (id integer, body text)
           PARTITION BY RANGE (id);
@@ -8257,6 +8490,7 @@ run_test test_refresh_selects_requested_workflow
 run_test test_concurrent_legacy_lineage_backfill
 run_test test_legacy_reindex_spill_lock_order
 run_test test_managed_lock_order
+run_test test_cross_statement_managed_lock_order
 run_test test_internal_lock_namespace
 run_test test_lineage_ddl_guards
 run_test test_partitioned_lineage_history

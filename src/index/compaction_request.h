@@ -33,7 +33,10 @@ extern char *tp_new_available_compaction_lineage(Oid heap_oid, Oid owner_oid);
 extern bool
 tp_compaction_lineage_in_use(const char *lineage, Oid heap_oid, Oid owner_oid);
 extern void	 tp_lock_compaction_index(Oid indexoid);
+extern void	 tp_lock_compaction_dependency(void);
 extern void	 tp_lock_compaction_lineage(const char *lineage);
+extern void	 tp_require_compaction_index_lock(Oid indexoid);
+extern void	 tp_require_compaction_dependency_lock(void);
 extern List *tp_prelock_compaction_indexes(List *indexoids);
 extern List				*
 tp_prelock_compaction_indexes_nowait(List *indexoids, bool nowait);

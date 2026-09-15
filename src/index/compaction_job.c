@@ -110,6 +110,12 @@ typedef struct TpHistoryHeapOwner
 	Oid owner_oid;
 } TpHistoryHeapOwner;
 
+typedef enum TpJobObjectLookupMode
+{
+	TP_JOB_OBJECTS_PREFLIGHT,
+	TP_JOB_OBJECTS_LOCKED
+} TpJobObjectLookupMode;
+
 static char *tp_copy_spi_text(
 		HeapTuple	  tuple,
 		TupleDesc	  tuple_desc,
@@ -223,11 +229,12 @@ tp_lock_extension(Oid extension_oid)
 
 static Oid
 tp_resolve_extension_function(
-		Oid			extension_oid,
-		const char *schema_name,
-		const char *function_name,
-		int			nargs,
-		const Oid  *argtypes)
+		Oid					  extension_oid,
+		const char			 *schema_name,
+		const char			 *function_name,
+		int					  nargs,
+		const Oid			 *argtypes,
+		TpJobObjectLookupMode mode)
 {
 	List *names;
 	Oid	  function_oid;
@@ -244,17 +251,21 @@ tp_resolve_extension_function(
 		tp_durable_not_initialized(
 				"a required pg_durable function is missing");
 
-	LockDatabaseObject(ProcedureRelationId, function_oid, 0, AccessShareLock);
-	if (getExtensionOfObject(ProcedureRelationId, function_oid) !=
-		extension_oid)
-		tp_durable_not_initialized(
-				"a required pg_durable function changed during admission");
+	if (mode == TP_JOB_OBJECTS_LOCKED)
+	{
+		LockDatabaseObject(
+				ProcedureRelationId, function_oid, 0, AccessShareLock);
+		if (getExtensionOfObject(ProcedureRelationId, function_oid) !=
+			extension_oid)
+			tp_durable_not_initialized(
+					"a required pg_durable function changed during admission");
+	}
 
 	return function_oid;
 }
 
 static Oid
-tp_resolve_start_function(Oid extension_oid)
+tp_resolve_start_function(Oid extension_oid, TpJobObjectLookupMode mode)
 {
 	Oid				  function_oid = InvalidOid;
 	List			 *names;
@@ -302,18 +313,25 @@ tp_resolve_start_function(Oid extension_oid)
 	if (!OidIsValid(function_oid))
 		tp_durable_not_initialized("df.start(text,text,text,text) is missing");
 
-	LockDatabaseObject(ProcedureRelationId, function_oid, 0, AccessShareLock);
-	if (getExtensionOfObject(ProcedureRelationId, function_oid) !=
-		extension_oid)
-		tp_durable_not_initialized(
-				"df.start(text,text,text,text) changed during admission");
+	if (mode == TP_JOB_OBJECTS_LOCKED)
+	{
+		LockDatabaseObject(
+				ProcedureRelationId, function_oid, 0, AccessShareLock);
+		if (getExtensionOfObject(ProcedureRelationId, function_oid) !=
+			extension_oid)
+			tp_durable_not_initialized(
+					"df.start(text,text,text,text) changed during admission");
+	}
 
 	return function_oid;
 }
 
 static Oid
 tp_resolve_extension_operator(
-		Oid extension_oid, const char *schema_name, const char *operator_name)
+		Oid					  extension_oid,
+		const char			 *schema_name,
+		const char			 *operator_name,
+		TpJobObjectLookupMode mode)
 {
 	List *names;
 	Oid	  operator_oid;
@@ -335,19 +353,26 @@ tp_resolve_extension_operator(
 				operator_name,
 				operator_oid));
 
-	LockDatabaseObject(OperatorRelationId, operator_oid, 0, AccessShareLock);
-	if (getExtensionOfObject(OperatorRelationId, operator_oid) !=
-		extension_oid)
-		tp_durable_not_initialized(psprintf(
-				"required text operator %s changed during admission",
-				operator_name));
+	if (mode == TP_JOB_OBJECTS_LOCKED)
+	{
+		LockDatabaseObject(
+				OperatorRelationId, operator_oid, 0, AccessShareLock);
+		if (getExtensionOfObject(OperatorRelationId, operator_oid) !=
+			extension_oid)
+			tp_durable_not_initialized(psprintf(
+					"required text operator %s changed during admission",
+					operator_name));
+	}
 
 	return operator_oid;
 }
 
 static Oid
 tp_resolve_extension_relation(
-		Oid extension_oid, Oid namespace_oid, const char *relation_name)
+		Oid					  extension_oid,
+		Oid					  namespace_oid,
+		const char			 *relation_name,
+		TpJobObjectLookupMode mode)
 {
 	Oid relation_oid = get_relname_relid(relation_name, namespace_oid);
 
@@ -357,11 +382,14 @@ tp_resolve_extension_relation(
 		tp_durable_not_initialized(
 				psprintf("df.%s is missing", relation_name));
 
-	LockRelationOid(relation_oid, AccessShareLock);
-	if (getExtensionOfObject(RelationRelationId, relation_oid) !=
-		extension_oid)
-		tp_durable_not_initialized(
-				psprintf("df.%s changed during admission", relation_name));
+	if (mode == TP_JOB_OBJECTS_LOCKED)
+	{
+		LockRelationOid(relation_oid, AccessShareLock);
+		if (getExtensionOfObject(RelationRelationId, relation_oid) !=
+			extension_oid)
+			tp_durable_not_initialized(
+					psprintf("df.%s changed during admission", relation_name));
+	}
 
 	return relation_oid;
 }
@@ -640,7 +668,8 @@ tp_compaction_job_lineage_exists(
 }
 
 static void
-tp_discover_job_objects_as_owner(TpCompactionJobObjects *objects)
+tp_populate_job_objects_as_owner(
+		TpCompactionJobObjects *objects, TpJobObjectLookupMode mode)
 {
 	char	   *version;
 	Oid			durable_oid;
@@ -669,10 +698,13 @@ tp_discover_job_objects_as_owner(TpCompactionJobObjects *objects)
 	if (!OidIsValid(durable_oid))
 		tp_durable_required();
 
-	tp_lock_extension(durable_oid);
-	rechecked_oid = get_extension_oid("pg_durable", true);
-	if (rechecked_oid != durable_oid)
-		tp_durable_required();
+	if (mode == TP_JOB_OBJECTS_LOCKED)
+	{
+		tp_lock_extension(durable_oid);
+		rechecked_oid = get_extension_oid("pg_durable", true);
+		if (rechecked_oid != durable_oid)
+			tp_durable_required();
+	}
 
 	if (!tp_extension_lookup(durable_oid, &durable_owner, &version))
 		tp_durable_required();
@@ -696,7 +728,7 @@ tp_discover_job_objects_as_owner(TpCompactionJobObjects *objects)
 		tp_durable_not_initialized(
 				"pg_durable.database does not name the current database");
 
-	start_oid			  = tp_resolve_start_function(durable_oid);
+	start_oid			  = tp_resolve_start_function(durable_oid, mode);
 	durable_namespace_oid = get_func_namespace(start_oid);
 	durable_schema		  = get_namespace_name(durable_namespace_oid);
 	if (durable_schema == NULL)
@@ -709,12 +741,12 @@ tp_discover_job_objects_as_owner(TpCompactionJobObjects *objects)
 	objects->start_function_oid		 = start_oid;
 	objects->start_function			 = tp_qualified_function_name(start_oid);
 	objects->explain_function_oid	 = tp_resolve_extension_function(
-			   durable_oid, durable_schema, "explain", 1, text_args);
+			   durable_oid, durable_schema, "explain", 1, text_args, mode);
 	objects->explain_function = tp_qualified_function_name(
 			objects->explain_function_oid);
 
 	objects->signal_function_oid = tp_resolve_extension_function(
-			durable_oid, durable_schema, "signal", 3, signal_args);
+			durable_oid, durable_schema, "signal", 3, signal_args, mode);
 	objects->signal_function = tp_qualified_function_name(
 			objects->signal_function_oid);
 	objects->wait_signal_function = tp_qualified_function_name(
@@ -723,20 +755,22 @@ tp_discover_job_objects_as_owner(TpCompactionJobObjects *objects)
 					durable_schema,
 					"wait_for_signal",
 					2,
-					wait_signal_args));
+					wait_signal_args,
+					mode));
 	objects->wait_schedule_function = tp_qualified_function_name(
 			tp_resolve_extension_function(
 					durable_oid,
 					durable_schema,
 					"wait_for_schedule",
 					1,
-					text_args));
+					text_args,
+					mode));
 	objects->loop_function = tp_qualified_function_name(
 			tp_resolve_extension_function(
-					durable_oid, durable_schema, "loop", 3, loop_args));
+					durable_oid, durable_schema, "loop", 3, loop_args, mode));
 	objects->break_function = tp_qualified_function_name(
 			tp_resolve_extension_function(
-					durable_oid, durable_schema, "break", 1, text_args));
+					durable_oid, durable_schema, "break", 1, text_args, mode));
 	operator_schema_oid = get_extension_schema(durable_oid);
 	operator_schema		= get_namespace_name(operator_schema_oid);
 	if (operator_schema == NULL)
@@ -744,18 +778,18 @@ tp_discover_job_objects_as_owner(TpCompactionJobObjects *objects)
 				"the pg_durable operator schema is missing");
 	objects->operator_schema = pstrdup(operator_schema);
 
-	tp_resolve_extension_operator(durable_oid, operator_schema, "|=>");
-	tp_resolve_extension_operator(durable_oid, operator_schema, "~>");
-	tp_resolve_extension_operator(durable_oid, operator_schema, "?>");
-	tp_resolve_extension_operator(durable_oid, operator_schema, "!>");
-	tp_resolve_extension_operator(durable_oid, operator_schema, "|");
+	tp_resolve_extension_operator(durable_oid, operator_schema, "|=>", mode);
+	tp_resolve_extension_operator(durable_oid, operator_schema, "~>", mode);
+	tp_resolve_extension_operator(durable_oid, operator_schema, "?>", mode);
+	tp_resolve_extension_operator(durable_oid, operator_schema, "!>", mode);
+	tp_resolve_extension_operator(durable_oid, operator_schema, "|", mode);
 
 	objects->instances_relation_oid = tp_resolve_extension_relation(
-			durable_oid, durable_namespace_oid, "instances");
+			durable_oid, durable_namespace_oid, "instances", mode);
 	objects->nodes_relation_oid = tp_resolve_extension_relation(
-			durable_oid, durable_namespace_oid, "nodes");
+			durable_oid, durable_namespace_oid, "nodes", mode);
 	objects->vars_relation_oid = tp_resolve_extension_relation(
-			durable_oid, durable_namespace_oid, "vars");
+			durable_oid, durable_namespace_oid, "vars", mode);
 	objects->instances_relation = quote_qualified_identifier(
 			durable_schema, get_rel_name(objects->instances_relation_oid));
 
@@ -768,7 +802,8 @@ tp_discover_job_objects_as_owner(TpCompactionJobObjects *objects)
 				"df.instances.submitted_by is not pg_catalog.regrole");
 
 	textsearch_oid = get_extension_oid("pg_textsearch", false);
-	tp_lock_extension(textsearch_oid);
+	if (mode == TP_JOB_OBJECTS_LOCKED)
+		tp_lock_extension(textsearch_oid);
 	textsearch_namespace_oid = get_extension_schema(textsearch_oid);
 	textsearch_schema		 = get_namespace_name(textsearch_namespace_oid);
 	if (textsearch_schema == NULL)
@@ -782,13 +817,15 @@ tp_discover_job_objects_as_owner(TpCompactionJobObjects *objects)
 			 objects->textsearch_schema,
 			 "bm25_compact_step_if_current",
 			 5,
-			 oid_args);
+			 oid_args,
+			 mode);
 	objects->current_function_oid = tp_resolve_extension_function(
 			textsearch_oid,
 			objects->textsearch_schema,
 			"bm25_background_target_is_current",
 			5,
-			oid_args);
+			oid_args,
+			mode);
 	objects->step_function = tp_qualified_function_name(
 			objects->step_function_oid);
 	objects->current_function = tp_qualified_function_name(
@@ -796,7 +833,8 @@ tp_discover_job_objects_as_owner(TpCompactionJobObjects *objects)
 }
 
 static void
-tp_discover_job_objects(TpCompactionJobObjects *objects)
+tp_lookup_job_objects(
+		TpCompactionJobObjects *objects, TpJobObjectLookupMode mode)
 {
 	Oid durable_oid;
 	Oid durable_owner = InvalidOid;
@@ -813,13 +851,26 @@ tp_discover_job_objects(TpCompactionJobObjects *objects)
 			durable_owner, save_sec_context | SECURITY_LOCAL_USERID_CHANGE);
 	PG_TRY();
 	{
-		tp_discover_job_objects_as_owner(objects);
+		tp_populate_job_objects_as_owner(objects, mode);
 	}
 	PG_FINALLY();
 	{
 		SetUserIdAndSecContext(save_userid, save_sec_context);
 	}
 	PG_END_TRY();
+}
+
+static void
+tp_preflight_job_objects(TpCompactionJobObjects *objects)
+{
+	tp_lookup_job_objects(objects, TP_JOB_OBJECTS_PREFLIGHT);
+}
+
+static void
+tp_discover_locked_job_objects(TpCompactionJobObjects *objects)
+{
+	tp_require_compaction_dependency_lock();
+	tp_lookup_job_objects(objects, TP_JOB_OBJECTS_LOCKED);
 }
 
 static void
@@ -1373,15 +1424,6 @@ tp_dependency_exists(
 }
 
 static void
-tp_lock_durable_dependency(void)
-{
-	Oid bm25_am_oid = get_index_am_oid("bm25", false);
-
-	LockDatabaseObject(
-			AccessMethodRelationId, bm25_am_oid, 0, ShareRowExclusiveLock);
-}
-
-static void
 tp_pin_durable_dependency(const TpCompactionJobObjects *objects)
 {
 	ObjectAddress bm25_am = {
@@ -1418,7 +1460,7 @@ tp_lock_job_target(Oid indexoid)
 	 * work.
 	 */
 	tp_take_admission_lock(indexoid);
-	tp_lock_durable_dependency();
+	tp_lock_compaction_dependency();
 }
 
 static void
@@ -2391,7 +2433,7 @@ tp_compaction_job_preflight(Oid owner_oid, const char *schedule)
 
 	tp_require_owner_login(owner_oid);
 	tp_require_owner_database_connect(owner_oid);
-	tp_discover_job_objects(&objects);
+	tp_preflight_job_objects(&objects);
 	tp_require_owner_superuser_policy(owner_oid);
 	tp_require_owner_durable_privileges(&objects, owner_oid);
 
@@ -2413,7 +2455,7 @@ tp_activate_captured_target(
 
 	tp_require_owner_login(target->owner_oid);
 	tp_require_owner_database_connect(target->owner_oid);
-	tp_discover_job_objects(&objects);
+	tp_discover_locked_job_objects(&objects);
 	tp_require_owner_superuser_policy(target->owner_oid);
 	tp_require_owner_durable_privileges(&objects, target->owner_oid);
 	tp_pin_durable_dependency(&objects);
@@ -2452,23 +2494,68 @@ tp_compaction_job_activate_with_schedule(Oid indexoid, const char *schedule)
 	tp_activate_captured_target(&target, true);
 }
 
-char *
-tp_compaction_job_schedule(Oid indexoid, bool lineage_backfilled)
+void
+tp_compaction_job_capture(Oid indexoid, TpCompactionJobIdentity *identity)
+{
+	TpCompactionJobTarget target;
+
+	tp_require_compaction_index_lock(indexoid);
+	tp_capture_target(indexoid, true, &target);
+
+	memset(identity, 0, sizeof(*identity));
+	identity->heap_oid			 = target.heap_oid;
+	identity->namespace_oid		 = get_rel_namespace(indexoid);
+	identity->index_name		 = target.index_name;
+	identity->index_oid			 = target.index_oid;
+	identity->tablespace_oid	 = target.tablespace_oid;
+	identity->relfilenumber		 = target.relfilenumber;
+	identity->owner_oid			 = target.owner_oid;
+	identity->lineage			 = target.lineage;
+	identity->schedule			 = target.schedule;
+	identity->lineage_backfilled = target.lineage_backfilled;
+	identity->schedule_resolved	 = false;
+	pfree(target.history_prefix);
+	pfree(target.family_prefix);
+}
+
+void
+tp_compaction_job_resolve_schedule(
+		Oid						 indexoid,
+		TpCompactionJobIdentity *identity,
+		MemoryContext			 result_context)
 {
 	TpCompactionJobTarget  target;
 	TpCompactionJobObjects objects;
 	char				  *schedule;
 
-	tp_lock_job_target(indexoid);
-	tp_capture_target(indexoid, true, &target);
-	target.lineage_backfilled = target.lineage_backfilled ||
-								lineage_backfilled;
+	if (identity->schedule_resolved)
+		return;
 
-	tp_discover_job_objects(&objects);
-	schedule = tp_schedule_as_trusted(&objects, &target, CurrentMemoryContext);
-	if (schedule == NULL)
-		schedule = pstrdup(target.schedule);
-	return schedule;
+	tp_require_compaction_index_lock(indexoid);
+	memset(&target, 0, sizeof(target));
+	target.database_oid		  = MyDatabaseId;
+	target.index_oid		  = identity->index_oid;
+	target.tablespace_oid	  = identity->tablespace_oid;
+	target.relfilenumber	  = identity->relfilenumber;
+	target.owner_oid		  = identity->owner_oid;
+	target.heap_oid			  = identity->heap_oid;
+	target.lineage			  = identity->lineage;
+	target.schedule			  = identity->schedule;
+	target.lineage_backfilled = identity->lineage_backfilled;
+	target.history_prefix	  = tp_build_history_prefix(&target);
+	target.family_prefix	  = tp_build_family_prefix(&target);
+
+	tp_lock_compaction_dependency();
+	tp_discover_locked_job_objects(&objects);
+	schedule = tp_schedule_as_trusted(&objects, &target, result_context);
+	if (schedule != NULL)
+	{
+		pfree(identity->schedule);
+		identity->schedule = schedule;
+	}
+	identity->schedule_resolved = true;
+	pfree(target.history_prefix);
+	pfree(target.family_prefix);
 }
 
 void
@@ -2492,7 +2579,7 @@ tp_compaction_job_signal(Oid indexoid)
 			target.owner_oid, save_sec_context | SECURITY_LOCAL_USERID_CHANGE);
 	PG_TRY();
 	{
-		tp_discover_job_objects(&objects);
+		tp_discover_locked_job_objects(&objects);
 	}
 	PG_FINALLY();
 	{

@@ -53,25 +53,75 @@ static bool tp_dispatch_active = false;
 #define TP_COMPACTION_INDEX_LOCK_SUBID	 1
 #define TP_COMPACTION_LINEAGE_LOCK_SUBID 2
 
-static bool
-tp_take_compaction_lock(
-		Oid object_id, uint16 discriminator, LOCKMODE lockmode, bool nowait)
+static void
+tp_set_compaction_locktag(LOCKTAG *tag, Oid object_id, uint16 discriminator)
 {
-	LOCKTAG tag;
-
 	/*
 	 * pg_am has no subobjects, so its object-subid space is private to the
 	 * access method.  LOCKTAG_OBJECT also keeps these locks disjoint from
 	 * SQL-visible advisory locks.
 	 */
 	SET_LOCKTAG_OBJECT(
-			tag,
+			*tag,
 			MyDatabaseId,
 			AccessMethodRelationId,
 			object_id,
 			discriminator);
+}
+
+static bool
+tp_compaction_lock_held(Oid object_id, uint16 discriminator, LOCKMODE lockmode)
+{
+	LOCKTAG tag;
+
+	tp_set_compaction_locktag(&tag, object_id, discriminator);
+	return LockHeldByMe(&tag, lockmode, true);
+}
+
+static bool
+tp_compaction_dependency_lock_held(void)
+{
+	Oid bm25_am_oid = get_index_am_oid("bm25", true);
+
+	if (!OidIsValid(bm25_am_oid))
+		return false;
+	return tp_compaction_lock_held(bm25_am_oid, 0, ShareRowExclusiveLock);
+}
+
+static bool
+tp_compaction_admission_allowed(Oid indexoid)
+{
+	return tp_compaction_lock_held(
+				   indexoid, TP_COMPACTION_INDEX_LOCK_SUBID, ExclusiveLock) ||
+		   !tp_compaction_dependency_lock_held();
+}
+
+static void
+tp_check_compaction_admission_order(Oid indexoid)
+{
+	if (tp_compaction_admission_allowed(indexoid))
+		return;
+
+	ereport(ERROR,
+			(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
+			 errmsg("cannot acquire a new background compaction admission "
+					"lock after pg_durable work has started in this "
+					"transaction"),
+			 errhint("Commit or roll back the current transaction before "
+					 "managing another BM25 index.")));
+}
+
+static bool
+tp_take_compaction_lock(
+		Oid object_id, uint16 discriminator, LOCKMODE lockmode, bool nowait)
+{
+	LOCKTAG tag;
+
+	tp_set_compaction_locktag(&tag, object_id, discriminator);
 	if (LockHeldByMe(&tag, lockmode, true))
 		return true;
+	if (discriminator == TP_COMPACTION_INDEX_LOCK_SUBID)
+		tp_check_compaction_admission_order(object_id);
 	if (nowait)
 		return ConditionalLockDatabaseObject(
 				AccessMethodRelationId, object_id, discriminator, lockmode);
@@ -85,6 +135,32 @@ tp_lock_compaction_index(Oid indexoid)
 {
 	(void)tp_take_compaction_lock(
 			indexoid, TP_COMPACTION_INDEX_LOCK_SUBID, ExclusiveLock, false);
+}
+
+void
+tp_lock_compaction_dependency(void)
+{
+	Oid bm25_am_oid = get_index_am_oid("bm25", false);
+
+	if (tp_compaction_dependency_lock_held())
+		return;
+	LockDatabaseObject(
+			AccessMethodRelationId, bm25_am_oid, 0, ShareRowExclusiveLock);
+}
+
+void
+tp_require_compaction_dependency_lock(void)
+{
+	if (!tp_compaction_dependency_lock_held())
+		elog(ERROR, "managed compaction dependency lock is not held");
+}
+
+void
+tp_require_compaction_index_lock(Oid indexoid)
+{
+	if (!tp_compaction_lock_held(
+				indexoid, TP_COMPACTION_INDEX_LOCK_SUBID, ExclusiveLock))
+		elog(ERROR, "managed compaction admission lock is not held");
 }
 
 void
@@ -113,6 +189,7 @@ tp_prelock_compaction_indexes_nowait(List *indexoids, bool nowait)
 
 		if (!OidIsValid(indexoid) || indexoid == previous)
 			continue;
+		tp_check_compaction_admission_order(indexoid);
 		if (nowait)
 		{
 			if (!ConditionalLockRelationOid(
@@ -378,6 +455,7 @@ tp_ensure_index_compaction_lineage(Oid indexoid, bool *created)
 	}
 	index_close(index_rel, AccessShareLock);
 
+	tp_check_compaction_admission_order(indexoid);
 	index_rel = try_index_open(indexoid, ShareUpdateExclusiveLock);
 	if (index_rel == NULL)
 		return NULL;
@@ -684,6 +762,13 @@ tp_prelock_requests(List *pending)
 			continue;
 		previous = indexoid;
 
+		/*
+		 * Dispatch is best effort and the on-disk debt is durable.  If an
+		 * earlier managed statement pinned the transaction dependency, do
+		 * not take a new admission during PRE_COMMIT.
+		 */
+		if (!tp_compaction_admission_allowed(indexoid))
+			continue;
 		if (!ConditionalLockRelationOid(indexoid, AccessShareLock))
 			continue;
 		index_rel = try_relation_open(indexoid, NoLock);
