@@ -47,6 +47,26 @@ as the authoritative defense-in-depth guard. This covers partition child
 builds, concurrent builds, `REINDEX`, and build paths that do not originate
 from the expected utility statement shape.
 
+### Concurrent DDL Serialization
+
+The catalog checks are quick, but they must be atomic with respect to other
+DDL that can create the opposite half of an RLS/BM25 combination. Otherwise,
+one transaction can observe no RLS ancestor while another observes no BM25
+descendant, and both can commit.
+
+When `pg_textsearch.allow_rls` is off, relevant utility statements acquire one
+transaction-scoped exclusive PostgreSQL object lock on the `pg_textsearch`
+extension before core PostgreSQL acquires relation locks. This serializes BM25
+index creation and rebuilds with RLS enablement and hierarchy attachment
+within the database.
+
+Hierarchy traversal uses relation locks only while each catalog object is
+being inspected and releases them immediately. It does not retain a lock on
+every ancestor or descendant until transaction end. The extension object lock
+therefore provides the serialization point without reversing PostgreSQL's
+parent-to-child DDL lock order or consuming one shared lock-table entry per
+relation in a large hierarchy.
+
 Errors use `ERRCODE_FEATURE_NOT_SUPPORTED`, identify the conflicting
 relation, name `pg_textsearch.allow_rls`, and hint that enabling the setting
 accepts the documented term-frequency leakage risk.
@@ -63,6 +83,8 @@ Keep the README addition terse:
 - Link to Elastic's analogous limitation:
   <https://www.elastic.co/docs/deploy-manage/security/limitations>.
 - State what setting `pg_textsearch.allow_rls = off` prevents.
+- Briefly note that the setting does not disable combinations that already
+  exist when it is turned off.
 
 ## Tests
 
@@ -78,6 +100,10 @@ Regression coverage will verify:
 - Switching the GUC off does not prevent scans or writes through an existing
   RLS/BM25 combination.
 - Partition and inheritance hierarchies are protected in both directions.
+- Relevant concurrent DDL waits on the extension object lock before acquiring
+  relation locks.
+- Successful checks do not retain relation locks across every traversed
+  ancestor or descendant.
 
 The tests will use the existing SQL regression framework and assert the
 resulting errors in the expected output.
