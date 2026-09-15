@@ -31,6 +31,7 @@
 #include "access/am.h"
 #include "access/build_context.h"
 #include "access/build_parallel.h"
+#include "access/rls.h"
 #include "constants.h"
 #include "index/compaction_request.h"
 #include "index/metapage.h"
@@ -1391,6 +1392,8 @@ tp_build(Relation heap, Relation index, IndexInfo *indexInfo)
 	uint64			   total_len  = 0;
 	TpLocalIndexState *index_state;
 	bool			   is_text_array;
+
+	tp_check_bm25_build_allowed(heap);
 
 	/* Show "started" for first partition only (suppresses duplicates) */
 	if (!build_progress.active || build_progress.partition_count == 0)

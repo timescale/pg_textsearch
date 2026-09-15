@@ -228,6 +228,7 @@ extern int tp_tranche_id(int fixed_tranche_id);
  * access/reloptions.h
  */
 extern bool	  tp_log_scores;
+extern bool	  tp_allow_rls;
 extern int	  tp_bulk_load_threshold;
 extern int	  tp_memtable_pages_threshold;
 extern int	  tp_segments_per_level;

@@ -8,10 +8,13 @@
 
 #include <access/relation.h>
 #include <access/reloptions.h>
+#include <access/table.h>
 #include <access/xact.h>
 #include <catalog/dependency.h>
+#include <catalog/namespace.h>
 #include <catalog/objectaccess.h>
 #include <catalog/pg_class_d.h>
+#include <commands/tablecmds.h>
 #include <fmgr.h>
 #include <limits.h>
 #include <miscadmin.h>
@@ -24,6 +27,7 @@
 #include <utils/inval.h>
 
 #include "access/am.h"
+#include "access/rls.h"
 #include "constants.h"
 #include "index/compaction_request.h"
 #include "index/metapage.h"
@@ -67,6 +71,9 @@ int tp_segments_per_level = TP_DEFAULT_SEGMENTS_PER_LEVEL;
 
 /* Conservative size budget for newly merged multi-source segments. */
 int tp_max_segment_size_mb = TP_DEFAULT_SEGMENT_SIZE_MB;
+
+/* Allow BM25 indexes on relations protected by row-level security. */
+bool tp_allow_rls = true;
 
 static const relopt_enum_elt_def compaction_mode_options[] =
 		{{"inline", TP_COMPACTION_INLINE},
@@ -405,6 +412,20 @@ _PG_init(void)
 			NULL);
 
 	DefineCustomBoolVariable(
+			"pg_textsearch.allow_rls",
+			"Allow BM25 indexes on row-level security tables.",
+			"When disabled, BM25 indexes cannot be created or rebuilt on "
+			"RLS-protected relations, and RLS cannot be enabled on relations "
+			"that have BM25 indexes.",
+			&tp_allow_rls,
+			true,
+			PGC_SUSET,
+			0,
+			NULL,
+			NULL,
+			NULL);
+
+	DefineCustomBoolVariable(
 			"pg_textsearch.debug_panic_after_spill_finalize",
 			"Trigger PANIC after spill finalize for crash-safety testing.",
 			"When enabled, forces a server crash immediately after "
@@ -685,6 +706,22 @@ tp_subxact_callback(
 	}
 }
 
+static bool
+alter_table_enables_rls(AlterTableStmt *stmt)
+{
+	ListCell *lc;
+
+	foreach (lc, stmt->cmds)
+	{
+		AlterTableCmd *cmd = lfirst_node(AlterTableCmd, lc);
+
+		if (cmd->subtype == AT_EnableRowSecurity)
+			return true;
+	}
+
+	return false;
+}
+
 /*
  * ProcessUtility hook - detect CREATE INDEX USING bm25 and wrap
  * with build progress tracking. This collapses per-partition
@@ -709,6 +746,14 @@ tp_process_utility(
 
 		if (stmt->accessMethod && strcmp(stmt->accessMethod, "bm25") == 0)
 		{
+			LOCKMODE lockmode = stmt->concurrent ? ShareUpdateExclusiveLock
+												 : ShareLock;
+			Oid		 relid = RangeVarGetRelid(stmt->relation, lockmode, false);
+			Relation rel   = table_open(relid, NoLock);
+
+			tp_check_bm25_build_allowed(rel);
+			table_close(rel, NoLock);
+
 			tp_build_progress_begin();
 
 			if (prev_process_utility_hook)
@@ -734,6 +779,20 @@ tp_process_utility(
 
 			tp_build_progress_end();
 			return;
+		}
+	}
+
+	if (IsA(parsetree, AlterTableStmt))
+	{
+		AlterTableStmt *stmt = (AlterTableStmt *)parsetree;
+
+		if (alter_table_enables_rls(stmt))
+		{
+			Oid relid = RangeVarGetRelid(
+					stmt->relation, AccessExclusiveLock, stmt->missing_ok);
+
+			if (OidIsValid(relid))
+				tp_check_rls_enable_allowed(relid);
 		}
 	}
 
