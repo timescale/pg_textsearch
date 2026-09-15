@@ -63,8 +63,14 @@ BEGIN
     END IF;
 END $$;
 CREATE ROLE rls_guc_user;
+SET pg_textsearch.allow_rls = off;
 SET ROLE rls_guc_user;
 \set VERBOSITY terse
+CREATE INDEX rls_unauthorized_idx ON rls_before_index USING bm25(content)
+    WITH (text_config='english');
+ERROR:  must be owner of table rls_before_index
+ALTER TABLE index_before_rls ENABLE ROW LEVEL SECURITY;
+ERROR:  must be owner of table index_before_rls
 SET pg_textsearch.allow_rls = off;
 ERROR:  permission denied to set parameter "pg_textsearch.allow_rls"
 \set VERBOSITY default

@@ -748,8 +748,13 @@ tp_process_utility(
 		{
 			LOCKMODE lockmode = stmt->concurrent ? ShareUpdateExclusiveLock
 												 : ShareLock;
-			Oid		 relid = RangeVarGetRelid(stmt->relation, lockmode, false);
-			Relation rel   = table_open(relid, NoLock);
+			Oid		 relid	  = RangeVarGetRelidExtended(
+					stmt->relation,
+					lockmode,
+					0,
+					RangeVarCallbackOwnsRelation,
+					NULL);
+			Relation rel = table_open(relid, NoLock);
 
 			tp_check_bm25_build_allowed(rel);
 			table_close(rel, NoLock);
@@ -788,8 +793,12 @@ tp_process_utility(
 
 		if (alter_table_enables_rls(stmt))
 		{
-			Oid relid = RangeVarGetRelid(
-					stmt->relation, AccessExclusiveLock, stmt->missing_ok);
+			Oid relid = RangeVarGetRelidExtended(
+					stmt->relation,
+					AccessExclusiveLock,
+					stmt->missing_ok ? RVR_MISSING_OK : 0,
+					RangeVarCallbackOwnsRelation,
+					NULL);
 
 			if (OidIsValid(relid))
 				tp_check_rls_enable_allowed(relid);

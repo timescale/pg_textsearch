@@ -52,8 +52,12 @@ BEGIN
     END IF;
 END $$;
 CREATE ROLE rls_guc_user;
+SET pg_textsearch.allow_rls = off;
 SET ROLE rls_guc_user;
 \set VERBOSITY terse
+CREATE INDEX rls_unauthorized_idx ON rls_before_index USING bm25(content)
+    WITH (text_config='english');
+ALTER TABLE index_before_rls ENABLE ROW LEVEL SECURITY;
 SET pg_textsearch.allow_rls = off;
 \set VERBOSITY default
 RESET ROLE;
