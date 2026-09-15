@@ -4970,6 +4970,224 @@ spill: $(cat "${spill_output}")"
     sql_super -c "DROP TABLE public.lifecycle_legacy_lock_docs;"
 }
 
+test_managed_lock_order() {
+    local admission_before am_oid blocker_output blocker_pid index_oid
+    local reconcile_admission_wait reconcile_dependency_before
+    local reconcile_output reconcile_pid signal_dependency_wait
+    local reconcile_status=0 signal_output signal_pid signal_status=0
+
+    blocker_output="${DATA_DIR}/managed-lock-blocker.out"
+    reconcile_output="${DATA_DIR}/managed-lock-reconcile.out"
+    signal_output="${DATA_DIR}/managed-lock-signal.out"
+    sql_as durable_owner <<'SQL' >/dev/null 2>&1
+CREATE TABLE public.lifecycle_managed_lock_docs
+    (id integer, body text)
+    PARTITION BY RANGE (id);
+CREATE TABLE public.lifecycle_managed_lock_leaf
+    PARTITION OF public.lifecycle_managed_lock_docs
+    FOR VALUES FROM (0) TO (1000);
+CREATE INDEX lifecycle_managed_lock_leaf_idx
+    ON public.lifecycle_managed_lock_leaf USING bm25(body)
+    WITH (text_config = 'english',
+          compaction = 'background',
+          compaction_schedule = '0 0 1 1 *');
+INSERT INTO public.lifecycle_managed_lock_leaf
+SELECT document_number,
+       pg_catalog.format('managed lock first %s filler', document_number)
+FROM generate_series(1, 20) AS document_number;
+SELECT bm25_spill_index('public.lifecycle_managed_lock_leaf_idx');
+INSERT INTO public.lifecycle_managed_lock_leaf
+SELECT 100 + document_number,
+       pg_catalog.format('managed lock second %s filler', document_number)
+FROM generate_series(1, 20) AS document_number;
+SQL
+    index_oid="$(sql_super -c "SELECT
+        'public.lifecycle_managed_lock_leaf_idx'::regclass::oid;")"
+    am_oid="$(sql_super -c \
+        "SELECT oid FROM pg_catalog.pg_am WHERE amname = 'bm25';")"
+
+    PGAPPNAME=lifecycle-managed-lock-blocker sql_super -c "
+        BEGIN;
+        COMMENT ON ACCESS METHOD bm25 IS 'managed lock gate';
+        SELECT pg_catalog.pg_sleep(120);" \
+        >"${blocker_output}" 2>&1 &
+    blocker_pid=$!
+    for _ in $(seq 1 100); do
+        if [ "$(sql_super -c "SELECT count(*)
+              FROM pg_catalog.pg_stat_activity
+              WHERE application_name =
+                    'lifecycle-managed-lock-blocker'
+                AND wait_event = 'PgSleep';")" = "1" ]; then
+            break
+        fi
+        sleep 0.1
+    done
+    if [ "$(sql_super -c "SELECT count(*)
+          FROM pg_catalog.pg_stat_activity AS activity
+          JOIN pg_catalog.pg_locks AS dependency
+            ON dependency.pid = activity.pid
+          WHERE activity.application_name =
+                'lifecycle-managed-lock-blocker'
+            AND activity.wait_event = 'PgSleep'
+            AND dependency.locktype = 'object'
+            AND dependency.classid =
+                'pg_catalog.pg_am'::pg_catalog.regclass
+            AND dependency.objid = ${am_oid}
+            AND dependency.objsubid = 0
+            AND dependency.mode = 'ShareUpdateExclusiveLock'
+            AND dependency.granted;")" != "1" ]; then
+        error "managed blocker did not hold the dependency object:
+locks: $(sql_super -c "SELECT pg_catalog.string_agg(
+          lock.locktype || ':' || coalesce(lock.classid::text, '') || ':' ||
+          coalesce(lock.objid::text, '') || ':' ||
+          coalesce(lock.objsubid::text, '') || ':' || lock.mode || ':' ||
+          lock.granted::text, ',')
+        FROM pg_catalog.pg_stat_activity AS activity
+        JOIN pg_catalog.pg_locks AS lock ON lock.pid = activity.pid
+        WHERE activity.application_name =
+              'lifecycle-managed-lock-blocker';")
+output: $(cat "${blocker_output}")"
+    fi
+    log "PASS: managed lock blocker holds the dependency object"
+
+    PGAPPNAME=lifecycle-managed-lock-signal \
+        "${PGBINDIR}/psql" -h "${SOCKET_DIR}" -p "${TEST_PORT}" \
+        -U durable_owner -d "${TEST_DB}" -qAt -v ON_ERROR_STOP=1 \
+        -c "SET statement_timeout = '15s';
+            BEGIN;
+            SELECT bm25_spill_index(
+              'public.lifecycle_managed_lock_leaf_idx');
+            COMMIT;" >"${signal_output}" 2>&1 &
+    signal_pid=$!
+    for _ in $(seq 1 100); do
+        if [ "$(sql_super -c "SELECT count(*)
+              FROM pg_catalog.pg_stat_activity
+              WHERE application_name = 'lifecycle-managed-lock-signal'
+                AND wait_event_type = 'Lock';")" = "1" ]; then
+            break
+        fi
+        sleep 0.1
+    done
+    assert_eq "managed signal reaches the dependency barrier" "1" \
+        "$(sql_super -c "SELECT count(*)
+          FROM pg_catalog.pg_stat_activity
+          WHERE application_name = 'lifecycle-managed-lock-signal'
+            AND wait_event_type = 'Lock';")"
+    admission_before="$(sql_super -c "SELECT count(*)
+      FROM pg_catalog.pg_stat_activity AS activity
+      JOIN pg_catalog.pg_locks AS admission
+        ON admission.pid = activity.pid
+      WHERE activity.application_name = 'lifecycle-managed-lock-signal'
+        AND admission.locktype = 'object'
+        AND admission.classid =
+            'pg_catalog.pg_am'::pg_catalog.regclass
+        AND admission.objid = ${index_oid}
+        AND admission.objsubid = 1
+        AND admission.mode = 'ExclusiveLock'
+        AND admission.granted;")"
+    signal_dependency_wait="$(sql_super -c "SELECT count(*)
+      FROM pg_catalog.pg_stat_activity AS activity
+      JOIN pg_catalog.pg_locks AS dependency
+        ON dependency.pid = activity.pid
+      WHERE activity.application_name = 'lifecycle-managed-lock-signal'
+        AND dependency.locktype = 'object'
+        AND dependency.classid =
+            'pg_catalog.pg_am'::pg_catalog.regclass
+        AND dependency.objid = ${am_oid}
+        AND dependency.objsubid = 0
+        AND dependency.mode = 'ShareRowExclusiveLock'
+        AND NOT dependency.granted;")"
+
+    PGAPPNAME=lifecycle-managed-lock-reconcile \
+        "${PGBINDIR}/psql" -h "${SOCKET_DIR}" -p "${TEST_PORT}" \
+        -U durable_owner -d "${TEST_DB}" -qAt -v ON_ERROR_STOP=1 \
+        -c "SET statement_timeout = '15s';
+            CREATE INDEX lifecycle_managed_lock_parent_idx
+              ON public.lifecycle_managed_lock_docs USING bm25(body)
+              WITH (text_config = 'english',
+                    compaction = 'background',
+                    compaction_schedule = '5 4 3 2 *');" \
+        >"${reconcile_output}" 2>&1 &
+    reconcile_pid=$!
+    for _ in $(seq 1 100); do
+        if [ "$(sql_super -c "SELECT count(*)
+              FROM pg_catalog.pg_stat_activity
+              WHERE application_name =
+                    'lifecycle-managed-lock-reconcile'
+                AND wait_event_type = 'Lock';")" = "1" ]; then
+            break
+        fi
+        sleep 0.1
+    done
+    assert_eq "option reconciliation reaches the lock barrier" "1" \
+        "$(sql_super -c "SELECT count(*)
+          FROM pg_catalog.pg_stat_activity
+          WHERE application_name = 'lifecycle-managed-lock-reconcile'
+            AND wait_event_type = 'Lock';")"
+    reconcile_admission_wait="$(sql_super -c "SELECT count(*)
+      FROM pg_catalog.pg_stat_activity AS activity
+      JOIN pg_catalog.pg_locks AS admission
+        ON admission.pid = activity.pid
+      WHERE activity.application_name =
+            'lifecycle-managed-lock-reconcile'
+        AND admission.locktype = 'object'
+        AND admission.classid =
+            'pg_catalog.pg_am'::pg_catalog.regclass
+        AND admission.objid = ${index_oid}
+        AND admission.objsubid = 1
+        AND admission.mode = 'ExclusiveLock'
+        AND NOT admission.granted;")"
+    reconcile_dependency_before="$(sql_super -c "SELECT count(*)
+      FROM pg_catalog.pg_stat_activity AS activity
+      JOIN pg_catalog.pg_locks AS dependency
+        ON dependency.pid = activity.pid
+      WHERE activity.application_name =
+            'lifecycle-managed-lock-reconcile'
+        AND dependency.locktype = 'object'
+        AND dependency.classid =
+            'pg_catalog.pg_am'::pg_catalog.regclass
+        AND dependency.objid = ${am_oid}
+        AND dependency.objsubid = 0
+        AND dependency.mode = 'ShareRowExclusiveLock'
+        AND NOT dependency.granted;")"
+
+    sql_super -c "SELECT pg_catalog.pg_terminate_backend(pid)
+      FROM pg_catalog.pg_stat_activity
+      WHERE application_name =
+            'lifecycle-managed-lock-blocker';" >/dev/null
+    wait "${blocker_pid}" || true
+    wait "${reconcile_pid}" || reconcile_status=$?
+    wait "${signal_pid}" || signal_status=$?
+    if [ "${reconcile_status}" -ne 0 ] || [ "${signal_status}" -ne 0 ]; then
+        error "managed lifecycle lock ordering failed:
+reconcile: $(cat "${reconcile_output}")
+signal: $(cat "${signal_output}")"
+    fi
+    if grep -Fq "deadlock detected" "${reconcile_output}" ||
+        grep -Fq "deadlock detected" "${signal_output}"; then
+        error "managed lifecycle lock ordering reported a caught deadlock:
+reconcile: $(cat "${reconcile_output}")
+signal: $(cat "${signal_output}")"
+    fi
+    assert_eq "blocked signal takes admission before dependency" "1" \
+        "${admission_before}"
+    assert_eq "blocked signal waits on the dependency object" "1" \
+        "${signal_dependency_wait}"
+    assert_eq "reconciliation waits on the same admission" "1" \
+        "${reconcile_admission_wait}"
+    assert_eq "reconciliation waits for admission before dependency" "0" \
+        "${reconcile_dependency_before}"
+    assert_eq "partition option reconciliation completes" "t:t" \
+        "$(sql_super -c "SELECT pg_catalog.concat_ws(
+            ':',
+            reloptions @> ARRAY['compaction=background'],
+            reloptions @>
+              ARRAY['compaction_schedule=5 4 3 2 *'])
+          FROM pg_catalog.pg_class WHERE oid = ${index_oid};")"
+
+    sql_super -c "DROP TABLE public.lifecycle_managed_lock_docs;"
+}
+
 test_internal_lock_namespace() {
     local admission_error database_oid gate_pid index_oid lock_key owner_error
 
@@ -8038,6 +8256,7 @@ run_test test_legacy_reconciliation_edges
 run_test test_refresh_selects_requested_workflow
 run_test test_concurrent_legacy_lineage_backfill
 run_test test_legacy_reindex_spill_lock_order
+run_test test_managed_lock_order
 run_test test_internal_lock_namespace
 run_test test_lineage_ddl_guards
 run_test test_partitioned_lineage_history
