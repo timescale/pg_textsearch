@@ -1109,6 +1109,110 @@ test_reindex_nonrelation_passthrough() {
         "DROP SCHEMA lifecycle_reindex_scope CASCADE;" >/dev/null
 }
 
+test_late_bulk_reindex_target() {
+    local file_after file_before index_oid job_after reindex_output
+
+    sql_super <<'SQL' >/dev/null
+CREATE SCHEMA lifecycle_reindex_late AUTHORIZATION durable_owner;
+CREATE TABLE lifecycle_reindex_late.documents
+    (id integer PRIMARY KEY, body text);
+INSERT INTO lifecycle_reindex_late.documents
+VALUES (1, 'one'), (2, 'two');
+ALTER TABLE lifecycle_reindex_late.documents OWNER TO durable_owner;
+
+CREATE TABLE public.lifecycle_reindex_late_capture
+    (index_oid oid, filenumber oid);
+
+CREATE FUNCTION public.lifecycle_reindex_late_create()
+RETURNS event_trigger
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = pg_catalog, pg_temp
+AS $body$
+BEGIN
+    IF pg_catalog.current_setting(
+           'lifecycle.reindex_late', true)
+           OPERATOR(pg_catalog.=) 'armed' THEN
+        PERFORM pg_catalog.set_config(
+            'lifecycle.reindex_late', 'created', false);
+        EXECUTE $command$
+            CREATE INDEX documents_bm25_idx
+              ON lifecycle_reindex_late.documents USING bm25(body)
+              WITH (text_config = 'english',
+                    compaction = 'background',
+                    compaction_schedule = '0 0 1 1 *')
+        $command$;
+        INSERT INTO public.lifecycle_reindex_late_capture
+        SELECT relation.oid, pg_catalog.pg_relation_filenode(relation.oid)
+        FROM pg_catalog.pg_class AS relation
+        WHERE relation.oid =
+              'lifecycle_reindex_late.documents_bm25_idx'::regclass;
+    END IF;
+END
+$body$;
+
+CREATE EVENT TRIGGER lifecycle_reindex_late_create
+    ON ddl_command_start
+    WHEN TAG IN ('REINDEX')
+    EXECUTE FUNCTION public.lifecycle_reindex_late_create();
+SQL
+    sql_super -c "ALTER ROLE durable_owner IN DATABASE ${TEST_DB}
+        SET lifecycle.reindex_late = 'armed';" >/dev/null
+
+    reindex_output="$(sql_as durable_owner -c \
+        "REINDEX SCHEMA lifecycle_reindex_late;" 2>&1)"
+    if grep -Fq "still active" <<<"${reindex_output}"; then
+        error "late-target REINDEX leaked an active snapshot across commit"
+    fi
+
+    index_oid="$(sql_super -c "SELECT index_oid
+        FROM public.lifecycle_reindex_late_capture;")"
+    file_before="$(sql_super -c "SELECT filenumber
+        FROM public.lifecycle_reindex_late_capture;")"
+    index_oid="$(sql_super -c "SELECT
+        'lifecycle_reindex_late.documents_bm25_idx'::regclass::oid;")"
+    file_after="$(sql_super -c "SELECT
+        pg_catalog.pg_relation_filenode(${index_oid});")"
+    if [ "${file_after}" = "${file_before}" ]; then
+        error "REINDEX SCHEMA did not rebuild its late managed index"
+    fi
+    job_after="$(current_generation_job_id "${index_oid}")"
+    if [ -z "${job_after}" ]; then
+        error "REINDEX SCHEMA did not reconcile its late managed index"
+    fi
+    log "PASS: REINDEX SCHEMA reconciles a late managed index"
+
+    sql_super -c "
+        DROP INDEX lifecycle_reindex_late.documents_bm25_idx;
+        TRUNCATE public.lifecycle_reindex_late_capture;" >/dev/null
+    reindex_output="$(sql_as durable_owner -c \
+        "REINDEX (CONCURRENTLY) SCHEMA lifecycle_reindex_late;" 2>&1)"
+    index_oid="$(sql_super -c "SELECT index_oid
+        FROM public.lifecycle_reindex_late_capture;")"
+    file_before="$(sql_super -c "SELECT filenumber
+        FROM public.lifecycle_reindex_late_capture;")"
+    index_oid="$(sql_super -c "SELECT
+        'lifecycle_reindex_late.documents_bm25_idx'::regclass::oid;")"
+    file_after="$(sql_super -c "SELECT
+        pg_catalog.pg_relation_filenode(${index_oid});")"
+    if [ "${file_after}" = "${file_before}" ]; then
+        error "concurrent REINDEX SCHEMA did not rebuild its late managed index"
+    fi
+    job_after="$(current_generation_job_id "${index_oid}")"
+    if [ -z "${job_after}" ]; then
+        error "concurrent REINDEX SCHEMA did not reconcile its late managed index"
+    fi
+    log "PASS: concurrent REINDEX SCHEMA reconciles a late managed index"
+
+    sql_super -c "
+        ALTER ROLE durable_owner IN DATABASE ${TEST_DB}
+          RESET lifecycle.reindex_late;
+        DROP EVENT TRIGGER lifecycle_reindex_late_create;
+        DROP FUNCTION public.lifecycle_reindex_late_create();
+        DROP TABLE public.lifecycle_reindex_late_capture;
+        DROP SCHEMA lifecycle_reindex_late CASCADE;" >/dev/null
+}
+
 test_failed_bulk_reindex_reconciliation() {
     local failure_value index_oid job_after job_before reindex_error
 
@@ -10408,6 +10512,7 @@ run_test test_cic_owner_privilege_preflight
 run_test test_alter_preflight_rejections
 run_test test_defaulted_start_arity
 run_test test_reindex_nonrelation_passthrough
+run_test test_late_bulk_reindex_target
 run_test test_failed_bulk_reindex_reconciliation
 run_test test_partitioned_create_activation
 run_test test_direct_index_partition_attach
