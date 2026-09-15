@@ -746,18 +746,19 @@ tp_process_utility(
 
 		if (stmt->accessMethod && strcmp(stmt->accessMethod, "bm25") == 0)
 		{
-			LOCKMODE lockmode = stmt->concurrent ? ShareUpdateExclusiveLock
-												 : ShareLock;
-			Oid		 relid	  = RangeVarGetRelidExtended(
-					stmt->relation,
-					lockmode,
-					0,
-					RangeVarCallbackOwnsRelation,
-					NULL);
-			Relation rel = table_open(relid, NoLock);
+			if (!stmt->concurrent)
+			{
+				Oid relid = RangeVarGetRelidExtended(
+						stmt->relation,
+						ShareLock,
+						0,
+						RangeVarCallbackOwnsRelation,
+						NULL);
+				Relation rel = table_open(relid, NoLock);
 
-			tp_check_bm25_build_allowed(rel);
-			table_close(rel, NoLock);
+				tp_check_bm25_build_allowed(rel);
+				table_close(rel, NoLock);
+			}
 
 			tp_build_progress_begin();
 
@@ -793,12 +794,7 @@ tp_process_utility(
 
 		if (alter_table_enables_rls(stmt))
 		{
-			Oid relid = RangeVarGetRelidExtended(
-					stmt->relation,
-					AccessExclusiveLock,
-					stmt->missing_ok ? RVR_MISSING_OK : 0,
-					RangeVarCallbackOwnsRelation,
-					NULL);
+			Oid relid = AlterTableLookupRelation(stmt, AccessExclusiveLock);
 
 			if (OidIsValid(relid))
 				tp_check_rls_enable_allowed(relid);

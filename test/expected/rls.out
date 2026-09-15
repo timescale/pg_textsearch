@@ -37,6 +37,12 @@ ERROR:  BM25 indexes are not allowed on row-level security relation "rls_existin
 CREATE TABLE rls_before_index (id integer, content text);
 ALTER TABLE rls_before_index ENABLE ROW LEVEL SECURITY;
 \set VERBOSITY terse
+BEGIN;
+CREATE INDEX CONCURRENTLY rls_concurrent_idx
+    ON rls_before_index USING bm25(content)
+    WITH (text_config='english');
+ERROR:  CREATE INDEX CONCURRENTLY cannot run inside a transaction block
+ROLLBACK;
 CREATE INDEX rls_before_index_idx ON rls_before_index USING bm25(content)
     WITH (text_config='english');
 ERROR:  BM25 indexes are not allowed on row-level security relation "rls_before_index" when "pg_textsearch.allow_rls" is off
@@ -49,6 +55,8 @@ NOTICE:  Using text search configuration: english
 NOTICE:  Using index options: k1=1.20, b=0.75
 NOTICE:  BM25 index build completed: 0 documents, avg_length=0.00
 \set VERBOSITY terse
+ALTER VIEW index_before_rls ENABLE ROW LEVEL SECURITY;
+ERROR:  "index_before_rls" is not a view
 ALTER TABLE index_before_rls ENABLE ROW LEVEL SECURITY;
 ERROR:  cannot enable row-level security on relation "index_before_rls" because it has a BM25 index while "pg_textsearch.allow_rls" is off
 \set VERBOSITY default

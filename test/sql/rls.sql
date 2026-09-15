@@ -29,6 +29,11 @@ REINDEX INDEX rls_existing_idx;
 CREATE TABLE rls_before_index (id integer, content text);
 ALTER TABLE rls_before_index ENABLE ROW LEVEL SECURITY;
 \set VERBOSITY terse
+BEGIN;
+CREATE INDEX CONCURRENTLY rls_concurrent_idx
+    ON rls_before_index USING bm25(content)
+    WITH (text_config='english');
+ROLLBACK;
 CREATE INDEX rls_before_index_idx ON rls_before_index USING bm25(content)
     WITH (text_config='english');
 \set VERBOSITY default
@@ -37,6 +42,7 @@ CREATE TABLE index_before_rls (id integer, content text);
 CREATE INDEX index_before_rls_idx ON index_before_rls USING bm25(content)
     WITH (text_config='english');
 \set VERBOSITY terse
+ALTER VIEW index_before_rls ENABLE ROW LEVEL SECURITY;
 ALTER TABLE index_before_rls ENABLE ROW LEVEL SECURITY;
 \set VERBOSITY default
 
