@@ -40,6 +40,12 @@
  */
 static float8 tp_cached_score = 0.0;
 
+static bool
+tp_is_combined_scan(IndexScanDesc scan, TpScanOpaque so)
+{
+	return so->is_boolean_scan && scan->numberOfOrderBys > 0;
+}
+
 float8
 tp_get_cached_score(void)
 {
@@ -276,12 +282,6 @@ tp_rescan(
 	Assert(scan != NULL);
 	Assert(scan->opaque != NULL);
 
-	if (nkeys > 0 && norderbys > 0)
-		ereport(ERROR,
-				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-				 errmsg("pg_textsearch does not support Boolean filtering "
-						"and BM25 ordering in the same index scan")));
-
 	if (!so)
 		return;
 
@@ -342,6 +342,9 @@ tp_rescan(
 
 		tp_rescan_process_orderby(scan, orderbys, norderbys, metap);
 	}
+
+	if (tp_is_combined_scan(scan, so))
+		so->boolean_recheck = true;
 
 	if (metap)
 		pfree(metap);
@@ -497,6 +500,37 @@ tp_execute_scoring_query(IndexScanDesc scan)
 }
 
 /*
+ * Complete a combined scan with Boolean matches that have no BM25 score.
+ * Ranked matches are returned first; the Boolean executor then supplies the
+ * zero-score tail, with the emitted-CTID set removing ranked duplicates.
+ */
+static bool
+tp_begin_combined_boolean_tail(IndexScanDesc scan)
+{
+	TpScanOpaque	   so = (TpScanOpaque)scan->opaque;
+	TpLocalIndexState *index_state;
+
+	tp_rescan_cleanup_results(so);
+
+	index_state = tp_get_local_index_state(
+			RelationGetRelid(scan->indexRelation));
+	if (!index_state)
+		ereport(ERROR,
+				(errcode(ERRCODE_INTERNAL_ERROR),
+				 errmsg("could not get index state for BM25 Boolean search")));
+
+	if (!tp_boolean_execute(scan, index_state))
+	{
+		so->eof_reached = true;
+		return false;
+	}
+
+	/* Combined candidates must always satisfy the original heap predicate. */
+	so->boolean_recheck = true;
+	return true;
+}
+
+/*
  * Get next tuple from scan
  */
 bool
@@ -505,12 +539,14 @@ tp_gettuple(IndexScanDesc scan, ScanDirection dir)
 	TpScanOpaque so = (TpScanOpaque)scan->opaque;
 	float4		 bm25_score;
 	BlockNumber	 blknum;
+	bool		 combined_scan;
 
 	(void)dir; /* BM25 index only supports forward scan */
 
 	Assert(scan != NULL);
 	Assert(so != NULL);
 	Assert(so->is_boolean_scan || so->query_text != NULL);
+	combined_scan = tp_is_combined_scan(scan, so);
 
 	/* Execute scoring query if we haven't done so yet */
 	if (so->result_ctids == NULL && so->boolean_results == NULL &&
@@ -523,7 +559,13 @@ tp_gettuple(IndexScanDesc scan, ScanDirection dir)
 			scan->instrument->nsearches++;
 #endif
 
-		if (so->is_boolean_scan)
+		if (combined_scan &&
+			(so->boolean_query == NULL || so->boolean_query->size == 0))
+		{
+			so->eof_reached = true;
+			return false;
+		}
+		if (so->is_boolean_scan && !combined_scan)
 		{
 			TpLocalIndexState *index_state = tp_get_local_index_state(
 					RelationGetRelid(scan->indexRelation));
@@ -540,7 +582,9 @@ tp_gettuple(IndexScanDesc scan, ScanDirection dir)
 				return false;
 			}
 		}
-		else if (!tp_execute_scoring_query(scan))
+		else if (
+				!tp_execute_scoring_query(scan) &&
+				(!combined_scan || !tp_begin_combined_boolean_tail(scan)))
 		{
 			so->eof_reached = true;
 			return false;
@@ -554,14 +598,25 @@ tp_gettuple(IndexScanDesc scan, ScanDirection dir)
 
 	if (so->boolean_results != NULL)
 	{
-		if (!tp_boolean_next(scan))
+		do
 		{
-			so->eof_reached = true;
-			return false;
-		}
+			if (!tp_boolean_next(scan))
+			{
+				so->eof_reached = true;
+				return false;
+			}
+		} while (combined_scan && tp_ctid_seen_or_mark(so, &scan->xs_heaptid));
 
 		scan->xs_recheck		= so->boolean_recheck;
 		scan->xs_recheckorderby = false;
+
+		if (combined_scan)
+		{
+			Assert(scan->numberOfOrderBys == 1);
+			scan->xs_orderbyvals[0]	 = Float4GetDatum(0.0);
+			scan->xs_orderbynulls[0] = false;
+			tp_cached_score			 = 0.0;
+		}
 		return true;
 	}
 
@@ -575,7 +630,7 @@ tp_gettuple(IndexScanDesc scan, ScanDirection dir)
 			 * more documents.  Double the limit and re-execute the
 			 * scoring query.
 			 */
-			if (!so->is_boolean_scan && !so->eof_reached &&
+			if ((!so->is_boolean_scan || combined_scan) && !so->eof_reached &&
 				so->result_count > 0 &&
 				so->result_count >= so->max_results_used &&
 				so->max_results_used < TP_MAX_QUERY_LIMIT)
@@ -599,12 +654,20 @@ tp_gettuple(IndexScanDesc scan, ScanDirection dir)
 				}
 				else
 				{
+					if (combined_scan && tp_begin_combined_boolean_tail(scan))
+						return tp_gettuple(scan, dir);
+
 					so->eof_reached = true;
 					return false;
 				}
 			}
 			else
+			{
+				if (combined_scan && tp_begin_combined_boolean_tail(scan))
+					return tp_gettuple(scan, dir);
+
 				return false;
+			}
 		}
 
 		Assert(so->scan_context != NULL);
