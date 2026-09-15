@@ -2743,7 +2743,7 @@ SQL
         sql_as durable_owner -c "
         BEGIN;
         ALTER INDEX public.lifecycle_global_unclustered_idx
-          SET (compaction_schedule = '1 2 3 4 *');
+          RENAME TO lifecycle_global_unclustered_locked_idx;
         SELECT pg_catalog.pg_sleep(120);" \
         >"${DATA_DIR}/global-cluster-lock.out" 2>&1 &
     blocker_pid=$!
@@ -2760,19 +2760,24 @@ SQL
 
     if ! cluster_output="$(PGOPTIONS='-c statement_timeout=2s' \
         sql_as durable_owner -c "CLUSTER;" 2>&1)"; then
-        kill "${blocker_pid}" 2>/dev/null || true
-        wait "${blocker_pid}" 2>/dev/null || true
+        sql_super -c "SELECT pg_catalog.pg_terminate_backend(pid)
+          FROM pg_catalog.pg_stat_activity
+          WHERE application_name = 'lifecycle-global-cluster-lock';" \
+            >/dev/null
+        wait "${blocker_pid}" || true
         error "global CLUSTER touched an unclustered heap: ${cluster_output}"
     fi
-    kill "${blocker_pid}" 2>/dev/null || true
-    wait "${blocker_pid}" 2>/dev/null || true
+    sql_super -c "SELECT pg_catalog.pg_terminate_backend(pid)
+      FROM pg_catalog.pg_stat_activity
+      WHERE application_name = 'lifecycle-global-cluster-lock';" >/dev/null
+    wait "${blocker_pid}" || true
 
     if [ "$(sql_super -c "SELECT
-              pg_catalog.pg_relation_filenode(${clustered_index_oid});")" =
+              pg_catalog.pg_relation_filenode(${clustered_index_oid});")" = \
          "${clustered_file_before}" ]; then
         error "global CLUSTER did not rewrite the clustered managed index"
     fi
-    if [ "$(current_generation_job_id "${clustered_index_oid}")" =
+    if [ "$(current_generation_job_id "${clustered_index_oid}")" = \
          "${clustered_job_before}" ]; then
         error "global CLUSTER did not reconcile the clustered workflow"
     fi
