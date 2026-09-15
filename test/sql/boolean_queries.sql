@@ -62,7 +62,48 @@ SELECT pg_temp.first_plan_child($query$
     WHERE body @@ to_tsquery('english', 'refund')
     ORDER BY body <@> to_bm25query('refund', 'boolean_docs_body_idx')
     LIMIT 1
-$query$) = 'Sort' AS unsupported_path_falls_back;
+$query$) = 'Index Scan' AS combined_path_uses_index;
+
+SELECT id
+FROM boolean_docs
+WHERE body @@ to_tsquery('english', 'billing & refund')
+ORDER BY body <@> to_bm25query('refund', 'boolean_docs_body_idx')
+LIMIT 1;
+
+SELECT id
+FROM boolean_docs
+WHERE body @@ to_tsquery('english', 'refund & !fraud')
+ORDER BY body <@> to_bm25query('refund', 'boolean_docs_body_idx')
+LIMIT 2;
+
+SELECT id
+FROM boolean_docs
+WHERE body @@ to_tsquery('english', 'bill:*')
+ORDER BY body <@> to_bm25query('refund', 'boolean_docs_body_idx')
+LIMIT 2;
+
+SELECT id
+FROM boolean_docs
+WHERE body @@ to_tsquery('english', 'billing <-> refund')
+ORDER BY body <@> to_bm25query('refund', 'boolean_docs_body_idx')
+LIMIT 2;
+
+SET plan_cache_mode = force_generic_plan;
+PREPARE combined_ranked_scan(tsquery) AS
+SELECT id
+FROM boolean_docs
+WHERE body @@ $1
+ORDER BY body <@> to_bm25query('refund', 'boolean_docs_body_idx')
+LIMIT 2;
+
+EXECUTE combined_ranked_scan(to_tsquery('english', 'refund & !fraud'));
+EXECUTE combined_ranked_scan(NULL);
+SET client_min_messages = WARNING;
+EXECUTE combined_ranked_scan(to_tsquery('english', ''));
+RESET client_min_messages;
+DEALLOCATE combined_ranked_scan;
+RESET plan_cache_mode;
+
 SET enable_nestloop = off;
 SELECT pg_temp.first_plan_child($query$
     SELECT d.id

@@ -129,9 +129,17 @@ generic plan, `DEALLOCATE` and prepare the statement again. A newly planned
 query can choose the correct sequential fallback, while the cached plan is
 rejected to avoid incorrect index results.
 
-Boolean filtering and BM25 ranking are separate scan modes. A query combining
-`WHERE content @@ ...` with `ORDER BY content <@> ...` cannot use one BM25
-index scan for both operations.
+Boolean filtering can be combined with BM25 ranking in one index scan:
+
+```sql
+SELECT * FROM documents
+WHERE content @@ to_tsquery('english', 'postgres & !mysql')
+ORDER BY content <@> 'database system'
+LIMIT 5;
+```
+
+The index produces candidates in BM25 order, and PostgreSQL rechecks the
+Boolean predicate against each table row.
 
 ### Verifying Index Usage
 
