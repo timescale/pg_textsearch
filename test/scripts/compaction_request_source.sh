@@ -409,6 +409,47 @@ if grep -Fq "tp_lock_compaction_index" <<<"${option_reconcile_body}"; then
     exit 1
 fi
 
+reindex_candidate_body="$(
+    sed -n '/^tp_reindex_try_relation_open(/,/^}/p;
+             /^tp_reindex_relation_close(/,/^}/p;
+             /^tp_reindex_target_live_original(/,/^}/p;
+             /^tp_reindex_collect_candidates(/,/^}/p' "${MODULE_SOURCE}"
+)"
+reindex_intent_body="$(
+    sed -n '/^tp_collect_reindex_state_intents(/,/^}/p' "${MODULE_SOURCE}"
+)"
+if grep -Fq "try_relation_open(target->index_oid, AccessShareLock)" \
+        <<<"${reindex_candidate_body}" ||
+    grep -Fq "try_relation_open(indexoid, AccessShareLock)" \
+        <<<"${reindex_candidate_body}" ||
+    ! grep -Fq "ConditionalLockRelationOid" \
+        <<<"${reindex_candidate_body}" ||
+    ! grep -Fq "UnlockRelationOid" <<<"${reindex_candidate_body}" ||
+    ! grep -Fq "tp_collect_prevalidated_managed_intent" \
+        <<<"${reindex_intent_body}"; then
+    echo "post-publication target discovery can block before the terminal batch" \
+        >&2
+    exit 1
+fi
+
+utility_wrapper_body="$(
+    sed -n '/^tp_process_utility(/,/^}/p' "${MODULE_SOURCE}"
+)"
+precommit_reconcile_body="$(
+    sed -n '/^tp_reconcile_managed_intents_at_precommit(/,/^}/p' \
+        "${MODULE_SOURCE}"
+)"
+if ! grep -Fq "tp_managed_reconciling" <<<"${utility_wrapper_body}" ||
+    ! grep -Fq "GrantStmt" <<<"${utility_wrapper_body}" ||
+    ! grep -Fq "BeginInternalSubTransaction" \
+        <<<"${precommit_reconcile_body}" ||
+    ! grep -Fq "ERRCODE_QUERY_CANCELED" \
+        <<<"${precommit_reconcile_body}"; then
+    echo "terminal reconciliation does not safely reject utility reentry" \
+        >&2
+    exit 1
+fi
+
 dependency_lock_body="$(
     sed -n '/^tp_lock_compaction_dependency(void)/,/^}/p' "${REQUEST_SOURCE}"
 )"
@@ -444,7 +485,7 @@ textsearch_extension_line="$(
         <<<"${object_bundle_body}" | head -1 | cut -d: -f1
 )"
 bundle_dependency_line="$(
-    grep -n "tp_try_lock_compaction_dependency()" \
+    grep -n "tp_try_lock_compaction_dependency_oid(" \
         <<<"${object_bundle_body}" | head -1 | cut -d: -f1
 )"
 bundle_member_line="$(
@@ -474,6 +515,17 @@ if [ "$(grep -Fc "RowExclusiveLock" <<<"${object_bundle_body}")" -lt 3 ] ||
     ! grep -Fq "objects.nodes_relation_oid" <<<"${object_bundle_body}" ||
     ! grep -Fq "objects.vars_relation_oid" <<<"${object_bundle_body}"; then
     echo "pg_durable writable relations lack terminal write locks" >&2
+    exit 1
+fi
+if ! grep -Fq "objects.bm25_am_oid" <<<"${object_bundle_body}" ||
+    ! grep -Fq \
+        "tp_try_lock_compaction_dependency_oid(objects.bm25_am_oid)" \
+        <<<"${object_bundle_body}" ||
+    ! grep -Fq "objects->bm25_am_oid" \
+        <<<"$(sed -n '/^tp_job_objects_still_match(/,/^}/p' \
+            "${JOB_SOURCE}")"; then
+    echo "terminal dependency admission does not use the discovered AM OID" \
+        >&2
     exit 1
 fi
 

@@ -84,6 +84,7 @@ struct TpCompactionJobObjects
 	Oid	  textsearch_extension_oid;
 	Oid	  textsearch_namespace_oid;
 	Oid	  textsearch_extension_owner;
+	Oid	  bm25_am_oid;
 	Oid	  start_function_oid;
 	Oid	  explain_function_oid;
 	Oid	  signal_function_oid;
@@ -826,6 +827,7 @@ tp_populate_job_objects_as_owner(
 	objects->textsearch_extension_owner = tp_extension_owner(textsearch_oid);
 	objects->textsearch_namespace_oid	= textsearch_namespace_oid;
 	objects->textsearch_schema			= pstrdup(textsearch_schema);
+	objects->bm25_am_oid				= get_index_am_oid("bm25", false);
 	objects->step_function_oid			= tp_resolve_extension_function(
 			 textsearch_oid,
 			 objects->textsearch_schema,
@@ -935,6 +937,11 @@ tp_job_objects_still_match(const TpCompactionJobObjects *objects)
 	textsearch_oid = get_extension_oid("pg_textsearch", true);
 	if (durable_oid != objects->durable_extension_oid ||
 		textsearch_oid != objects->textsearch_extension_oid ||
+		get_index_am_oid("bm25", true) != objects->bm25_am_oid ||
+		!SearchSysCacheExists1(
+				AMOID, ObjectIdGetDatum(objects->bm25_am_oid)) ||
+		getExtensionOfObject(AccessMethodRelationId, objects->bm25_am_oid) !=
+				textsearch_oid ||
 		!tp_extension_lookup(durable_oid, &durable_owner, NULL) ||
 		durable_owner != objects->durable_extension_owner ||
 		!tp_extension_lookup(textsearch_oid, &textsearch_owner, NULL) ||
@@ -1086,8 +1093,9 @@ tp_compaction_job_try_lock_objects(bool invalid_is_error)
 		return NULL;
 	}
 
-	dependency_was_held = tp_compaction_dependency_lock_held();
-	if (!tp_try_lock_compaction_dependency())
+	dependency_was_held = tp_compaction_dependency_oid_lock_held(
+			objects.bm25_am_oid);
+	if (!tp_try_lock_compaction_dependency_oid(objects.bm25_am_oid))
 		goto unavailable;
 
 #define TP_ADD_JOB_OBJECT_LOCK(classid, objectid, lockmode) \
@@ -1188,8 +1196,9 @@ unavailable:
 					0,
 					locks[acquired].mode);
 	}
-	if (!dependency_was_held && tp_compaction_dependency_lock_held())
-		tp_unlock_compaction_dependency();
+	if (!dependency_was_held &&
+		tp_compaction_dependency_oid_lock_held(objects.bm25_am_oid))
+		tp_unlock_compaction_dependency_oid(objects.bm25_am_oid);
 	UnlockDatabaseObject(
 			ExtensionRelationId,
 			objects.textsearch_extension_oid,
@@ -1758,7 +1767,7 @@ tp_pin_durable_dependency(const TpCompactionJobObjects *objects)
 {
 	ObjectAddress bm25_am = {
 			.classId	 = AccessMethodRelationId,
-			.objectId	 = get_index_am_oid("bm25", false),
+			.objectId	 = objects->bm25_am_oid,
 			.objectSubId = 0,
 	};
 	ObjectAddress durable_ext = {

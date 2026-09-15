@@ -5353,7 +5353,7 @@ reindex: $(cat "${reindex_output}")"
 
 test_cross_statement_reindex_lock_order() {
     local am_oid dependency_before first_output first_pid first_status=0
-    local first_waited=false gate_pid second_index_oid second_output
+    local gate_pid second_index_oid second_output
     local second_pid second_status=0
 
     first_output="${DATA_DIR}/cross-reindex-first.out"
@@ -5429,16 +5429,6 @@ SQL
         AND dependency.mode = 'ShareRowExclusiveLock'
         AND dependency.granted;")"
 
-    if [ "${dependency_before}" = "0" ]; then
-        sql_super -c "SELECT pg_catalog.pg_terminate_backend(pid)
-          FROM pg_catalog.pg_stat_activity
-          WHERE application_name =
-                'lifecycle-cross-reindex-gate';" >/dev/null
-        wait "${gate_pid}" || true
-        wait "${first_pid}" || first_status=$?
-        first_waited=true
-    fi
-
     PGAPPNAME=lifecycle-cross-reindex-second \
         PGOPTIONS="-c deadlock_timeout=100ms -c statement_timeout=15s" \
         "${PGBINDIR}/psql" -h "${SOCKET_DIR}" -p "${TEST_PORT}" \
@@ -5488,16 +5478,14 @@ SQL
                 ON managed.pid = activity.pid
               WHERE activity.application_name =
                     'lifecycle-cross-reindex-second';")"
-        sql_super -c "SELECT pg_catalog.pg_terminate_backend(pid)
-          FROM pg_catalog.pg_stat_activity
-          WHERE application_name =
-                'lifecycle-cross-reindex-gate';" >/dev/null
-        wait "${gate_pid}" || true
     fi
 
-    if [ "${first_waited}" = "false" ]; then
-        wait "${first_pid}" || first_status=$?
-    fi
+    sql_super -c "SELECT pg_catalog.pg_terminate_backend(pid)
+      FROM pg_catalog.pg_stat_activity
+      WHERE application_name =
+            'lifecycle-cross-reindex-gate';" >/dev/null
+    wait "${gate_pid}" || true
+    wait "${first_pid}" || first_status=$?
     wait "${second_pid}" || second_status=$?
     if [ "${first_status}" -ne 0 ] || [ "${second_status}" -ne 0 ] ||
         grep -Fq "deadlock detected" "${first_output}" ||
@@ -5521,7 +5509,7 @@ second: $(cat "${second_output}")"
 
 test_cross_statement_owner_lock_order() {
     local am_oid dependency_before first_output first_pid first_status=0
-    local first_waited=false gate_pid second_heap_oid second_output
+    local gate_pid second_heap_oid second_output
     local second_pid second_status=0
 
     first_output="${DATA_DIR}/cross-owner-first.out"
@@ -5599,16 +5587,6 @@ SQL
         AND dependency.mode = 'ShareRowExclusiveLock'
         AND dependency.granted;")"
 
-    if [ "${dependency_before}" = "0" ]; then
-        sql_super -c "SELECT pg_catalog.pg_terminate_backend(pid)
-          FROM pg_catalog.pg_stat_activity
-          WHERE application_name =
-                'lifecycle-cross-owner-gate';" >/dev/null
-        wait "${gate_pid}" || true
-        wait "${first_pid}" || first_status=$?
-        first_waited=true
-    fi
-
     PGAPPNAME=lifecycle-cross-owner-second \
         PGOPTIONS="-c deadlock_timeout=100ms -c statement_timeout=15s" \
         "${PGBINDIR}/psql" -h "${SOCKET_DIR}" -p "${TEST_PORT}" \
@@ -5659,16 +5637,14 @@ SQL
                 ON managed.pid = activity.pid
               WHERE activity.application_name =
                     'lifecycle-cross-owner-second';")"
-        sql_super -c "SELECT pg_catalog.pg_terminate_backend(pid)
-          FROM pg_catalog.pg_stat_activity
-          WHERE application_name =
-                'lifecycle-cross-owner-gate';" >/dev/null
-        wait "${gate_pid}" || true
     fi
 
-    if [ "${first_waited}" = "false" ]; then
-        wait "${first_pid}" || first_status=$?
-    fi
+    sql_super -c "SELECT pg_catalog.pg_terminate_backend(pid)
+      FROM pg_catalog.pg_stat_activity
+      WHERE application_name =
+            'lifecycle-cross-owner-gate';" >/dev/null
+    wait "${gate_pid}" || true
+    wait "${first_pid}" || first_status=$?
     wait "${second_pid}" || second_status=$?
     if [ "${first_status}" -ne 0 ] || [ "${second_status}" -ne 0 ] ||
         grep -Fq "deadlock detected" "${first_output}" ||
@@ -5792,6 +5768,78 @@ SQL
 
     sql_super -c "DROP TABLE public.lifecycle_multi_family_parent;" \
         >/dev/null
+}
+
+test_attached_index_rewrite_preserves_parent_options() {
+    local child_oid parent_lineage tablespace_dir
+
+    tablespace_dir="$(
+        mktemp -d "${TMPDIR:-/tmp}/pg_textsearch_attach_ts.XXXXXX"
+    )"
+    sql_super -c "CREATE TABLESPACE lifecycle_attach_rewrite_ts
+      LOCATION '${tablespace_dir}';" >/dev/null
+    sql_super -c "GRANT CREATE ON TABLESPACE lifecycle_attach_rewrite_ts
+      TO durable_owner;" >/dev/null
+
+    sql_as durable_owner <<'SQL' >/dev/null 2>&1
+CREATE TABLE public.lifecycle_attach_reindex_parent (
+    id integer,
+    body text
+) PARTITION BY RANGE (id);
+CREATE TABLE public.lifecycle_attach_reindex_child
+    PARTITION OF public.lifecycle_attach_reindex_parent
+    FOR VALUES FROM (0) TO (100);
+CREATE INDEX lifecycle_attach_reindex_parent_idx
+    ON ONLY public.lifecycle_attach_reindex_parent USING bm25(body)
+    WITH (text_config = 'english',
+          compaction = 'background',
+          compaction_schedule = '1 0 1 1 *');
+CREATE INDEX lifecycle_attach_reindex_child_idx
+    ON public.lifecycle_attach_reindex_child USING bm25(body)
+    WITH (text_config = 'english',
+          compaction = 'background',
+          compaction_schedule = '2 0 1 1 *');
+BEGIN;
+ALTER INDEX public.lifecycle_attach_reindex_parent_idx
+    ATTACH PARTITION public.lifecycle_attach_reindex_child_idx;
+ALTER TABLE public.lifecycle_attach_reindex_child
+    SET TABLESPACE lifecycle_attach_rewrite_ts;
+COMMIT;
+SQL
+    child_oid="$(sql_super -c "SELECT
+        'public.lifecycle_attach_reindex_child_idx'::regclass::oid;")"
+    parent_lineage="$(
+        index_lineage public.lifecycle_attach_reindex_parent_idx
+    )"
+
+    assert_eq "attached then rewritten child inherits parent options" \
+        "${parent_lineage}:true" \
+        "$(sql_super -c "SELECT
+          pg_catalog.substr(
+            lineage_option,
+            pg_catalog.length('compaction_lineage=') + 1)
+          || ':' ||
+          (relation.reloptions @>
+             ARRAY['compaction_schedule=1 0 1 1 *'])::text
+          FROM pg_catalog.pg_class AS relation
+          CROSS JOIN LATERAL pg_catalog.unnest(
+            relation.reloptions) AS lineage_option
+          WHERE relation.oid = ${child_oid}
+            AND lineage_option OPERATOR(pg_catalog.~~)
+                'compaction_lineage=%';")"
+    assert_eq "attached then rewritten child activates parent schedule" \
+        "true" \
+        "$(sql_super -c "SELECT
+            (label OPERATOR(pg_catalog.~~)
+            ('%:' || pg_catalog.encode(
+              pg_catalog.convert_to('1 0 1 1 *', 'UTF8'), 'hex')))::text
+          FROM df.instances
+          WHERE id = '$(current_generation_job_id "${child_oid}")';")"
+
+    sql_super -c \
+        "DROP TABLE public.lifecycle_attach_reindex_parent;" >/dev/null
+    sql_super -c "DROP TABLESPACE lifecycle_attach_rewrite_ts;" >/dev/null
+    rmdir "${tablespace_dir}"
 }
 
 test_lineage_lookup_drop_durable_order() {
@@ -6380,6 +6428,70 @@ blocker: $(cat "${blocker_output}")"
       public.lifecycle_precommit_admission_docs;" >/dev/null
 }
 
+test_terminal_grant_reentry_is_rejected() {
+    local alter_output
+
+    sql_as durable_owner <<'SQL' >/dev/null 2>&1
+CREATE TABLE public.lifecycle_grant_reentry_docs (
+    body_a text,
+    body_b text
+);
+CREATE INDEX lifecycle_grant_reentry_outer_idx
+    ON public.lifecycle_grant_reentry_docs USING bm25(body_a)
+    WITH (text_config = 'english', compaction = 'manual');
+CREATE FUNCTION public.lifecycle_grant_reenter()
+RETURNS event_trigger
+LANGUAGE plpgsql
+SET search_path = pg_catalog, pg_temp
+AS $body$
+BEGIN
+    IF pg_catalog.current_setting('application_name')
+           OPERATOR(pg_catalog.=) 'lifecycle-grant-reentry'
+       AND pg_catalog.to_regclass(
+             'public.lifecycle_grant_reentry_nested_idx') IS NULL THEN
+        EXECUTE
+            'CREATE INDEX lifecycle_grant_reentry_nested_idx '
+            'ON public.lifecycle_grant_reentry_docs USING bm25(body_b) '
+            'WITH (text_config = ''english'', '
+            'compaction = ''background'')';
+    END IF;
+END
+$body$;
+SQL
+    sql_super -c "
+        CREATE EVENT TRIGGER lifecycle_grant_reenter
+          ON ddl_command_end
+          WHEN TAG IN ('GRANT')
+          EXECUTE FUNCTION public.lifecycle_grant_reenter();
+        REVOKE EXECUTE ON FUNCTION
+          bm25_compact_step_if_current(oid, oid, oid, oid, oid),
+          bm25_background_target_is_current(oid, oid, oid, oid, oid)
+          FROM durable_owner;" >/dev/null
+
+    if alter_output="$(PGAPPNAME=lifecycle-grant-reentry \
+        sql_as durable_owner -c "
+          ALTER INDEX public.lifecycle_grant_reentry_outer_idx
+            SET (compaction = 'background');" 2>&1)"; then
+        error "managed DDL reentered terminal reconciliation:
+${alter_output}"
+    fi
+    if ! grep -Fq \
+        "cannot execute DDL during background compaction reconciliation" \
+        <<<"${alter_output}"; then
+        error "terminal reentry failed for the wrong reason:
+${alter_output}"
+    fi
+    assert_eq "terminal reentry rolls back nested managed DDL" "" \
+        "$(sql_super -c "SELECT pg_catalog.to_regclass(
+          'public.lifecycle_grant_reentry_nested_idx');")"
+
+    sql_super -c "
+        DROP EVENT TRIGGER lifecycle_grant_reenter;
+        DROP FUNCTION public.lifecycle_grant_reenter();
+        DROP TABLE public.lifecycle_grant_reentry_docs;
+        SELECT df.grant_usage('durable_owner');" >/dev/null
+}
+
 test_post_publication_reindex_defers() {
     local blocker_output blocker_pid blocker_status=0 gate_fifo gate_pid
     local index_oid_after index_oid_before outer_output outer_pid
@@ -6683,6 +6795,78 @@ $(cat "${renamed_output}")"
         DROP FUNCTION public.lifecycle_post_publication_pause();
         DROP TABLE public.lifecycle_post_publication_docs,
                    public.lifecycle_post_publication_nested_docs;" >/dev/null
+}
+
+test_post_publication_activation_error_defers() {
+    local index_oid output relfilenumber_before
+
+    sql_as durable_owner <<'SQL' >/dev/null 2>&1
+CREATE TABLE public.lifecycle_post_publication_error_docs (body text);
+INSERT INTO public.lifecycle_post_publication_error_docs
+VALUES ('before');
+CREATE INDEX lifecycle_post_publication_error_idx
+    ON public.lifecycle_post_publication_error_docs USING bm25(body)
+    WITH (text_config = 'english',
+          compaction = 'background',
+          compaction_schedule = '0 0 1 1 *');
+CREATE FUNCTION public.lifecycle_post_publication_revoke()
+RETURNS event_trigger
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = pg_catalog, pg_temp
+AS $body$
+BEGIN
+    IF pg_catalog.current_setting('application_name')
+           OPERATOR(pg_catalog.=) 'lifecycle-post-publication-error' THEN
+        REVOKE USAGE ON SCHEMA df FROM durable_owner;
+    END IF;
+END
+$body$;
+SQL
+    sql_super -c "
+        ALTER FUNCTION public.lifecycle_post_publication_revoke()
+          OWNER TO postgres;
+        CREATE EVENT TRIGGER lifecycle_post_publication_revoke
+          ON ddl_command_end
+          WHEN TAG IN ('REINDEX')
+          EXECUTE FUNCTION public.lifecycle_post_publication_revoke();" \
+        >/dev/null
+    index_oid="$(sql_super -c "SELECT
+        'public.lifecycle_post_publication_error_idx'::regclass::oid;")"
+    relfilenumber_before="$(sql_super -c "SELECT
+        pg_catalog.pg_relation_filenode(${index_oid});")"
+
+    if ! output="$(PGAPPNAME=lifecycle-post-publication-error \
+        sql_as durable_owner -c "
+          REINDEX INDEX CONCURRENTLY
+            public.lifecycle_post_publication_error_idx;" 2>&1)"; then
+        error "published REINDEX reported an activation error:
+${output}"
+    fi
+    if ! grep -Fq \
+        "background compaction lifecycle reconciliation was deferred" \
+        <<<"${output}"; then
+        error "published REINDEX did not report activation deferral:
+${output}"
+    fi
+    if [ "$(sql_super -c "SELECT pg_catalog.pg_relation_filenode(
+          'public.lifecycle_post_publication_error_idx'::regclass);")" = \
+         "${relfilenumber_before}" ]; then
+        error "activation-error test did not publish replacement storage"
+    fi
+
+    sql_super -c "SELECT df.grant_usage('durable_owner');" >/dev/null
+    sql_as durable_owner -c "
+        ALTER INDEX public.lifecycle_post_publication_error_idx
+          SET (compaction_schedule = '0 0 1 1 *');" >/dev/null
+    assert_eq "activation-error deferral remains explicitly retryable" "1" \
+        "$(current_generation_job_count "$(sql_super -c "SELECT
+          'public.lifecycle_post_publication_error_idx'::regclass::oid;")")"
+
+    sql_super -c "
+        DROP EVENT TRIGGER lifecycle_post_publication_revoke;
+        DROP FUNCTION public.lifecycle_post_publication_revoke();
+        DROP TABLE public.lifecycle_post_publication_error_docs;" >/dev/null
 }
 
 test_cross_statement_managed_lock_order() {
@@ -8236,7 +8420,7 @@ $(cat "${alter_output}")"
 
 test_reindex_authorization_resolution_race() {
     local gate_pid lock_output locker_pid rename_output rename_pid
-    local reindex_error reindex_pid
+    local reindex_error reindex_pid reindex_waiting
 
     lock_output="${DATA_DIR}/reindex-auth-race-lock.out"
     rename_output="${DATA_DIR}/reindex-auth-race-rename.out"
@@ -8307,10 +8491,10 @@ SQL
     done
 
     PGAPPNAME=lifecycle-auth-race-reindex \
+        PGOPTIONS="-c statement_timeout=5s" \
         "${PGBINDIR}/psql" -h "${SOCKET_DIR}" -p "${TEST_PORT}" \
         -U durable_writer -d "${TEST_DB}" -qAt -v ON_ERROR_STOP=1 \
-        -c "SET statement_timeout = '5s';
-            REINDEX INDEX CONCURRENTLY
+        -c "REINDEX INDEX CONCURRENTLY
               public.lifecycle_auth_race_idx;" \
         >"${lock_output}.reindex" 2>&1 &
     reindex_pid=$!
@@ -8323,11 +8507,15 @@ SQL
         fi
         sleep 0.1
     done
-    assert_eq "authorization race reaches the original heap lock" "1" \
-        "$(sql_super -c "SELECT pg_catalog.count(*)
+    reindex_waiting="$(sql_super -c "SELECT pg_catalog.count(*)
           FROM pg_catalog.pg_stat_activity
           WHERE application_name = 'lifecycle-auth-race-reindex'
             AND wait_event_type = 'Lock';")"
+    if [ "${reindex_waiting}" != "1" ]; then
+        error "authorization race did not reach the original heap lock:
+$(cat "${lock_output}.reindex")"
+    fi
+    log "PASS: authorization race reaches the original heap lock"
 
     sql_super -c "SELECT pg_catalog.pg_terminate_backend(pid)
       FROM pg_catalog.pg_stat_activity
@@ -10257,10 +10445,13 @@ run_test test_alter_reindex_lock_order
 run_test test_cross_statement_reindex_lock_order
 run_test test_cross_statement_owner_lock_order
 run_test test_multi_family_partition_attach_batch
+run_test test_attached_index_rewrite_preserves_parent_options
 run_test test_lineage_lookup_drop_durable_order
 run_test test_textsearch_extension_dependency_order
 run_test test_precommit_request_admission_nowait
+run_test test_terminal_grant_reentry_is_rejected
 run_test test_post_publication_reindex_defers
+run_test test_post_publication_activation_error_defers
 run_test test_cross_statement_managed_lock_order
 run_test test_managed_intent_savepoint_recovery
 run_test test_internal_lock_namespace

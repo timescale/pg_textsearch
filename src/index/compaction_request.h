@@ -37,8 +37,11 @@ extern bool tp_compaction_lineage_in_use_by_other(
 extern void	 tp_lock_compaction_index(Oid indexoid);
 extern void	 tp_lock_compaction_dependency(void);
 extern bool	 tp_try_lock_compaction_dependency(void);
+extern bool	 tp_try_lock_compaction_dependency_oid(Oid bm25_am_oid);
 extern bool	 tp_compaction_dependency_lock_held(void);
+extern bool	 tp_compaction_dependency_oid_lock_held(Oid bm25_am_oid);
 extern void	 tp_unlock_compaction_dependency(void);
+extern void	 tp_unlock_compaction_dependency_oid(Oid bm25_am_oid);
 extern void	 tp_lock_compaction_lineage(const char *lineage);
 extern void	 tp_require_compaction_index_lock(Oid indexoid);
 extern void	 tp_require_compaction_dependency_lock(void);
