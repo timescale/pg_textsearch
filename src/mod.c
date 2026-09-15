@@ -1863,9 +1863,6 @@ tp_reindex_initial_indexes(
 				 &lookup_state);
 		relkind			= get_rel_relkind(relation_oid);
 		*tracks_commits = concurrently || relkind == RELKIND_PARTITIONED_INDEX;
-		if (!*tracks_commits)
-			return NIL;
-
 		if (relkind == RELKIND_PARTITIONED_INDEX)
 		{
 			PreventInTransactionBlock(is_top_level, "REINDEX INDEX");
@@ -1883,9 +1880,6 @@ tp_reindex_initial_indexes(
 			 NULL);
 	relkind			= get_rel_relkind(relation_oid);
 	*tracks_commits = concurrently || relkind == RELKIND_PARTITIONED_TABLE;
-	if (!*tracks_commits)
-		return NIL;
-
 	if (relkind == RELKIND_PARTITIONED_TABLE)
 	{
 		PreventInTransactionBlock(is_top_level, "REINDEX TABLE");
@@ -3956,18 +3950,15 @@ tp_process_utility_impl(
 
 		PG_TRY();
 		{
-			if (tracks_commits)
-			{
-				List *candidates = tp_physical_bm25_indexes(indexoids, true);
+			List *candidates = tp_physical_bm25_indexes(indexoids, true);
 
-				reindex_state = tp_reindex_tracking_begin(
-						candidates,
-						stmt->kind,
-						scope_oid,
-						OidIsValid(scope_oid),
-						true);
-				list_free(candidates);
-			}
+			reindex_state = tp_reindex_tracking_begin(
+					candidates,
+					stmt->kind,
+					scope_oid,
+					OidIsValid(scope_oid),
+					tracks_commits);
+			list_free(candidates);
 			list_free(indexoids);
 
 			if (prev_process_utility_hook)
@@ -3991,11 +3982,11 @@ tp_process_utility_impl(
 						dest,
 						qc);
 
-			if (tracks_commits)
+			if (reindex_state != NULL)
 				tp_collect_reindex_state_intents(true);
 			else if (
-					stmt->kind == REINDEX_OBJECT_INDEX ||
-					stmt->kind == REINDEX_OBJECT_TABLE)
+					!tracks_commits && (stmt->kind == REINDEX_OBJECT_INDEX ||
+										stmt->kind == REINDEX_OBJECT_TABLE))
 			{
 				indexoids = tp_reindex_current_indexes(stmt);
 				tp_collect_background_indexes(indexoids, true);
