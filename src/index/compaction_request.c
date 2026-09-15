@@ -78,7 +78,7 @@ tp_compaction_lock_held(Oid object_id, uint16 discriminator, LOCKMODE lockmode)
 	return LockHeldByMe(&tag, lockmode, true);
 }
 
-static bool
+bool
 tp_compaction_dependency_lock_held(void)
 {
 	Oid bm25_am_oid = get_index_am_oid("bm25", true);
@@ -86,29 +86,6 @@ tp_compaction_dependency_lock_held(void)
 	if (!OidIsValid(bm25_am_oid))
 		return false;
 	return tp_compaction_lock_held(bm25_am_oid, 0, ShareRowExclusiveLock);
-}
-
-static bool
-tp_compaction_admission_allowed(Oid indexoid)
-{
-	return tp_compaction_lock_held(
-				   indexoid, TP_COMPACTION_INDEX_LOCK_SUBID, ExclusiveLock) ||
-		   !tp_compaction_dependency_lock_held();
-}
-
-static void
-tp_check_compaction_admission_order(Oid indexoid)
-{
-	if (tp_compaction_admission_allowed(indexoid))
-		return;
-
-	ereport(ERROR,
-			(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
-			 errmsg("cannot acquire a new background compaction admission "
-					"lock after pg_durable work has started in this "
-					"transaction"),
-			 errhint("Commit or roll back the current transaction before "
-					 "managing another BM25 index.")));
 }
 
 static bool
@@ -120,8 +97,6 @@ tp_take_compaction_lock(
 	tp_set_compaction_locktag(&tag, object_id, discriminator);
 	if (LockHeldByMe(&tag, lockmode, true))
 		return true;
-	if (discriminator == TP_COMPACTION_INDEX_LOCK_SUBID)
-		tp_check_compaction_admission_order(object_id);
 	if (nowait)
 		return ConditionalLockDatabaseObject(
 				AccessMethodRelationId, object_id, discriminator, lockmode);
@@ -145,6 +120,24 @@ tp_lock_compaction_dependency(void)
 	if (tp_compaction_dependency_lock_held())
 		return;
 	LockDatabaseObject(
+			AccessMethodRelationId, bm25_am_oid, 0, ShareRowExclusiveLock);
+}
+
+bool
+tp_try_lock_compaction_dependency(void)
+{
+	Oid bm25_am_oid = get_index_am_oid("bm25", false);
+
+	return tp_take_compaction_lock(
+			bm25_am_oid, 0, ShareRowExclusiveLock, true);
+}
+
+void
+tp_unlock_compaction_dependency(void)
+{
+	Oid bm25_am_oid = get_index_am_oid("bm25", false);
+
+	UnlockDatabaseObject(
 			AccessMethodRelationId, bm25_am_oid, 0, ShareRowExclusiveLock);
 }
 
@@ -189,7 +182,6 @@ tp_prelock_compaction_indexes_nowait(List *indexoids, bool nowait)
 
 		if (!OidIsValid(indexoid) || indexoid == previous)
 			continue;
-		tp_check_compaction_admission_order(indexoid);
 		if (nowait)
 		{
 			if (!ConditionalLockRelationOid(
@@ -234,6 +226,50 @@ List *
 tp_prelock_compaction_indexes(List *indexoids)
 {
 	return tp_prelock_compaction_indexes_nowait(indexoids, false);
+}
+
+List *
+tp_try_prelock_compaction_indexes(List *indexoids)
+{
+	List	 *sorted = list_copy(indexoids);
+	List	 *locked = NIL;
+	ListCell *lc;
+	Oid		  previous = InvalidOid;
+
+	list_sort(sorted, list_oid_cmp);
+	foreach (lc, sorted)
+	{
+		Oid indexoid = lfirst_oid(lc);
+
+		if (!OidIsValid(indexoid) || indexoid == previous)
+			continue;
+		previous = indexoid;
+		if ((tp_compaction_dependency_lock_held() &&
+			 !tp_compaction_lock_held(
+					 indexoid,
+					 TP_COMPACTION_INDEX_LOCK_SUBID,
+					 ExclusiveLock)) ||
+			!ConditionalLockRelationOid(indexoid, ShareUpdateExclusiveLock))
+			continue;
+		locked = lappend_oid(locked, indexoid);
+	}
+	list_free(sorted);
+
+	foreach (lc, locked)
+	{
+		Oid indexoid = lfirst_oid(lc);
+
+		if (!tp_take_compaction_lock(
+					indexoid,
+					TP_COMPACTION_INDEX_LOCK_SUBID,
+					ExclusiveLock,
+					true))
+		{
+			UnlockRelationOid(indexoid, ShareUpdateExclusiveLock);
+			locked = foreach_delete_current(locked, lc);
+		}
+	}
+	return locked;
 }
 
 /*
@@ -394,8 +430,8 @@ tp_live_compaction_lineage_conflicts(const char *lineage, Oid heap_oid)
 bool
 tp_compaction_lineage_in_use(const char *lineage, Oid heap_oid, Oid owner_oid)
 {
-	return tp_live_compaction_lineage_conflicts(lineage, heap_oid) ||
-		   tp_compaction_job_lineage_exists(lineage, heap_oid, owner_oid);
+	(void)owner_oid;
+	return tp_live_compaction_lineage_conflicts(lineage, heap_oid);
 }
 
 char *
@@ -413,7 +449,7 @@ tp_new_available_compaction_lineage(Oid heap_oid, Oid owner_oid)
 		}
 
 		tp_lock_compaction_lineage(lineage);
-		if (!tp_compaction_lineage_in_use(lineage, heap_oid, owner_oid))
+		if (!tp_live_compaction_lineage_conflicts(lineage, heap_oid))
 			return lineage;
 		pfree(lineage);
 	} while (true);
@@ -455,7 +491,6 @@ tp_ensure_index_compaction_lineage(Oid indexoid, bool *created)
 	}
 	index_close(index_rel, AccessShareLock);
 
-	tp_check_compaction_admission_order(indexoid);
 	index_rel = try_index_open(indexoid, ShareUpdateExclusiveLock);
 	if (index_rel == NULL)
 		return NULL;
@@ -763,11 +798,13 @@ tp_prelock_requests(List *pending)
 		previous = indexoid;
 
 		/*
-		 * Dispatch is best effort and the on-disk debt is durable.  If an
-		 * earlier managed statement pinned the transaction dependency, do
-		 * not take a new admission during PRE_COMMIT.
+		 * Dispatch is best effort and the on-disk debt is durable.  A
+		 * terminal reconciliation batch may already hold the dependency;
+		 * never add a new admission after that point.
 		 */
-		if (!tp_compaction_admission_allowed(indexoid))
+		if (tp_compaction_dependency_lock_held() &&
+			!tp_compaction_lock_held(
+					indexoid, TP_COMPACTION_INDEX_LOCK_SUBID, ExclusiveLock))
 			continue;
 		if (!ConditionalLockRelationOid(indexoid, AccessShareLock))
 			continue;
@@ -804,7 +841,12 @@ tp_prelock_requests(List *pending)
 	{
 		Oid indexoid = lfirst_oid(lc);
 
-		tp_lock_compaction_index(indexoid);
+		if (!tp_take_compaction_lock(
+					indexoid,
+					TP_COMPACTION_INDEX_LOCK_SUBID,
+					ExclusiveLock,
+					true))
+			targets = foreach_delete_current(targets, lc);
 	}
 	return targets;
 }
@@ -845,6 +887,11 @@ tp_compaction_flush_requests(void)
 	PG_TRY();
 	{
 		targets = tp_prelock_requests(pending);
+		if (targets != NIL && !tp_compaction_job_try_lock_objects())
+		{
+			list_free(targets);
+			targets = NIL;
+		}
 		foreach (lc, targets)
 		{
 			Oid indexoid = lfirst_oid(lc);

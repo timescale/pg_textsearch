@@ -293,7 +293,7 @@ if ! grep -Fq "list_sort(sorted, list_oid_cmp)" \
     echo "pending requests are not safely prelocked in OID order" >&2
     exit 1
 fi
-if ! grep -Fq "tp_lock_compaction_index(indexoid)" \
+if ! grep -Fq "tp_take_compaction_lock(" \
     <<<"${prelock_requests_body}" ||
     [ "$(grep -Fc "foreach (lc, targets)" \
         <<<"${prelock_requests_body}")" -lt 1 ]; then
@@ -345,17 +345,10 @@ if ! grep -Fq "LockHeldByMe" <<<"${compaction_lock_body}"; then
         >&2
     exit 1
 fi
-admission_order_line="$(
-    grep -n "tp_check_compaction_admission_order" \
-        <<<"${compaction_lock_body}" | cut -d: -f1 || true
-)"
-database_lock_line="$(
-    grep -n "^[[:space:]]*LockDatabaseObject" \
-        <<<"${compaction_lock_body}" | head -1 | cut -d: -f1
-)"
-if [[ -z "${admission_order_line}" || -z "${database_lock_line}" ||
-      "${admission_order_line}" -ge "${database_lock_line}" ]]; then
-    echo "new admissions are not rejected after the transaction dependency" \
+if grep -Eq \
+    'tp_compaction_admission_allowed|tp_check_compaction_admission_order|cannot acquire a new background compaction admission' \
+    "${REQUEST_SOURCE}"; then
+    echo "transaction-wide managed admission rejection remains installed" \
         >&2
     exit 1
 fi
@@ -374,35 +367,63 @@ if ! grep -Fq "list_sort(sorted, list_oid_cmp)" \
         >&2
     exit 1
 fi
-prelock_order_line="$(
-    grep -n "tp_check_compaction_admission_order(indexoid)" \
-        <<<"${prelock_indexes_body}" | head -1 | cut -d: -f1 || true
-)"
 prelock_relation_line="$(
-    grep -n "ConditionalLockRelationOid" \
+    grep -n "LockRelationOid" \
         <<<"${prelock_indexes_body}" | head -1 | cut -d: -f1
 )"
-if [[ -z "${prelock_order_line}" || -z "${prelock_relation_line}" ||
-      "${prelock_order_line}" -ge "${prelock_relation_line}" ]]; then
-    echo "multi-index prelocking can take relation locks after dependency" \
+prelock_admission_line="$(
+    grep -n "tp_lock_compaction_index(indexoid)" \
+        <<<"${prelock_indexes_body}" | head -1 | cut -d: -f1
+)"
+if [[ -z "${prelock_relation_line}" || -z "${prelock_admission_line}" ||
+      "${prelock_relation_line}" -ge "${prelock_admission_line}" ]]; then
+    echo "multi-index prelocking does not take relations before admissions" \
         >&2
+    exit 1
+fi
+
+try_prelock_indexes_body="$(
+    sed -n \
+        '/^tp_try_prelock_compaction_indexes(List \*indexoids)/,/^}/p' \
+        "${REQUEST_SOURCE}"
+)"
+for required in \
+    "list_sort(sorted, list_oid_cmp)" \
+    "tp_compaction_dependency_lock_held()" \
+    "ConditionalLockRelationOid" \
+    "tp_take_compaction_lock("; do
+    if ! grep -Fq "${required}" <<<"${try_prelock_indexes_body}"; then
+        echo "terminal index batching is missing ${required}" >&2
+        exit 1
+    fi
+done
+try_relation_line="$(
+    grep -n "ConditionalLockRelationOid" \
+        <<<"${try_prelock_indexes_body}" | head -1 | cut -d: -f1
+)"
+try_admission_line="$(
+    grep -n "tp_take_compaction_lock(" \
+        <<<"${try_prelock_indexes_body}" | head -1 | cut -d: -f1
+)"
+if [[ -z "${try_relation_line}" || -z "${try_admission_line}" ||
+      "${try_relation_line}" -ge "${try_admission_line}" ]]; then
+    echo "terminal batching does not take relations before admissions" >&2
     exit 1
 fi
 
 prelock_requests_body="$(
     sed -n '/^tp_prelock_requests(List \*pending)/,/^}/p' "${REQUEST_SOURCE}"
 )"
-request_order_line="$(
-    grep -n "tp_compaction_admission_allowed(indexoid)" \
-        <<<"${prelock_requests_body}" | head -1 | cut -d: -f1 || true
-)"
 request_relation_line="$(
     grep -n "ConditionalLockRelationOid" \
         <<<"${prelock_requests_body}" | head -1 | cut -d: -f1
 )"
-if [[ -z "${request_order_line}" || -z "${request_relation_line}" ||
-      "${request_order_line}" -ge "${request_relation_line}" ]]; then
-    echo "pre-commit dispatch can take relation locks after dependency" >&2
+if ! grep -Fq "tp_compaction_dependency_lock_held()" \
+    <<<"${prelock_requests_body}" ||
+    ! grep -Fq "tp_compaction_lock_held(" <<<"${prelock_requests_body}" ||
+    [ -z "${request_relation_line}" ]; then
+    echo "pre-commit dispatch does not skip new admissions after dependency" \
+        >&2
     exit 1
 fi
 
@@ -425,25 +446,9 @@ if ! grep -Fq "ShareRowExclusiveLock" <<<"${dependency_lock_body}" ||
     echo "managed lifecycle dependency serialization is not explicit" >&2
     exit 1
 fi
-admission_order_body="$(
-    sed -n \
-        '/^tp_check_compaction_admission_order(Oid indexoid)/,/^}/p' \
-        "${REQUEST_SOURCE}"
-)"
-admission_allowed_body="$(
-    sed -n \
-        '/^tp_compaction_admission_allowed(Oid indexoid)/,/^}/p' \
-        "${REQUEST_SOURCE}"
-)"
-if ! grep -Fq "tp_compaction_admission_allowed(indexoid)" \
-    <<<"${admission_order_body}" ||
-    ! grep -Fq "tp_compaction_dependency_lock_held" \
-        "${REQUEST_SOURCE}" ||
-    ! grep -Fq "!tp_compaction_dependency_lock_held()" \
-        <<<"${admission_allowed_body}" ||
-    ! grep -Fq "tp_require_compaction_dependency_lock" \
-        "${JOB_SOURCE}"; then
-    echo "transaction dependency state does not guard all admissions" >&2
+if ! grep -Fq "tp_require_compaction_dependency_lock" \
+    "${JOB_SOURCE}"; then
+    echo "dependency-backed job discovery lacks a lock assertion" >&2
     exit 1
 fi
 
@@ -452,6 +457,51 @@ pin_dependency_body="$(
 )"
 if grep -Fq "LockDatabaseObject" <<<"${pin_dependency_body}"; then
     echo "dependency catalog work still acquires its serialization lock" >&2
+    exit 1
+fi
+
+object_bundle_body="$(
+    sed -n '/^tp_compaction_job_try_lock_objects(void)/,/^}/p' \
+        "${JOB_SOURCE}"
+)"
+durable_extension_line="$(
+    grep -n "objects.durable_extension_oid" \
+        <<<"${object_bundle_body}" | head -1 | cut -d: -f1
+)"
+textsearch_extension_line="$(
+    grep -n "objects.textsearch_extension_oid" \
+        <<<"${object_bundle_body}" | head -1 | cut -d: -f1
+)"
+bundle_dependency_line="$(
+    grep -n "tp_try_lock_compaction_dependency()" \
+        <<<"${object_bundle_body}" | head -1 | cut -d: -f1
+)"
+bundle_member_line="$(
+    grep -n "qsort(locks" \
+        <<<"${object_bundle_body}" | head -1 | cut -d: -f1
+)"
+if [[ -z "${durable_extension_line}" ||
+      -z "${textsearch_extension_line}" ||
+      -z "${bundle_dependency_line}" ||
+      -z "${bundle_member_line}" ||
+      "${durable_extension_line}" -ge "${textsearch_extension_line}" ||
+      "${textsearch_extension_line}" -ge "${bundle_dependency_line}" ||
+      "${bundle_dependency_line}" -ge "${bundle_member_line}" ]] ||
+    ! grep -Fq "ConditionalLockDatabaseObject" \
+        <<<"${object_bundle_body}" ||
+    ! grep -Fq "ConditionalLockRelationOid" \
+        <<<"${object_bundle_body}"; then
+    echo "terminal object bundle violates extension/dependency/member order" \
+        >&2
+    exit 1
+fi
+
+lineage_exists_body="$(
+    sed -n '/^tp_compaction_job_lineage_exists(/,/^}/p' "${JOB_SOURCE}"
+)"
+if ! grep -Fq "tp_require_compaction_dependency_lock()" \
+    <<<"${lineage_exists_body}"; then
+    echo "durable lineage history is queried without the object bundle" >&2
     exit 1
 fi
 
@@ -583,24 +633,51 @@ if grep -Eq 'tp_take_admission_lock|tp_lock_durable_dependency' \
     exit 1
 fi
 
-alter_prelock_body="$(
-    sed -n '/^tp_prelock_alter_background_index(/,/^}/p' "${MODULE_SOURCE}"
+collect_intent_body="$(
+    sed -n '/^tp_collect_managed_intent(/,/^}/p' "${MODULE_SOURCE}"
 )"
-for required in \
-    "RangeVarCallbackOwnsRelation" \
-    "AccessShareLock" \
-    "tp_lock_compaction_index(indexoid)"; do
-    if ! grep -Fq "${required}" <<<"${alter_prelock_body}"; then
-        echo "managed ALTER does not prelock admission before mutation" >&2
-        exit 1
-    fi
-done
-if ! grep -Fq \
-    "Oid indexoid = tp_prelock_alter_background_index(stmt)" \
-    "${MODULE_SOURCE}"; then
-    echo "managed ALTER mutation bypasses its admission prelock" >&2
+if grep -Eq \
+    'tp_lock_compaction|tp_compaction_job_|SPI_|LockRelation|LockDatabaseObject' \
+    <<<"${collect_intent_body}"; then
+    echo "managed intent collection performs terminal reconciliation work" \
+        >&2
     exit 1
 fi
+
+managed_reconcile_body="$(
+    sed -n '/^tp_reconcile_managed_intents(void)/,/^}/p' "${MODULE_SOURCE}"
+)"
+managed_batch_line="$(
+    grep -n "tp_try_prelock_compaction_indexes(indexoids)" \
+        <<<"${managed_reconcile_body}" | head -1 | cut -d: -f1
+)"
+managed_bundle_line="$(
+    grep -n "tp_compaction_job_try_lock_objects()" \
+        <<<"${managed_reconcile_body}" | head -1 | cut -d: -f1
+)"
+managed_lineage_line="$(
+    grep -n "tp_compaction_job_lineage_exists(" \
+        <<<"${managed_reconcile_body}" | head -1 | cut -d: -f1
+)"
+managed_activation_line="$(
+    grep -n "tp_compaction_job_activate" \
+        <<<"${managed_reconcile_body}" | head -1 | cut -d: -f1
+)"
+if [[ -z "${managed_batch_line}" || -z "${managed_bundle_line}" ||
+      -z "${managed_lineage_line}" || -z "${managed_activation_line}" ||
+      "${managed_batch_line}" -ge "${managed_bundle_line}" ||
+      "${managed_bundle_line}" -ge "${managed_lineage_line}" ||
+      "${managed_lineage_line}" -ge "${managed_activation_line}" ]]; then
+    echo "managed intents bypass the terminal lock and validation batch" >&2
+    exit 1
+fi
+if ! grep -Fq \
+    "was deferred" \
+    <<<"${managed_reconcile_body}"; then
+    echo "contended managed reconciliation can be silently discarded" >&2
+    exit 1
+fi
+
 if ! grep -Fq "RangeVarCallbackOwnsRelation" "${MODULE_SOURCE}"; then
     echo "CREATE INDEX locking does not preserve core authorization ordering" \
         >&2

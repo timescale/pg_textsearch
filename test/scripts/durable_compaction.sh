@@ -4985,10 +4985,9 @@ spill: $(cat "${spill_output}")"
 }
 
 test_managed_lock_order() {
-    local admission_before am_oid blocker_output blocker_pid index_oid
-    local reconcile_admission_wait reconcile_dependency_before
-    local reconcile_output reconcile_pid signal_dependency_wait
-    local reconcile_status=0 signal_output signal_pid signal_status=0
+    local blocker_output blocker_pid index_oid reconcile_completed=false
+    local reconcile_output reconcile_pid reconcile_status=0
+    local signal_completed=false signal_output signal_pid signal_status=0
 
     blocker_output="${DATA_DIR}/managed-lock-blocker.out"
     reconcile_output="${DATA_DIR}/managed-lock-reconcile.out"
@@ -5017,8 +5016,6 @@ FROM generate_series(1, 20) AS document_number;
 SQL
     index_oid="$(sql_super -c "SELECT
         'public.lifecycle_managed_lock_leaf_idx'::regclass::oid;")"
-    am_oid="$(sql_super -c \
-        "SELECT oid FROM pg_catalog.pg_am WHERE amname = 'bm25';")"
 
     PGAPPNAME=lifecycle-managed-lock-blocker sql_super -c "
         BEGIN;
@@ -5036,33 +5033,23 @@ SQL
         fi
         sleep 0.1
     done
-    if [ "$(sql_super -c "SELECT count(*)
+    assert_eq "managed lock blocker holds the dependency object" "1" \
+        "$(sql_super -c "SELECT count(*)
           FROM pg_catalog.pg_stat_activity AS activity
           JOIN pg_catalog.pg_locks AS dependency
             ON dependency.pid = activity.pid
+          JOIN pg_catalog.pg_am AS access_method
+            ON access_method.oid = dependency.objid
           WHERE activity.application_name =
                 'lifecycle-managed-lock-blocker'
             AND activity.wait_event = 'PgSleep'
             AND dependency.locktype = 'object'
             AND dependency.classid =
                 'pg_catalog.pg_am'::pg_catalog.regclass
-            AND dependency.objid = ${am_oid}
+            AND access_method.amname = 'bm25'
             AND dependency.objsubid = 0
             AND dependency.mode = 'ShareUpdateExclusiveLock'
-            AND dependency.granted;")" != "1" ]; then
-        error "managed blocker did not hold the dependency object:
-locks: $(sql_super -c "SELECT pg_catalog.string_agg(
-          lock.locktype || ':' || coalesce(lock.classid::text, '') || ':' ||
-          coalesce(lock.objid::text, '') || ':' ||
-          coalesce(lock.objsubid::text, '') || ':' || lock.mode || ':' ||
-          lock.granted::text, ',')
-        FROM pg_catalog.pg_stat_activity AS activity
-        JOIN pg_catalog.pg_locks AS lock ON lock.pid = activity.pid
-        WHERE activity.application_name =
-              'lifecycle-managed-lock-blocker';")
-output: $(cat "${blocker_output}")"
-    fi
-    log "PASS: managed lock blocker holds the dependency object"
+            AND dependency.granted;")"
 
     PGAPPNAME=lifecycle-managed-lock-signal \
         "${PGBINDIR}/psql" -h "${SOCKET_DIR}" -p "${TEST_PORT}" \
@@ -5076,41 +5063,16 @@ output: $(cat "${blocker_output}")"
     for _ in $(seq 1 100); do
         if [ "$(sql_super -c "SELECT count(*)
               FROM pg_catalog.pg_stat_activity
-              WHERE application_name = 'lifecycle-managed-lock-signal'
-                AND wait_event_type = 'Lock';")" = "1" ]; then
+              WHERE application_name =
+                    'lifecycle-managed-lock-signal';")" = "0" ]; then
+            signal_completed=true
             break
         fi
         sleep 0.1
     done
-    assert_eq "managed signal reaches the dependency barrier" "1" \
-        "$(sql_super -c "SELECT count(*)
-          FROM pg_catalog.pg_stat_activity
-          WHERE application_name = 'lifecycle-managed-lock-signal'
-            AND wait_event_type = 'Lock';")"
-    admission_before="$(sql_super -c "SELECT count(*)
-      FROM pg_catalog.pg_stat_activity AS activity
-      JOIN pg_catalog.pg_locks AS admission
-        ON admission.pid = activity.pid
-      WHERE activity.application_name = 'lifecycle-managed-lock-signal'
-        AND admission.locktype = 'object'
-        AND admission.classid =
-            'pg_catalog.pg_am'::pg_catalog.regclass
-        AND admission.objid = ${index_oid}
-        AND admission.objsubid = 1
-        AND admission.mode = 'ExclusiveLock'
-        AND admission.granted;")"
-    signal_dependency_wait="$(sql_super -c "SELECT count(*)
-      FROM pg_catalog.pg_stat_activity AS activity
-      JOIN pg_catalog.pg_locks AS dependency
-        ON dependency.pid = activity.pid
-      WHERE activity.application_name = 'lifecycle-managed-lock-signal'
-        AND dependency.locktype = 'object'
-        AND dependency.classid =
-            'pg_catalog.pg_am'::pg_catalog.regclass
-        AND dependency.objid = ${am_oid}
-        AND dependency.objsubid = 0
-        AND dependency.mode = 'ShareRowExclusiveLock'
-        AND NOT dependency.granted;")"
+    if [ "${signal_completed}" = "true" ]; then
+        wait "${signal_pid}" || signal_status=$?
+    fi
 
     PGAPPNAME=lifecycle-managed-lock-reconcile \
         "${PGBINDIR}/psql" -h "${SOCKET_DIR}" -p "${TEST_PORT}" \
@@ -5127,52 +5089,30 @@ output: $(cat "${blocker_output}")"
         if [ "$(sql_super -c "SELECT count(*)
               FROM pg_catalog.pg_stat_activity
               WHERE application_name =
-                    'lifecycle-managed-lock-reconcile'
-                AND wait_event_type = 'Lock';")" = "1" ]; then
+                    'lifecycle-managed-lock-reconcile';")" = "0" ]; then
+            reconcile_completed=true
             break
         fi
         sleep 0.1
     done
-    assert_eq "option reconciliation reaches the lock barrier" "1" \
-        "$(sql_super -c "SELECT count(*)
-          FROM pg_catalog.pg_stat_activity
-          WHERE application_name = 'lifecycle-managed-lock-reconcile'
-            AND wait_event_type = 'Lock';")"
-    reconcile_admission_wait="$(sql_super -c "SELECT count(*)
-      FROM pg_catalog.pg_stat_activity AS activity
-      JOIN pg_catalog.pg_locks AS admission
-        ON admission.pid = activity.pid
-      WHERE activity.application_name =
-            'lifecycle-managed-lock-reconcile'
-        AND admission.locktype = 'object'
-        AND admission.classid =
-            'pg_catalog.pg_am'::pg_catalog.regclass
-        AND admission.objid = ${index_oid}
-        AND admission.objsubid = 1
-        AND admission.mode = 'ExclusiveLock'
-        AND NOT admission.granted;")"
-    reconcile_dependency_before="$(sql_super -c "SELECT count(*)
-      FROM pg_catalog.pg_stat_activity AS activity
-      JOIN pg_catalog.pg_locks AS dependency
-        ON dependency.pid = activity.pid
-      WHERE activity.application_name =
-            'lifecycle-managed-lock-reconcile'
-        AND dependency.locktype = 'object'
-        AND dependency.classid =
-            'pg_catalog.pg_am'::pg_catalog.regclass
-        AND dependency.objid = ${am_oid}
-        AND dependency.objsubid = 0
-        AND dependency.mode = 'ShareRowExclusiveLock'
-        AND NOT dependency.granted;")"
+    if [ "${reconcile_completed}" = "true" ]; then
+        wait "${reconcile_pid}" || reconcile_status=$?
+    fi
 
     sql_super -c "SELECT pg_catalog.pg_terminate_backend(pid)
       FROM pg_catalog.pg_stat_activity
       WHERE application_name =
             'lifecycle-managed-lock-blocker';" >/dev/null
     wait "${blocker_pid}" || true
-    wait "${reconcile_pid}" || reconcile_status=$?
-    wait "${signal_pid}" || signal_status=$?
-    if [ "${reconcile_status}" -ne 0 ] || [ "${signal_status}" -ne 0 ]; then
+    if [ "${signal_completed}" != "true" ]; then
+        wait "${signal_pid}" || signal_status=$?
+    fi
+    if [ "${reconcile_completed}" != "true" ]; then
+        wait "${reconcile_pid}" || reconcile_status=$?
+    fi
+    if [ "${signal_completed}" != "true" ] ||
+        [ "${reconcile_completed}" != "true" ] ||
+        [ "${reconcile_status}" -ne 0 ] || [ "${signal_status}" -ne 0 ]; then
         error "managed lifecycle lock ordering failed:
 reconcile: $(cat "${reconcile_output}")
 signal: $(cat "${signal_output}")"
@@ -5183,14 +5123,13 @@ signal: $(cat "${signal_output}")"
 reconcile: $(cat "${reconcile_output}")
 signal: $(cat "${signal_output}")"
     fi
-    assert_eq "blocked signal takes admission before dependency" "1" \
-        "${admission_before}"
-    assert_eq "blocked signal waits on the dependency object" "1" \
-        "${signal_dependency_wait}"
-    assert_eq "reconciliation waits on the same admission" "1" \
-        "${reconcile_admission_wait}"
-    assert_eq "reconciliation waits for admission before dependency" "0" \
-        "${reconcile_dependency_before}"
+    if ! grep -Fq \
+        "background compaction lifecycle reconciliation was deferred" \
+        "${reconcile_output}"; then
+        error "contended partition reconciliation was not reported:
+$(cat "${reconcile_output}")"
+    fi
+    log "PASS: PRECOMMIT managed paths defer instead of waiting"
     assert_eq "partition option reconciliation completes" "t:t" \
         "$(sql_super -c "SELECT pg_catalog.concat_ws(
             ':',
@@ -5198,16 +5137,1512 @@ signal: $(cat "${signal_output}")"
             reloptions @>
               ARRAY['compaction_schedule=5 4 3 2 *'])
           FROM pg_catalog.pg_class WHERE oid = ${index_oid};")"
+    sql_as durable_owner -c "
+        ALTER INDEX public.lifecycle_managed_lock_leaf_idx
+          SET (compaction_schedule = '5 4 3 2 *');" >/dev/null
+    assert_eq "deferred partition schedule is retryable" "t" \
+        "$(sql_super -c "SELECT EXISTS (
+          SELECT 1 FROM df.instances
+          WHERE label OPERATOR(pg_catalog.~~)
+                ('pg_textsearch:bg:v1:%:${index_oid}:%:' ||
+                 pg_catalog.encode(
+                   pg_catalog.convert_to('5 4 3 2 *', 'UTF8'), 'hex'))
+            AND status OPERATOR(pg_catalog.=)
+                ANY (ARRAY['pending', 'running']::pg_catalog.text[]));")"
 
     sql_super -c "DROP TABLE public.lifecycle_managed_lock_docs;"
 }
 
+test_alter_reindex_lock_order() {
+    local alter_admission_before alter_output alter_pid alter_status=0
+    local alter_waited=false gate_pid index_oid reindex_inverse
+    local reindex_output reindex_pid reindex_status=0
+
+    alter_output="${DATA_DIR}/alter-reindex-alter.out"
+    reindex_output="${DATA_DIR}/alter-reindex-reindex.out"
+    sql_as durable_owner <<'SQL' >/dev/null 2>&1
+CREATE TABLE public.lifecycle_alter_reindex_docs (body text);
+CREATE INDEX lifecycle_alter_reindex_idx
+    ON public.lifecycle_alter_reindex_docs USING bm25(body)
+    WITH (text_config = 'english',
+          compaction = 'background',
+          compaction_schedule = '0 0 1 1 *');
+CREATE TABLE public.lifecycle_uppercase_background_docs (body text);
+CREATE INDEX lifecycle_uppercase_background_idx
+    ON public.lifecycle_uppercase_background_docs USING bm25(body)
+    WITH (text_config = 'english', compaction = 'manual');
+CREATE FUNCTION public.lifecycle_alter_reindex_pause()
+RETURNS event_trigger
+LANGUAGE plpgsql
+SET search_path = pg_catalog, pg_temp
+AS $body$
+BEGIN
+    IF pg_catalog.current_setting('application_name')
+           OPERATOR(pg_catalog.=) 'lifecycle-alter-reindex-alter' THEN
+        PERFORM pg_catalog.pg_advisory_xact_lock_shared(478, 14);
+    END IF;
+END
+$body$;
+SQL
+    sql_super -c "
+        CREATE EVENT TRIGGER lifecycle_alter_reindex_pause
+          ON ddl_command_start
+          WHEN TAG IN ('ALTER INDEX')
+          EXECUTE FUNCTION public.lifecycle_alter_reindex_pause();" \
+        >/dev/null
+    index_oid="$(sql_super -c "SELECT
+        'public.lifecycle_alter_reindex_idx'::regclass::oid;")"
+
+    PGAPPNAME=lifecycle-alter-reindex-gate sql_super -c \
+        "SELECT pg_catalog.pg_advisory_lock(478, 14);
+         SELECT pg_catalog.pg_sleep(120);" \
+        >"${DATA_DIR}/alter-reindex-gate.out" 2>&1 &
+    gate_pid=$!
+    for _ in $(seq 1 100); do
+        if [ "$(sql_super -c "SELECT count(*)
+              FROM pg_catalog.pg_stat_activity
+              WHERE application_name = 'lifecycle-alter-reindex-gate'
+                AND wait_event = 'PgSleep';")" = "1" ]; then
+            break
+        fi
+        sleep 0.1
+    done
+
+    PGAPPNAME=lifecycle-alter-reindex-alter \
+        PGOPTIONS="-c deadlock_timeout=100ms -c statement_timeout=15s" \
+        "${PGBINDIR}/psql" -h "${SOCKET_DIR}" -p "${TEST_PORT}" \
+        -U postgres -d "${TEST_DB}" -qAt -v ON_ERROR_STOP=1 \
+        -c "ALTER INDEX public.lifecycle_alter_reindex_idx
+              SET (compaction_schedule = '1 0 1 1 *');" \
+        >"${alter_output}" 2>&1 &
+    alter_pid=$!
+    for _ in $(seq 1 100); do
+        if [ "$(sql_super -c "SELECT count(*)
+              FROM pg_catalog.pg_stat_activity
+              WHERE application_name =
+                    'lifecycle-alter-reindex-alter'
+                AND wait_event = 'advisory';")" = "1" ]; then
+            break
+        fi
+        sleep 0.1
+    done
+    assert_eq "managed ALTER reaches the pre-core barrier" "1" \
+        "$(sql_super -c "SELECT count(*)
+          FROM pg_catalog.pg_stat_activity
+          WHERE application_name =
+                'lifecycle-alter-reindex-alter'
+            AND wait_event = 'advisory';")"
+    alter_admission_before="$(sql_super -c "SELECT count(*)
+          FROM pg_catalog.pg_stat_activity AS activity
+          JOIN pg_catalog.pg_locks AS admission
+            ON admission.pid = activity.pid
+          WHERE activity.application_name =
+                'lifecycle-alter-reindex-alter'
+            AND activity.wait_event = 'advisory'
+            AND admission.locktype = 'object'
+            AND admission.classid =
+                'pg_catalog.pg_am'::pg_catalog.regclass
+            AND admission.objid = ${index_oid}
+            AND admission.objsubid = 1
+            AND admission.mode = 'ExclusiveLock'
+            AND admission.granted;")"
+
+    if [ "${alter_admission_before}" = "0" ]; then
+        sql_super -c "SELECT pg_catalog.pg_terminate_backend(pid)
+          FROM pg_catalog.pg_stat_activity
+          WHERE application_name =
+                'lifecycle-alter-reindex-gate';" >/dev/null
+        wait "${gate_pid}" || true
+        wait "${alter_pid}" || alter_status=$?
+        alter_waited=true
+    fi
+
+    PGAPPNAME=lifecycle-alter-reindex-reindex \
+        PGOPTIONS="-c deadlock_timeout=100ms -c statement_timeout=15s" \
+        "${PGBINDIR}/psql" -h "${SOCKET_DIR}" -p "${TEST_PORT}" \
+        -U postgres -d "${TEST_DB}" -qAt -v ON_ERROR_STOP=1 \
+        -c "REINDEX INDEX CONCURRENTLY
+              public.lifecycle_alter_reindex_idx;" \
+        >"${reindex_output}" 2>&1 &
+    reindex_pid=$!
+    for _ in $(seq 1 100); do
+        if [ "$(sql_super -c "SELECT count(*)
+              FROM pg_catalog.pg_stat_activity AS activity
+              JOIN pg_catalog.pg_locks AS admission
+                ON admission.pid = activity.pid
+              WHERE activity.application_name =
+                    'lifecycle-alter-reindex-reindex'
+                AND admission.locktype = 'object'
+                AND admission.classid =
+                    'pg_catalog.pg_am'::pg_catalog.regclass
+                AND admission.objid = ${index_oid}
+                AND admission.objsubid = 1
+                AND admission.mode = 'ExclusiveLock'
+                AND NOT admission.granted;")" = "1" ]; then
+            break
+        fi
+        if [ "$(sql_super -c "SELECT count(*)
+              FROM pg_catalog.pg_stat_activity
+              WHERE application_name =
+                    'lifecycle-alter-reindex-reindex';")" = "0" ]; then
+            break
+        fi
+        sleep 0.1
+    done
+    reindex_inverse="$(sql_super -c "SELECT
+            count(*) FILTER (
+              WHERE relation_lock.locktype = 'relation'
+                AND relation_lock.relation = ${index_oid}
+                AND relation_lock.mode = 'ShareUpdateExclusiveLock'
+                AND relation_lock.granted)
+            || ':' ||
+            count(*) FILTER (
+              WHERE relation_lock.locktype = 'object'
+                AND relation_lock.classid =
+                    'pg_catalog.pg_am'::pg_catalog.regclass
+                AND relation_lock.objid = ${index_oid}
+                AND relation_lock.objsubid = 1
+                AND relation_lock.mode = 'ExclusiveLock'
+                AND NOT relation_lock.granted)
+          FROM pg_catalog.pg_stat_activity AS activity
+          JOIN pg_catalog.pg_locks AS relation_lock
+            ON relation_lock.pid = activity.pid
+          WHERE activity.application_name =
+                'lifecycle-alter-reindex-reindex';")"
+    if [ "${alter_admission_before}" = "1" ]; then
+        assert_eq "old-order REINDEX reaches the inverse lock edge" "1:1" \
+            "${reindex_inverse}"
+        sql_super -c "SELECT pg_catalog.pg_terminate_backend(pid)
+          FROM pg_catalog.pg_stat_activity
+          WHERE application_name =
+                'lifecycle-alter-reindex-gate';" >/dev/null
+        wait "${gate_pid}" || true
+    fi
+    if [ "${alter_waited}" = "false" ]; then
+        wait "${alter_pid}" || alter_status=$?
+    fi
+    wait "${reindex_pid}" || reindex_status=$?
+    if [ "${alter_status}" -ne 0 ] || [ "${reindex_status}" -ne 0 ] ||
+        grep -Fq "deadlock detected" "${alter_output}" ||
+        grep -Fq "deadlock detected" "${reindex_output}"; then
+        error "ALTER/concurrent REINDEX lock order failed:
+alter: $(cat "${alter_output}")
+reindex: $(cat "${reindex_output}")"
+    fi
+    assert_eq "managed ALTER takes no admission before core relation lock" \
+        "0" "${alter_admission_before}"
+    assert_eq "ALTER schedule survives concurrent REINDEX" "t" \
+        "$(sql_super -c "SELECT reloptions @>
+          ARRAY['compaction_schedule=1 0 1 1 *']
+          FROM pg_catalog.pg_class WHERE oid =
+            'public.lifecycle_alter_reindex_idx'::regclass;")"
+
+    sql_as durable_owner -c "
+        ALTER INDEX public.lifecycle_uppercase_background_idx
+          SET (compaction = 'BACKGROUND');" >/dev/null
+    assert_eq "accepted mixed-case background option activates" "1" \
+        "$(active_jobs_for_index "$(sql_super -c "SELECT
+          'public.lifecycle_uppercase_background_idx'::regclass::oid;")")"
+
+    sql_super -c "
+        DROP EVENT TRIGGER lifecycle_alter_reindex_pause;
+        DROP FUNCTION public.lifecycle_alter_reindex_pause();
+        DROP TABLE public.lifecycle_alter_reindex_docs,
+                   public.lifecycle_uppercase_background_docs;" >/dev/null
+}
+
+test_cross_statement_reindex_lock_order() {
+    local am_oid dependency_before first_output first_pid first_status=0
+    local first_waited=false gate_pid second_index_oid second_output
+    local second_pid second_status=0
+
+    first_output="${DATA_DIR}/cross-reindex-first.out"
+    second_output="${DATA_DIR}/cross-reindex-second.out"
+    sql_as durable_owner <<'SQL' >/dev/null 2>&1
+CREATE TABLE public.lifecycle_cross_reindex_first_docs (body text);
+CREATE INDEX lifecycle_cross_reindex_first_idx
+    ON public.lifecycle_cross_reindex_first_docs USING bm25(body)
+    WITH (text_config = 'english',
+          compaction = 'background',
+          compaction_schedule = '0 0 1 1 *');
+CREATE TABLE public.lifecycle_cross_reindex_second_docs (body text);
+CREATE INDEX lifecycle_cross_reindex_second_idx
+    ON public.lifecycle_cross_reindex_second_docs USING bm25(body)
+    WITH (text_config = 'english',
+          compaction = 'background',
+          compaction_schedule = '0 0 1 1 *');
+SQL
+    second_index_oid="$(sql_super -c "SELECT
+        'public.lifecycle_cross_reindex_second_idx'::regclass::oid;")"
+    am_oid="$(sql_super -c \
+        "SELECT oid FROM pg_catalog.pg_am WHERE amname = 'bm25';")"
+
+    PGAPPNAME=lifecycle-cross-reindex-gate sql_super -c \
+        "SELECT pg_catalog.pg_advisory_lock(478, 15);
+         SELECT pg_catalog.pg_sleep(120);" \
+        >"${DATA_DIR}/cross-reindex-gate.out" 2>&1 &
+    gate_pid=$!
+    for _ in $(seq 1 100); do
+        if [ "$(sql_super -c "SELECT count(*)
+              FROM pg_catalog.pg_stat_activity
+              WHERE application_name = 'lifecycle-cross-reindex-gate'
+                AND wait_event = 'PgSleep';")" = "1" ]; then
+            break
+        fi
+        sleep 0.1
+    done
+
+    PGAPPNAME=lifecycle-cross-reindex-first \
+        PGOPTIONS="-c deadlock_timeout=100ms -c statement_timeout=15s" \
+        "${PGBINDIR}/psql" -h "${SOCKET_DIR}" -p "${TEST_PORT}" \
+        -U postgres -d "${TEST_DB}" -qAt -v ON_ERROR_STOP=1 \
+        -c "BEGIN;
+            REINDEX INDEX public.lifecycle_cross_reindex_first_idx;
+            SELECT pg_catalog.pg_advisory_xact_lock(478, 15);
+            REINDEX INDEX public.lifecycle_cross_reindex_second_idx;
+            COMMIT;" >"${first_output}" 2>&1 &
+    first_pid=$!
+    for _ in $(seq 1 100); do
+        if [ "$(sql_super -c "SELECT count(*)
+              FROM pg_catalog.pg_stat_activity
+              WHERE application_name = 'lifecycle-cross-reindex-first'
+                AND wait_event = 'advisory';")" = "1" ]; then
+            break
+        fi
+        sleep 0.1
+    done
+    assert_eq "first REINDEX transaction reaches the statement barrier" "1" \
+        "$(sql_super -c "SELECT count(*)
+          FROM pg_catalog.pg_stat_activity
+          WHERE application_name = 'lifecycle-cross-reindex-first'
+            AND wait_event = 'advisory';")"
+    dependency_before="$(sql_super -c "SELECT count(*)
+      FROM pg_catalog.pg_stat_activity AS activity
+      JOIN pg_catalog.pg_locks AS dependency
+        ON dependency.pid = activity.pid
+      WHERE activity.application_name = 'lifecycle-cross-reindex-first'
+        AND dependency.locktype = 'object'
+        AND dependency.classid =
+            'pg_catalog.pg_am'::pg_catalog.regclass
+        AND dependency.objid = ${am_oid}
+        AND dependency.objsubid = 0
+        AND dependency.mode = 'ShareRowExclusiveLock'
+        AND dependency.granted;")"
+
+    if [ "${dependency_before}" = "0" ]; then
+        sql_super -c "SELECT pg_catalog.pg_terminate_backend(pid)
+          FROM pg_catalog.pg_stat_activity
+          WHERE application_name =
+                'lifecycle-cross-reindex-gate';" >/dev/null
+        wait "${gate_pid}" || true
+        wait "${first_pid}" || first_status=$?
+        first_waited=true
+    fi
+
+    PGAPPNAME=lifecycle-cross-reindex-second \
+        PGOPTIONS="-c deadlock_timeout=100ms -c statement_timeout=15s" \
+        "${PGBINDIR}/psql" -h "${SOCKET_DIR}" -p "${TEST_PORT}" \
+        -U postgres -d "${TEST_DB}" -qAt -v ON_ERROR_STOP=1 \
+        -c "BEGIN;
+            REINDEX INDEX public.lifecycle_cross_reindex_second_idx;
+            COMMIT;" >"${second_output}" 2>&1 &
+    second_pid=$!
+    if [ "${dependency_before}" = "1" ]; then
+        for _ in $(seq 1 100); do
+            if [ "$(sql_super -c "SELECT count(*)
+                  FROM pg_catalog.pg_stat_activity AS activity
+                  JOIN pg_catalog.pg_locks AS dependency
+                    ON dependency.pid = activity.pid
+                  WHERE activity.application_name =
+                        'lifecycle-cross-reindex-second'
+                    AND dependency.locktype = 'object'
+                    AND dependency.classid =
+                        'pg_catalog.pg_am'::pg_catalog.regclass
+                    AND dependency.objid = ${am_oid}
+                    AND dependency.objsubid = 0
+                    AND dependency.mode = 'ShareRowExclusiveLock'
+                    AND NOT dependency.granted;")" = "1" ]; then
+                break
+            fi
+            sleep 0.1
+        done
+        assert_eq "inverse REINDEX holds relation while waiting dependency" \
+            "1:1" \
+            "$(sql_super -c "SELECT
+                count(*) FILTER (
+                  WHERE managed.locktype = 'relation'
+                    AND managed.relation = ${second_index_oid}
+                    AND managed.mode = 'AccessExclusiveLock'
+                    AND managed.granted)
+                || ':' ||
+                count(*) FILTER (
+                  WHERE managed.locktype = 'object'
+                    AND managed.classid =
+                        'pg_catalog.pg_am'::pg_catalog.regclass
+                    AND managed.objid = ${am_oid}
+                    AND managed.objsubid = 0
+                    AND managed.mode = 'ShareRowExclusiveLock'
+                    AND NOT managed.granted)
+              FROM pg_catalog.pg_stat_activity AS activity
+              JOIN pg_catalog.pg_locks AS managed
+                ON managed.pid = activity.pid
+              WHERE activity.application_name =
+                    'lifecycle-cross-reindex-second';")"
+        sql_super -c "SELECT pg_catalog.pg_terminate_backend(pid)
+          FROM pg_catalog.pg_stat_activity
+          WHERE application_name =
+                'lifecycle-cross-reindex-gate';" >/dev/null
+        wait "${gate_pid}" || true
+    fi
+
+    if [ "${first_waited}" = "false" ]; then
+        wait "${first_pid}" || first_status=$?
+    fi
+    wait "${second_pid}" || second_status=$?
+    if [ "${first_status}" -ne 0 ] || [ "${second_status}" -ne 0 ] ||
+        grep -Fq "deadlock detected" "${first_output}" ||
+        grep -Fq "deadlock detected" "${second_output}"; then
+        error "cross-statement REINDEX lock order failed:
+first: $(cat "${first_output}")
+second: $(cat "${second_output}")"
+    fi
+    assert_eq "REINDEX defers dependency work to the terminal batch" \
+        "0" "${dependency_before}"
+    assert_eq "both REINDEX workflows remain current" "1:1" \
+        "$(current_generation_job_count "$(sql_super -c "SELECT
+          'public.lifecycle_cross_reindex_first_idx'::regclass::oid;")"):$(
+          current_generation_job_count "$(sql_super -c "SELECT
+          'public.lifecycle_cross_reindex_second_idx'::regclass::oid;")")"
+
+    sql_super -c "
+        DROP TABLE public.lifecycle_cross_reindex_first_docs,
+                   public.lifecycle_cross_reindex_second_docs;" >/dev/null
+}
+
+test_cross_statement_owner_lock_order() {
+    local am_oid dependency_before first_output first_pid first_status=0
+    local first_waited=false gate_pid second_heap_oid second_output
+    local second_pid second_status=0
+
+    first_output="${DATA_DIR}/cross-owner-first.out"
+    second_output="${DATA_DIR}/cross-owner-second.out"
+    sql_as durable_owner <<'SQL' >/dev/null 2>&1
+CREATE TABLE public.lifecycle_cross_owner_first_docs (body text);
+CREATE INDEX lifecycle_cross_owner_first_idx
+    ON public.lifecycle_cross_owner_first_docs USING bm25(body)
+    WITH (text_config = 'english',
+          compaction = 'background',
+          compaction_schedule = '0 0 1 1 *');
+CREATE TABLE public.lifecycle_cross_owner_second_docs (body text);
+CREATE INDEX lifecycle_cross_owner_second_idx
+    ON public.lifecycle_cross_owner_second_docs USING bm25(body)
+    WITH (text_config = 'english',
+          compaction = 'background',
+          compaction_schedule = '0 0 1 1 *');
+SQL
+    second_heap_oid="$(sql_super -c "SELECT
+        'public.lifecycle_cross_owner_second_docs'::regclass::oid;")"
+    am_oid="$(sql_super -c \
+        "SELECT oid FROM pg_catalog.pg_am WHERE amname = 'bm25';")"
+
+    PGAPPNAME=lifecycle-cross-owner-gate sql_super -c \
+        "SELECT pg_catalog.pg_advisory_lock(478, 16);
+         SELECT pg_catalog.pg_sleep(120);" \
+        >"${DATA_DIR}/cross-owner-gate.out" 2>&1 &
+    gate_pid=$!
+    for _ in $(seq 1 100); do
+        if [ "$(sql_super -c "SELECT count(*)
+              FROM pg_catalog.pg_stat_activity
+              WHERE application_name = 'lifecycle-cross-owner-gate'
+                AND wait_event = 'PgSleep';")" = "1" ]; then
+            break
+        fi
+        sleep 0.1
+    done
+
+    PGAPPNAME=lifecycle-cross-owner-first \
+        PGOPTIONS="-c deadlock_timeout=100ms -c statement_timeout=15s" \
+        "${PGBINDIR}/psql" -h "${SOCKET_DIR}" -p "${TEST_PORT}" \
+        -U postgres -d "${TEST_DB}" -qAt -v ON_ERROR_STOP=1 \
+        -c "BEGIN;
+            ALTER TABLE public.lifecycle_cross_owner_first_docs
+              OWNER TO durable_owner_two;
+            SELECT pg_catalog.pg_advisory_xact_lock(478, 16);
+            ALTER TABLE public.lifecycle_cross_owner_second_docs
+              OWNER TO durable_owner_two;
+            COMMIT;" >"${first_output}" 2>&1 &
+    first_pid=$!
+    for _ in $(seq 1 100); do
+        if [ "$(sql_super -c "SELECT count(*)
+              FROM pg_catalog.pg_stat_activity
+              WHERE application_name = 'lifecycle-cross-owner-first'
+                AND wait_event = 'advisory';")" = "1" ]; then
+            break
+        fi
+        sleep 0.1
+    done
+    assert_eq "first owner transaction reaches the statement barrier" "1" \
+        "$(sql_super -c "SELECT count(*)
+          FROM pg_catalog.pg_stat_activity
+          WHERE application_name = 'lifecycle-cross-owner-first'
+            AND wait_event = 'advisory';")"
+    dependency_before="$(sql_super -c "SELECT count(*)
+      FROM pg_catalog.pg_stat_activity AS activity
+      JOIN pg_catalog.pg_locks AS dependency
+        ON dependency.pid = activity.pid
+      WHERE activity.application_name = 'lifecycle-cross-owner-first'
+        AND dependency.locktype = 'object'
+        AND dependency.classid =
+            'pg_catalog.pg_am'::pg_catalog.regclass
+        AND dependency.objid = ${am_oid}
+        AND dependency.objsubid = 0
+        AND dependency.mode = 'ShareRowExclusiveLock'
+        AND dependency.granted;")"
+
+    if [ "${dependency_before}" = "0" ]; then
+        sql_super -c "SELECT pg_catalog.pg_terminate_backend(pid)
+          FROM pg_catalog.pg_stat_activity
+          WHERE application_name =
+                'lifecycle-cross-owner-gate';" >/dev/null
+        wait "${gate_pid}" || true
+        wait "${first_pid}" || first_status=$?
+        first_waited=true
+    fi
+
+    PGAPPNAME=lifecycle-cross-owner-second \
+        PGOPTIONS="-c deadlock_timeout=100ms -c statement_timeout=15s" \
+        "${PGBINDIR}/psql" -h "${SOCKET_DIR}" -p "${TEST_PORT}" \
+        -U postgres -d "${TEST_DB}" -qAt -v ON_ERROR_STOP=1 \
+        -c "BEGIN;
+            ALTER TABLE public.lifecycle_cross_owner_second_docs
+              OWNER TO durable_owner_two;
+            COMMIT;" >"${second_output}" 2>&1 &
+    second_pid=$!
+    if [ "${dependency_before}" = "1" ]; then
+        for _ in $(seq 1 100); do
+            if [ "$(sql_super -c "SELECT count(*)
+                  FROM pg_catalog.pg_stat_activity AS activity
+                  JOIN pg_catalog.pg_locks AS dependency
+                    ON dependency.pid = activity.pid
+                  WHERE activity.application_name =
+                        'lifecycle-cross-owner-second'
+                    AND dependency.locktype = 'object'
+                    AND dependency.classid =
+                        'pg_catalog.pg_am'::pg_catalog.regclass
+                    AND dependency.objid = ${am_oid}
+                    AND dependency.objsubid = 0
+                    AND dependency.mode = 'ShareRowExclusiveLock'
+                    AND NOT dependency.granted;")" = "1" ]; then
+                break
+            fi
+            sleep 0.1
+        done
+        assert_eq "inverse owner change holds heap while waiting dependency" \
+            "1:1" \
+            "$(sql_super -c "SELECT
+                count(*) FILTER (
+                  WHERE managed.locktype = 'relation'
+                    AND managed.relation = ${second_heap_oid}
+                    AND managed.mode = 'AccessExclusiveLock'
+                    AND managed.granted)
+                || ':' ||
+                count(*) FILTER (
+                  WHERE managed.locktype = 'object'
+                    AND managed.classid =
+                        'pg_catalog.pg_am'::pg_catalog.regclass
+                    AND managed.objid = ${am_oid}
+                    AND managed.objsubid = 0
+                    AND managed.mode = 'ShareRowExclusiveLock'
+                    AND NOT managed.granted)
+              FROM pg_catalog.pg_stat_activity AS activity
+              JOIN pg_catalog.pg_locks AS managed
+                ON managed.pid = activity.pid
+              WHERE activity.application_name =
+                    'lifecycle-cross-owner-second';")"
+        sql_super -c "SELECT pg_catalog.pg_terminate_backend(pid)
+          FROM pg_catalog.pg_stat_activity
+          WHERE application_name =
+                'lifecycle-cross-owner-gate';" >/dev/null
+        wait "${gate_pid}" || true
+    fi
+
+    if [ "${first_waited}" = "false" ]; then
+        wait "${first_pid}" || first_status=$?
+    fi
+    wait "${second_pid}" || second_status=$?
+    if [ "${first_status}" -ne 0 ] || [ "${second_status}" -ne 0 ] ||
+        grep -Fq "deadlock detected" "${first_output}" ||
+        grep -Fq "deadlock detected" "${second_output}"; then
+        error "cross-statement owner lock order failed:
+first: $(cat "${first_output}")
+second: $(cat "${second_output}")"
+    fi
+    assert_eq "owner changes defer dependency work to the terminal batch" \
+        "0" "${dependency_before}"
+    assert_eq "both owner changes preserve current workflows" "1:1" \
+        "$(current_generation_job_count "$(sql_super -c "SELECT
+          'public.lifecycle_cross_owner_first_idx'::regclass::oid;")"):$(
+          current_generation_job_count "$(sql_super -c "SELECT
+          'public.lifecycle_cross_owner_second_idx'::regclass::oid;")")"
+    assert_eq "both owner changes complete" \
+        "durable_owner_two:durable_owner_two" \
+        "$(sql_super -c "SELECT
+          pg_catalog.pg_get_userbyid(
+            (SELECT relowner FROM pg_catalog.pg_class
+             WHERE oid =
+               'public.lifecycle_cross_owner_first_docs'::regclass))
+          || ':' ||
+          pg_catalog.pg_get_userbyid(
+            (SELECT relowner FROM pg_catalog.pg_class
+             WHERE oid =
+               'public.lifecycle_cross_owner_second_docs'::regclass));")"
+
+    sql_super -c "
+        DROP TABLE public.lifecycle_cross_owner_first_docs,
+                   public.lifecycle_cross_owner_second_docs;" >/dev/null
+}
+
+test_multi_family_partition_attach_batch() {
+    local attach_output
+    local child_a_oid child_b_oid parent_a_lineage parent_b_lineage
+
+    sql_as durable_owner <<'SQL' >/dev/null 2>&1
+CREATE TABLE public.lifecycle_multi_family_parent (
+    id integer,
+    body_a text,
+    body_b text
+) PARTITION BY RANGE (id);
+CREATE INDEX lifecycle_multi_family_parent_a_idx
+    ON public.lifecycle_multi_family_parent USING bm25(body_a)
+    WITH (text_config = 'english',
+          compaction = 'background',
+          compaction_schedule = '1 0 1 1 *');
+CREATE INDEX lifecycle_multi_family_parent_b_idx
+    ON public.lifecycle_multi_family_parent USING bm25(body_b)
+    WITH (text_config = 'english',
+          compaction = 'background',
+          compaction_schedule = '2 0 1 1 *');
+CREATE TABLE public.lifecycle_multi_family_child (
+    id integer,
+    body_a text,
+    body_b text
+);
+SQL
+    if ! attach_output="$(sql_as durable_owner -c "
+        ALTER TABLE public.lifecycle_multi_family_parent
+          ATTACH PARTITION public.lifecycle_multi_family_child
+          FOR VALUES FROM (0) TO (100);" 2>&1)"; then
+        error "two-family partition attachment failed: ${attach_output}"
+    fi
+
+    child_a_oid="$(sql_super -c "SELECT inhrelid
+      FROM pg_catalog.pg_inherits
+      WHERE inhparent =
+        'public.lifecycle_multi_family_parent_a_idx'::regclass;")"
+    child_b_oid="$(sql_super -c "SELECT inhrelid
+      FROM pg_catalog.pg_inherits
+      WHERE inhparent =
+        'public.lifecycle_multi_family_parent_b_idx'::regclass;")"
+    parent_a_lineage="$(
+        index_lineage public.lifecycle_multi_family_parent_a_idx
+    )"
+    parent_b_lineage="$(
+        index_lineage public.lifecycle_multi_family_parent_b_idx
+    )"
+
+    assert_eq "two-family attachment creates both physical indexes" "t:t" \
+        "$(sql_super -c "SELECT pg_catalog.concat_ws(
+          ':',
+          ${child_a_oid} <> ${child_b_oid},
+          (SELECT count(*) FROM pg_catalog.pg_class
+           WHERE oid IN (${child_a_oid}, ${child_b_oid})) = 2);")"
+    assert_eq "first attached family inherits lifecycle options" \
+        "${parent_a_lineage}:true" \
+        "$(sql_super -c "SELECT
+          pg_catalog.substr(
+            lineage_option,
+            pg_catalog.length('compaction_lineage=') + 1)
+          || ':' ||
+          (relation.reloptions @>
+             ARRAY['compaction_schedule=1 0 1 1 *'])::text
+          FROM pg_catalog.pg_class AS relation
+          CROSS JOIN LATERAL pg_catalog.unnest(
+            relation.reloptions) AS lineage_option
+          WHERE relation.oid = ${child_a_oid}
+            AND lineage_option OPERATOR(pg_catalog.~~)
+                'compaction_lineage=%';")"
+    assert_eq "second attached family inherits lifecycle options" \
+        "${parent_b_lineage}:true" \
+        "$(sql_super -c "SELECT
+          pg_catalog.substr(
+            lineage_option,
+            pg_catalog.length('compaction_lineage=') + 1)
+          || ':' ||
+          (relation.reloptions @>
+             ARRAY['compaction_schedule=2 0 1 1 *'])::text
+          FROM pg_catalog.pg_class AS relation
+          CROSS JOIN LATERAL pg_catalog.unnest(
+            relation.reloptions) AS lineage_option
+          WHERE relation.oid = ${child_b_oid}
+            AND lineage_option OPERATOR(pg_catalog.~~)
+                'compaction_lineage=%';")"
+    assert_eq "two-family attachment activates both leaves" "1:1" \
+        "$(current_generation_job_count "${child_a_oid}"):$(
+          current_generation_job_count "${child_b_oid}")"
+
+    sql_super -c "DROP TABLE public.lifecycle_multi_family_parent;" \
+        >/dev/null
+}
+
+test_lineage_lookup_drop_durable_order() {
+    local create_output create_pid create_status=0 durable_oid
+    local drop_output drop_pid drop_status=0 gate_create_pid gate_drop_pid
+    local instances_oid member_before
+
+    create_output="${DATA_DIR}/lineage-drop-create.out"
+    drop_output="${DATA_DIR}/lineage-drop-extension.out"
+    durable_oid="$(sql_super -c "SELECT oid FROM pg_catalog.pg_extension
+      WHERE extname = 'pg_durable';")"
+    instances_oid="$(sql_super -c "SELECT 'df.instances'::regclass::oid;")"
+
+    sql_as durable_owner <<'SQL' >/dev/null 2>&1
+CREATE TABLE public.lifecycle_lineage_drop_docs (body text);
+CREATE FUNCTION public.lifecycle_lineage_drop_pause()
+RETURNS event_trigger
+LANGUAGE plpgsql
+SET search_path = pg_catalog, pg_temp
+AS $body$
+BEGIN
+    IF pg_catalog.current_setting('application_name')
+           OPERATOR(pg_catalog.=) 'lifecycle-lineage-drop-create' THEN
+        PERFORM pg_catalog.pg_advisory_xact_lock_shared(478, 17);
+    END IF;
+END
+$body$;
+SQL
+    sql_super -c "
+        CREATE EVENT TRIGGER lifecycle_lineage_drop_pause
+          ON ddl_command_start
+          WHEN TAG IN ('CREATE INDEX')
+          EXECUTE FUNCTION public.lifecycle_lineage_drop_pause();" \
+        >/dev/null
+
+    PGAPPNAME=lifecycle-lineage-drop-create-gate sql_super -c \
+        "SELECT pg_catalog.pg_advisory_lock(478, 17);
+         SELECT pg_catalog.pg_sleep(120);" \
+        >"${DATA_DIR}/lineage-drop-create-gate.out" 2>&1 &
+    gate_create_pid=$!
+    PGAPPNAME=lifecycle-lineage-drop-extension-gate sql_super -c \
+        "SELECT pg_catalog.pg_advisory_lock(478, 18);
+         SELECT pg_catalog.pg_sleep(120);" \
+        >"${DATA_DIR}/lineage-drop-extension-gate.out" 2>&1 &
+    gate_drop_pid=$!
+    for _ in $(seq 1 100); do
+        if [ "$(sql_super -c "SELECT count(*)
+              FROM pg_catalog.pg_stat_activity
+              WHERE application_name IN (
+                'lifecycle-lineage-drop-create-gate',
+                'lifecycle-lineage-drop-extension-gate')
+                AND wait_event = 'PgSleep';")" = "2" ]; then
+            break
+        fi
+        sleep 0.1
+    done
+
+    PGAPPNAME=lifecycle-lineage-drop-create \
+        PGOPTIONS="-c deadlock_timeout=100ms -c statement_timeout=15s" \
+        "${PGBINDIR}/psql" -h "${SOCKET_DIR}" -p "${TEST_PORT}" \
+        -U postgres -d "${TEST_DB}" -qAt -v ON_ERROR_STOP=1 \
+        -c "CREATE INDEX lifecycle_lineage_drop_idx
+              ON public.lifecycle_lineage_drop_docs USING bm25(body)
+              WITH (text_config = 'english',
+                    compaction = 'background',
+                    compaction_schedule = '0 0 1 1 *');" \
+        >"${create_output}" 2>&1 &
+    create_pid=$!
+    for _ in $(seq 1 100); do
+        if [ "$(sql_super -c "SELECT count(*)
+              FROM pg_catalog.pg_stat_activity
+              WHERE application_name = 'lifecycle-lineage-drop-create'
+                AND wait_event = 'advisory';")" = "1" ]; then
+            break
+        fi
+        sleep 0.1
+    done
+    assert_eq "lineage CREATE reaches its pre-core barrier" "1" \
+        "$(sql_super -c "SELECT count(*)
+          FROM pg_catalog.pg_stat_activity
+          WHERE application_name = 'lifecycle-lineage-drop-create'
+            AND wait_event = 'advisory';")"
+    member_before="$(sql_super -c "SELECT count(*)
+      FROM pg_catalog.pg_stat_activity AS activity
+      JOIN pg_catalog.pg_locks AS member_lock
+        ON member_lock.pid = activity.pid
+      WHERE activity.application_name = 'lifecycle-lineage-drop-create'
+        AND member_lock.locktype = 'relation'
+        AND member_lock.relation = ${instances_oid}
+        AND member_lock.mode = 'AccessShareLock'
+        AND member_lock.granted;")"
+
+    PGAPPNAME=lifecycle-lineage-drop-extension \
+        PGOPTIONS="-c deadlock_timeout=100ms -c statement_timeout=15s" \
+        "${PGBINDIR}/psql" -h "${SOCKET_DIR}" -p "${TEST_PORT}" \
+        -U postgres -d "${TEST_DB}" -qAt -v ON_ERROR_STOP=1 \
+        -c "BEGIN;
+            ALTER EXTENSION pg_durable DROP TABLE df.instances;
+            LOCK TABLE df.instances IN ACCESS EXCLUSIVE MODE;
+            SELECT pg_catalog.pg_advisory_xact_lock(478, 18);
+            ROLLBACK;" >"${drop_output}" 2>&1 &
+    drop_pid=$!
+
+    if [ "${member_before}" = "1" ]; then
+        for _ in $(seq 1 100); do
+            if [ "$(sql_super -c "SELECT count(*)
+                  FROM pg_catalog.pg_stat_activity AS activity
+                  JOIN pg_catalog.pg_locks AS member_lock
+                    ON member_lock.pid = activity.pid
+                  WHERE activity.application_name =
+                        'lifecycle-lineage-drop-extension'
+                    AND member_lock.locktype = 'relation'
+                    AND member_lock.relation = ${instances_oid}
+                    AND member_lock.mode = 'AccessExclusiveLock'
+                    AND NOT member_lock.granted;")" = "1" ]; then
+                break
+            fi
+            sleep 0.1
+        done
+        assert_eq "pg_durable member change waits behind lineage SPI" "1:1" \
+            "$(sql_super -c "SELECT
+              count(*) FILTER (
+                WHERE extension_lock.locktype = 'object'
+                  AND extension_lock.classid =
+                      'pg_catalog.pg_extension'::pg_catalog.regclass
+                  AND extension_lock.objid = ${durable_oid}
+                  AND extension_lock.mode = 'AccessExclusiveLock'
+                  AND extension_lock.granted)
+              || ':' ||
+              count(*) FILTER (
+                WHERE extension_lock.locktype = 'relation'
+                  AND extension_lock.relation = ${instances_oid}
+                  AND extension_lock.mode = 'AccessExclusiveLock'
+                  AND NOT extension_lock.granted)
+              FROM pg_catalog.pg_stat_activity AS activity
+              JOIN pg_catalog.pg_locks AS extension_lock
+                ON extension_lock.pid = activity.pid
+              WHERE activity.application_name =
+                    'lifecycle-lineage-drop-extension';")"
+    else
+        for _ in $(seq 1 100); do
+            if [ "$(sql_super -c "SELECT count(*)
+                  FROM pg_catalog.pg_stat_activity
+                  WHERE application_name =
+                        'lifecycle-lineage-drop-extension'
+                    AND wait_event = 'advisory';")" = "1" ]; then
+                break
+            fi
+            sleep 0.1
+        done
+        if [ "$(sql_super -c "SELECT count(*)
+              FROM pg_catalog.pg_stat_activity
+              WHERE application_name =
+                    'lifecycle-lineage-drop-extension'
+                AND wait_event = 'advisory';")" != "1" ]; then
+            error "pg_durable member change did not reach its rollback barrier:
+activity: $(sql_super -c "SELECT
+  pg_catalog.concat_ws(':', state, wait_event_type, wait_event, query)
+  FROM pg_catalog.pg_stat_activity
+  WHERE application_name = 'lifecycle-lineage-drop-extension';")
+output: $(cat "${drop_output}")"
+        fi
+        log "PASS: pg_durable member change reaches its rollback barrier"
+    fi
+
+    if [ "${member_before}" = "0" ]; then
+        sql_super -c "SELECT pg_catalog.pg_terminate_backend(pid)
+          FROM pg_catalog.pg_stat_activity
+          WHERE application_name =
+                'lifecycle-lineage-drop-extension-gate';" >/dev/null
+        wait "${gate_drop_pid}" || true
+        wait "${drop_pid}" || drop_status=$?
+    fi
+    sql_super -c "SELECT pg_catalog.pg_terminate_backend(pid)
+      FROM pg_catalog.pg_stat_activity
+      WHERE application_name =
+            'lifecycle-lineage-drop-create-gate';" >/dev/null
+    wait "${gate_create_pid}" || true
+    wait "${create_pid}" || create_status=$?
+    if [ "${member_before}" = "1" ]; then
+        sql_super -c "SELECT pg_catalog.pg_terminate_backend(pid)
+          FROM pg_catalog.pg_stat_activity
+          WHERE application_name =
+                'lifecycle-lineage-drop-extension-gate';" >/dev/null
+        wait "${gate_drop_pid}" || true
+        wait "${drop_pid}" || drop_status=$?
+    fi
+
+    if [ "${create_status}" -ne 0 ] || [ "${drop_status}" -ne 0 ] ||
+        grep -Fq "deadlock detected" "${create_output}" ||
+        grep -Fq "deadlock detected" "${drop_output}"; then
+        error "lineage lookup and DROP pg_durable lock order failed:
+create: $(cat "${create_output}")
+drop: $(cat "${drop_output}")"
+    fi
+    assert_eq "lineage collection takes no pg_durable member lock" \
+        "0" "${member_before}"
+    assert_eq "rolled-back pg_durable drop preserves both extensions" \
+        "1:1" \
+        "$(sql_super -c "SELECT
+          count(*) FILTER (WHERE extname = 'pg_durable')
+          || ':' ||
+          count(*) FILTER (WHERE extname = 'pg_textsearch')
+          FROM pg_catalog.pg_extension;")"
+    assert_eq "lineage CREATE activates after the drop rollback" "1" \
+        "$(current_generation_job_count "$(sql_super -c "SELECT
+          'public.lifecycle_lineage_drop_idx'::regclass::oid;")")"
+
+    sql_super -c "
+        DROP EVENT TRIGGER lifecycle_lineage_drop_pause;
+        DROP FUNCTION public.lifecycle_lineage_drop_pause();
+        DROP TABLE public.lifecycle_lineage_drop_docs;" >/dev/null
+}
+
+test_textsearch_extension_dependency_order() {
+    local alter_completed=false alter_output alter_pid alter_status=0
+    local extension_oid extension_output extension_pid extension_status=0
+    local gate_pid index_oid step_function_oid
+
+    alter_output="${DATA_DIR}/textsearch-extension-alter.out"
+    extension_output="${DATA_DIR}/textsearch-extension-holder.out"
+    sql_as durable_owner <<'SQL' >/dev/null 2>&1
+CREATE TABLE public.lifecycle_textsearch_extension_docs (body text);
+CREATE INDEX lifecycle_textsearch_extension_idx
+    ON public.lifecycle_textsearch_extension_docs USING bm25(body)
+    WITH (text_config = 'english',
+          compaction = 'background',
+          compaction_schedule = '0 0 1 1 *');
+SQL
+    index_oid="$(sql_super -c "SELECT
+        'public.lifecycle_textsearch_extension_idx'::regclass::oid;")"
+    extension_oid="$(sql_super -c "SELECT oid
+      FROM pg_catalog.pg_extension WHERE extname = 'pg_textsearch';")"
+    step_function_oid="$(sql_super -c "SELECT
+      'bm25_compact_step_if_current(oid,oid,oid,oid,oid)'::regprocedure::oid;")"
+
+    PGAPPNAME=lifecycle-textsearch-extension-gate sql_super -c \
+        "SELECT pg_catalog.pg_advisory_lock(478, 19);
+         SELECT pg_catalog.pg_sleep(120);" \
+        >"${DATA_DIR}/textsearch-extension-gate.out" 2>&1 &
+    gate_pid=$!
+    for _ in $(seq 1 100); do
+        if [ "$(sql_super -c "SELECT count(*)
+              FROM pg_catalog.pg_stat_activity
+              WHERE application_name =
+                    'lifecycle-textsearch-extension-gate'
+                AND wait_event = 'PgSleep';")" = "1" ]; then
+            break
+        fi
+        sleep 0.1
+    done
+
+    PGAPPNAME=lifecycle-textsearch-extension-holder \
+        PGOPTIONS="-c deadlock_timeout=100ms -c statement_timeout=15s" \
+        "${PGBINDIR}/psql" -h "${SOCKET_DIR}" -p "${TEST_PORT}" \
+        -U postgres -d "${TEST_DB}" -qAt -v ON_ERROR_STOP=1 \
+        -c "BEGIN;
+            ALTER EXTENSION pg_textsearch DROP FUNCTION
+              bm25_compact_step_if_current(oid, oid, oid, oid, oid);
+            DROP FUNCTION
+              bm25_compact_step_if_current(oid, oid, oid, oid, oid);
+            SELECT pg_catalog.pg_advisory_xact_lock_shared(478, 19);
+            DROP EXTENSION pg_textsearch CASCADE;
+            ROLLBACK;" >"${extension_output}" 2>&1 &
+    extension_pid=$!
+    for _ in $(seq 1 100); do
+        if [ "$(sql_super -c "SELECT count(*)
+              FROM pg_catalog.pg_stat_activity AS activity
+              JOIN pg_catalog.pg_locks AS member_lock
+                ON member_lock.pid = activity.pid
+              WHERE activity.application_name =
+                    'lifecycle-textsearch-extension-holder'
+                AND activity.wait_event = 'advisory'
+                AND member_lock.locktype = 'object'
+                AND member_lock.classid =
+                    'pg_catalog.pg_proc'::pg_catalog.regclass
+                AND member_lock.objid = ${step_function_oid}
+                AND member_lock.mode = 'AccessExclusiveLock'
+                AND member_lock.granted;")" = "1" ]; then
+            break
+        fi
+        sleep 0.1
+    done
+    if [ "$(sql_super -c "SELECT
+          count(*) FILTER (
+            WHERE object_lock.classid =
+                    'pg_catalog.pg_extension'::pg_catalog.regclass
+              AND object_lock.objid = ${extension_oid}
+              AND object_lock.mode = 'AccessShareLock')
+          || ':' ||
+          count(*) FILTER (
+            WHERE object_lock.classid =
+                    'pg_catalog.pg_proc'::pg_catalog.regclass
+              AND object_lock.objid = ${step_function_oid}
+              AND object_lock.mode = 'AccessExclusiveLock')
+          FROM pg_catalog.pg_stat_activity AS activity
+          JOIN pg_catalog.pg_locks AS object_lock
+            ON object_lock.pid = activity.pid
+          WHERE activity.application_name =
+                'lifecycle-textsearch-extension-holder'
+            AND activity.wait_event = 'advisory'
+            AND object_lock.locktype = 'object'
+            AND object_lock.granted;")" != "1:1" ]; then
+        error "pg_textsearch drop did not hold its extension and member:
+activity: $(sql_super -c "SELECT
+  pg_catalog.concat_ws(':', state, wait_event_type, wait_event, query)
+  FROM pg_catalog.pg_stat_activity
+  WHERE application_name = 'lifecycle-textsearch-extension-holder';")
+locks: $(sql_super -c "SELECT pg_catalog.string_agg(
+  lock.locktype || ':' || coalesce(lock.classid::text, '') || ':' ||
+  coalesce(lock.objid::text, '') || ':' || lock.mode || ':' ||
+  lock.granted::text, ',')
+  FROM pg_catalog.pg_stat_activity AS activity
+  JOIN pg_catalog.pg_locks AS lock ON lock.pid = activity.pid
+  WHERE activity.application_name =
+        'lifecycle-textsearch-extension-holder';")
+output: $(cat "${extension_output}")"
+    fi
+    log "PASS: pg_textsearch drop holds its extension and member"
+
+    PGAPPNAME=lifecycle-textsearch-extension-alter \
+        PGOPTIONS="-c statement_timeout=15s" \
+        "${PGBINDIR}/psql" -h "${SOCKET_DIR}" -p "${TEST_PORT}" \
+        -U durable_owner -d "${TEST_DB}" -qAt -v ON_ERROR_STOP=1 \
+        -c "ALTER INDEX public.lifecycle_textsearch_extension_idx
+              SET (compaction_schedule = '7 0 1 1 *');" \
+        >"${alter_output}" 2>&1 &
+    alter_pid=$!
+    for _ in $(seq 1 100); do
+        if [ "$(sql_super -c "SELECT count(*)
+              FROM pg_catalog.pg_stat_activity
+              WHERE application_name =
+                    'lifecycle-textsearch-extension-alter';")" = "0" ]; then
+            alter_completed=true
+            break
+        fi
+        sleep 0.1
+    done
+    if [ "${alter_completed}" = "true" ]; then
+        wait "${alter_pid}" || alter_status=$?
+    fi
+    assert_eq "contended extension root defers terminal activation" "f" \
+        "$(sql_super -c "SELECT EXISTS (
+          SELECT 1 FROM df.instances
+          WHERE label OPERATOR(pg_catalog.~~)
+                ('pg_textsearch:bg:v1:%:${index_oid}:%:' ||
+                 pg_catalog.encode(
+                   pg_catalog.convert_to('7 0 1 1 *', 'UTF8'), 'hex'))
+            AND status OPERATOR(pg_catalog.=)
+                ANY (ARRAY['pending', 'running']::pg_catalog.text[]));")"
+
+    sql_super -c "SELECT pg_catalog.pg_terminate_backend(pid)
+      FROM pg_catalog.pg_stat_activity
+      WHERE application_name =
+            'lifecycle-textsearch-extension-gate';" >/dev/null
+    wait "${gate_pid}" || true
+    wait "${extension_pid}" || extension_status=$?
+    if [ "${alter_completed}" != "true" ]; then
+        wait "${alter_pid}" || alter_status=$?
+    fi
+    if [ "${alter_completed}" != "true" ] ||
+        [ "${alter_status}" -ne 0 ] ||
+        [ "${extension_status}" -ne 0 ] ||
+        ! grep -Fq \
+            "background compaction lifecycle reconciliation was deferred" \
+            "${alter_output}" ||
+        grep -Fq "deadlock detected" "${alter_output}" ||
+        grep -Fq "deadlock detected" "${extension_output}"; then
+        error "pg_textsearch extension/dependency ordering failed:
+alter: $(cat "${alter_output}")
+extension: $(cat "${extension_output}")"
+    fi
+    log "PASS: contended extension root is checked before dependency work"
+
+    sql_as durable_owner -c "
+        ALTER INDEX public.lifecycle_textsearch_extension_idx
+          SET (compaction_schedule = '7 0 1 1 *');" >/dev/null
+    assert_eq "explicit retry publishes the deferred schedule" "t" \
+        "$(sql_super -c "SELECT EXISTS (
+          SELECT 1 FROM df.instances
+          WHERE label OPERATOR(pg_catalog.~~)
+                ('pg_textsearch:bg:v1:%:${index_oid}:%:' ||
+                 pg_catalog.encode(
+                   pg_catalog.convert_to('7 0 1 1 *', 'UTF8'), 'hex'))
+            AND status OPERATOR(pg_catalog.=)
+                ANY (ARRAY['pending', 'running']::pg_catalog.text[]));")"
+
+    sql_super -c "
+        DROP TABLE public.lifecycle_textsearch_extension_docs;" >/dev/null
+}
+
+test_precommit_request_admission_nowait() {
+    local blocker_output blocker_pid blocker_status=0 gate_pid index_oid
+    local writer_output writer_pid writer_status=0 writer_waiting
+
+    blocker_output="${DATA_DIR}/precommit-admission-blocker.out"
+    writer_output="${DATA_DIR}/precommit-admission-writer.out"
+    sql_as durable_owner <<'SQL' >/dev/null 2>&1
+CREATE TABLE public.lifecycle_precommit_admission_docs (
+    id integer,
+    body text
+);
+CREATE INDEX lifecycle_precommit_admission_idx
+    ON public.lifecycle_precommit_admission_docs USING bm25(body)
+    WITH (text_config = 'english',
+          compaction = 'background',
+          compaction_schedule = '0 0 1 1 *');
+CREATE FUNCTION public.lifecycle_precommit_admission_pause()
+RETURNS event_trigger
+LANGUAGE plpgsql
+SET search_path = pg_catalog, pg_temp
+AS $body$
+BEGIN
+    IF pg_catalog.current_setting('application_name')
+           OPERATOR(pg_catalog.=) 'lifecycle-precommit-admission-blocker' THEN
+        PERFORM pg_catalog.pg_advisory_xact_lock_shared(478, 19);
+    END IF;
+END
+$body$;
+SQL
+    sql_super -c "
+        CREATE EVENT TRIGGER lifecycle_precommit_admission_pause
+          ON ddl_command_start
+          WHEN TAG IN ('REINDEX')
+          EXECUTE FUNCTION public.lifecycle_precommit_admission_pause();" \
+        >/dev/null
+    index_oid="$(sql_super -c "SELECT
+        'public.lifecycle_precommit_admission_idx'::regclass::oid;")"
+
+    PGAPPNAME=lifecycle-precommit-admission-gate sql_super -c \
+        "SELECT pg_catalog.pg_advisory_lock(478, 19);
+         SELECT pg_catalog.pg_sleep(120);" \
+        >"${DATA_DIR}/precommit-admission-gate.out" 2>&1 &
+    gate_pid=$!
+    for _ in $(seq 1 100); do
+        if [ "$(sql_super -c "SELECT count(*)
+              FROM pg_catalog.pg_stat_activity
+              WHERE application_name =
+                    'lifecycle-precommit-admission-gate'
+                AND wait_event = 'PgSleep';")" = "1" ]; then
+            break
+        fi
+        sleep 0.1
+    done
+
+    PGAPPNAME=lifecycle-precommit-admission-blocker \
+        PGOPTIONS="-c deadlock_timeout=100ms -c statement_timeout=15s" \
+        "${PGBINDIR}/psql" -h "${SOCKET_DIR}" -p "${TEST_PORT}" \
+        -U postgres -d "${TEST_DB}" -qAt -v ON_ERROR_STOP=1 \
+        -c "REINDEX INDEX CONCURRENTLY
+              public.lifecycle_precommit_admission_idx;" \
+        >"${blocker_output}" 2>&1 &
+    blocker_pid=$!
+    for _ in $(seq 1 100); do
+        if [ "$(sql_super -c "SELECT count(*)
+              FROM pg_catalog.pg_stat_activity AS activity
+              JOIN pg_catalog.pg_locks AS admission
+                ON admission.pid = activity.pid
+              WHERE activity.application_name =
+                    'lifecycle-precommit-admission-blocker'
+                AND activity.wait_event = 'advisory'
+                AND admission.locktype = 'object'
+                AND admission.classid =
+                    'pg_catalog.pg_am'::pg_catalog.regclass
+                AND admission.objid = ${index_oid}
+                AND admission.objsubid = 1
+                AND admission.mode = 'ExclusiveLock'
+                AND admission.granted;")" = "1" ]; then
+            break
+        fi
+        sleep 0.1
+    done
+    assert_eq "REINDEX blocker holds the target admission" "1" \
+        "$(sql_super -c "SELECT count(*)
+          FROM pg_catalog.pg_stat_activity AS activity
+          JOIN pg_catalog.pg_locks AS admission
+            ON admission.pid = activity.pid
+          WHERE activity.application_name =
+                'lifecycle-precommit-admission-blocker'
+            AND activity.wait_event = 'advisory'
+            AND admission.locktype = 'object'
+            AND admission.classid =
+                'pg_catalog.pg_am'::pg_catalog.regclass
+            AND admission.objid = ${index_oid}
+            AND admission.objsubid = 1
+            AND admission.mode = 'ExclusiveLock'
+            AND admission.granted;")"
+
+    PGAPPNAME=lifecycle-precommit-admission-writer \
+        PGOPTIONS="-c statement_timeout=15s" \
+        "${PGBINDIR}/psql" -h "${SOCKET_DIR}" -p "${TEST_PORT}" \
+        -U durable_owner -d "${TEST_DB}" -qAt -v ON_ERROR_STOP=1 \
+        -c "BEGIN;
+            INSERT INTO public.lifecycle_precommit_admission_docs
+            SELECT value,
+                   pg_catalog.format(
+                     'precommit first %s filler', value)
+            FROM pg_catalog.generate_series(1, 20) AS value;
+            SELECT bm25_spill_index(
+              'public.lifecycle_precommit_admission_idx');
+            INSERT INTO public.lifecycle_precommit_admission_docs
+            SELECT 100 + value,
+                   pg_catalog.format(
+                     'precommit second %s filler', value)
+            FROM pg_catalog.generate_series(1, 20) AS value;
+            SELECT bm25_spill_index(
+              'public.lifecycle_precommit_admission_idx');
+            COMMIT;" >"${writer_output}" 2>&1 &
+    writer_pid=$!
+    writer_waiting=0
+    for _ in $(seq 1 100); do
+        writer_waiting="$(sql_super -c "SELECT count(*)
+          FROM pg_catalog.pg_stat_activity AS activity
+          JOIN pg_catalog.pg_locks AS admission
+            ON admission.pid = activity.pid
+          WHERE activity.application_name =
+                'lifecycle-precommit-admission-writer'
+            AND admission.locktype = 'object'
+            AND admission.classid =
+                'pg_catalog.pg_am'::pg_catalog.regclass
+            AND admission.objid = ${index_oid}
+            AND admission.objsubid = 1
+            AND admission.mode = 'ExclusiveLock'
+            AND NOT admission.granted;")"
+        if [ "${writer_waiting}" = "1" ] ||
+            [ "$(sql_super -c "SELECT count(*)
+              FROM pg_catalog.pg_stat_activity
+              WHERE application_name =
+                    'lifecycle-precommit-admission-writer';")" = "0" ]; then
+            break
+        fi
+        sleep 0.1
+    done
+
+    if [ "${writer_waiting}" = "0" ]; then
+        wait "${writer_pid}" || writer_status=$?
+    fi
+    sql_super -c "SELECT pg_catalog.pg_terminate_backend(pid)
+      FROM pg_catalog.pg_stat_activity
+      WHERE application_name =
+            'lifecycle-precommit-admission-gate';" >/dev/null
+    wait "${gate_pid}" || true
+    if [ "${writer_waiting}" = "1" ]; then
+        wait "${writer_pid}" || writer_status=$?
+    fi
+    wait "${blocker_pid}" || blocker_status=$?
+
+    if [ "${writer_status}" -ne 0 ] || [ "${blocker_status}" -ne 0 ] ||
+        grep -Fq "deadlock detected" "${writer_output}" ||
+        grep -Fq "deadlock detected" "${blocker_output}"; then
+        error "PRE_COMMIT admission deferral failed:
+writer: $(cat "${writer_output}")
+blocker: $(cat "${blocker_output}")"
+    fi
+    assert_eq "PRE_COMMIT request never waits on admission" \
+        "0" "${writer_waiting}"
+    assert_eq "deferred request preserves writer rows" "40" \
+        "$(sql_super -c "SELECT count(*)
+          FROM public.lifecycle_precommit_admission_docs;")"
+
+    sql_super -c "
+        DROP EVENT TRIGGER lifecycle_precommit_admission_pause;
+        DROP FUNCTION public.lifecycle_precommit_admission_pause();
+        DROP TABLE public.lifecycle_precommit_admission_docs;" >/dev/null
+}
+
+test_post_publication_reindex_defers() {
+    local blocker_output blocker_pid blocker_status=0 gate_fifo gate_pid
+    local index_oid_after index_oid_before outer_output outer_pid
+    local outer_status=0 outer_waiting relfilenumber_before signal_gate_fifo
+    local signal_gate_pid
+
+    blocker_output="${DATA_DIR}/post-publication-blocker.out"
+    outer_output="${DATA_DIR}/post-publication-reindex.out"
+    sql_as durable_owner <<'SQL' >/dev/null 2>&1
+CREATE TABLE public.lifecycle_post_publication_docs (
+    id integer,
+    body text
+);
+INSERT INTO public.lifecycle_post_publication_docs
+VALUES (1, 'before');
+CREATE INDEX lifecycle_post_publication_idx
+    ON public.lifecycle_post_publication_docs USING bm25(body)
+    WITH (text_config = 'english',
+          compaction = 'background',
+          compaction_schedule = '0 0 1 1 *');
+CREATE TABLE public.lifecycle_post_publication_nested_docs (body text);
+CREATE INDEX lifecycle_post_publication_nested_idx
+    ON public.lifecycle_post_publication_nested_docs USING bm25(body)
+    WITH (text_config = 'english',
+          compaction = 'background',
+          compaction_schedule = '0 0 1 1 *');
+CREATE FUNCTION public.lifecycle_post_publication_pause()
+RETURNS event_trigger
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = pg_catalog, pg_temp
+AS $body$
+BEGIN
+    IF pg_catalog.current_setting('application_name')
+           OPERATOR(pg_catalog.=) 'lifecycle-post-publication-reindex'
+       AND COALESCE(
+             pg_catalog.current_setting(
+               'lifecycle.post_publication_reentry', true),
+             '') OPERATOR(pg_catalog.<>) 'done' THEN
+        PERFORM pg_catalog.set_config(
+            'lifecycle.post_publication_reentry', 'done', false);
+        EXECUTE
+            'ALTER INDEX public.lifecycle_post_publication_nested_idx '
+            'SET (compaction_schedule = ''1 0 1 1 *'')';
+        PERFORM pg_catalog.pg_advisory_xact_lock_shared(478, 20);
+    END IF;
+END
+$body$;
+SQL
+    sql_super -c "
+        CREATE EVENT TRIGGER lifecycle_post_publication_pause
+          ON ddl_command_end
+          WHEN TAG IN ('REINDEX')
+          EXECUTE FUNCTION public.lifecycle_post_publication_pause();" \
+        >/dev/null
+    index_oid_before="$(sql_super -c "SELECT
+        'public.lifecycle_post_publication_idx'::regclass::oid;")"
+    relfilenumber_before="$(sql_super -c "SELECT
+        pg_catalog.pg_relation_filenode(
+          'public.lifecycle_post_publication_idx'::regclass);")"
+    install_signal_probe
+    reset_signal_probe
+    sql_super -c "INSERT INTO public.compaction_signal_fault
+      VALUES ('*', 'gate');"
+
+    gate_fifo="${DATA_DIR}/post-publication-gate.fifo"
+    mkfifo "${gate_fifo}"
+    exec 7<>"${gate_fifo}"
+    PGAPPNAME=lifecycle-post-publication-gate \
+        "${PGBINDIR}/psql" -h "${SOCKET_DIR}" -p "${TEST_PORT}" \
+        -U postgres -d "${TEST_DB}" -qAt -v ON_ERROR_STOP=1 \
+        <"${gate_fifo}" >"${DATA_DIR}/post-publication-gate.out" 2>&1 &
+    gate_pid=$!
+    printf '%s\n' \
+        "SELECT pg_catalog.pg_advisory_lock(478, 20);" >&7
+    for _ in $(seq 1 100); do
+        if [ "$(sql_super -c "SELECT count(*)
+              FROM pg_catalog.pg_stat_activity AS activity
+              JOIN pg_catalog.pg_locks AS gate
+                ON gate.pid = activity.pid
+              WHERE activity.application_name =
+                    'lifecycle-post-publication-gate'
+                AND activity.state = 'idle'
+                AND gate.locktype = 'advisory'
+                AND gate.classid = 478
+                AND gate.objid = 20
+                AND gate.mode = 'ExclusiveLock'
+                AND gate.granted;")" = "1" ]; then
+            break
+        fi
+        sleep 0.1
+    done
+
+    PGAPPNAME=lifecycle-post-publication-reindex \
+        PGOPTIONS="-c deadlock_timeout=100ms -c statement_timeout=15s" \
+        "${PGBINDIR}/psql" -h "${SOCKET_DIR}" -p "${TEST_PORT}" \
+        -U postgres -d "${TEST_DB}" -qAt -v ON_ERROR_STOP=1 \
+        -c "REINDEX INDEX CONCURRENTLY
+              public.lifecycle_post_publication_idx;" \
+        >"${outer_output}" 2>&1 &
+    outer_pid=$!
+    for _ in $(seq 1 200); do
+        if [ "$(sql_super -c "SELECT count(*)
+              FROM pg_catalog.pg_stat_activity
+              WHERE application_name =
+                    'lifecycle-post-publication-reindex'
+                AND wait_event = 'advisory';")" = "1" ]; then
+            break
+        fi
+        sleep 0.1
+    done
+    assert_eq "concurrent REINDEX reaches post-publication reentry" "1" \
+        "$(sql_super -c "SELECT count(*)
+          FROM pg_catalog.pg_stat_activity
+          WHERE application_name =
+                'lifecycle-post-publication-reindex'
+            AND wait_event = 'advisory';")"
+    index_oid_after="$(sql_super -c "SELECT
+        'public.lifecycle_post_publication_idx'::regclass::oid;")"
+    if [ "$(sql_super -c "SELECT
+          pg_catalog.pg_relation_filenode(
+            'public.lifecycle_post_publication_idx'::regclass);")" = \
+         "${relfilenumber_before}" ]; then
+        error "concurrent REINDEX paused before publishing replacement storage"
+    fi
+
+    signal_gate_fifo="${DATA_DIR}/post-publication-signal-gate.fifo"
+    mkfifo "${signal_gate_fifo}"
+    exec 8<>"${signal_gate_fifo}"
+    PGAPPNAME=lifecycle-post-publication-signal-gate \
+        "${PGBINDIR}/psql" -h "${SOCKET_DIR}" -p "${TEST_PORT}" \
+        -U postgres -d "${TEST_DB}" -qAt -v ON_ERROR_STOP=1 \
+        <"${signal_gate_fifo}" \
+        >"${DATA_DIR}/post-publication-signal-gate.out" 2>&1 &
+    signal_gate_pid=$!
+    printf '%s\n' \
+        "SELECT pg_catalog.pg_advisory_lock(478, 11);" >&8
+    for _ in $(seq 1 100); do
+        if [ "$(sql_super -c "SELECT count(*)
+              FROM pg_catalog.pg_stat_activity AS activity
+              JOIN pg_catalog.pg_locks AS gate
+                ON gate.pid = activity.pid
+              WHERE activity.application_name =
+                    'lifecycle-post-publication-signal-gate'
+                AND activity.state = 'idle'
+                AND gate.locktype = 'advisory'
+                AND gate.classid = 478
+                AND gate.objid = 11
+                AND gate.mode = 'ExclusiveLock'
+                AND gate.granted;")" = "1" ]; then
+            break
+        fi
+        sleep 0.1
+    done
+
+    PGAPPNAME=lifecycle-post-publication-blocker \
+        PGOPTIONS="-c statement_timeout=15s" \
+        "${PGBINDIR}/psql" -h "${SOCKET_DIR}" -p "${TEST_PORT}" \
+        -U durable_owner -d "${TEST_DB}" -qAt -v ON_ERROR_STOP=1 \
+        -c "BEGIN;
+            INSERT INTO public.lifecycle_post_publication_docs
+            SELECT 100 + value,
+                   pg_catalog.format(
+                     'post publication first %s filler', value)
+            FROM pg_catalog.generate_series(1, 20) AS value;
+            SELECT bm25_spill_index(
+              'public.lifecycle_post_publication_idx');
+            INSERT INTO public.lifecycle_post_publication_docs
+            SELECT 200 + value,
+                   pg_catalog.format(
+                     'post publication second %s filler', value)
+            FROM pg_catalog.generate_series(1, 20) AS value;
+            SELECT bm25_spill_index(
+              'public.lifecycle_post_publication_idx');
+            COMMIT;" >"${blocker_output}" 2>&1 &
+    blocker_pid=$!
+    for _ in $(seq 1 200); do
+        if [ "$(sql_super -c "SELECT count(*)
+              FROM pg_catalog.pg_stat_activity AS activity
+              JOIN pg_catalog.pg_locks AS admission
+                ON admission.pid = activity.pid
+              WHERE activity.application_name =
+                    'lifecycle-post-publication-blocker'
+                AND activity.wait_event = 'advisory'
+                AND admission.locktype = 'object'
+                AND admission.classid =
+                    'pg_catalog.pg_am'::pg_catalog.regclass
+                AND admission.objid = ${index_oid_after}
+                AND admission.objsubid = 1
+                AND admission.mode = 'ExclusiveLock'
+                AND admission.granted;")" = "1" ]; then
+            break
+        fi
+        sleep 0.1
+    done
+    assert_eq "signal blocker holds the published target admission" "1" \
+        "$(sql_super -c "SELECT count(*)
+          FROM pg_catalog.pg_stat_activity AS activity
+          JOIN pg_catalog.pg_locks AS admission
+            ON admission.pid = activity.pid
+          WHERE activity.application_name =
+                'lifecycle-post-publication-blocker'
+            AND activity.wait_event = 'advisory'
+            AND admission.locktype = 'object'
+            AND admission.classid =
+                'pg_catalog.pg_am'::pg_catalog.regclass
+            AND admission.objid = ${index_oid_after}
+            AND admission.objsubid = 1
+            AND admission.mode = 'ExclusiveLock'
+            AND admission.granted;")"
+
+    printf '%s\n' \
+        "SELECT pg_catalog.pg_advisory_unlock(478, 20);" \
+        '\q' >&7
+    exec 7>&-
+    wait "${gate_pid}" || true
+    outer_waiting=0
+    for _ in $(seq 1 50); do
+        outer_waiting="$(sql_super -c "SELECT count(*)
+          FROM pg_catalog.pg_stat_activity AS activity
+          JOIN pg_catalog.pg_locks AS admission
+            ON admission.pid = activity.pid
+          WHERE activity.application_name =
+                'lifecycle-post-publication-reindex'
+            AND admission.locktype = 'object'
+            AND admission.classid =
+                'pg_catalog.pg_am'::pg_catalog.regclass
+            AND admission.objid = ${index_oid_after}
+            AND admission.objsubid = 1
+            AND admission.mode = 'ExclusiveLock'
+            AND NOT admission.granted;")"
+        if [ "${outer_waiting}" = "1" ] ||
+            [ "$(sql_super -c "SELECT count(*)
+              FROM pg_catalog.pg_stat_activity
+              WHERE application_name =
+                    'lifecycle-post-publication-reindex';")" = "0" ]; then
+            break
+        fi
+        sleep 0.1
+    done
+    if [ "${outer_waiting}" = "0" ]; then
+        wait "${outer_pid}" || outer_status=$?
+    fi
+
+    printf '%s\n' \
+        "SELECT pg_catalog.pg_advisory_unlock(478, 11);" \
+        '\q' >&8
+    exec 8>&-
+    wait "${signal_gate_pid}" || true
+    wait "${blocker_pid}" || blocker_status=$?
+    if [ "${outer_waiting}" = "1" ]; then
+        wait "${outer_pid}" || outer_status=$?
+    fi
+
+    if [ "${outer_status}" -ne 0 ] || [ "${blocker_status}" -ne 0 ] ||
+        grep -Fq "deadlock detected" "${outer_output}" ||
+        grep -Fq "deadlock detected" "${blocker_output}"; then
+        error "post-publication reconciliation failed:
+reindex: $(cat "${outer_output}")
+blocker: $(cat "${blocker_output}")"
+    fi
+    assert_eq "post-publication reconciliation never waits on admission" \
+        "0" "${outer_waiting}"
+    assert_eq "published concurrent REINDEX remains visible" \
+        "${index_oid_after}" \
+        "$(sql_super -c "SELECT
+          'public.lifecycle_post_publication_idx'::regclass::oid;")"
+    assert_eq "nested reentry option change commits" "t" \
+        "$(sql_super -c "SELECT reloptions @>
+          ARRAY['compaction_schedule=1 0 1 1 *']
+          FROM pg_catalog.pg_class WHERE oid =
+            'public.lifecycle_post_publication_nested_idx'::regclass;")"
+
+    restore_signal_probe
+    sql_super -c "
+        DROP EVENT TRIGGER lifecycle_post_publication_pause;
+        DROP FUNCTION public.lifecycle_post_publication_pause();
+        DROP TABLE public.lifecycle_post_publication_docs,
+                   public.lifecycle_post_publication_nested_docs;" >/dev/null
+}
+
 test_cross_statement_managed_lock_order() {
     local am_oid first_index_oid first_output first_pid first_status=0
-    local gate_output gate_pid second_index_oid second_output second_pid
-    local second_status=0
+    local gate_pid second_index_oid second_output second_pid second_status=0
 
-    gate_output="${DATA_DIR}/cross-statement-lock-gate.out"
     first_output="${DATA_DIR}/cross-statement-lock-first.out"
     second_output="${DATA_DIR}/cross-statement-lock-second.out"
     sql_as durable_owner <<'SQL' >/dev/null 2>&1
@@ -5233,7 +6668,8 @@ SQL
 
     PGAPPNAME=lifecycle-cross-statement-gate sql_super -c "
         SELECT pg_catalog.pg_advisory_lock(478, 13);
-        SELECT pg_catalog.pg_sleep(120);" >"${gate_output}" 2>&1 &
+        SELECT pg_catalog.pg_sleep(120);" \
+        >"${DATA_DIR}/cross-statement-lock-gate.out" 2>&1 &
     gate_pid=$!
     for _ in $(seq 1 100); do
         if [ "$(sql_super -c "SELECT count(*)
@@ -5267,18 +6703,16 @@ SQL
 
     PGAPPNAME=lifecycle-cross-statement-first \
         "${PGBINDIR}/psql" -h "${SOCKET_DIR}" -p "${TEST_PORT}" \
-        -U postgres -d "${TEST_DB}" -qAt -v ON_ERROR_STOP=0 \
+        -U postgres -d "${TEST_DB}" -qAt -v ON_ERROR_STOP=1 \
         -c "SET deadlock_timeout = '100ms';
             SET statement_timeout = '15s';
             BEGIN;
             ALTER INDEX public.lifecycle_cross_statement_first_idx
               SET (compaction_schedule = '1 0 1 1 *');
             SELECT pg_catalog.pg_advisory_xact_lock(478, 13);
-            SAVEPOINT second_admission;
             ALTER INDEX public.lifecycle_cross_statement_second_idx
               SET (compaction_schedule = '2 0 1 1 *');
-            ROLLBACK TO SAVEPOINT second_admission;
-            ROLLBACK;" >"${first_output}" 2>&1 &
+            COMMIT;" >"${first_output}" 2>&1 &
     first_pid=$!
     for _ in $(seq 1 100); do
         if [ "$(sql_super -c "SELECT count(*)
@@ -5295,7 +6729,7 @@ SQL
           FROM pg_catalog.pg_stat_activity
           WHERE application_name = 'lifecycle-cross-statement-first'
             AND wait_event_type = 'Lock';")"
-    assert_eq "first transaction holds its admission and dependency" "2" \
+    assert_eq "collecting transaction holds no managed locks" "0" \
         "$(sql_super -c "SELECT count(*)
           FROM pg_catalog.pg_stat_activity AS activity
           JOIN pg_catalog.pg_locks AS managed
@@ -5305,8 +6739,6 @@ SQL
             AND managed.locktype = 'object'
             AND managed.classid =
                 'pg_catalog.pg_am'::pg_catalog.regclass
-            AND managed.mode IN
-                ('ExclusiveLock', 'ShareRowExclusiveLock')
             AND managed.granted
             AND ((managed.objid = ${first_index_oid}
                   AND managed.objsubid = 1
@@ -5328,50 +6760,19 @@ SQL
     second_pid=$!
     for _ in $(seq 1 100); do
         if [ "$(sql_super -c "SELECT count(*)
-              FROM pg_catalog.pg_stat_activity AS activity
-              JOIN pg_catalog.pg_locks AS dependency
-                ON dependency.pid = activity.pid
-              WHERE activity.application_name =
-                    'lifecycle-cross-statement-second'
-                AND dependency.locktype = 'object'
-                AND dependency.classid =
-                    'pg_catalog.pg_am'::pg_catalog.regclass
-                AND dependency.objid = ${am_oid}
-                AND dependency.objsubid = 0
-                AND dependency.mode = 'ShareRowExclusiveLock'
-                AND NOT dependency.granted;")" = "1" ]; then
+              FROM pg_catalog.pg_stat_activity
+              WHERE application_name =
+                    'lifecycle-cross-statement-second';")" = "0" ]; then
             break
         fi
         sleep 0.1
     done
-    assert_eq "second transaction holds the inverse admission" "1" \
-        "$(sql_super -c "SELECT count(*)
-          FROM pg_catalog.pg_stat_activity AS activity
-          JOIN pg_catalog.pg_locks AS admission
-            ON admission.pid = activity.pid
-          WHERE activity.application_name =
-                'lifecycle-cross-statement-second'
-            AND admission.locktype = 'object'
-            AND admission.classid =
-                'pg_catalog.pg_am'::pg_catalog.regclass
-            AND admission.objid = ${second_index_oid}
-            AND admission.objsubid = 1
-            AND admission.mode = 'ExclusiveLock'
-            AND admission.granted;")"
-    assert_eq "second transaction waits on the dependency" "1" \
-        "$(sql_super -c "SELECT count(*)
-          FROM pg_catalog.pg_stat_activity AS activity
-          JOIN pg_catalog.pg_locks AS dependency
-            ON dependency.pid = activity.pid
-          WHERE activity.application_name =
-                'lifecycle-cross-statement-second'
-            AND dependency.locktype = 'object'
-            AND dependency.classid =
-                'pg_catalog.pg_am'::pg_catalog.regclass
-            AND dependency.objid = ${am_oid}
-            AND dependency.objsubid = 0
-            AND dependency.mode = 'ShareRowExclusiveLock'
-            AND NOT dependency.granted;")"
+    wait "${second_pid}" || second_status=$?
+    if [ "${second_status}" -ne 0 ]; then
+        error "independent managed transaction was blocked:
+$(cat "${second_output}")"
+    fi
+    log "PASS: independent managed transaction completes during collection"
 
     sql_super -c "SELECT pg_catalog.pg_terminate_backend(pid)
       FROM pg_catalog.pg_stat_activity
@@ -5379,8 +6780,7 @@ SQL
             'lifecycle-cross-statement-gate';" >/dev/null
     wait "${gate_pid}" || true
     wait "${first_pid}" || first_status=$?
-    wait "${second_pid}" || second_status=$?
-    if [ "${first_status}" -eq 0 ] || [ "${second_status}" -ne 0 ]; then
+    if [ "${first_status}" -ne 0 ]; then
         error "cross-statement managed lock test failed:
 first: $(cat "${first_output}")
 second: $(cat "${second_output}")"
@@ -5391,32 +6791,239 @@ second: $(cat "${second_output}")"
 first: $(cat "${first_output}")
 second: $(cat "${second_output}")"
     fi
-    if ! grep -Fq \
-        "cannot acquire a new background compaction admission lock after" \
-        "${first_output}"; then
-        error "cross-statement admission failed for the wrong reason:
-$(cat "${first_output}")"
-    fi
-    assert_eq "inverse transaction completes after guarded admission" "t" \
+    assert_eq "later statement wins after collected transaction resumes" "t" \
         "$(sql_super -c "SELECT reloptions @>
-          ARRAY['compaction_schedule=3 0 1 1 *']
+          ARRAY['compaction_schedule=2 0 1 1 *']
           FROM pg_catalog.pg_class WHERE oid = ${second_index_oid};")"
-
-    sql_super -c "
-        BEGIN;
-        ALTER INDEX public.lifecycle_cross_statement_first_idx
-          SET (compaction_schedule = '4 0 1 1 *');
-        ALTER INDEX public.lifecycle_cross_statement_first_idx
-          SET (compaction_schedule = '5 0 1 1 *');
-        COMMIT;"
-    assert_eq "same-index admission remains reentrant" "t" \
-        "$(sql_super -c "SELECT reloptions @>
-          ARRAY['compaction_schedule=5 0 1 1 *']
-          FROM pg_catalog.pg_class WHERE oid = ${first_index_oid};")"
+    assert_eq "cross-statement batch publishes the first schedule" "t" \
+        "$(sql_super -c "SELECT EXISTS (
+          SELECT 1 FROM df.instances
+          WHERE label OPERATOR(pg_catalog.~~)
+                ('pg_textsearch:bg:v1:%:${first_index_oid}:%:' ||
+                 pg_catalog.encode(
+                   pg_catalog.convert_to('1 0 1 1 *', 'UTF8'), 'hex'))
+            AND status OPERATOR(pg_catalog.=)
+                ANY (ARRAY['pending', 'running']::pg_catalog.text[]));")"
+    assert_eq "cross-statement batch publishes the second schedule" "t" \
+        "$(sql_super -c "SELECT EXISTS (
+          SELECT 1 FROM df.instances
+          WHERE label OPERATOR(pg_catalog.~~)
+                ('pg_textsearch:bg:v1:%:${second_index_oid}:%:' ||
+                 pg_catalog.encode(
+                   pg_catalog.convert_to('2 0 1 1 *', 'UTF8'), 'hex'))
+            AND status OPERATOR(pg_catalog.=)
+                ANY (ARRAY['pending', 'running']::pg_catalog.text[]));")"
 
     sql_super -c "
         DROP TABLE public.lifecycle_cross_statement_first_docs;
         DROP TABLE public.lifecycle_cross_statement_second_docs;"
+}
+
+test_managed_intent_savepoint_recovery() {
+    local fifo output pid status=0
+
+    fifo="${DATA_DIR}/managed-intent-savepoint.fifo"
+    output="${DATA_DIR}/managed-intent-savepoint.out"
+    sql_as durable_owner <<'SQL' >/dev/null 2>&1
+CREATE TABLE public.lifecycle_savepoint_first_docs (body text);
+CREATE INDEX lifecycle_savepoint_first_idx
+    ON public.lifecycle_savepoint_first_docs USING bm25(body)
+    WITH (text_config = 'english',
+          compaction = 'background',
+          compaction_schedule = '0 0 1 1 *');
+CREATE TABLE public.lifecycle_savepoint_second_docs (body text);
+CREATE INDEX lifecycle_savepoint_second_idx
+    ON public.lifecycle_savepoint_second_docs USING bm25(body)
+    WITH (text_config = 'english',
+          compaction = 'background',
+          compaction_schedule = '0 0 1 1 *');
+CREATE TABLE public.lifecycle_savepoint_created_docs (body text);
+CREATE TABLE public.lifecycle_intent_order_a_docs (body text);
+CREATE INDEX lifecycle_intent_order_a_idx
+    ON public.lifecycle_intent_order_a_docs USING bm25(body)
+    WITH (text_config = 'english',
+          compaction = 'background',
+          compaction_schedule = '0 0 1 1 *');
+CREATE TABLE public.lifecycle_intent_order_b_docs (body text);
+CREATE INDEX lifecycle_intent_order_b_idx
+    ON public.lifecycle_intent_order_b_docs USING bm25(body)
+    WITH (text_config = 'english',
+          compaction = 'background',
+          compaction_schedule = '0 0 1 1 *');
+SQL
+
+    mkfifo "${fifo}"
+    exec 9<>"${fifo}"
+    PGAPPNAME=lifecycle-managed-intent-savepoint \
+        "${PGBINDIR}/psql" -h "${SOCKET_DIR}" -p "${TEST_PORT}" \
+        -U postgres -d "${TEST_DB}" -qAt -v ON_ERROR_STOP=0 \
+        <"${fifo}" >"${output}" 2>&1 &
+    pid=$!
+
+    printf '%s\n' 'BEGIN;' '\echo begin_done' >&9
+    for _ in $(seq 1 100); do
+        grep -Fq "begin_done" "${output}" && break
+        sleep 0.1
+    done
+    printf '%s\n' \
+        "ALTER INDEX public.lifecycle_savepoint_first_idx
+           SET (compaction_schedule = '4 0 1 1 *');" \
+        '\echo first_done' >&9
+    for _ in $(seq 1 100); do
+        grep -Fq "first_done" "${output}" && break
+        sleep 0.1
+    done
+    printf '%s\n' \
+        "CREATE INDEX lifecycle_savepoint_created_idx
+           ON public.lifecycle_savepoint_created_docs USING bm25(body)
+           WITH (text_config = 'english',
+                 compaction = 'background',
+                 compaction_schedule = '3 0 1 1 *');" \
+        "ALTER INDEX public.lifecycle_savepoint_created_idx
+           SET (compaction_schedule = '9 0 1 1 *');" \
+        '\echo create_alter_done' >&9
+    for _ in $(seq 1 100); do
+        grep -Fq "create_alter_done" "${output}" && break
+        sleep 0.1
+    done
+    printf '%s\n' \
+        "ALTER INDEX public.lifecycle_intent_order_a_idx
+           SET (compaction_schedule = '10 0 1 1 *');" \
+        "ALTER TABLE public.lifecycle_intent_order_a_docs
+           OWNER TO durable_owner_two;" \
+        "ALTER TABLE public.lifecycle_intent_order_b_docs
+           OWNER TO durable_owner_two;" \
+        "ALTER INDEX public.lifecycle_intent_order_b_idx
+           SET (compaction_schedule = '11 0 1 1 *');" \
+        '\echo intent_order_done' >&9
+    for _ in $(seq 1 100); do
+        grep -Fq "intent_order_done" "${output}" && break
+        sleep 0.1
+    done
+    printf '%s\n' 'SAVEPOINT managed_intent;' '\echo savepoint_done' >&9
+    for _ in $(seq 1 100); do
+        grep -Fq "savepoint_done" "${output}" && break
+        sleep 0.1
+    done
+    printf '%s\n' \
+        "ALTER INDEX public.lifecycle_savepoint_second_idx
+           SET (compaction_schedule = '5 0 1 1 *');" \
+        '\echo rolled_back_intent_done' >&9
+    for _ in $(seq 1 100); do
+        grep -Fq "rolled_back_intent_done" "${output}" && break
+        sleep 0.1
+    done
+    printf '%s\n' 'SELECT 1 / 0;' '\echo expected_error_done' >&9
+    for _ in $(seq 1 100); do
+        grep -Fq "expected_error_done" "${output}" && break
+        sleep 0.1
+    done
+    printf '%s\n' \
+        'ROLLBACK TO SAVEPOINT managed_intent;' \
+        '\echo rollback_done' >&9
+    for _ in $(seq 1 100); do
+        grep -Fq "rollback_done" "${output}" && break
+        sleep 0.1
+    done
+    printf '%s\n' \
+        'SAVEPOINT merged_intent;' \
+        "ALTER INDEX public.lifecycle_savepoint_first_idx
+           SET (compaction_schedule = '8 0 1 1 *');" \
+        'RELEASE SAVEPOINT merged_intent;' \
+        '\echo release_done' >&9
+    for _ in $(seq 1 100); do
+        grep -Fq "release_done" "${output}" && break
+        sleep 0.1
+    done
+    printf '%s\n' \
+        "ALTER INDEX public.lifecycle_savepoint_second_idx
+           SET (compaction_schedule = '6 0 1 1 *');" \
+        '\echo replacement_intent_done' >&9
+    for _ in $(seq 1 100); do
+        grep -Fq "replacement_intent_done" "${output}" && break
+        sleep 0.1
+    done
+    printf '%s\n' 'COMMIT;' '\echo commit_done' '\q' >&9
+    exec 9>&-
+    wait "${pid}" || status=$?
+
+    if [ "${status}" -ne 0 ] ||
+        ! grep -Fq "division by zero" "${output}" ||
+        ! grep -Fq "rollback_done" "${output}" ||
+        ! grep -Fq "commit_done" "${output}" ||
+        grep -Fq "current transaction is aborted" "${output}"; then
+        error "managed intent savepoint recovery failed:
+$(cat "${output}")"
+    fi
+    assert_eq "savepoint recovery commits the parent intent" "t" \
+        "$(sql_super -c "SELECT reloptions @>
+          ARRAY['compaction_schedule=8 0 1 1 *']
+          FROM pg_catalog.pg_class WHERE oid =
+            'public.lifecycle_savepoint_first_idx'::regclass;")"
+    assert_eq "savepoint recovery discards and replaces the child intent" \
+        "t" \
+        "$(sql_super -c "SELECT reloptions @>
+          ARRAY['compaction_schedule=6 0 1 1 *']
+          FROM pg_catalog.pg_class WHERE oid =
+            'public.lifecycle_savepoint_second_idx'::regclass;")"
+    assert_eq "later ALTER overrides a CREATE intent schedule" "t:t" \
+        "$(sql_super -c "SELECT pg_catalog.concat_ws(
+          ':',
+          relation.reloptions @> ARRAY['compaction_schedule=9 0 1 1 *'],
+          EXISTS (
+            SELECT 1 FROM df.instances
+            WHERE label OPERATOR(pg_catalog.~~)
+                  ('pg_textsearch:bg:v1:%:' || relation.oid || ':%:' ||
+                   pg_catalog.encode(
+                     pg_catalog.convert_to('9 0 1 1 *', 'UTF8'), 'hex'))
+              AND status OPERATOR(pg_catalog.=)
+                  ANY (ARRAY['pending', 'running']::pg_catalog.text[])))
+          FROM pg_catalog.pg_class AS relation
+          WHERE relation.oid =
+            'public.lifecycle_savepoint_created_idx'::regclass;")"
+    assert_eq "ALTER then owner change keeps the altered schedule" "t:t:t" \
+        "$(sql_super -c "SELECT pg_catalog.concat_ws(
+          ':',
+          relation.relowner = 'durable_owner_two'::regrole,
+          relation.reloptions @> ARRAY['compaction_schedule=10 0 1 1 *'],
+          EXISTS (
+            SELECT 1 FROM df.instances
+            WHERE label OPERATOR(pg_catalog.~~)
+                  ('pg_textsearch:bg:v1:%:' || relation.oid || ':%:' ||
+                   relation.relowner || ':%:' ||
+                   pg_catalog.encode(
+                     pg_catalog.convert_to('10 0 1 1 *', 'UTF8'), 'hex'))
+              AND submitted_by::pg_catalog.oid = relation.relowner
+              AND status OPERATOR(pg_catalog.=)
+                  ANY (ARRAY['pending', 'running']::pg_catalog.text[])))
+          FROM pg_catalog.pg_class AS relation
+          WHERE relation.oid =
+            'public.lifecycle_intent_order_a_idx'::regclass;")"
+    assert_eq "owner change then ALTER uses the final schedule" "t:t:t" \
+        "$(sql_super -c "SELECT pg_catalog.concat_ws(
+          ':',
+          relation.relowner = 'durable_owner_two'::regrole,
+          relation.reloptions @> ARRAY['compaction_schedule=11 0 1 1 *'],
+          EXISTS (
+            SELECT 1 FROM df.instances
+            WHERE label OPERATOR(pg_catalog.~~)
+                  ('pg_textsearch:bg:v1:%:' || relation.oid || ':%:' ||
+                   relation.relowner || ':%:' ||
+                   pg_catalog.encode(
+                     pg_catalog.convert_to('11 0 1 1 *', 'UTF8'), 'hex'))
+              AND submitted_by::pg_catalog.oid = relation.relowner
+              AND status OPERATOR(pg_catalog.=)
+                  ANY (ARRAY['pending', 'running']::pg_catalog.text[])))
+          FROM pg_catalog.pg_class AS relation
+          WHERE relation.oid =
+            'public.lifecycle_intent_order_b_idx'::regclass;")"
+
+    sql_super -c "
+        DROP TABLE public.lifecycle_savepoint_first_docs;
+        DROP TABLE public.lifecycle_savepoint_second_docs;
+        DROP TABLE public.lifecycle_savepoint_created_docs;
+        DROP TABLE public.lifecycle_intent_order_a_docs;
+        DROP TABLE public.lifecycle_intent_order_b_docs;"
 }
 
 test_internal_lock_namespace() {
@@ -6822,7 +8429,10 @@ BEGIN
     SELECT fault
       INTO injected_fault
       FROM public.compaction_signal_fault AS control
-      WHERE control.instance_id OPERATOR(pg_catalog.=) $1;
+      WHERE control.instance_id OPERATOR(pg_catalog.=) $1
+         OR control.instance_id OPERATOR(pg_catalog.=) '*'
+      ORDER BY control.instance_id OPERATOR(pg_catalog.=) $1 DESC
+      LIMIT 1;
 
     IF injected_fault OPERATOR(pg_catalog.=) 'error' THEN
         RAISE EXCEPTION 'probe ordinary signal failure';
@@ -8490,7 +10100,16 @@ run_test test_refresh_selects_requested_workflow
 run_test test_concurrent_legacy_lineage_backfill
 run_test test_legacy_reindex_spill_lock_order
 run_test test_managed_lock_order
+run_test test_alter_reindex_lock_order
+run_test test_cross_statement_reindex_lock_order
+run_test test_cross_statement_owner_lock_order
+run_test test_multi_family_partition_attach_batch
+run_test test_lineage_lookup_drop_durable_order
+run_test test_textsearch_extension_dependency_order
+run_test test_precommit_request_admission_nowait
+run_test test_post_publication_reindex_defers
 run_test test_cross_statement_managed_lock_order
+run_test test_managed_intent_savepoint_recovery
 run_test test_internal_lock_namespace
 run_test test_lineage_ddl_guards
 run_test test_partitioned_lineage_history
