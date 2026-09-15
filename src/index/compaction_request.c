@@ -7,6 +7,7 @@
 #include <postgres.h>
 
 #include <access/genam.h>
+#include <access/htup_details.h>
 #include <access/parallel.h>
 #include <access/relation.h>
 #include <access/table.h>
