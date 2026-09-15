@@ -292,7 +292,7 @@ tp_finish_spill(
 		else if (tp_compaction_needed(index_rel))
 			tp_compaction_request(RelationGetRelid(index_rel));
 		break;
-	case TP_COMPACTION_OFF:
+	case TP_COMPACTION_MANUAL:
 		break;
 	}
 	pgstat_progress_update_param(
@@ -1358,11 +1358,7 @@ tp_build_callback(
 
 		pgstat_progress_update_param(
 				PROGRESS_CREATEIDX_SUBPHASE, TP_PHASE_COMPACTING);
-		/*
-		 * CREATE INDEX always compacts inline because another session
-		 * cannot open it until the build commits.  Off remains off.
-		 */
-		if (tp_index_compaction_mode(bs->index) != TP_COMPACTION_OFF)
+		if (tp_index_compaction_mode(bs->index) == TP_COMPACTION_INLINE)
 			tp_maybe_compact_level(bs->index_state, bs->index, 0);
 		pgstat_progress_update_param(
 				PROGRESS_CREATEIDX_SUBPHASE, TP_PHASE_LOADING);
@@ -1664,7 +1660,7 @@ tp_build(Relation heap, Relation index, IndexInfo *indexInfo)
 		if (build_ctx->num_docs > 0)
 		{
 			tp_build_flush_and_link(build_ctx, index);
-			if (tp_index_compaction_mode(index) != TP_COMPACTION_OFF)
+			if (tp_index_compaction_mode(index) == TP_COMPACTION_INLINE)
 			{
 				pgstat_progress_update_param(
 						PROGRESS_CREATEIDX_SUBPHASE, TP_PHASE_COMPACTING);

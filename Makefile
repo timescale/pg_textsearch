@@ -60,6 +60,7 @@ OBJS = \
 	src/types/array.o \
 	src/types/vector.o \
 	src/types/query.o \
+	src/index/compaction_job.o \
 	src/index/compaction_request.o \
 	src/index/state.o \
 	src/index/registry.o \
@@ -106,6 +107,10 @@ test-compaction-ownercheck:
 
 test-compaction-request-source:
 	@./test/scripts/compaction_request_source.sh
+
+test-durable:
+	@echo "Running managed pg_durable compaction tests..."
+	@cd test/scripts && ./durable_compaction.sh
 
 test-segment-io-limits:
 	@set -e; tmp_dir="$$(mktemp -d)"; \
@@ -383,6 +388,7 @@ help:
 	@echo "  make test-cic         - Run CREATE INDEX CONCURRENTLY tests"
 	@echo "  make test-chinese     - Run Chinese tokenization test (needs zhparser)"
 	@echo "  make test-reindex     - Run multi-backend reindex regression tests (issue #390)"
+	@echo "  make test-durable     - Run managed pg_durable compaction tests"
 	@echo "  make expected     - Generate expected output files from test results"
 	@echo ""
 	@echo "Code formatting targets:"
@@ -406,4 +412,13 @@ help:
 	@echo "  make test-all"
 	@echo "  make format"
 
-.PHONY: test test-compaction-ownercheck test-compaction-request-source test-segment-io-limits clean-test-dirs installcheck test-concurrency test-recovery test-segment test-stress test-cic test-chinese test-replication test-replication-extended test-logical-replication test-multi-index test-reindex test-shell test-all expected lint-format format format-check format-diff format-single coverage coverage-build coverage-clean coverage-report help
+.PHONY: \
+	test test-compaction-ownercheck test-compaction-request-source \
+	test-durable test-segment-io-limits clean-test-dirs installcheck \
+	test-concurrency \
+	test-recovery test-segment test-stress test-cic test-chinese \
+	test-replication test-replication-extended \
+	test-logical-replication test-multi-index test-reindex \
+	test-shell test-all expected lint-format format format-check \
+	format-diff format-single coverage coverage-build coverage-clean \
+	coverage-report help
