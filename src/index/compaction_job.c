@@ -26,6 +26,7 @@
 #include <catalog/pg_extension_d.h>
 #include <catalog/pg_inherits.h>
 #include <catalog/pg_namespace_d.h>
+#include <catalog/pg_operator.h>
 #include <catalog/pg_operator_d.h>
 #include <catalog/pg_proc_d.h>
 #include <catalog/pg_type_d.h>
@@ -74,11 +75,12 @@ typedef struct TpCompactionJobTarget
 	char		 *family_prefix;
 } TpCompactionJobTarget;
 
-typedef struct TpCompactionJobObjects
+struct TpCompactionJobObjects
 {
 	Oid	  durable_extension_oid;
 	Oid	  durable_extension_owner;
 	Oid	  durable_namespace_oid;
+	Oid	  operator_namespace_oid;
 	Oid	  textsearch_extension_oid;
 	Oid	  textsearch_namespace_oid;
 	Oid	  textsearch_extension_owner;
@@ -108,7 +110,7 @@ typedef struct TpCompactionJobObjects
 	char *instances_relation;
 	char *step_function;
 	char *current_function;
-} TpCompactionJobObjects;
+};
 
 typedef struct TpHistoryHeapOwner
 {
@@ -124,8 +126,9 @@ typedef enum TpJobObjectLookupMode
 
 typedef struct TpJobObjectLock
 {
-	Oid class_id;
-	Oid object_id;
+	Oid		 class_id;
+	Oid		 object_id;
+	LOCKMODE mode;
 } TpJobObjectLock;
 
 static char *tp_copy_spi_text(
@@ -133,7 +136,6 @@ static char *tp_copy_spi_text(
 		TupleDesc	  tuple_desc,
 		int			  column,
 		MemoryContext context);
-static void tp_discover_locked_job_objects(TpCompactionJobObjects *objects);
 
 static int
 tp_set_safe_elevated_gucs(void)
@@ -570,12 +572,11 @@ tp_label_has_lineage(
 
 bool
 tp_compaction_job_lineage_exists(
-		const char *lineage, Oid heap_oid, Oid owner_oid)
+		const TpCompactionJobObjects *objects,
+		const char					 *lineage,
+		Oid							  heap_oid,
+		Oid							  owner_oid)
 {
-	Oid			   durable_oid;
-	Oid			   durable_owner;
-	Oid			   namespace_oid;
-	Oid			   instances_oid;
 	Oid			   save_userid;
 	int			   save_sec_context;
 	int			   save_nestlevel;
@@ -590,21 +591,8 @@ tp_compaction_job_lineage_exists(
 	char		  *prefix;
 
 	tp_require_compaction_dependency_lock();
-	durable_oid = get_extension_oid("pg_durable", true);
-	if (!OidIsValid(durable_oid) ||
-		!tp_extension_lookup(durable_oid, &durable_owner, NULL))
-		return false;
-
-	namespace_oid = get_namespace_oid("df", true);
-	if (!OidIsValid(namespace_oid))
-		return false;
-	instances_oid = get_relname_relid("instances", namespace_oid);
-	if (!OidIsValid(instances_oid) ||
-		getExtensionOfObject(RelationRelationId, instances_oid) != durable_oid)
-		return false;
-
-	schema	 = get_namespace_name(namespace_oid);
-	relation = get_rel_name(instances_oid);
+	schema	 = get_namespace_name(objects->durable_namespace_oid);
+	relation = get_rel_name(objects->instances_relation_oid);
 	if (schema == NULL || relation == NULL)
 		return false;
 
@@ -626,7 +614,8 @@ tp_compaction_job_lineage_exists(
 	save_nestlevel = tp_set_safe_elevated_gucs();
 	GetUserIdAndSecContext(&save_userid, &save_sec_context);
 	SetUserIdAndSecContext(
-			durable_owner, save_sec_context | SECURITY_LOCAL_USERID_CHANGE);
+			objects->durable_extension_owner,
+			save_sec_context | SECURITY_LOCAL_USERID_CHANGE);
 	PG_TRY();
 	{
 		int rc;
@@ -794,7 +783,8 @@ tp_populate_job_objects_as_owner(
 	if (operator_schema == NULL)
 		tp_durable_not_initialized(
 				"the pg_durable operator schema is missing");
-	objects->operator_schema = pstrdup(operator_schema);
+	objects->operator_schema		= pstrdup(operator_schema);
+	objects->operator_namespace_oid = operator_schema_oid;
 
 	objects->operator_oids[0] = tp_resolve_extension_operator(
 			durable_oid, operator_schema, "|=>", mode);
@@ -890,6 +880,137 @@ tp_preflight_job_objects(TpCompactionJobObjects *objects)
 	tp_lookup_job_objects(objects, TP_JOB_OBJECTS_PREFLIGHT);
 }
 
+static bool
+tp_job_object_is_member(Oid class_id, Oid object_id, Oid extension_oid)
+{
+	return SearchSysCacheExists1(
+				   class_id == ProcedureRelationId	? PROCOID
+				   : class_id == OperatorRelationId ? OPEROID
+													: RELOID,
+				   ObjectIdGetDatum(object_id)) &&
+		   getExtensionOfObject(class_id, object_id) == extension_oid;
+}
+
+static bool
+tp_job_objects_still_match(const TpCompactionJobObjects *objects)
+{
+	const char *function_names[] = {
+			"start",
+			"explain",
+			"signal",
+			"wait_for_signal",
+			"wait_for_schedule",
+			"loop",
+			"break",
+			"bm25_compact_step_if_current",
+			"bm25_background_target_is_current",
+	};
+	Oid function_oids[] = {
+			objects->start_function_oid,
+			objects->explain_function_oid,
+			objects->signal_function_oid,
+			objects->wait_signal_function_oid,
+			objects->wait_schedule_function_oid,
+			objects->loop_function_oid,
+			objects->break_function_oid,
+			objects->step_function_oid,
+			objects->current_function_oid,
+	};
+	const char *operator_names[] = {"|=>", "~>", "?>", "!>", "|"};
+	const char *relation_names[] = {"instances", "nodes", "vars"};
+	Oid			relation_oids[]	 = {
+			 objects->instances_relation_oid,
+			 objects->nodes_relation_oid,
+			 objects->vars_relation_oid,
+	 };
+	Oid	  durable_oid;
+	Oid	  durable_owner;
+	Oid	  textsearch_oid;
+	Oid	  textsearch_owner;
+	char *durable_schema;
+	char *operator_schema;
+	char *textsearch_schema;
+
+	durable_oid	   = get_extension_oid("pg_durable", true);
+	textsearch_oid = get_extension_oid("pg_textsearch", true);
+	if (durable_oid != objects->durable_extension_oid ||
+		textsearch_oid != objects->textsearch_extension_oid ||
+		!tp_extension_lookup(durable_oid, &durable_owner, NULL) ||
+		durable_owner != objects->durable_extension_owner ||
+		!tp_extension_lookup(textsearch_oid, &textsearch_owner, NULL) ||
+		textsearch_owner != objects->textsearch_extension_owner ||
+		get_extension_schema(textsearch_oid) !=
+				objects->textsearch_namespace_oid)
+		return false;
+	durable_schema	  = get_namespace_name(objects->durable_namespace_oid);
+	operator_schema	  = get_namespace_name(objects->operator_namespace_oid);
+	textsearch_schema = get_namespace_name(objects->textsearch_namespace_oid);
+	if (durable_schema == NULL || operator_schema == NULL ||
+		textsearch_schema == NULL ||
+		strcmp(durable_schema, objects->durable_schema) != 0 ||
+		strcmp(operator_schema, objects->operator_schema) != 0 ||
+		strcmp(textsearch_schema, objects->textsearch_schema) != 0)
+		return false;
+
+	for (Size i = 0; i < lengthof(function_oids); i++)
+	{
+		Oid	  extension_oid = i < 7 ? durable_oid : textsearch_oid;
+		Oid	  namespace_oid = i < 7 ? objects->durable_namespace_oid
+									: objects->textsearch_namespace_oid;
+		char *name;
+
+		if (!tp_job_object_is_member(
+					ProcedureRelationId, function_oids[i], extension_oid) ||
+			get_func_namespace(function_oids[i]) != namespace_oid)
+			return false;
+		name = get_func_name(function_oids[i]);
+		if (name == NULL || strcmp(name, function_names[i]) != 0)
+			return false;
+	}
+
+	for (Size i = 0; i < lengthof(objects->operator_oids); i++)
+	{
+		HeapTuple		 tuple;
+		Form_pg_operator operator_form;
+		char			*name;
+
+		if (!tp_job_object_is_member(
+					OperatorRelationId,
+					objects->operator_oids[i],
+					durable_oid))
+			return false;
+		tuple = SearchSysCache1(
+				OPEROID, ObjectIdGetDatum(objects->operator_oids[i]));
+		if (!HeapTupleIsValid(tuple))
+			return false;
+		operator_form = (Form_pg_operator)GETSTRUCT(tuple);
+		if (operator_form->oprnamespace != objects->operator_namespace_oid)
+		{
+			ReleaseSysCache(tuple);
+			return false;
+		}
+		ReleaseSysCache(tuple);
+		name = get_opname(objects->operator_oids[i]);
+		if (name == NULL || strcmp(name, operator_names[i]) != 0)
+			return false;
+	}
+
+	for (Size i = 0; i < lengthof(relation_oids); i++)
+	{
+		char *name;
+
+		if (!tp_job_object_is_member(
+					RelationRelationId, relation_oids[i], durable_oid) ||
+			get_rel_namespace(relation_oids[i]) !=
+					objects->durable_namespace_oid)
+			return false;
+		name = get_rel_name(relation_oids[i]);
+		if (name == NULL || strcmp(name, relation_names[i]) != 0)
+			return false;
+	}
+	return true;
+}
+
 static int
 tp_job_object_lock_cmp(const void *left, const void *right)
 {
@@ -907,24 +1028,50 @@ tp_job_object_lock_cmp(const void *left, const void *right)
 	return 0;
 }
 
-bool
-tp_compaction_job_try_lock_objects(void)
+TpCompactionJobObjects *
+tp_compaction_job_try_lock_objects(bool invalid_is_error)
 {
-	TpCompactionJobObjects objects;
-	TpCompactionJobObjects locked_objects;
-	TpJobObjectLock		   locks[17];
-	int					   acquired = 0;
-	int					   count	= 0;
-	bool				   dependency_was_held;
+	TpCompactionJobObjects	objects;
+	TpCompactionJobObjects *result;
+	TpJobObjectLock			locks[20];
+	MemoryContext			old_context = CurrentMemoryContext;
+	ResourceOwner			old_owner	= CurrentResourceOwner;
+	int						acquired	= 0;
+	int						count		= 0;
+	bool					dependency_was_held;
 
-	tp_preflight_job_objects(&objects);
+	BeginInternalSubTransaction(NULL);
+	PG_TRY();
+	{
+		MemoryContextSwitchTo(old_context);
+		tp_preflight_job_objects(&objects);
+		ReleaseCurrentSubTransaction();
+		MemoryContextSwitchTo(old_context);
+		CurrentResourceOwner = old_owner;
+	}
+	PG_CATCH();
+	{
+		ErrorData *edata;
+
+		MemoryContextSwitchTo(old_context);
+		edata = CopyErrorData();
+		FlushErrorState();
+		RollbackAndReleaseCurrentSubTransaction();
+		MemoryContextSwitchTo(old_context);
+		CurrentResourceOwner = old_owner;
+		if (invalid_is_error)
+			ReThrowError(edata);
+		FreeErrorData(edata);
+		return NULL;
+	}
+	PG_END_TRY();
 
 	if (!ConditionalLockDatabaseObject(
 				ExtensionRelationId,
 				objects.durable_extension_oid,
 				0,
 				AccessShareLock))
-		return false;
+		return NULL;
 	if (!ConditionalLockDatabaseObject(
 				ExtensionRelationId,
 				objects.textsearch_extension_oid,
@@ -936,37 +1083,71 @@ tp_compaction_job_try_lock_objects(void)
 				objects.durable_extension_oid,
 				0,
 				AccessShareLock);
-		return false;
+		return NULL;
 	}
 
 	dependency_was_held = tp_compaction_dependency_lock_held();
 	if (!tp_try_lock_compaction_dependency())
 		goto unavailable;
 
-#define TP_ADD_JOB_OBJECT_LOCK(classid, objectid) \
-	do                                            \
-	{                                             \
-		locks[count].class_id  = (classid);       \
-		locks[count].object_id = (objectid);      \
-		count++;                                  \
+#define TP_ADD_JOB_OBJECT_LOCK(classid, objectid, lockmode) \
+	do                                                      \
+	{                                                       \
+		locks[count].class_id  = (classid);                 \
+		locks[count].object_id = (objectid);                \
+		locks[count].mode	   = (lockmode);                \
+		count++;                                            \
 	} while (0)
 
-	TP_ADD_JOB_OBJECT_LOCK(ProcedureRelationId, objects.start_function_oid);
-	TP_ADD_JOB_OBJECT_LOCK(ProcedureRelationId, objects.explain_function_oid);
-	TP_ADD_JOB_OBJECT_LOCK(ProcedureRelationId, objects.signal_function_oid);
 	TP_ADD_JOB_OBJECT_LOCK(
-			ProcedureRelationId, objects.wait_signal_function_oid);
+			ProcedureRelationId, objects.start_function_oid, AccessShareLock);
 	TP_ADD_JOB_OBJECT_LOCK(
-			ProcedureRelationId, objects.wait_schedule_function_oid);
-	TP_ADD_JOB_OBJECT_LOCK(ProcedureRelationId, objects.loop_function_oid);
-	TP_ADD_JOB_OBJECT_LOCK(ProcedureRelationId, objects.break_function_oid);
-	TP_ADD_JOB_OBJECT_LOCK(ProcedureRelationId, objects.step_function_oid);
-	TP_ADD_JOB_OBJECT_LOCK(ProcedureRelationId, objects.current_function_oid);
+			ProcedureRelationId,
+			objects.explain_function_oid,
+			AccessShareLock);
+	TP_ADD_JOB_OBJECT_LOCK(
+			ProcedureRelationId, objects.signal_function_oid, AccessShareLock);
+	TP_ADD_JOB_OBJECT_LOCK(
+			ProcedureRelationId,
+			objects.wait_signal_function_oid,
+			AccessShareLock);
+	TP_ADD_JOB_OBJECT_LOCK(
+			ProcedureRelationId,
+			objects.wait_schedule_function_oid,
+			AccessShareLock);
+	TP_ADD_JOB_OBJECT_LOCK(
+			ProcedureRelationId, objects.loop_function_oid, AccessShareLock);
+	TP_ADD_JOB_OBJECT_LOCK(
+			ProcedureRelationId, objects.break_function_oid, AccessShareLock);
+	TP_ADD_JOB_OBJECT_LOCK(
+			ProcedureRelationId, objects.step_function_oid, AccessShareLock);
+	TP_ADD_JOB_OBJECT_LOCK(
+			ProcedureRelationId,
+			objects.current_function_oid,
+			AccessShareLock);
 	for (Size i = 0; i < lengthof(objects.operator_oids); i++)
-		TP_ADD_JOB_OBJECT_LOCK(OperatorRelationId, objects.operator_oids[i]);
-	TP_ADD_JOB_OBJECT_LOCK(RelationRelationId, objects.instances_relation_oid);
-	TP_ADD_JOB_OBJECT_LOCK(RelationRelationId, objects.nodes_relation_oid);
-	TP_ADD_JOB_OBJECT_LOCK(RelationRelationId, objects.vars_relation_oid);
+		TP_ADD_JOB_OBJECT_LOCK(
+				OperatorRelationId, objects.operator_oids[i], AccessShareLock);
+	TP_ADD_JOB_OBJECT_LOCK(
+			RelationRelationId,
+			objects.instances_relation_oid,
+			RowExclusiveLock);
+	TP_ADD_JOB_OBJECT_LOCK(
+			RelationRelationId, objects.nodes_relation_oid, RowExclusiveLock);
+	TP_ADD_JOB_OBJECT_LOCK(
+			RelationRelationId, objects.vars_relation_oid, RowExclusiveLock);
+	TP_ADD_JOB_OBJECT_LOCK(
+			NamespaceRelationId,
+			objects.durable_namespace_oid,
+			AccessShareLock);
+	TP_ADD_JOB_OBJECT_LOCK(
+			NamespaceRelationId,
+			objects.textsearch_namespace_oid,
+			AccessShareLock);
+	TP_ADD_JOB_OBJECT_LOCK(
+			NamespaceRelationId,
+			objects.operator_namespace_oid,
+			AccessShareLock);
 
 #undef TP_ADD_JOB_OBJECT_LOCK
 
@@ -976,32 +1157,36 @@ tp_compaction_job_try_lock_objects(void)
 		if (locks[acquired].class_id == RelationRelationId)
 		{
 			if (!ConditionalLockRelationOid(
-						locks[acquired].object_id, AccessShareLock))
+						locks[acquired].object_id, locks[acquired].mode))
 				goto unavailable;
 		}
 		else if (!ConditionalLockDatabaseObject(
 						 locks[acquired].class_id,
 						 locks[acquired].object_id,
 						 0,
-						 AccessShareLock))
+						 locks[acquired].mode))
 			goto unavailable;
 	}
 
-	tp_discover_locked_job_objects(&locked_objects);
-	return true;
+	if (!tp_job_objects_still_match(&objects))
+		goto unavailable;
+
+	result = palloc(sizeof(*result));
+	memcpy(result, &objects, sizeof(*result));
+	return result;
 
 unavailable:
 	while (acquired > 0)
 	{
 		acquired--;
 		if (locks[acquired].class_id == RelationRelationId)
-			UnlockRelationOid(locks[acquired].object_id, AccessShareLock);
+			UnlockRelationOid(locks[acquired].object_id, locks[acquired].mode);
 		else
 			UnlockDatabaseObject(
 					locks[acquired].class_id,
 					locks[acquired].object_id,
 					0,
-					AccessShareLock);
+					locks[acquired].mode);
 	}
 	if (!dependency_was_held && tp_compaction_dependency_lock_held())
 		tp_unlock_compaction_dependency();
@@ -1015,14 +1200,7 @@ unavailable:
 			objects.durable_extension_oid,
 			0,
 			AccessShareLock);
-	return false;
-}
-
-static void
-tp_discover_locked_job_objects(TpCompactionJobObjects *objects)
-{
-	tp_require_compaction_dependency_lock();
-	tp_lookup_job_objects(objects, TP_JOB_OBJECTS_LOCKED);
+	return NULL;
 }
 
 static void
@@ -1594,25 +1772,6 @@ tp_pin_durable_dependency(const TpCompactionJobObjects *objects)
 		recordDependencyOn(&bm25_am, &durable_ext, DEPENDENCY_NORMAL);
 		CommandCounterIncrement();
 	}
-}
-
-static void
-tp_take_admission_lock(Oid indexoid)
-{
-	tp_lock_compaction_index(indexoid);
-}
-
-static void
-tp_lock_job_target(Oid indexoid)
-{
-	/*
-	 * Multi-target callers prelock every admission in OID order, making
-	 * their per-entry calls no-ops.  Single-target callers acquire here.
-	 * Both paths take the dependency lock before pg_durable catalog or SPI
-	 * work.
-	 */
-	tp_take_admission_lock(indexoid);
-	tp_lock_compaction_dependency();
 }
 
 static void
@@ -2241,6 +2400,38 @@ tp_start_job(
 			SPI_tuptable->vals[0], SPI_tuptable->tupdesc, 1, result_context);
 	if (instance_id == NULL)
 		elog(ERROR, "pg_durable returned no compaction workflow identifier");
+	{
+		Oid	  save_userid;
+		int	  save_sec_context;
+		Oid	  stamp_argtypes[1] = {TEXTOID};
+		Datum stamp_values[1]	= {CStringGetTextDatum(instance_id)};
+
+		GetUserIdAndSecContext(&save_userid, &save_sec_context);
+		SetUserIdAndSecContext(
+				objects->durable_extension_owner,
+				save_sec_context | SECURITY_LOCAL_USERID_CHANGE);
+		PG_TRY();
+		{
+			resetStringInfo(&sql);
+			appendStringInfo(
+					&sql,
+					"UPDATE %s SET created_at = "
+					"pg_catalog.statement_timestamp(), updated_at = "
+					"pg_catalog.statement_timestamp() "
+					"WHERE id OPERATOR(pg_catalog.=) $1",
+					objects->instances_relation);
+			rc = SPI_execute_with_args(
+					sql.data, 1, stamp_argtypes, stamp_values, NULL, false, 0);
+			if (rc != SPI_OK_UPDATE || SPI_processed != 1)
+				elog(ERROR,
+					 "could not timestamp pg_durable compaction workflow");
+		}
+		PG_FINALLY();
+		{
+			SetUserIdAndSecContext(save_userid, save_sec_context);
+		}
+		PG_END_TRY();
+	}
 
 	pfree(sql.data);
 	pfree(step_sql);
@@ -2600,20 +2791,20 @@ tp_compaction_job_preflight(Oid owner_oid, const char *schedule)
 
 static void
 tp_activate_captured_target(
-		TpCompactionJobTarget *target, bool refresh_default)
+		const TpCompactionJobObjects *objects,
+		TpCompactionJobTarget		 *target,
+		bool						  refresh_default)
 {
-	TpCompactionJobObjects objects;
-	char *instance_id	   PG_USED_FOR_ASSERTS_ONLY;
+	char *instance_id PG_USED_FOR_ASSERTS_ONLY;
 
 	tp_require_owner_login(target->owner_oid);
 	tp_require_owner_database_connect(target->owner_oid);
-	tp_discover_locked_job_objects(&objects);
 	tp_require_owner_superuser_policy(target->owner_oid);
-	tp_require_owner_durable_privileges(&objects, target->owner_oid);
-	tp_pin_durable_dependency(&objects);
-	tp_grant_helper_access(&objects, target->owner_oid);
+	tp_require_owner_durable_privileges(objects, target->owner_oid);
+	tp_pin_durable_dependency(objects);
+	tp_grant_helper_access(objects, target->owner_oid);
 	instance_id = tp_reconcile_as_owner(
-			&objects, target, refresh_default, false, CurrentMemoryContext);
+			objects, target, refresh_default, false, CurrentMemoryContext);
 	Assert(instance_id != NULL);
 
 	ereport(WARNING,
@@ -2622,63 +2813,100 @@ tp_activate_captured_target(
 }
 
 void
-tp_compaction_job_activate(Oid indexoid, bool refresh_default)
+tp_compaction_job_activate(
+		const TpCompactionJobObjects *objects,
+		Oid							  indexoid,
+		bool						  refresh_default)
 {
 	TpCompactionJobTarget target;
 
-	tp_lock_job_target(indexoid);
+	tp_require_compaction_index_lock(indexoid);
+	tp_require_compaction_dependency_lock();
 	tp_capture_target(indexoid, refresh_default, &target);
-	tp_activate_captured_target(&target, refresh_default);
+	tp_activate_captured_target(objects, &target, refresh_default);
 }
 
 void
-tp_compaction_job_activate_with_schedule(Oid indexoid, const char *schedule)
+tp_compaction_job_activate_with_schedule(
+		const TpCompactionJobObjects *objects,
+		Oid							  indexoid,
+		const char					 *schedule)
 {
 	TpCompactionJobTarget target;
 
 	if (schedule == NULL)
 		elog(ERROR, "background compaction schedule is not initialized");
 
-	tp_lock_job_target(indexoid);
+	tp_require_compaction_index_lock(indexoid);
+	tp_require_compaction_dependency_lock();
 	tp_capture_target(indexoid, true, &target);
 	pfree(target.schedule);
 	target.schedule = pstrdup(schedule);
-	tp_activate_captured_target(&target, true);
+	tp_activate_captured_target(objects, &target, true);
 }
 
 void
 tp_compaction_job_capture(Oid indexoid, TpCompactionJobIdentity *identity)
 {
-	TpCompactionJobTarget target;
+	Relation	index_rel;
+	const char *lineage;
+	const char *schedule;
 
-	tp_require_compaction_index_lock(indexoid);
-	tp_capture_target(indexoid, true, &target);
+	index_rel = try_relation_open(indexoid, AccessShareLock);
+	if (index_rel == NULL)
+		ereport(ERROR,
+				(errcode(ERRCODE_UNDEFINED_OBJECT),
+				 errmsg("relation with OID %u does not exist", indexoid)));
+	if (index_rel->rd_indam == NULL ||
+		index_rel->rd_indam->ambuild != tp_build ||
+		index_rel->rd_rel->relkind != RELKIND_INDEX ||
+		index_rel->rd_index == NULL || !index_rel->rd_index->indisvalid ||
+		!index_rel->rd_index->indisready || !index_rel->rd_index->indislive ||
+		tp_index_compaction_mode(index_rel) != TP_COMPACTION_BACKGROUND)
+	{
+		char *index_name = pstrdup(RelationGetRelationName(index_rel));
+
+		relation_close(index_rel, AccessShareLock);
+		ereport(ERROR,
+				(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
+				 errmsg("index \"%s\" is not ready for background "
+						"compaction",
+						index_name)));
+	}
 
 	memset(identity, 0, sizeof(*identity));
-	identity->heap_oid			 = target.heap_oid;
-	identity->namespace_oid		 = get_rel_namespace(indexoid);
-	identity->index_name		 = target.index_name;
-	identity->index_oid			 = target.index_oid;
-	identity->tablespace_oid	 = target.tablespace_oid;
-	identity->relfilenumber		 = target.relfilenumber;
-	identity->owner_oid			 = target.owner_oid;
-	identity->lineage			 = target.lineage;
-	identity->schedule			 = target.schedule;
-	identity->lineage_backfilled = target.lineage_backfilled;
-	identity->schedule_resolved	 = false;
-	pfree(target.history_prefix);
-	pfree(target.family_prefix);
+	identity->heap_oid		 = index_rel->rd_index->indrelid;
+	identity->namespace_oid	 = RelationGetNamespace(index_rel);
+	identity->index_name	 = pstrdup(RelationGetRelationName(index_rel));
+	identity->index_oid		 = indexoid;
+	identity->tablespace_oid = index_rel->rd_locator.spcOid;
+	identity->relfilenumber	 = index_rel->rd_locator.relNumber;
+	identity->owner_oid		 = index_rel->rd_rel->relowner;
+	lineage					 = tp_index_compaction_lineage(index_rel);
+	if (lineage == NULL)
+	{
+		identity->lineage			 = tp_new_compaction_lineage();
+		identity->lineage_backfilled = true;
+	}
+	else
+		identity->lineage = pstrdup(lineage);
+	schedule = tp_index_compaction_schedule(index_rel);
+	if (schedule == NULL)
+		schedule = tp_background_compaction_schedule;
+	identity->schedule			= pstrdup(schedule);
+	identity->schedule_resolved = false;
+	relation_close(index_rel, AccessShareLock);
 }
 
 void
 tp_compaction_job_resolve_schedule(
-		Oid						 indexoid,
-		TpCompactionJobIdentity *identity,
-		MemoryContext			 result_context)
+		const TpCompactionJobObjects *objects,
+		Oid							  indexoid,
+		TpCompactionJobIdentity		 *identity,
+		MemoryContext				  result_context)
 {
-	TpCompactionJobTarget  target;
-	TpCompactionJobObjects objects;
-	char				  *schedule;
+	TpCompactionJobTarget target;
+	char				 *schedule;
 
 	if (identity->schedule_resolved)
 		return;
@@ -2697,9 +2925,8 @@ tp_compaction_job_resolve_schedule(
 	target.history_prefix	  = tp_build_history_prefix(&target);
 	target.family_prefix	  = tp_build_family_prefix(&target);
 
-	tp_lock_compaction_dependency();
-	tp_discover_locked_job_objects(&objects);
-	schedule = tp_schedule_as_trusted(&objects, &target, result_context);
+	tp_require_compaction_dependency_lock();
+	schedule = tp_schedule_as_trusted(objects, &target, result_context);
 	if (schedule != NULL)
 	{
 		pfree(identity->schedule);
@@ -2711,39 +2938,23 @@ tp_compaction_job_resolve_schedule(
 }
 
 void
-tp_compaction_job_signal(Oid indexoid)
+tp_compaction_job_signal(const TpCompactionJobObjects *objects, Oid indexoid)
 {
-	TpCompactionJobTarget  target;
-	TpCompactionJobObjects objects;
-	Oid					   save_userid;
-	int					   save_sec_context;
-	char *instance_id	   PG_USED_FOR_ASSERTS_ONLY;
+	TpCompactionJobTarget target;
+	char *instance_id	  PG_USED_FOR_ASSERTS_ONLY;
 
-	tp_lock_job_target(indexoid);
+	tp_require_compaction_index_lock(indexoid);
+	tp_require_compaction_dependency_lock();
 	tp_capture_target(indexoid, false, &target);
 
 	tp_require_owner_login(target.owner_oid);
 	tp_require_owner_database_connect(target.owner_oid);
 
-	/* Function lookup checks schema USAGE, which writers need not have. */
-	GetUserIdAndSecContext(&save_userid, &save_sec_context);
-	SetUserIdAndSecContext(
-			target.owner_oid, save_sec_context | SECURITY_LOCAL_USERID_CHANGE);
-	PG_TRY();
-	{
-		tp_discover_locked_job_objects(&objects);
-	}
-	PG_FINALLY();
-	{
-		SetUserIdAndSecContext(save_userid, save_sec_context);
-	}
-	PG_END_TRY();
-
 	tp_require_owner_superuser_policy(target.owner_oid);
-	tp_require_owner_durable_privileges(&objects, target.owner_oid);
-	tp_pin_durable_dependency(&objects);
-	tp_grant_helper_access(&objects, target.owner_oid);
+	tp_require_owner_durable_privileges(objects, target.owner_oid);
+	tp_pin_durable_dependency(objects);
+	tp_grant_helper_access(objects, target.owner_oid);
 	instance_id = tp_reconcile_as_owner(
-			&objects, &target, false, true, CurrentMemoryContext);
+			objects, &target, false, true, CurrentMemoryContext);
 	Assert(instance_id != NULL);
 }

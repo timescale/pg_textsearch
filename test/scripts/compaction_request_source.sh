@@ -315,7 +315,7 @@ if grep -Fq "SET_LOCKTAG_ADVISORY" "${REQUEST_SOURCE}" ||
     exit 1
 fi
 if grep -Fq "pg_advisory_xact_lock" "${JOB_SOURCE}" ||
-    ! grep -Fq "tp_lock_compaction_index(indexoid)" \
+    ! grep -Fq "tp_require_compaction_index_lock(indexoid)" \
         "${JOB_SOURCE}"; then
     echo "workflow admission shares PostgreSQL's advisory-lock namespace" \
         >&2
@@ -349,35 +349,6 @@ if grep -Eq \
     'tp_compaction_admission_allowed|tp_check_compaction_admission_order|cannot acquire a new background compaction admission' \
     "${REQUEST_SOURCE}"; then
     echo "transaction-wide managed admission rejection remains installed" \
-        >&2
-    exit 1
-fi
-
-prelock_indexes_body="$(
-    sed -n \
-        '/^tp_prelock_compaction_indexes_nowait(/,/^}/p' \
-        "${REQUEST_SOURCE}"
-)"
-if ! grep -Fq "list_sort(sorted, list_oid_cmp)" \
-    <<<"${prelock_indexes_body}" ||
-    ! grep -Fq "foreach (lc, locked)" <<<"${prelock_indexes_body}" ||
-    ! grep -Fq "tp_lock_compaction_index(indexoid)" \
-    <<<"${prelock_indexes_body}"; then
-    echo "multi-index lifecycle paths do not prelock admissions in OID order" \
-        >&2
-    exit 1
-fi
-prelock_relation_line="$(
-    grep -n "LockRelationOid" \
-        <<<"${prelock_indexes_body}" | head -1 | cut -d: -f1
-)"
-prelock_admission_line="$(
-    grep -n "tp_lock_compaction_index(indexoid)" \
-        <<<"${prelock_indexes_body}" | head -1 | cut -d: -f1
-)"
-if [[ -z "${prelock_relation_line}" || -z "${prelock_admission_line}" ||
-      "${prelock_relation_line}" -ge "${prelock_admission_line}" ]]; then
-    echo "multi-index prelocking does not take relations before admissions" \
         >&2
     exit 1
 fi
@@ -461,7 +432,7 @@ if grep -Fq "LockDatabaseObject" <<<"${pin_dependency_body}"; then
 fi
 
 object_bundle_body="$(
-    sed -n '/^tp_compaction_job_try_lock_objects(void)/,/^}/p' \
+    sed -n '/^tp_compaction_job_try_lock_objects(bool invalid_is_error)/,/^}/p' \
         "${JOB_SOURCE}"
 )"
 durable_extension_line="$(
@@ -490,9 +461,19 @@ if [[ -z "${durable_extension_line}" ||
     ! grep -Fq "ConditionalLockDatabaseObject" \
         <<<"${object_bundle_body}" ||
     ! grep -Fq "ConditionalLockRelationOid" \
+        <<<"${object_bundle_body}" ||
+    ! grep -Fq "tp_job_objects_still_match(&objects)" \
         <<<"${object_bundle_body}"; then
     echo "terminal object bundle violates extension/dependency/member order" \
         >&2
+    exit 1
+fi
+if [ "$(grep -Fc "RowExclusiveLock" <<<"${object_bundle_body}")" -lt 3 ] ||
+    ! grep -Fq "objects.instances_relation_oid" \
+        <<<"${object_bundle_body}" ||
+    ! grep -Fq "objects.nodes_relation_oid" <<<"${object_bundle_body}" ||
+    ! grep -Fq "objects.vars_relation_oid" <<<"${object_bundle_body}"; then
+    echo "pg_durable writable relations lack terminal write locks" >&2
     exit 1
 fi
 
@@ -505,23 +486,6 @@ if ! grep -Fq "tp_require_compaction_dependency_lock()" \
     exit 1
 fi
 
-job_target_lock_body="$(
-    sed -n '/^tp_lock_job_target(Oid indexoid)/,/^}/p' "${JOB_SOURCE}"
-)"
-job_admission_line="$(
-    grep -n "tp_take_admission_lock(indexoid)" \
-        <<<"${job_target_lock_body}" | cut -d: -f1
-)"
-job_dependency_line="$(
-    grep -n "tp_lock_compaction_dependency()" \
-        <<<"${job_target_lock_body}" | cut -d: -f1
-)"
-if [[ -z "${job_admission_line}" || -z "${job_dependency_line}" ||
-      "${job_admission_line}" -ge "${job_dependency_line}" ]]; then
-    echo "managed job targets do not lock admission before dependency" >&2
-    exit 1
-fi
-
 for entrypoint in \
     tp_compaction_job_activate \
     tp_compaction_job_activate_with_schedule \
@@ -530,15 +494,21 @@ for entrypoint in \
         sed -n "/^${entrypoint}(/,/^}/p" "${JOB_SOURCE}"
     )"
     target_lock_line="$(
-        grep -n "tp_lock_job_target(indexoid)" \
+        grep -n "tp_require_compaction_index_lock(indexoid)" \
+            <<<"${entrypoint_body}" | cut -d: -f1
+    )"
+    dependency_lock_line="$(
+        grep -n "tp_require_compaction_dependency_lock()" \
             <<<"${entrypoint_body}" | cut -d: -f1
     )"
     capture_line="$(
         grep -n "tp_capture_target(indexoid" \
             <<<"${entrypoint_body}" | cut -d: -f1
     )"
-    if [[ -z "${target_lock_line}" || -z "${capture_line}" ||
-          "${target_lock_line}" -ge "${capture_line}" ]]; then
+    if [[ -z "${target_lock_line}" || -z "${dependency_lock_line}" ||
+          -z "${capture_line}" ||
+          "${target_lock_line}" -ge "${dependency_lock_line}" ||
+          "${dependency_lock_line}" -ge "${capture_line}" ]]; then
         echo "${entrypoint} enters discovery before managed lock ordering" >&2
         exit 1
     fi
@@ -547,17 +517,12 @@ done
 capture_body="$(
     sed -n '/^tp_compaction_job_capture(/,/^}/p' "${JOB_SOURCE}"
 )"
-capture_admission_line="$(
-    grep -n "tp_require_compaction_index_lock(indexoid)" \
-        <<<"${capture_body}" | cut -d: -f1
-)"
-capture_target_line="$(
-    grep -n "tp_capture_target(indexoid" \
-        <<<"${capture_body}" | cut -d: -f1
-)"
-if [[ -z "${capture_admission_line}" || -z "${capture_target_line}" ||
-      "${capture_admission_line}" -ge "${capture_target_line}" ]]; then
-    echo "managed identity capture can run without admission" >&2
+if ! grep -Fq "try_relation_open(indexoid, AccessShareLock)" \
+    <<<"${capture_body}" ||
+    grep -Eq \
+        'tp_require_compaction_index_lock|tp_lock_compaction|tp_ensure_index_compaction_lineage' \
+        <<<"${capture_body}"; then
+    echo "managed identity capture is not read-only local collection" >&2
     exit 1
 fi
 
@@ -570,17 +535,16 @@ schedule_admission_line="$(
 )"
 schedule_dependency_line="$(
     grep -n "tp_lock_compaction_dependency()" \
-        <<<"${schedule_body}" | cut -d: -f1
+        <<<"${schedule_body}" | cut -d: -f1 || true
 )"
-schedule_discovery_line="$(
-    grep -n "tp_discover_locked_job_objects(&objects)" \
+schedule_query_line="$(
+    grep -n "tp_schedule_as_trusted(objects" \
         <<<"${schedule_body}" | cut -d: -f1
 )"
 if [[ -z "${schedule_admission_line}" ||
-      -z "${schedule_dependency_line}" ||
-      -z "${schedule_discovery_line}" ||
-      "${schedule_admission_line}" -ge "${schedule_dependency_line}" ||
-      "${schedule_dependency_line}" -ge "${schedule_discovery_line}" ]]; then
+      -z "${schedule_query_line}" ||
+      "${schedule_admission_line}" -ge "${schedule_query_line}" ]] ||
+    [ -n "${schedule_dependency_line}" ]; then
     echo "captured schedule resolution bypasses managed lock ordering" >&2
     exit 1
 fi
@@ -588,26 +552,13 @@ fi
 preflight_body="$(
     sed -n '/^tp_compaction_job_preflight(/,/^}/p' "${JOB_SOURCE}"
 )"
-locked_discovery_body="$(
-    sed -n '/^tp_discover_locked_job_objects(/,/^}/p' "${JOB_SOURCE}"
-)"
 if ! grep -Fq "tp_preflight_job_objects(&objects)" <<<"${preflight_body}" ||
-    grep -Fq "tp_discover_locked_job_objects" <<<"${preflight_body}" ||
-    ! grep -Fq "tp_require_compaction_dependency_lock()" \
-        <<<"${locked_discovery_body}"; then
-    echo "unlocked preflight and dependency-locked discovery are not split" \
+    ! grep -Fq "tp_preflight_job_objects(&objects)" \
+        <<<"${object_bundle_body}" ||
+    ! grep -Fq "tp_job_objects_still_match(&objects)" \
+        <<<"${object_bundle_body}"; then
+    echo "object preflight and locked identity validation are not split" \
         >&2
-    exit 1
-fi
-preflight_discovery_body="$(
-    sed -n '/^tp_preflight_job_objects(/,/^}/p' "${JOB_SOURCE}"
-)"
-if ! grep -Fq "TP_JOB_OBJECTS_PREFLIGHT" \
-    <<<"${preflight_discovery_body}" ||
-    ! grep -Fq "TP_JOB_OBJECTS_LOCKED" <<<"${locked_discovery_body}" ||
-    [ "$(grep -Fc "tp_populate_job_objects_as_owner(" \
-        "${JOB_SOURCE}")" -ne 2 ]; then
-    echo "job object resolution bypasses the preflight/locked split" >&2
     exit 1
 fi
 for locked_entrypoint in \
@@ -617,9 +568,11 @@ for locked_entrypoint in \
     locked_entrypoint_body="$(
         sed -n "/^${locked_entrypoint}(/,/^}/p" "${JOB_SOURCE}"
     )"
-    if ! grep -Fq "tp_discover_locked_job_objects(&objects)" \
-        <<<"${locked_entrypoint_body}"; then
-        echo "${locked_entrypoint} bypasses dependency-locked discovery" >&2
+    if grep -Fq "tp_discover_locked_job_objects" \
+        <<<"${locked_entrypoint_body}" ||
+        ! grep -Fq "objects" <<<"${locked_entrypoint_body}"; then
+        echo "${locked_entrypoint} does not consume the admitted object bundle" \
+            >&2
         exit 1
     fi
 done
@@ -652,7 +605,7 @@ managed_batch_line="$(
         <<<"${managed_reconcile_body}" | head -1 | cut -d: -f1
 )"
 managed_bundle_line="$(
-    grep -n "tp_compaction_job_try_lock_objects()" \
+    grep -n "tp_compaction_job_try_lock_objects(" \
         <<<"${managed_reconcile_body}" | head -1 | cut -d: -f1
 )"
 managed_lineage_line="$(
@@ -705,11 +658,8 @@ if ! grep -Fq "OAT_POST_CREATE" "${MODULE_SOURCE}" ||
     exit 1
 fi
 
-prelock_call_count="$(
-    grep -Fc "tp_prelock_compaction_indexes" "${MODULE_SOURCE}" || true
-)"
-if [ "${prelock_call_count}" -lt 4 ]; then
-    echo "multi-index lifecycle paths do not share sorted relation locking" \
+if grep -Fq "tp_prelock_compaction_indexes(" "${MODULE_SOURCE}"; then
+    echo "utility collection still retains managed admissions before core" \
         >&2
     exit 1
 fi

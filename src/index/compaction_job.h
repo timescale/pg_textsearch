@@ -8,6 +8,8 @@
 
 #include <postgres.h>
 
+typedef struct TpCompactionJobObjects TpCompactionJobObjects;
+
 typedef struct TpCompactionJobIdentity
 {
 	Oid	  heap_oid;
@@ -28,7 +30,9 @@ typedef enum TpManagedIntentFlags
 	TP_MANAGED_INTENT_REFRESH_DEFAULT	= 1 << 0,
 	TP_MANAGED_INTENT_RECONCILE_OPTIONS = 1 << 1,
 	TP_MANAGED_INTENT_PRESERVE_SCHEDULE = 1 << 2,
-	TP_MANAGED_INTENT_LINEAGE_SUPPLIED	= 1 << 3
+	TP_MANAGED_INTENT_LINEAGE_SUPPLIED	= 1 << 3,
+	TP_MANAGED_INTENT_DISABLE			= 1 << 4,
+	TP_MANAGED_INTENT_POST_PUBLICATION	= 1 << 5
 } TpManagedIntentFlags;
 
 typedef struct TpManagedIndexIntent
@@ -42,16 +46,27 @@ typedef struct TpManagedIndexIntent
 } TpManagedIndexIntent;
 
 extern void tp_compaction_job_preflight(Oid owner_oid, const char *schedule);
-extern bool tp_compaction_job_try_lock_objects(void);
-extern void tp_compaction_job_activate(Oid indexoid, bool refresh_default);
-extern void
-tp_compaction_job_activate_with_schedule(Oid indexoid, const char *schedule);
+extern TpCompactionJobObjects			  *
+tp_compaction_job_try_lock_objects(bool invalid_is_error);
+extern void tp_compaction_job_activate(
+		const TpCompactionJobObjects *objects,
+		Oid							  indexoid,
+		bool						  refresh_default);
+extern void tp_compaction_job_activate_with_schedule(
+		const TpCompactionJobObjects *objects,
+		Oid							  indexoid,
+		const char					 *schedule);
 extern void
 tp_compaction_job_capture(Oid indexoid, TpCompactionJobIdentity *identity);
 extern void tp_compaction_job_resolve_schedule(
-		Oid						 indexoid,
-		TpCompactionJobIdentity *identity,
-		MemoryContext			 result_context);
-extern void tp_compaction_job_signal(Oid indexoid);
+		const TpCompactionJobObjects *objects,
+		Oid							  indexoid,
+		TpCompactionJobIdentity		 *identity,
+		MemoryContext				  result_context);
+extern void
+tp_compaction_job_signal(const TpCompactionJobObjects *objects, Oid indexoid);
 extern bool tp_compaction_job_lineage_exists(
-		const char *lineage, Oid heap_oid, Oid owner_oid);
+		const TpCompactionJobObjects *objects,
+		const char					 *lineage,
+		Oid							  heap_oid,
+		Oid							  owner_oid);
