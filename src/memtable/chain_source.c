@@ -83,7 +83,7 @@ typedef struct TpMemtableChainSource
 									* counter atomic was reset to 0 by
 									* shmem init. */
 	bool filter_terms;			   /* true when constructor was passed
-									* a non-empty query_terms[]: the
+									* a non-NULL query_terms[]: the
 									* term HTAB is pre-populated with
 									* those terms (and only those) at
 									* construction time, and ingest_terms
@@ -139,7 +139,7 @@ lookup_or_create_term(
 	 * address, and the bytes are unchanged after we copy them.
 	 *
 	 * Filter mode (set when the constructor was passed a
-	 * non-empty query_terms[]): query terms have already been
+	 * non-NULL query_terms[]): query terms have already been
 	 * pre-inserted into the HTAB, so HASH_FIND is sufficient and
 	 * any miss means the lexeme is not a query term — return
 	 * NULL so the caller skips term_entry_append.  This is the
@@ -430,6 +430,19 @@ chain_get_doc_freq(TpDataSource *source, const char *term)
 }
 
 static void
+chain_foreach_document(
+		TpDataSource *source, TpDocumentCallback callback, void *arg)
+{
+	TpMemtableChainSource *src = (TpMemtableChainSource *)source;
+	HASH_SEQ_STATUS		   sequence;
+	ChainDocLenEntry	  *entry;
+
+	hash_seq_init(&sequence, src->doclen_ht);
+	while ((entry = hash_seq_search(&sequence)) != NULL)
+		callback(&entry->ctid, arg);
+}
+
+static void
 chain_close(TpDataSource *source)
 {
 	TpMemtableChainSource *src = (TpMemtableChainSource *)source;
@@ -442,11 +455,12 @@ chain_close(TpDataSource *source)
 }
 
 static const TpDataSourceOps chain_source_ops = {
-		.get_postings	= chain_get_postings,
-		.free_postings	= chain_free_postings,
-		.get_doc_length = chain_get_doc_length,
-		.get_doc_freq	= chain_get_doc_freq,
-		.close			= chain_close,
+		.get_postings	  = chain_get_postings,
+		.free_postings	  = chain_free_postings,
+		.get_doc_length	  = chain_get_doc_length,
+		.get_doc_freq	  = chain_get_doc_freq,
+		.foreach_document = chain_foreach_document,
+		.close			  = chain_close,
 };
 
 /* ---------- public constructor ---------- */
@@ -548,7 +562,7 @@ tp_memtable_chain_source_create(
 	src->mcxt		  = mcxt;
 	src->base.ops	  = &chain_source_ops;
 	src->lock_state	  = lock_state_to_release;
-	src->filter_terms = (query_term_count > 0);
+	src->filter_terms = (query_terms != NULL);
 
 	{
 		MemoryContext old = MemoryContextSwitchTo(mcxt);
@@ -1037,6 +1051,34 @@ bm25_test_chain_source(PG_FUNCTION_ARGS)
 				TEST_FAIL("ctid mismatch for %s", terms[i]);
 			tp_source_free_postings(src, post);
 		}
+		TEST_OK();
+	}
+	else if (strcmp(case_name, "documents_only") == 0)
+	{
+		ItemPointerData ctid;
+		const char	   *terms[]		   = {"alpha"};
+		const char	   *documents_only = NULL;
+		int32			freqs[]		   = {2};
+
+		ItemPointerSet(&ctid, 301, 1);
+		test_append_terms(rel, idx_name, &ctid, 1, terms, freqs);
+
+		src = tp_memtable_chain_source_create(state, rel, &documents_only, 0);
+		if (src == NULL)
+			TEST_FAIL("chain source NULL");
+		if (!((TpMemtableChainSource *)src)->filter_terms)
+			TEST_FAIL("documents-only source did not enable term filtering");
+		if (hash_get_num_entries(((TpMemtableChainSource *)src)->term_ht) != 0)
+			TEST_FAIL(
+					"documents-only source retained %ld terms",
+					hash_get_num_entries(
+							((TpMemtableChainSource *)src)->term_ht));
+		if (src->total_docs != 1)
+			TEST_FAIL("total_docs=%d, expected 1", src->total_docs);
+		if (tp_source_get_doc_length(src, &ctid) != 2)
+			TEST_FAIL("get_doc_length mismatch");
+		if (tp_source_get_postings(src, "alpha") != NULL)
+			TEST_FAIL("documents-only source materialized postings");
 		TEST_OK();
 	}
 	else if (strcmp(case_name, "multi_page_chain") == 0)

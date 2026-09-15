@@ -16,6 +16,7 @@
 
 #include "access/am.h"
 #include "planner/cost.h"
+#include "tsearch/ts_utils.h"
 
 /* Relation options - initialized in mod.c */
 extern relopt_kind tp_relopt_kind;
@@ -61,7 +62,7 @@ tp_handler(PG_FUNCTION_ARGS)
 
 	amroutine = makeNode(IndexAmRoutine);
 
-	amroutine->amstrategies	  = 0; /* No search strategies - ORDER BY only */
+	amroutine->amstrategies	  = TSearchStrategyNumber;
 	amroutine->amsupport	  = 8; /* 8 for distance */
 	amroutine->amoptsprocnum  = 0;
 	amroutine->amcanorder	  = false;

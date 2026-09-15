@@ -98,6 +98,41 @@ ORDER BY content <@> to_bm25query('database system', 'docs_idx')
 LIMIT 5;
 ```
 
+Supported operations:
+- `text <@> 'query'` - Score text against a query (index auto-detected)
+- `text <@> bm25query` - Score text with explicit index specification
+
+### Boolean Filtering
+
+Use PostgreSQL's `@@` operator and `tsquery` syntax to filter through a BM25
+index:
+
+```sql
+SELECT * FROM documents
+WHERE content @@ to_tsquery('english', 'postgres & (search | database) & !mysql');
+```
+
+Supported `tsquery` features include `&` (AND), `|` (OR), `!` (NOT), phrase
+operators such as `<->`, prefix matching with `:*`, and weight restrictions.
+Phrase and weight checks may be rechecked against the table row after the
+index finds candidates.
+
+The `default_text_search_config` used to parse the left-hand `text` value must
+match the index configuration:
+
+```sql
+SET default_text_search_config = 'english';
+```
+
+If that setting changes after a Boolean prepared statement has switched to a
+generic plan, `DEALLOCATE` and prepare the statement again. A newly planned
+query can choose the correct sequential fallback, while the cached plan is
+rejected to avoid incorrect index results.
+
+Boolean filtering and BM25 ranking are separate scan modes. A query combining
+`WHERE content @@ ...` with `ORDER BY content <@> ...` cannot use one BM25
+index scan for both operations.
+
 ### Verifying Index Usage
 
 ```sql

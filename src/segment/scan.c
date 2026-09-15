@@ -6,6 +6,7 @@
  */
 #include <postgres.h>
 
+#include <miscadmin.h>
 #include <utils/memutils.h>
 
 #include "segment/compression.h"
@@ -13,6 +14,25 @@
 #include "segment/fieldnorm.h"
 #include "segment/io.h"
 #include "segment/segment.h"
+
+static void
+tp_segment_posting_iterator_init_at(
+		TpSegmentPostingIterator *iter,
+		TpSegmentReader			 *reader,
+		const char				 *term,
+		uint32					  dict_entry_idx,
+		bool					  force_copy)
+{
+	memset(iter, 0, sizeof(*iter));
+	iter->reader		 = reader;
+	iter->term			 = term;
+	iter->dict_entry_idx = dict_entry_idx;
+	iter->force_copy	 = force_copy;
+	tp_segment_read_dict_entry(
+			reader, reader->header, dict_entry_idx, &iter->dict_entry);
+	iter->initialized = true;
+	iter->finished	  = (iter->dict_entry.block_count == 0);
+}
 
 /*
  * Read a skip entry by block index.
@@ -73,19 +93,10 @@ tp_segment_posting_iterator_init(
 
 	header = reader->header;
 
-	iter->reader		   = reader;
-	iter->term			   = term;
-	iter->current_block	   = 0;
-	iter->current_in_block = 0;
-	iter->initialized	   = false;
-	iter->finished		   = true;
-	iter->block_postings   = NULL;
-	iter->has_block_access = false;
-	memset(&iter->block_access, 0, sizeof(iter->block_access));
-	iter->fallback_block	   = NULL;
-	iter->fallback_block_size  = 0;
-	iter->cached_skip_entries  = NULL;
-	iter->compressed_buf_cache = NULL;
+	memset(iter, 0, sizeof(*iter));
+	iter->reader   = reader;
+	iter->term	   = term;
+	iter->finished = true;
 
 	if (header->num_terms == 0 || header->dictionary_offset == 0)
 		return false;
@@ -153,13 +164,8 @@ tp_segment_posting_iterator_init(
 
 		if (cmp == 0)
 		{
-			/* Found! Read dictionary entry (version-aware) */
-			tp_segment_read_dict_entry(reader, header, mid, &iter->dict_entry);
-
-			iter->dict_entry_idx = mid;
-			iter->initialized	 = true;
-			iter->finished		 = (iter->dict_entry.block_count == 0);
-
+			tp_segment_posting_iterator_init_at(
+					iter, reader, term, mid, false);
 			pfree(term_buffer);
 			return true;
 		}
@@ -175,6 +181,144 @@ tp_segment_posting_iterator_init(
 
 	pfree(term_buffer);
 	return false;
+}
+
+/*
+ * Build candidates for dictionary terms with the prefix. Small expansions
+ * return one iterator per term for ordered merging. Broad expansions consume
+ * one iterator at a time into a document bitmap, bounding simultaneous pins.
+ */
+void
+tp_segment_prefix_candidates_init(
+		TpSegmentReader			  *reader,
+		const char				  *prefix,
+		int						   prefix_length,
+		uint32					   max_iterators,
+		TpSegmentPrefixCandidates *candidates)
+{
+	TpSegmentHeader *header;
+	TpDictionary	 dict_header;
+	char			*prefix_string;
+	uint32			 first;
+	uint32			 end;
+	uint32			 left;
+	uint32			 postings_since_interrupt = 0;
+	uint32			 right;
+
+	memset(candidates, 0, sizeof(*candidates));
+	if (!reader || !reader->header || prefix_length <= 0)
+		return;
+
+	header = reader->header;
+	if (header->num_terms == 0 || header->dictionary_offset == 0)
+		return;
+
+	tp_segment_read(
+			reader,
+			header->dictionary_offset,
+			&dict_header,
+			sizeof(dict_header.num_terms));
+
+	if (dict_header.num_terms != header->num_terms)
+		ereport(ERROR,
+				(errcode(ERRCODE_DATA_CORRUPTED),
+				 errmsg("corrupt segment: dictionary term count %u "
+						"does not match segment term count %u",
+						dict_header.num_terms,
+						header->num_terms)));
+
+	prefix_string = pnstrdup(prefix, prefix_length);
+
+	left  = 0;
+	right = dict_header.num_terms;
+	while (left < right)
+	{
+		uint32 mid	= left + (right - left) / 2;
+		char  *term = tp_segment_read_term_at_index(reader, header, NULL, mid);
+		int	   cmp	= strcmp(term, prefix_string);
+
+		pfree(term);
+		if (cmp < 0)
+			left = mid + 1;
+		else
+			right = mid;
+	}
+
+	first = left;
+	end	  = first;
+	while (end < dict_header.num_terms)
+	{
+		char *term = tp_segment_read_term_at_index(reader, header, NULL, end);
+
+		if (strncmp(term, prefix_string, prefix_length) != 0)
+		{
+			pfree(term);
+			break;
+		}
+		pfree(term);
+		end++;
+	}
+	pfree(prefix_string);
+
+	if (end - first <= max_iterators)
+	{
+		candidates->iterator_count = end - first;
+		if (candidates->iterator_count == 0)
+			return;
+
+		candidates->iterators = palloc_array(
+				TpSegmentPostingIterator, candidates->iterator_count);
+		for (uint32 i = 0; i < candidates->iterator_count; i++)
+		{
+			TpSegmentPostingIterator *iter = &candidates->iterators[i];
+
+			tp_segment_posting_iterator_init_at(
+					iter, reader, NULL, first + i, true);
+			candidates->estimate =
+					Min((uint64)header->num_docs,
+						candidates->estimate + iter->dict_entry.doc_freq);
+		}
+		return;
+	}
+
+	candidates->doc_bitmap = palloc0(((Size)header->num_docs + 7) / 8);
+	for (uint32 i = first; i < end; i++)
+	{
+		TpSegmentPostingIterator iter;
+		TpSegmentPosting		*posting;
+
+		CHECK_FOR_INTERRUPTS();
+		tp_segment_posting_iterator_init_at(&iter, reader, NULL, i, false);
+		while (tp_segment_posting_iterator_next(&iter, &posting))
+		{
+			uint8 *byte;
+			uint8  mask;
+
+			if (posting->doc_id >= header->num_docs)
+				ereport(ERROR,
+						(errcode(ERRCODE_DATA_CORRUPTED),
+						 errmsg("corrupt segment: posting document ID %u "
+								"exceeds document count %u",
+								posting->doc_id,
+								header->num_docs)));
+
+			if (++postings_since_interrupt == 4096)
+			{
+				CHECK_FOR_INTERRUPTS();
+				postings_since_interrupt = 0;
+			}
+
+			byte = &candidates->doc_bitmap[posting->doc_id >> 3];
+			mask = (uint8)(1 << (posting->doc_id & 7));
+
+			if ((*byte & mask) == 0)
+			{
+				*byte |= mask;
+				candidates->estimate++;
+			}
+		}
+		tp_segment_posting_iterator_free(&iter);
+	}
 }
 
 /*
@@ -259,7 +403,8 @@ tp_segment_posting_iterator_load_block(TpSegmentPostingIterator *iter)
 		 * TpBlockPosting requires 4-byte alignment (due to uint32 doc_id).
 		 * If the data address is misaligned, fall back to copying.
 		 */
-		if (tp_segment_get_direct(
+		if (!iter->force_copy &&
+			tp_segment_get_direct(
 					iter->reader,
 					iter->skip_entry.posting_offset,
 					block_bytes,
@@ -458,6 +603,7 @@ tp_segment_posting_iterator_seek(
 	uint32		block_count;
 	int			left, right, mid;
 	uint32		target_block;
+	uint32		step;
 	TpSkipEntry skip;
 
 	if (!iter->initialized || iter->finished)
@@ -472,6 +618,45 @@ tp_segment_posting_iterator_seek(
 	 */
 	left  = 0;
 	right = block_count - 1;
+
+	/*
+	 * A target beyond the loaded block cannot occur in an earlier block.
+	 * Probe nearby blocks first because Boolean intersections seek
+	 * monotonically and usually advance only a few posting blocks.
+	 */
+	if (iter->block_postings != NULL &&
+		target_doc_id > iter->skip_entry.last_doc_id)
+	{
+		if (iter->current_block + 1 >= block_count)
+		{
+			iter->finished = true;
+			return false;
+		}
+
+		left  = iter->current_block + 1;
+		right = left;
+		step  = 1;
+
+		for (;;)
+		{
+			tp_segment_read_skip_entry(
+					iter->reader,
+					iter->dict_entry.skip_index_offset,
+					right,
+					&skip);
+
+			if (skip.last_doc_id >= target_doc_id ||
+				right == (int)block_count - 1)
+				break;
+
+			left = right + 1;
+			if (step >= block_count - 1 - right)
+				right = block_count - 1;
+			else
+				right += step;
+			step *= 2;
+		}
+	}
 
 	while (left < right)
 	{

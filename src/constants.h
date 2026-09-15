@@ -30,7 +30,9 @@
  * Each page type has its own version for independent evolution.
  */
 /*
- * v7: on-disk memtable redesign (issue #374).  Appends
+ * v9 appends index capability flags.  v8 adds the deferred-free
+ * tombstone head.  v7 is the on-disk memtable redesign (issue #374)
+ * and appends
  * memtable_head_blkno and memtable_tail_blkno at the end of
  * TpIndexMetaPageData and retires the docid recovery pages.
  *
@@ -49,7 +51,7 @@
  * fine; the first metapage mutation (via
  * tp_metapage_upgrade_to_current) emits a client-visible
  * WARNING recording the possibly-incomplete state and PRESERVES
- * the pointer as a durable marker in v8, which
+ * the pointer as a durable marker, which
  * tp_warn_if_pending_docid() re-surfaces on the scan path, at most
  * once per session, until a REINDEX rebuilds the index from the heap
  * and clears it.  Indexes from a clean v1.2.x shutdown have
@@ -58,10 +60,11 @@
  *
  * v5 and below are not read-compatible.  v5 -> v6 changed BMW
  * scoring semantics with no on-disk-struct change, but
- * pre-v0.5.0 indexes carry an older segment format the v7
+ * pre-v0.5.0 indexes carry an older segment format the current
  * binary cannot read; those continue to require REINDEX.
  */
-#define TP_METAPAGE_VERSION 8
+#define TP_METAPAGE_VERSION	   9
+#define TP_METAPAGE_VERSION_V8 8 /* read-compatible: no capability flags */
 #define TP_METAPAGE_VERSION_V7                                            \
 	7							 /* read-compatible: on-disk memtable, no \
 								  * pending_free_head (issue #380) */
@@ -71,6 +74,8 @@
 #define TP_MEMTABLE_PAGE_VERSION 1
 
 #define TP_METAPAGE_BLKNO 0
+
+#define TP_METAPAGE_ALL_DOCUMENTS_INDEXED (1U << 0)
 
 /* Segment hierarchy configuration */
 #define TP_MAX_LEVELS				  8 /* Supports 8^8 = 16M segments */

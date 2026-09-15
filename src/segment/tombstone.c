@@ -171,7 +171,7 @@ tp_tombstone_read_head(Relation index)
 	page  = BufferGetPage(buf);
 	metap = (TpIndexMetaPage)PageGetContents(page);
 	/* v6/v7 pages predate the field; treat as empty. */
-	if (metap->version < TP_METAPAGE_VERSION)
+	if (metap->version < TP_METAPAGE_VERSION_V8)
 		head = InvalidBlockNumber;
 	else
 		head = metap->pending_free_head;
