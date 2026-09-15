@@ -50,7 +50,22 @@ CREATE INDEX index_before_rls_idx ON index_before_rls USING bm25(content)
     WITH (text_config='english');
 \set VERBOSITY terse
 ALTER VIEW index_before_rls ENABLE ROW LEVEL SECURITY;
+ALTER TABLE index_before_rls
+    DROP COLUMN missing, ENABLE ROW LEVEL SECURITY;
+\pset format unaligned
+SELECT relrowsecurity
+FROM pg_class
+WHERE oid = 'index_before_rls'::regclass;
+ALTER TABLE index_before_rls
+    ENABLE ROW LEVEL SECURITY, DISABLE ROW LEVEL SECURITY;
+SELECT relrowsecurity
+FROM pg_class
+WHERE oid = 'index_before_rls'::regclass;
 ALTER TABLE index_before_rls ENABLE ROW LEVEL SECURITY;
+SELECT relrowsecurity
+FROM pg_class
+WHERE oid = 'index_before_rls'::regclass;
+\pset format aligned
 \set VERBOSITY default
 
 RESET pg_textsearch.allow_rls;

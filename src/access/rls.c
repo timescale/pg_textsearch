@@ -71,6 +71,12 @@ tp_check_rls_enable_allowed(Oid relid)
 		return;
 
 	rel = table_open(relid, NoLock);
+	if (!rel->rd_rel->relrowsecurity)
+	{
+		table_close(rel, NoLock);
+		return;
+	}
+
 	if (relation_has_bm25_index(rel))
 	{
 		char *relname = pstrdup(RelationGetRelationName(rel));

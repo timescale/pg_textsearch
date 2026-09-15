@@ -807,8 +807,30 @@ tp_process_utility(
 		{
 			Oid relid = AlterTableLookupRelation(stmt, AccessExclusiveLock);
 
+			if (prev_process_utility_hook)
+				prev_process_utility_hook(
+						pstmt,
+						queryString,
+						readOnlyTree,
+						context,
+						params,
+						queryEnv,
+						dest,
+						qc);
+			else
+				standard_ProcessUtility(
+						pstmt,
+						queryString,
+						readOnlyTree,
+						context,
+						params,
+						queryEnv,
+						dest,
+						qc);
+
 			if (OidIsValid(relid))
 				tp_check_rls_enable_allowed(relid);
+			return;
 		}
 	}
 

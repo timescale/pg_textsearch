@@ -68,8 +68,33 @@ NOTICE:  BM25 index build completed: 0 documents, avg_length=0.00
 \set VERBOSITY terse
 ALTER VIEW index_before_rls ENABLE ROW LEVEL SECURITY;
 ERROR:  "index_before_rls" is not a view
+ALTER TABLE index_before_rls
+    DROP COLUMN missing, ENABLE ROW LEVEL SECURITY;
+ERROR:  column "missing" of relation "index_before_rls" does not exist
+\pset format unaligned
+SELECT relrowsecurity
+FROM pg_class
+WHERE oid = 'index_before_rls'::regclass;
+relrowsecurity
+f
+(1 row)
+ALTER TABLE index_before_rls
+    ENABLE ROW LEVEL SECURITY, DISABLE ROW LEVEL SECURITY;
+SELECT relrowsecurity
+FROM pg_class
+WHERE oid = 'index_before_rls'::regclass;
+relrowsecurity
+f
+(1 row)
 ALTER TABLE index_before_rls ENABLE ROW LEVEL SECURITY;
 ERROR:  cannot enable row-level security on relation "index_before_rls" because it has a BM25 index while "pg_textsearch.allow_rls" is off
+SELECT relrowsecurity
+FROM pg_class
+WHERE oid = 'index_before_rls'::regclass;
+relrowsecurity
+f
+(1 row)
+\pset format aligned
 \set VERBOSITY default
 RESET pg_textsearch.allow_rls;
 ALTER TABLE index_before_rls ENABLE ROW LEVEL SECURITY;
