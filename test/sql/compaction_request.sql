@@ -39,6 +39,9 @@ CREATE TEMP TABLE relopt_temp_docs (id integer, body text);
 CREATE INDEX relopt_temp_background_idx ON relopt_temp_docs
     USING bm25(body)
     WITH (text_config = 'english', compaction = 'background');
+CREATE INDEX CONCURRENTLY relopt_temp_background_cic_idx ON relopt_temp_docs
+    USING bm25(body)
+    WITH (text_config = 'english', compaction = 'background');
 
 -- Manual mode leaves spill-time compaction debt in place.
 CREATE TABLE manual_docs (id serial PRIMARY KEY, body text);

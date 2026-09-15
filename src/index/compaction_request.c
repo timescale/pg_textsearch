@@ -167,65 +167,15 @@ tp_lock_compaction_lineage(const char *lineage)
 			hash, TP_COMPACTION_LINEAGE_LOCK_SUBID, ExclusiveLock, false);
 }
 
-List *
-tp_prelock_compaction_indexes_nowait(List *indexoids, bool nowait)
+bool
+tp_try_lock_compaction_lineage(const char *lineage)
 {
-	List	 *sorted = list_copy(indexoids);
-	List	 *locked = NIL;
-	ListCell *lc;
-	Oid		  previous = InvalidOid;
+	uint32 hash;
 
-	list_sort(sorted, list_oid_cmp);
-	foreach (lc, sorted)
-	{
-		Oid indexoid = lfirst_oid(lc);
-
-		if (!OidIsValid(indexoid) || indexoid == previous)
-			continue;
-		if (nowait)
-		{
-			if (!ConditionalLockRelationOid(
-						indexoid, ShareUpdateExclusiveLock))
-				ereport(ERROR,
-						(errcode(ERRCODE_LOCK_NOT_AVAILABLE),
-						 errmsg("could not obtain lock on relation with OID "
-								"%u",
-								indexoid)));
-		}
-		else
-			LockRelationOid(indexoid, ShareUpdateExclusiveLock);
-		locked	 = lappend_oid(locked, indexoid);
-		previous = indexoid;
-	}
-	list_free(sorted);
-
-	foreach (lc, locked)
-	{
-		Oid indexoid = lfirst_oid(lc);
-
-		if (nowait)
-		{
-			if (!tp_take_compaction_lock(
-						indexoid,
-						TP_COMPACTION_INDEX_LOCK_SUBID,
-						ExclusiveLock,
-						true))
-				ereport(ERROR,
-						(errcode(ERRCODE_LOCK_NOT_AVAILABLE),
-						 errmsg("could not obtain lock on relation with OID "
-								"%u",
-								indexoid)));
-		}
-		else
-			tp_lock_compaction_index(indexoid);
-	}
-	return locked;
-}
-
-List *
-tp_prelock_compaction_indexes(List *indexoids)
-{
-	return tp_prelock_compaction_indexes_nowait(indexoids, false);
+	hash = hash_bytes(
+			(const unsigned char *)lineage, TP_COMPACTION_LINEAGE_LENGTH);
+	return tp_take_compaction_lock(
+			hash, TP_COMPACTION_LINEAGE_LOCK_SUBID, ExclusiveLock, true);
 }
 
 List *
@@ -368,7 +318,8 @@ tp_heaps_share_partition_family(Oid first_heap_oid, Oid second_heap_oid)
 }
 
 static bool
-tp_live_compaction_lineage_conflicts(const char *lineage, Oid heap_oid)
+tp_live_compaction_lineage_conflicts(
+		const char *lineage, Oid excluded_index_oid, Oid heap_oid)
 {
 	Relation	class_rel;
 	SysScanDesc scan;
@@ -387,6 +338,8 @@ tp_live_compaction_lineage_conflicts(const char *lineage, Oid heap_oid)
 
 		if (class_form->relkind != RELKIND_INDEX &&
 			class_form->relkind != RELKIND_PARTITIONED_INDEX)
+			continue;
+		if (class_form->oid == excluded_index_oid)
 			continue;
 
 		reloptions = heap_getattr(
@@ -431,7 +384,14 @@ bool
 tp_compaction_lineage_in_use(const char *lineage, Oid heap_oid, Oid owner_oid)
 {
 	(void)owner_oid;
-	return tp_live_compaction_lineage_conflicts(lineage, heap_oid);
+	return tp_live_compaction_lineage_conflicts(lineage, InvalidOid, heap_oid);
+}
+
+bool
+tp_compaction_lineage_in_use_by_other(
+		const char *lineage, Oid indexoid, Oid heap_oid)
+{
+	return tp_live_compaction_lineage_conflicts(lineage, indexoid, heap_oid);
 }
 
 char *
@@ -449,7 +409,8 @@ tp_new_available_compaction_lineage(Oid heap_oid, Oid owner_oid)
 		}
 
 		tp_lock_compaction_lineage(lineage);
-		if (!tp_live_compaction_lineage_conflicts(lineage, heap_oid))
+		if (!tp_live_compaction_lineage_conflicts(
+					lineage, InvalidOid, heap_oid))
 			return lineage;
 		pfree(lineage);
 	} while (true);
@@ -715,8 +676,12 @@ tp_run_request(Oid indexoid)
 	BeginInternalSubTransaction(NULL);
 	PG_TRY();
 	{
+		TpCompactionJobObjects *objects;
+
 		PushActiveSnapshot(GetLatestSnapshot());
-		tp_compaction_job_signal(indexoid);
+		objects = tp_compaction_job_try_lock_objects(false);
+		if (objects != NULL)
+			tp_compaction_job_signal(objects, indexoid);
 		PopActiveSnapshot();
 		ReleaseCurrentSubTransaction();
 		MemoryContextSwitchTo(oldcxt);
@@ -791,8 +756,6 @@ tp_prelock_requests(List *pending)
 	{
 		Oid		 indexoid = lfirst_oid(lc);
 		Relation index_rel;
-		bool	 needs_lineage_lock;
-
 		if (!OidIsValid(indexoid) || indexoid == previous)
 			continue;
 		previous = indexoid;
@@ -806,7 +769,7 @@ tp_prelock_requests(List *pending)
 			!tp_compaction_lock_held(
 					indexoid, TP_COMPACTION_INDEX_LOCK_SUBID, ExclusiveLock))
 			continue;
-		if (!ConditionalLockRelationOid(indexoid, AccessShareLock))
+		if (!ConditionalLockRelationOid(indexoid, ShareUpdateExclusiveLock))
 			continue;
 		index_rel = try_relation_open(indexoid, NoLock);
 		if (index_rel == NULL || index_rel->rd_rel->relkind != RELKIND_INDEX ||
@@ -819,19 +782,10 @@ tp_prelock_requests(List *pending)
 		{
 			if (index_rel != NULL)
 				relation_close(index_rel, NoLock);
-			UnlockRelationOid(indexoid, AccessShareLock);
+			UnlockRelationOid(indexoid, ShareUpdateExclusiveLock);
 			continue;
 		}
-
-		needs_lineage_lock = tp_index_compaction_lineage(index_rel) == NULL;
 		relation_close(index_rel, NoLock);
-		if (needs_lineage_lock)
-		{
-			UnlockRelationOid(indexoid, AccessShareLock);
-			if (!ConditionalLockRelationOid(
-						indexoid, ShareUpdateExclusiveLock))
-				continue;
-		}
 
 		targets = lappend_oid(targets, indexoid);
 	}
@@ -846,7 +800,10 @@ tp_prelock_requests(List *pending)
 					TP_COMPACTION_INDEX_LOCK_SUBID,
 					ExclusiveLock,
 					true))
+		{
+			UnlockRelationOid(indexoid, ShareUpdateExclusiveLock);
 			targets = foreach_delete_current(targets, lc);
+		}
 	}
 	return targets;
 }
@@ -887,11 +844,6 @@ tp_compaction_flush_requests(void)
 	PG_TRY();
 	{
 		targets = tp_prelock_requests(pending);
-		if (targets != NIL && !tp_compaction_job_try_lock_objects())
-		{
-			list_free(targets);
-			targets = NIL;
-		}
 		foreach (lc, targets)
 		{
 			Oid indexoid = lfirst_oid(lc);

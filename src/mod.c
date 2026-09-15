@@ -255,7 +255,7 @@ static void tp_process_utility_impl(
 		QueryEnvironment	 *queryEnv,
 		DestReceiver		 *dest,
 		QueryCompletion		 *qc);
-static void tp_reconcile_reindex_states(bool include_deferred);
+static void tp_collect_reindex_state_intents(bool include_deferred);
 static bool tp_reconcile_managed_intents(void);
 
 static void
@@ -743,7 +743,9 @@ tp_update_managed_intent(
 {
 	const int mode_flags = TP_MANAGED_INTENT_REFRESH_DEFAULT |
 						   TP_MANAGED_INTENT_RECONCILE_OPTIONS |
-						   TP_MANAGED_INTENT_PRESERVE_SCHEDULE;
+						   TP_MANAGED_INTENT_PRESERVE_SCHEDULE |
+						   TP_MANAGED_INTENT_DISABLE |
+						   TP_MANAGED_INTENT_POST_PUBLICATION;
 	bool current_options_authoritative =
 			(intent->flags & (TP_MANAGED_INTENT_REFRESH_DEFAULT |
 							  TP_MANAGED_INTENT_RECONCILE_OPTIONS)) != 0;
@@ -843,6 +845,17 @@ tp_reset_managed_intents(void)
 }
 
 static void
+tp_free_managed_intent(TpManagedIndexIntent *intent)
+{
+	tp_reset_compaction_identity(&intent->source);
+	if (intent->schedule != NULL)
+		pfree(intent->schedule);
+	if (intent->lineage != NULL)
+		pfree(intent->lineage);
+	pfree(intent);
+}
+
+static void
 tp_abort_managed_intents(SubTransactionId subid)
 {
 	ListCell *lc;
@@ -852,8 +865,11 @@ tp_abort_managed_intents(SubTransactionId subid)
 		TpManagedIndexIntent *intent = lfirst(lc);
 
 		if (intent->subid == subid)
+		{
 			tp_managed_intents =
 					foreach_delete_current(tp_managed_intents, lc);
+			tp_free_managed_intent(intent);
+		}
 	}
 }
 
@@ -901,7 +917,10 @@ tp_promote_managed_intents(
 			}
 		}
 		if (existing != NULL)
+		{
 			tp_merge_managed_intent(existing, intent);
+			tp_free_managed_intent(intent);
+		}
 		else
 			merged = lappend(merged, intent);
 	}
@@ -1003,18 +1022,7 @@ tp_xact_callback(XactEvent event, void *arg pg_attribute_unused())
 	{
 	case XACT_EVENT_PRE_COMMIT:
 		if (tp_reindex_states != NULL)
-		{
-			PushActiveSnapshot(GetLatestSnapshot());
-			PG_TRY();
-			{
-				tp_reconcile_reindex_states(true);
-			}
-			PG_FINALLY();
-			{
-				PopActiveSnapshot();
-			}
-			PG_END_TRY();
-		}
+			tp_collect_reindex_state_intents(true);
 
 		/*
 		 * Check for bulk load auto-spill before commit.
@@ -1153,7 +1161,9 @@ tp_index_stmt_ensure_lineage(IndexStmt *stmt, Oid heap_oid, Oid owner_oid)
 	if (tp_index_stmt_option(stmt, "compaction_lineage") != NULL)
 		return;
 
-	lineage		  = tp_new_available_compaction_lineage(heap_oid, owner_oid);
+	(void)heap_oid;
+	(void)owner_oid;
+	lineage		  = tp_new_compaction_lineage();
 	stmt->options = lappend(
 			stmt->options,
 			makeDefElem(
@@ -1182,7 +1192,6 @@ tp_index_stmt_validate_supplied_lineage(
 	if (!object_ownercheck(RelationRelationId, heap_oid, GetUserId()))
 		return;
 
-	tp_lock_compaction_lineage(lineage);
 	if (tp_compaction_lineage_in_use(lineage, heap_oid, owner_oid))
 	{
 		/*
@@ -1897,25 +1906,43 @@ tp_collect_background_indexes(List *indexoids, bool refresh_default)
 	list_free(candidates);
 }
 
+static int
+tp_lineage_cmp(const ListCell *left, const ListCell *right)
+{
+	return strcmp((const char *)lfirst(left), (const char *)lfirst(right));
+}
+
 static bool
 tp_reconcile_managed_intents(void)
 {
-	List	 *frozen;
-	List	 *indexoids = NIL;
-	List	 *locked;
-	ListCell *lc;
-	bool	  deferred		  = false;
-	bool	  snapshot_pushed = false;
+	List				   *frozen;
+	List				   *indexoids = NIL;
+	List				   *lineages  = NIL;
+	List				   *locked;
+	ListCell			   *lc;
+	TpCompactionJobObjects *objects			 = NULL;
+	bool					deferred		 = false;
+	bool					post_publication = false;
+	bool					snapshot_pushed	 = false;
+	bool					strict_lineage	 = false;
 
 	if (tp_managed_reconciling || tp_managed_intents == NIL)
 		return true;
 
-	frozen = list_copy(tp_managed_intents);
+	frozen			   = tp_managed_intents;
+	tp_managed_intents = NIL;
 	foreach (lc, frozen)
 	{
 		TpManagedIndexIntent *intent = lfirst(lc);
 
-		indexoids = list_append_unique_oid(indexoids, intent->index_oid);
+		if ((intent->flags & TP_MANAGED_INTENT_DISABLE) == 0 ||
+			(intent->flags & TP_MANAGED_INTENT_LINEAGE_SUPPLIED) != 0)
+			indexoids = list_append_unique_oid(indexoids, intent->index_oid);
+		if ((intent->flags & TP_MANAGED_INTENT_LINEAGE_SUPPLIED) != 0 &&
+			SearchSysCacheExists1(RELOID, ObjectIdGetDatum(intent->index_oid)))
+			strict_lineage = true;
+		if ((intent->flags & TP_MANAGED_INTENT_POST_PUBLICATION) != 0)
+			post_publication = true;
 	}
 
 	tp_managed_reconciling = true;
@@ -1929,19 +1956,69 @@ tp_reconcile_managed_intents(void)
 		locked = tp_try_prelock_compaction_indexes(indexoids);
 		if (list_length(locked) < list_length(indexoids))
 			deferred = true;
+		if (strict_lineage && list_length(locked) < list_length(indexoids))
+			ereport(ERROR,
+					(errcode(ERRCODE_LOCK_NOT_AVAILABLE),
+					 errmsg("could not validate background compaction "
+							"lineage"),
+					 errdetail("A required index is concurrently locked."),
+					 errhint("Retry the command after the conflicting "
+							 "transaction completes.")));
+		foreach (lc, frozen)
+		{
+			TpManagedIndexIntent *intent = lfirst(lc);
+
+			if ((intent->flags & TP_MANAGED_INTENT_LINEAGE_SUPPLIED) != 0 &&
+				list_member_oid(locked, intent->index_oid))
+				lineages = lappend(lineages, intent->lineage);
+		}
+		list_sort(lineages, tp_lineage_cmp);
+		foreach (lc, lineages)
+		{
+			if (!tp_try_lock_compaction_lineage(lfirst(lc)))
+				ereport(ERROR,
+						(errcode(ERRCODE_LOCK_NOT_AVAILABLE),
+						 errmsg("could not validate background compaction "
+								"lineage"),
+						 errdetail(
+								 "A requested lineage is concurrently "
+								 "locked."),
+						 errhint("Retry the command after the conflicting "
+								 "transaction completes.")));
+		}
+		foreach (lc, locked)
+		{
+			char *lineage =
+					tp_ensure_index_compaction_lineage(lfirst_oid(lc), NULL);
+
+			if (lineage != NULL)
+				pfree(lineage);
+		}
 		foreach (lc, frozen)
 		{
 			TpManagedIndexIntent *intent = lfirst(lc);
 
 			if (!list_member_oid(locked, intent->index_oid) ||
+				(intent->flags & TP_MANAGED_INTENT_DISABLE) != 0 ||
 				(intent->flags & TP_MANAGED_INTENT_RECONCILE_OPTIONS) == 0 ||
 				(intent->flags & TP_MANAGED_INTENT_LINEAGE_SUPPLIED) != 0)
 				continue;
 			tp_reconcile_index_compaction_options(
 					intent->index_oid, intent->schedule, intent->lineage);
 		}
-		if (locked != NIL && !tp_compaction_job_try_lock_objects())
+		if (locked != NIL && (objects = tp_compaction_job_try_lock_objects(
+									  !post_publication)) == NULL)
 		{
+			if (strict_lineage)
+				ereport(ERROR,
+						(errcode(ERRCODE_LOCK_NOT_AVAILABLE),
+						 errmsg("could not validate background compaction "
+								"lineage"),
+						 errdetail(
+								 "A required extension object is concurrently "
+								 "locked."),
+						 errhint("Retry the command after the conflicting "
+								 "transaction completes.")));
 			list_free(locked);
 			locked	 = NIL;
 			deferred = true;
@@ -1966,8 +2043,10 @@ tp_reconcile_managed_intents(void)
 			heap_oid  = index_rel->rd_index->indrelid;
 			owner_oid = index_rel->rd_rel->relowner;
 			relation_close(index_rel, NoLock);
-			if (tp_compaction_job_lineage_exists(
-						intent->lineage, heap_oid, owner_oid))
+			if (tp_compaction_lineage_in_use_by_other(
+						intent->lineage, intent->index_oid, heap_oid) ||
+				tp_compaction_job_lineage_exists(
+						objects, intent->lineage, heap_oid, owner_oid))
 				ereport(ERROR,
 						(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
 						 errmsg("background compaction lineage is already "
@@ -1978,6 +2057,7 @@ tp_reconcile_managed_intents(void)
 			TpManagedIndexIntent *intent = lfirst(lc);
 
 			if (!list_member_oid(locked, intent->index_oid) ||
+				(intent->flags & TP_MANAGED_INTENT_DISABLE) != 0 ||
 				!tp_is_background_physical_index(intent->index_oid))
 				continue;
 			if ((intent->flags & (TP_MANAGED_INTENT_RECONCILE_OPTIONS |
@@ -1989,20 +2069,23 @@ tp_reconcile_managed_intents(void)
 			if ((intent->flags & TP_MANAGED_INTENT_PRESERVE_SCHEDULE) != 0)
 			{
 				tp_compaction_job_resolve_schedule(
+						objects,
 						intent->index_oid,
 						&intent->source,
 						tp_managed_intent_context);
 				tp_compaction_job_activate_with_schedule(
-						intent->index_oid, intent->source.schedule);
+						objects, intent->index_oid, intent->source.schedule);
 			}
 			else
 				tp_compaction_job_activate(
+						objects,
 						intent->index_oid,
 						(intent->flags & TP_MANAGED_INTENT_REFRESH_DEFAULT) !=
 								0);
 		}
 		list_free(locked);
-		tp_managed_intents = NIL;
+		if (tp_managed_intents != NIL)
+			deferred = true;
 		if (deferred)
 			ereport(WARNING,
 					(errmsg("background compaction lifecycle reconciliation "
@@ -2024,6 +2107,7 @@ tp_reconcile_managed_intents(void)
 			PopActiveSnapshot();
 		tp_managed_reconciling = false;
 		list_free(indexoids);
+		list_free(lineages);
 		list_free(frozen);
 	}
 	PG_END_TRY();
@@ -2354,7 +2438,8 @@ tp_reindex_target_matches(const TpReindexTarget *target, Relation index_rel)
 
 	return index_rel->rd_index != NULL &&
 		   index_rel->rd_index->indrelid == target->heap_oid &&
-		   lineage != NULL && strcmp(lineage, target->lineage) == 0;
+		   (target->lineage_backfilled ||
+			(lineage != NULL && strcmp(lineage, target->lineage) == 0));
 }
 
 static bool
@@ -2451,12 +2536,10 @@ tp_reindex_collect_candidates(
 }
 
 static void
-tp_reconcile_reindex_states(bool include_deferred)
+tp_collect_reindex_state_intents(bool include_deferred)
 {
-	List		   *active_states = NIL;
-	List		   *candidates	  = NIL;
-	List		   *indexoids	  = NIL;
-	List		   *locked		  = NIL;
+	List		   *candidates = NIL;
+	List		   *indexoids  = NIL;
 	ListCell	   *lc;
 	TpReindexState *state;
 
@@ -2465,87 +2548,23 @@ tp_reconcile_reindex_states(bool include_deferred)
 		if (state->reconciling ||
 			(state->defer_reconciliation && !include_deferred))
 			continue;
-		state->reconciling = true;
-		active_states	   = lappend(active_states, state);
+		tp_reindex_collect_candidates(state, &candidates, &indexoids);
 	}
 
-	PG_TRY();
+	foreach (lc, candidates)
 	{
-		foreach (lc, active_states)
-			tp_reindex_collect_candidates(lfirst(lc), &candidates, &indexoids);
+		TpReindexCandidate *candidate = lfirst(lc);
 
-		locked = tp_try_prelock_compaction_indexes(indexoids);
-		if (locked != NIL && !tp_compaction_job_try_lock_objects())
-		{
-			list_free(locked);
-			locked = NIL;
-		}
-		foreach (lc, candidates)
-		{
-			TpReindexCandidate *candidate = lfirst(lc);
-			TpReindexTarget	   *target	  = candidate->target;
-			MemoryContext		old_context;
-
-			if (!list_member_oid(locked, candidate->index_oid))
-				continue;
-			if (target->schedule_resolved)
-				continue;
-			old_context = MemoryContextSwitchTo(candidate->state->context);
-			tp_compaction_job_resolve_schedule(
-					candidate->index_oid, target, candidate->state->context);
-			MemoryContextSwitchTo(old_context);
-		}
-
-		foreach (lc, candidates)
-		{
-			TpReindexCandidate *candidate = lfirst(lc);
-			TpReindexTarget	   *target	  = candidate->target;
-			Relation			index_rel;
-			Oid					tablespace_oid;
-			RelFileNumber		relfilenumber;
-
-			if (!list_member_oid(locked, candidate->index_oid))
-				continue;
-			index_rel = try_relation_open(candidate->index_oid, NoLock);
-			if (index_rel == NULL)
-				continue;
-			if (!tp_is_background_physical_index_relation(index_rel) ||
-				!tp_reindex_target_matches(target, index_rel))
-			{
-				relation_close(index_rel, NoLock);
-				continue;
-			}
-
-			tp_reindex_target_refresh_identity(
-					candidate->state, target, index_rel);
-			tablespace_oid = index_rel->rd_locator.spcOid;
-			relfilenumber  = index_rel->rd_locator.relNumber;
-			relation_close(index_rel, NoLock);
-
-			if (candidate->index_oid == target->index_oid &&
-				tablespace_oid == target->tablespace_oid &&
-				relfilenumber == target->relfilenumber &&
-				!target->lineage_backfilled)
-				continue;
-
-			tp_compaction_job_activate_with_schedule(
-					candidate->index_oid, target->schedule);
-			target->index_oid		   = candidate->index_oid;
-			target->tablespace_oid	   = tablespace_oid;
-			target->relfilenumber	   = relfilenumber;
-			target->lineage_backfilled = false;
-		}
+		tp_collect_managed_intent(
+				candidate->index_oid,
+				candidate->target,
+				NULL,
+				NULL,
+				TP_MANAGED_INTENT_PRESERVE_SCHEDULE |
+						TP_MANAGED_INTENT_POST_PUBLICATION);
 	}
-	PG_FINALLY();
-	{
-		foreach (lc, active_states)
-			((TpReindexState *)lfirst(lc))->reconciling = false;
-		list_free(locked);
-		list_free(indexoids);
-		list_free_deep(candidates);
-		list_free(active_states);
-	}
-	PG_END_TRY();
+	list_free(indexoids);
+	list_free_deep(candidates);
 }
 
 static void
@@ -3028,13 +3047,11 @@ tp_process_tracked_rewrite(
 {
 	TpReindexState *rewrite_state = NULL;
 	List		   *candidates;
-	List		   *locked;
 
-	candidates = tp_physical_bm25_indexes(indexoids, true);
-	locked	   = tp_prelock_compaction_indexes_nowait(candidates, nowait);
+	(void)nowait;
+	candidates	  = tp_physical_bm25_indexes(indexoids, true);
+	rewrite_state = tp_reindex_tracking_begin(candidates, false);
 	list_free(candidates);
-	rewrite_state = tp_reindex_tracking_begin(locked, false);
-	list_free(locked);
 	list_free(indexoids);
 
 	PG_TRY();
@@ -3060,7 +3077,7 @@ tp_process_tracked_rewrite(
 					dest,
 					qc);
 
-		tp_reconcile_reindex_states(true);
+		tp_collect_reindex_state_intents(true);
 	}
 	PG_FINALLY();
 	{
@@ -3296,12 +3313,10 @@ tp_process_utility_impl(
 		List *indexoids = tp_reassign_owned_indexes(
 				castNode(ReassignOwnedStmt, parsetree));
 		List *candidates = tp_physical_bm25_indexes(indexoids, true);
-		List *locked;
 		List *owner_targets;
 
 		tp_prelock_owner_change_heaps(candidates);
-		locked		  = tp_prelock_compaction_indexes(candidates);
-		owner_targets = tp_capture_owner_change_targets(locked);
+		owner_targets = tp_capture_owner_change_targets(candidates);
 		list_free(candidates);
 		list_free(indexoids);
 		PG_TRY();
@@ -3332,7 +3347,6 @@ tp_process_utility_impl(
 		PG_FINALLY();
 		{
 			tp_free_owner_change_targets(owner_targets);
-			list_free(locked);
 		}
 		PG_END_TRY();
 		return;
@@ -3525,14 +3539,11 @@ tp_process_utility_impl(
 			{
 				List *indexoids;
 				List *candidates;
-				List *locked;
 
 				tp_alter_owner_preflight(relation_oid, new_owner);
 				indexoids  = tp_relation_indexes_locked(relation_oid, NoLock);
 				candidates = tp_physical_bm25_indexes(indexoids, true);
-				locked	   = tp_prelock_compaction_indexes(candidates);
-				owner_targets = tp_capture_owner_change_targets(locked);
-				list_free(locked);
+				owner_targets = tp_capture_owner_change_targets(candidates);
 				list_free(candidates);
 				list_free(indexoids);
 			}
@@ -3607,6 +3618,9 @@ tp_process_utility_impl(
 						NULL,
 						NULL,
 						TP_MANAGED_INTENT_REFRESH_DEFAULT);
+			else
+				tp_collect_managed_intent(
+						indexoid, NULL, NULL, NULL, TP_MANAGED_INTENT_DISABLE);
 			return;
 		}
 	}
@@ -3632,14 +3646,12 @@ tp_process_utility_impl(
 			if (tracks_commits)
 			{
 				List *candidates = tp_physical_bm25_indexes(indexoids, true);
-				List *locked	 = tp_prelock_compaction_indexes(candidates);
 
-				list_free(candidates);
 				reindex_state = tp_reindex_tracking_begin(
-						locked,
+						candidates,
 						stmt->kind == REINDEX_OBJECT_SCHEMA ||
 								stmt->kind == REINDEX_OBJECT_DATABASE);
-				list_free(locked);
+				list_free(candidates);
 			}
 			list_free(indexoids);
 
@@ -3665,7 +3677,7 @@ tp_process_utility_impl(
 						qc);
 
 			if (tracks_commits)
-				tp_reconcile_reindex_states(true);
+				tp_collect_reindex_state_intents(true);
 			else if (
 					stmt->kind == REINDEX_OBJECT_INDEX ||
 					stmt->kind == REINDEX_OBJECT_TABLE)
@@ -3753,6 +3765,28 @@ tp_process_utility_impl(
 					stmt, heapoid, heap_rel->rd_rel->relowner);
 			lineage_supplied =
 					tp_index_stmt_option(stmt, "compaction_lineage") != NULL;
+			if (compaction != NULL &&
+				pg_strcasecmp(compaction, "background") == 0 &&
+				RelationUsesLocalBuffers(heap_rel))
+			{
+				relation_close(heap_rel, NoLock);
+				ereport(ERROR,
+						(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+						 errmsg("background compaction is not supported for "
+								"temporary indexes")));
+			}
+			if (stmt->concurrent && lineage_supplied && compaction != NULL &&
+				pg_strcasecmp(compaction, "background") == 0)
+			{
+				relation_close(heap_rel, NoLock);
+				ereport(ERROR,
+						(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+						 errmsg("explicit background compaction lineage is "
+								"not supported with CREATE INDEX "
+								"CONCURRENTLY"),
+						 errhint("Create the index without CONCURRENTLY, or "
+								 "omit compaction_lineage.")));
+			}
 			if (compaction != NULL &&
 				pg_strcasecmp(compaction, "background") == 0)
 				tp_index_stmt_ensure_lineage(

@@ -5881,7 +5881,7 @@ SQL
       WHERE activity.application_name = 'lifecycle-lineage-drop-create'
         AND member_lock.locktype = 'relation'
         AND member_lock.relation = ${instances_oid}
-        AND member_lock.mode = 'AccessShareLock'
+        AND member_lock.mode = 'RowExclusiveLock'
         AND member_lock.granted;")"
 
     PGAPPNAME=lifecycle-lineage-drop-extension \
@@ -6008,6 +6008,7 @@ drop: $(cat "${drop_output}")"
 
 test_textsearch_extension_dependency_order() {
     local alter_completed=false alter_output alter_pid alter_status=0
+    local create_output
     local extension_oid extension_output extension_pid extension_status=0
     local gate_pid index_oid step_function_oid
 
@@ -6020,6 +6021,7 @@ CREATE INDEX lifecycle_textsearch_extension_idx
     WITH (text_config = 'english',
           compaction = 'background',
           compaction_schedule = '0 0 1 1 *');
+CREATE TABLE public.lifecycle_textsearch_lineage_docs (body text);
 SQL
     index_oid="$(sql_super -c "SELECT
         'public.lifecycle_textsearch_extension_idx'::regclass::oid;")"
@@ -6112,6 +6114,24 @@ output: $(cat "${extension_output}")"
     fi
     log "PASS: pg_textsearch drop holds its extension and member"
 
+    if create_output="$(sql_as durable_owner -c "
+        CREATE INDEX lifecycle_textsearch_lineage_idx
+          ON public.lifecycle_textsearch_lineage_docs USING bm25(body)
+          WITH (text_config = 'english',
+                compaction = 'background',
+                compaction_lineage =
+                  'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb');" 2>&1)"; then
+        error "supplied lineage committed without terminal validation"
+    fi
+    if ! grep -Fq "could not validate background compaction lineage" \
+        <<<"${create_output}"; then
+        error "supplied lineage contention failed unexpectedly:
+${create_output}"
+    fi
+    assert_eq "contended supplied lineage leaves no index" "" \
+        "$(sql_super -c "SELECT pg_catalog.to_regclass(
+          'public.lifecycle_textsearch_lineage_idx');")"
+
     PGAPPNAME=lifecycle-textsearch-extension-alter \
         PGOPTIONS="-c statement_timeout=15s" \
         "${PGBINDIR}/psql" -h "${SOCKET_DIR}" -p "${TEST_PORT}" \
@@ -6180,11 +6200,13 @@ extension: $(cat "${extension_output}")"
                 ANY (ARRAY['pending', 'running']::pg_catalog.text[]));")"
 
     sql_super -c "
-        DROP TABLE public.lifecycle_textsearch_extension_docs;" >/dev/null
+        DROP TABLE public.lifecycle_textsearch_extension_docs,
+                   public.lifecycle_textsearch_lineage_docs;" >/dev/null
 }
 
 test_precommit_request_admission_nowait() {
-    local blocker_output blocker_pid blocker_status=0 gate_pid index_oid
+    local blocker_output blocker_pid blocker_status=0 gate_fifo gate_pid
+    local index_oid
     local writer_output writer_pid writer_status=0 writer_waiting
 
     blocker_output="${DATA_DIR}/precommit-admission-blocker.out"
@@ -6199,50 +6221,59 @@ CREATE INDEX lifecycle_precommit_admission_idx
     WITH (text_config = 'english',
           compaction = 'background',
           compaction_schedule = '0 0 1 1 *');
-CREATE FUNCTION public.lifecycle_precommit_admission_pause()
-RETURNS event_trigger
-LANGUAGE plpgsql
-SET search_path = pg_catalog, pg_temp
-AS $body$
-BEGIN
-    IF pg_catalog.current_setting('application_name')
-           OPERATOR(pg_catalog.=) 'lifecycle-precommit-admission-blocker' THEN
-        PERFORM pg_catalog.pg_advisory_xact_lock_shared(478, 19);
-    END IF;
-END
-$body$;
 SQL
-    sql_super -c "
-        CREATE EVENT TRIGGER lifecycle_precommit_admission_pause
-          ON ddl_command_start
-          WHEN TAG IN ('REINDEX')
-          EXECUTE FUNCTION public.lifecycle_precommit_admission_pause();" \
-        >/dev/null
     index_oid="$(sql_super -c "SELECT
         'public.lifecycle_precommit_admission_idx'::regclass::oid;")"
+    install_signal_probe
+    reset_signal_probe
+    sql_super -c "INSERT INTO public.compaction_signal_fault
+      VALUES ('*', 'gate');"
 
-    PGAPPNAME=lifecycle-precommit-admission-gate sql_super -c \
-        "SELECT pg_catalog.pg_advisory_lock(478, 19);
-         SELECT pg_catalog.pg_sleep(120);" \
-        >"${DATA_DIR}/precommit-admission-gate.out" 2>&1 &
+    gate_fifo="${DATA_DIR}/precommit-admission-gate.fifo"
+    mkfifo "${gate_fifo}"
+    exec 7<>"${gate_fifo}"
+    PGAPPNAME=lifecycle-precommit-admission-gate \
+        "${PGBINDIR}/psql" -h "${SOCKET_DIR}" -p "${TEST_PORT}" \
+        -U postgres -d "${TEST_DB}" -qAt -v ON_ERROR_STOP=1 \
+        <"${gate_fifo}" >"${DATA_DIR}/precommit-admission-gate.out" 2>&1 &
     gate_pid=$!
+    printf '%s\n' "SELECT pg_catalog.pg_advisory_lock(478, 11);" >&7
     for _ in $(seq 1 100); do
         if [ "$(sql_super -c "SELECT count(*)
-              FROM pg_catalog.pg_stat_activity
-              WHERE application_name =
+              FROM pg_catalog.pg_stat_activity AS activity
+              JOIN pg_catalog.pg_locks AS gate
+                ON gate.pid = activity.pid
+              WHERE activity.application_name =
                     'lifecycle-precommit-admission-gate'
-                AND wait_event = 'PgSleep';")" = "1" ]; then
+                AND activity.state = 'idle'
+                AND gate.locktype = 'advisory'
+                AND gate.classid = 478
+                AND gate.objid = 11
+                AND gate.mode = 'ExclusiveLock'
+                AND gate.granted;")" = "1" ]; then
             break
         fi
         sleep 0.1
     done
 
     PGAPPNAME=lifecycle-precommit-admission-blocker \
-        PGOPTIONS="-c deadlock_timeout=100ms -c statement_timeout=15s" \
+        PGOPTIONS="-c statement_timeout=15s" \
         "${PGBINDIR}/psql" -h "${SOCKET_DIR}" -p "${TEST_PORT}" \
-        -U postgres -d "${TEST_DB}" -qAt -v ON_ERROR_STOP=1 \
-        -c "REINDEX INDEX CONCURRENTLY
-              public.lifecycle_precommit_admission_idx;" \
+        -U durable_owner -d "${TEST_DB}" -qAt -v ON_ERROR_STOP=1 \
+        -c "BEGIN;
+            INSERT INTO public.lifecycle_precommit_admission_docs
+            SELECT value,
+                   pg_catalog.format('blocker %s filler', value)
+            FROM pg_catalog.generate_series(1, 20) AS value;
+            SELECT bm25_spill_index(
+              'public.lifecycle_precommit_admission_idx');
+            INSERT INTO public.lifecycle_precommit_admission_docs
+            SELECT 50 + value,
+                   pg_catalog.format('blocker second %s filler', value)
+            FROM pg_catalog.generate_series(1, 20) AS value;
+            SELECT bm25_spill_index(
+              'public.lifecycle_precommit_admission_idx');
+            COMMIT;" \
         >"${blocker_output}" 2>&1 &
     blocker_pid=$!
     for _ in $(seq 1 100); do
@@ -6264,7 +6295,7 @@ SQL
         fi
         sleep 0.1
     done
-    assert_eq "REINDEX blocker holds the target admission" "1" \
+    assert_eq "request blocker holds the target admission" "1" \
         "$(sql_super -c "SELECT count(*)
           FROM pg_catalog.pg_stat_activity AS activity
           JOIN pg_catalog.pg_locks AS admission
@@ -6286,16 +6317,8 @@ SQL
         -U durable_owner -d "${TEST_DB}" -qAt -v ON_ERROR_STOP=1 \
         -c "BEGIN;
             INSERT INTO public.lifecycle_precommit_admission_docs
-            SELECT value,
-                   pg_catalog.format(
-                     'precommit first %s filler', value)
-            FROM pg_catalog.generate_series(1, 20) AS value;
-            SELECT bm25_spill_index(
-              'public.lifecycle_precommit_admission_idx');
-            INSERT INTO public.lifecycle_precommit_admission_docs
             SELECT 100 + value,
-                   pg_catalog.format(
-                     'precommit second %s filler', value)
+                   pg_catalog.format('writer %s filler', value)
             FROM pg_catalog.generate_series(1, 20) AS value;
             SELECT bm25_spill_index(
               'public.lifecycle_precommit_admission_idx');
@@ -6329,10 +6352,10 @@ SQL
     if [ "${writer_waiting}" = "0" ]; then
         wait "${writer_pid}" || writer_status=$?
     fi
-    sql_super -c "SELECT pg_catalog.pg_terminate_backend(pid)
-      FROM pg_catalog.pg_stat_activity
-      WHERE application_name =
-            'lifecycle-precommit-admission-gate';" >/dev/null
+    printf '%s\n' \
+        "SELECT pg_catalog.pg_advisory_unlock(478, 11);" \
+        '\q' >&7
+    exec 7>&-
     wait "${gate_pid}" || true
     if [ "${writer_waiting}" = "1" ]; then
         wait "${writer_pid}" || writer_status=$?
@@ -6348,21 +6371,20 @@ blocker: $(cat "${blocker_output}")"
     fi
     assert_eq "PRE_COMMIT request never waits on admission" \
         "0" "${writer_waiting}"
-    assert_eq "deferred request preserves writer rows" "40" \
+    assert_eq "deferred request preserves writer rows" "60" \
         "$(sql_super -c "SELECT count(*)
           FROM public.lifecycle_precommit_admission_docs;")"
 
-    sql_super -c "
-        DROP EVENT TRIGGER lifecycle_precommit_admission_pause;
-        DROP FUNCTION public.lifecycle_precommit_admission_pause();
-        DROP TABLE public.lifecycle_precommit_admission_docs;" >/dev/null
+    restore_signal_probe
+    sql_super -c "DROP TABLE
+      public.lifecycle_precommit_admission_docs;" >/dev/null
 }
 
 test_post_publication_reindex_defers() {
     local blocker_output blocker_pid blocker_status=0 gate_fifo gate_pid
     local index_oid_after index_oid_before outer_output outer_pid
     local outer_status=0 outer_waiting relfilenumber_before signal_gate_fifo
-    local signal_gate_pid
+    local renamed_output signal_gate_pid
 
     blocker_output="${DATA_DIR}/post-publication-blocker.out"
     outer_output="${DATA_DIR}/post-publication-reindex.out"
@@ -6632,6 +6654,30 @@ blocker: $(cat "${blocker_output}")"
             'public.lifecycle_post_publication_nested_idx'::regclass;")"
 
     restore_signal_probe
+    renamed_output="${DATA_DIR}/post-publication-renamed-object.out"
+    sql_super -c "ALTER FUNCTION df.explain(text)
+      RENAME TO explain_temporarily_unavailable;"
+    if ! sql_as durable_owner -c "
+        REINDEX INDEX CONCURRENTLY
+          public.lifecycle_post_publication_idx;" \
+        >"${renamed_output}" 2>&1; then
+        error "published REINDEX reported an object-discovery failure:
+$(cat "${renamed_output}")"
+    fi
+    if ! grep -Fq \
+        "background compaction lifecycle reconciliation was deferred" \
+        "${renamed_output}"; then
+        error "published REINDEX did not report deferred object discovery:
+$(cat "${renamed_output}")"
+    fi
+    sql_super -c "ALTER FUNCTION df.explain_temporarily_unavailable(text)
+      RENAME TO explain;"
+    sql_as durable_owner -c "
+        ALTER INDEX public.lifecycle_post_publication_idx
+          SET (compaction_schedule = '0 0 1 1 *');" >/dev/null
+    assert_eq "object-discovery deferral remains explicitly retryable" "1" \
+        "$(current_generation_job_count "$(sql_super -c "SELECT
+          'public.lifecycle_post_publication_idx'::regclass::oid;")")"
     sql_super -c "
         DROP EVENT TRIGGER lifecycle_post_publication_pause;
         DROP FUNCTION public.lifecycle_post_publication_pause();
@@ -6838,6 +6884,14 @@ CREATE INDEX lifecycle_savepoint_second_idx
           compaction = 'background',
           compaction_schedule = '0 0 1 1 *');
 CREATE TABLE public.lifecycle_savepoint_created_docs (body text);
+CREATE TABLE public.lifecycle_intent_disabled_docs (body text);
+CREATE TABLE public.lifecycle_intent_rollback_docs (body text);
+CREATE TABLE public.lifecycle_intent_timestamp_docs (body text);
+CREATE INDEX lifecycle_intent_timestamp_idx
+    ON public.lifecycle_intent_timestamp_docs USING bm25(body)
+    WITH (text_config = 'english',
+          compaction = 'background',
+          compaction_schedule = '0 0 1 1 *');
 CREATE TABLE public.lifecycle_intent_order_a_docs (body text);
 CREATE INDEX lifecycle_intent_order_a_idx
     ON public.lifecycle_intent_order_a_docs USING bm25(body)
@@ -6865,6 +6919,17 @@ SQL
         grep -Fq "begin_done" "${output}" && break
         sleep 0.1
     done
+    sql_as durable_owner -c "
+        ALTER INDEX public.lifecycle_intent_timestamp_idx
+          SET (compaction_schedule = '14 0 1 1 *');" >/dev/null
+    printf '%s\n' \
+        "ALTER INDEX public.lifecycle_intent_timestamp_idx
+           SET (compaction_schedule = '15 0 1 1 *');" \
+        '\echo timestamp_intent_done' >&9
+    for _ in $(seq 1 100); do
+        grep -Fq "timestamp_intent_done" "${output}" && break
+        sleep 0.1
+    done
     printf '%s\n' \
         "ALTER INDEX public.lifecycle_savepoint_first_idx
            SET (compaction_schedule = '4 0 1 1 *');" \
@@ -6884,6 +6949,28 @@ SQL
         '\echo create_alter_done' >&9
     for _ in $(seq 1 100); do
         grep -Fq "create_alter_done" "${output}" && break
+        sleep 0.1
+    done
+    printf '%s\n' \
+        "CREATE INDEX lifecycle_intent_disabled_idx
+           ON public.lifecycle_intent_disabled_docs USING bm25(body)
+           WITH (text_config = 'english',
+                 compaction = 'background',
+                 compaction_schedule = '12 0 1 1 *');" \
+        "ALTER INDEX public.lifecycle_intent_disabled_idx
+           SET (compaction = 'manual');" \
+        "CREATE INDEX lifecycle_intent_rollback_idx
+           ON public.lifecycle_intent_rollback_docs USING bm25(body)
+           WITH (text_config = 'english',
+                 compaction = 'background',
+                 compaction_schedule = '13 0 1 1 *');" \
+        'SAVEPOINT disable_intent;' \
+        "ALTER INDEX public.lifecycle_intent_rollback_idx
+           SET (compaction = 'manual');" \
+        'ROLLBACK TO SAVEPOINT disable_intent;' \
+        '\echo mode_intents_done' >&9
+    for _ in $(seq 1 100); do
+        grep -Fq "mode_intents_done" "${output}" && break
         sleep 0.1
     done
     printf '%s\n' \
@@ -6981,6 +7068,48 @@ $(cat "${output}")"
           FROM pg_catalog.pg_class AS relation
           WHERE relation.oid =
             'public.lifecycle_savepoint_created_idx'::regclass;")"
+    assert_eq "later manual mode cancels a CREATE activation" "t:0" \
+        "$(sql_super -c "SELECT pg_catalog.concat_ws(
+          ':',
+          relation.reloptions @> ARRAY['compaction=manual'],
+          (SELECT count(*) FROM df.instances
+           WHERE label OPERATOR(pg_catalog.~~)
+                 ('pg_textsearch:bg:v1:%:' || relation.oid || ':%')
+             AND status OPERATOR(pg_catalog.=)
+                 ANY (ARRAY['pending', 'running']::pg_catalog.text[])))
+          FROM pg_catalog.pg_class AS relation
+          WHERE relation.oid =
+            'public.lifecycle_intent_disabled_idx'::regclass;")"
+    assert_eq "rolled-back manual mode preserves CREATE activation" "t:1" \
+        "$(sql_super -c "SELECT pg_catalog.concat_ws(
+          ':',
+          relation.reloptions @> ARRAY['compaction=background'],
+          (SELECT count(*) FROM df.instances
+           WHERE label OPERATOR(pg_catalog.~~)
+                 ('pg_textsearch:bg:v1:%:' || relation.oid || ':%')
+             AND status OPERATOR(pg_catalog.=)
+                 ANY (ARRAY['pending', 'running']::pg_catalog.text[])))
+          FROM pg_catalog.pg_class AS relation
+          WHERE relation.oid =
+            'public.lifecycle_intent_rollback_idx'::regclass;")"
+    assert_eq "workflow ordering follows activation rather than xact start" \
+        "t" \
+        "$(sql_super -c "SELECT (
+          SELECT created_at FROM df.instances
+          WHERE label OPERATOR(pg_catalog.~~)
+                ('pg_textsearch:bg:v1:%:' || relation.oid || ':%:' ||
+                 pg_catalog.encode(
+                   pg_catalog.convert_to('15 0 1 1 *', 'UTF8'), 'hex'))
+          ORDER BY created_at DESC, id DESC LIMIT 1) >
+        (SELECT created_at FROM df.instances
+         WHERE label OPERATOR(pg_catalog.~~)
+               ('pg_textsearch:bg:v1:%:' || relation.oid || ':%:' ||
+                pg_catalog.encode(
+                  pg_catalog.convert_to('14 0 1 1 *', 'UTF8'), 'hex'))
+         ORDER BY created_at DESC, id DESC LIMIT 1)
+        FROM pg_catalog.pg_class AS relation
+        WHERE relation.oid =
+          'public.lifecycle_intent_timestamp_idx'::regclass;")"
     assert_eq "ALTER then owner change keeps the altered schedule" "t:t:t" \
         "$(sql_super -c "SELECT pg_catalog.concat_ws(
           ':',
@@ -7022,6 +7151,9 @@ $(cat "${output}")"
         DROP TABLE public.lifecycle_savepoint_first_docs;
         DROP TABLE public.lifecycle_savepoint_second_docs;
         DROP TABLE public.lifecycle_savepoint_created_docs;
+        DROP TABLE public.lifecycle_intent_disabled_docs;
+        DROP TABLE public.lifecycle_intent_rollback_docs;
+        DROP TABLE public.lifecycle_intent_timestamp_docs;
         DROP TABLE public.lifecycle_intent_order_a_docs;
         DROP TABLE public.lifecycle_intent_order_b_docs;"
 }
@@ -7137,7 +7269,7 @@ ${admission_error}"
 }
 
 test_lineage_ddl_guards() {
-    local duplicate_error lineage replay_error reset_error set_error
+    local cic_error duplicate_error lineage replay_error reset_error set_error
 
     sql_as durable_owner <<'SQL' >/dev/null 2>&1
 CREATE TABLE public.lifecycle_lineage_source_docs (body text);
@@ -7204,6 +7336,25 @@ ${duplicate_error}"
     assert_eq "rejected live lineage reuse creates no index" "" \
         "$(sql_super -c "SELECT pg_catalog.to_regclass(
           'public.lifecycle_lineage_duplicate_idx');")"
+
+    if cic_error="$(sql_as durable_owner -c "
+        CREATE INDEX CONCURRENTLY lifecycle_lineage_cic_idx
+          ON public.lifecycle_lineage_duplicate_docs USING bm25(body)
+          WITH (text_config = 'english',
+                compaction = 'background',
+                compaction_lineage =
+                  'cccccccccccccccccccccccccccccccc');" 2>&1)"; then
+        error "concurrent CREATE accepted an explicit lineage"
+    fi
+    if ! grep -Fq \
+        "explicit background compaction lineage is not supported" \
+        <<<"${cic_error}"; then
+        error "concurrent explicit lineage failed unexpectedly:
+${cic_error}"
+    fi
+    assert_eq "rejected concurrent explicit lineage leaves no index" "" \
+        "$(sql_super -c "SELECT pg_catalog.to_regclass(
+          'public.lifecycle_lineage_cic_idx');")"
 
     sql_as durable_owner -c \
         "DROP INDEX public.lifecycle_lineage_source_idx;" >/dev/null
@@ -7464,14 +7615,16 @@ SQL
     successes=0
     if [ "${first_status}" -eq 0 ]; then
         successes=$((successes + 1))
-    elif ! grep -Fq "background compaction lineage is already in use" \
+    elif ! grep -Eq \
+        "background compaction lineage is already in use|could not validate background compaction lineage" \
         "${first_output}"; then
         error "first concurrent CREATE failed unexpectedly: \
 $(cat "${first_output}")"
     fi
     if [ "${second_status}" -eq 0 ]; then
         successes=$((successes + 1))
-    elif ! grep -Fq "background compaction lineage is already in use" \
+    elif ! grep -Eq \
+        "background compaction lineage is already in use|could not validate background compaction lineage" \
         "${second_output}"; then
         error "second concurrent CREATE failed unexpectedly: \
 $(cat "${second_output}")"
