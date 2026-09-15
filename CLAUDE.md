@@ -152,6 +152,7 @@ make format-single FILE=path/to/file.c  # format specific file
 | `pg_textsearch.log_bmw_stats` | Log BMW blocks scanned/skipped | false |
 | `pg_textsearch.bulk_load_threshold` | Terms/xact to trigger spill (0 = disable) | 100000 |
 | `pg_textsearch.memtable_pages_threshold` | Chain pages before auto-spill (0 = disable) | 64 |
+| `pg_textsearch.allow_rls` | Allow BM25 indexes on RLS-protected tables (superuser-only) | on |
 | `pg_textsearch.segments_per_level` | Segments before compaction | 8 |
 | `pg_textsearch.max_segment_size` | Conservative size budget for newly merged multi-source segments (1-4095MB) | 4095MB |
 | `pg_textsearch.compaction_request_function` | Schema-qualified function taking one `regclass`, invoked for indexes set to `compaction = 'background'` | (empty) |

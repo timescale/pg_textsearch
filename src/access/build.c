@@ -1394,6 +1394,7 @@ tp_build(Relation heap, Relation index, IndexInfo *indexInfo)
 	bool			   is_text_array;
 
 	tp_check_bm25_build_allowed(heap);
+	tp_rls_note_bm25_build();
 
 	/* Show "started" for first partition only (suppresses duplicates) */
 	if (!build_progress.active || build_progress.partition_count == 0)

@@ -123,6 +123,290 @@ psql -X -h "${DATA_DIR}" -p "${TEST_PORT}" -d "${TEST_DB}" \
 CREATE EXTENSION pg_textsearch;
 CREATE TABLE lock_parent (id integer, content text);
 CREATE TABLE lock_child () INHERITS (lock_parent);
+CREATE TABLE noop_inherit_parent (id integer);
+CREATE TABLE noop_inherit_child () INHERITS (noop_inherit_parent);
+CREATE TABLE noop_reindex (id integer);
+CREATE INDEX noop_reindex_idx ON noop_reindex(id);
+SQL
+
+rm -f "${SESSION_A_INPUT}" "${SESSION_A_OUTPUT}"
+mkfifo "${SESSION_A_INPUT}"
+PGAPPNAME=rls-noop-session \
+    psql -X -h "${DATA_DIR}" -p "${TEST_PORT}" -d "${TEST_DB}" \
+    -v ON_ERROR_STOP=1 < "${SESSION_A_INPUT}" \
+    > "${SESSION_A_OUTPUT}" 2>&1 &
+SESSION_A_PID=$!
+exec 3> "${SESSION_A_INPUT}"
+printf '%s\n' \
+    "SET pg_textsearch.allow_rls = off;" \
+    "BEGIN;" \
+    "ALTER TABLE IF EXISTS missing_rls_table ENABLE ROW LEVEL SECURITY;" \
+    "CREATE TABLE IF NOT EXISTS noop_inherit_child () INHERITS (noop_inherit_parent);" \
+    "REINDEX INDEX noop_reindex_idx;" >&3
+
+wait_for_true "
+    SELECT state = 'idle in transaction'
+    FROM pg_stat_activity
+    WHERE application_name = 'rls-noop-session';
+" "no-op RLS command to finish"
+
+noop_object_locks=$(run_value "
+    SELECT count(*)
+    FROM pg_stat_activity AS a
+    JOIN pg_locks AS l ON l.pid = a.pid
+    WHERE a.application_name = 'rls-noop-session'
+      AND l.locktype = 'object'
+      AND l.classid = 'pg_extension'::regclass
+      AND l.objid = (
+          SELECT oid
+          FROM pg_extension
+          WHERE extname = 'pg_textsearch'
+      )
+      AND l.granted;
+")
+if [ "${noop_object_locks}" != "0" ]; then
+    echo "No-op or unrelated DDL retained the extension object lock" >&2
+    exit 1
+fi
+
+release_session_a
+
+PGAPPNAME=rls-multireindex-session \
+PGOPTIONS="-c pg_textsearch.allow_rls=off" \
+    psql -X -h "${DATA_DIR}" -p "${TEST_PORT}" -d "${TEST_DB}" \
+    -v ON_ERROR_STOP=1 \
+    -c "REINDEX DATABASE ${TEST_DB};" \
+    > "${SESSION_A_OUTPUT}" 2>&1
+
+if grep -q "you don't own a lock" "${SESSION_A_OUTPUT}"; then
+    echo "Multi-relation REINDEX lost transaction lock ownership" >&2
+    cat "${SESSION_A_OUTPUT}" >&2
+    exit 1
+fi
+
+psql -X -h "${DATA_DIR}" -p "${TEST_PORT}" -d "${TEST_DB}" \
+    -v ON_ERROR_STOP=1 >/dev/null << 'SQL'
+CREATE TABLE upgrade_outer_a (id integer);
+CREATE TABLE upgrade_outer_b (id integer);
+CREATE TABLE upgrade_nested_a (id integer);
+CREATE TABLE upgrade_nested_b (id integer);
+
+CREATE FUNCTION test_nested_policy_upgrade()
+RETURNS event_trigger AS $$
+BEGIN
+    IF current_setting('rls_upgrade_test.action', true)
+            IS DISTINCT FROM 'outer' THEN
+        RETURN;
+    END IF;
+
+    PERFORM set_config('rls_upgrade_test.action', 'running', false);
+    IF current_setting('rls_upgrade_test.pause', true) = 'on' THEN
+        PERFORM pg_sleep(5);
+    END IF;
+    PERFORM set_config('pg_textsearch.allow_rls', 'off', false);
+    EXECUTE format(
+        'ALTER TABLE %I ENABLE ROW LEVEL SECURITY',
+        current_setting('rls_upgrade_test.nested_table')
+    );
+END
+$$ LANGUAGE plpgsql;
+
+CREATE EVENT TRIGGER test_nested_policy_upgrade_trigger
+ON ddl_command_start
+WHEN TAG IN ('ALTER TABLE')
+EXECUTE FUNCTION test_nested_policy_upgrade();
+SQL
+
+PGAPPNAME=rls-upgrade-session-a \
+    psql -X -h "${DATA_DIR}" -p "${TEST_PORT}" -d "${TEST_DB}" \
+    -v ON_ERROR_STOP=1 \
+    -c "SET pg_textsearch.allow_rls = on;
+        SET rls_upgrade_test.action = 'outer';
+        SET rls_upgrade_test.nested_table = 'upgrade_nested_a';
+        SET rls_upgrade_test.pause = on;
+        ALTER TABLE upgrade_outer_a ENABLE ROW LEVEL SECURITY;" \
+    > "${SESSION_A_OUTPUT}" 2>&1 &
+SESSION_A_PID=$!
+
+wait_for_true "
+    SELECT EXISTS (
+        SELECT 1
+        FROM pg_stat_activity AS a
+        JOIN pg_locks AS l ON l.pid = a.pid
+        WHERE a.application_name = 'rls-upgrade-session-a'
+          AND a.wait_event_type = 'Timeout'
+          AND l.locktype = 'object'
+          AND l.classid = 'pg_extension'::regclass
+          AND l.objid = (
+              SELECT oid
+              FROM pg_extension
+              WHERE extname = 'pg_textsearch'
+          )
+          AND l.mode = 'ExclusiveLock'
+          AND l.granted
+    );
+" "session A to hold the policy lock"
+
+PGAPPNAME=rls-upgrade-session-b \
+    psql -X -h "${DATA_DIR}" -p "${TEST_PORT}" -d "${TEST_DB}" \
+    -v ON_ERROR_STOP=1 \
+    -c "SET pg_textsearch.allow_rls = on;
+        SET rls_upgrade_test.action = 'outer';
+        SET rls_upgrade_test.nested_table = 'upgrade_nested_b';
+        SET rls_upgrade_test.pause = off;
+        ALTER TABLE upgrade_outer_b ENABLE ROW LEVEL SECURITY;" \
+    > "${SESSION_B_OUTPUT}" 2>&1 &
+SESSION_B_PID=$!
+
+wait_for_true "
+    SELECT EXISTS (
+        SELECT 1
+        FROM pg_stat_activity AS a
+        JOIN pg_locks AS l ON l.pid = a.pid
+        WHERE a.application_name = 'rls-upgrade-session-b'
+          AND l.locktype = 'object'
+          AND l.classid = 'pg_extension'::regclass
+          AND l.objid = (
+              SELECT oid
+              FROM pg_extension
+              WHERE extname = 'pg_textsearch'
+          )
+          AND l.mode = 'ExclusiveLock'
+          AND NOT l.granted
+    );
+" "session B to wait on the policy lock"
+
+set +e
+wait "${SESSION_A_PID}"
+session_a_status=$?
+SESSION_A_PID=
+wait "${SESSION_B_PID}"
+session_b_status=$?
+SESSION_B_PID=
+set -e
+
+if [ "${session_a_status}" -ne 0 ] || [ "${session_b_status}" -ne 0 ]; then
+    echo "Nested RLS policy lock upgrade deadlocked" >&2
+    cat "${SESSION_A_OUTPUT}" "${SESSION_B_OUTPUT}" >&2
+    exit 1
+fi
+
+psql -X -h "${DATA_DIR}" -p "${TEST_PORT}" -d "${TEST_DB}" \
+    -v ON_ERROR_STOP=1 >/dev/null << 'SQL'
+DROP EVENT TRIGGER test_nested_policy_upgrade_trigger;
+DROP FUNCTION test_nested_policy_upgrade();
+SQL
+
+psql -X -h "${DATA_DIR}" -p "${TEST_PORT}" -d "${TEST_DB}" \
+    -v ON_ERROR_STOP=1 >/dev/null << 'SQL'
+CREATE TABLE end_trigger_outer (id integer);
+CREATE TABLE end_trigger_nested (id integer);
+
+CREATE FUNCTION test_end_trigger_nested_ddl()
+RETURNS event_trigger AS $$
+BEGIN
+    IF current_setting('rls_end_test.action', true)
+            IS DISTINCT FROM 'outer' THEN
+        RETURN;
+    END IF;
+
+    PERFORM set_config('rls_end_test.action', 'running', false);
+    PERFORM pg_sleep(5);
+    PERFORM set_config('pg_textsearch.allow_rls', 'off', false);
+    EXECUTE 'ALTER TABLE end_trigger_nested ENABLE ROW LEVEL SECURITY';
+END
+$$ LANGUAGE plpgsql;
+
+CREATE EVENT TRIGGER test_end_trigger_nested_ddl_trigger
+ON ddl_command_end
+WHEN TAG IN ('ALTER TABLE')
+EXECUTE FUNCTION test_end_trigger_nested_ddl();
+SQL
+
+PGAPPNAME=rls-end-trigger-session-a \
+    psql -X -h "${DATA_DIR}" -p "${TEST_PORT}" -d "${TEST_DB}" \
+    -v ON_ERROR_STOP=1 \
+    -c "SET pg_textsearch.allow_rls = on;
+        SET rls_end_test.action = 'outer';
+        ALTER TABLE end_trigger_outer ADD COLUMN extra integer;" \
+    > "${SESSION_A_OUTPUT}" 2>&1 &
+SESSION_A_PID=$!
+
+wait_for_true "
+    SELECT EXISTS (
+        SELECT 1
+        FROM pg_stat_activity AS a
+        JOIN pg_locks AS l ON l.pid = a.pid
+        WHERE a.application_name = 'rls-end-trigger-session-a'
+          AND a.wait_event_type = 'Timeout'
+          AND l.locktype = 'relation'
+          AND l.relation = 'end_trigger_outer'::regclass
+          AND l.mode = 'AccessExclusiveLock'
+          AND l.granted
+    );
+" "session A to hold the outer relation lock"
+
+PGAPPNAME=rls-end-trigger-session-b \
+    psql -X -h "${DATA_DIR}" -p "${TEST_PORT}" -d "${TEST_DB}" \
+    -v ON_ERROR_STOP=1 \
+    -c "SET pg_textsearch.allow_rls = off;
+        ALTER TABLE end_trigger_outer ENABLE ROW LEVEL SECURITY;" \
+    > "${SESSION_B_OUTPUT}" 2>&1 &
+SESSION_B_PID=$!
+
+wait_for_true "
+    SELECT EXISTS (
+        SELECT 1
+        FROM pg_stat_activity AS a
+        JOIN pg_locks AS object_lock ON object_lock.pid = a.pid
+        JOIN pg_locks AS relation_lock ON relation_lock.pid = a.pid
+        WHERE a.application_name = 'rls-end-trigger-session-b'
+          AND object_lock.locktype = 'object'
+          AND object_lock.classid = 'pg_extension'::regclass
+          AND object_lock.objid = (
+              SELECT oid
+              FROM pg_extension
+              WHERE extname = 'pg_textsearch'
+          )
+          AND object_lock.mode = 'ExclusiveLock'
+          AND object_lock.granted
+          AND relation_lock.locktype = 'relation'
+          AND relation_lock.relation = 'end_trigger_outer'::regclass
+          AND relation_lock.mode = 'AccessExclusiveLock'
+          AND NOT relation_lock.granted
+    );
+" "session B to hold the policy lock while waiting on the outer table"
+
+set +e
+wait "${SESSION_A_PID}"
+session_a_status=$?
+SESSION_A_PID=
+wait "${SESSION_B_PID}"
+session_b_status=$?
+SESSION_B_PID=
+set -e
+
+if [ "${session_a_status}" -eq 0 ] || [ "${session_b_status}" -ne 0 ]; then
+    echo "End-trigger nested DDL did not fail safely" >&2
+    cat "${SESSION_A_OUTPUT}" "${SESSION_B_OUTPUT}" >&2
+    exit 1
+fi
+if grep -q "deadlock detected" "${SESSION_A_OUTPUT}" "${SESSION_B_OUTPUT}"; then
+    echo "End-trigger nested DDL deadlocked" >&2
+    cat "${SESSION_A_OUTPUT}" "${SESSION_B_OUTPUT}" >&2
+    exit 1
+fi
+if ! grep -q "could not acquire the pg_textsearch RLS DDL lock" \
+    "${SESSION_A_OUTPUT}"; then
+    echo "End-trigger nested DDL did not report lock contention" >&2
+    cat "${SESSION_A_OUTPUT}" >&2
+    exit 1
+fi
+
+psql -X -h "${DATA_DIR}" -p "${TEST_PORT}" -d "${TEST_DB}" \
+    -v ON_ERROR_STOP=1 >/dev/null << 'SQL'
+DROP EVENT TRIGGER test_end_trigger_nested_ddl_trigger;
+DROP FUNCTION test_end_trigger_nested_ddl();
 SQL
 
 start_rls_holder lock_parent
@@ -363,11 +647,11 @@ BEGIN
                   FROM pg_extension
                   WHERE extname = 'pg_textsearch'
               )
-              AND mode = 'ShareLock'
+              AND mode = 'ExclusiveLock'
               AND granted
         ) THEN
             RAISE EXCEPTION
-                'nested utility command did not acquire a shared policy lock';
+                'nested utility command did not acquire a policy lock';
         END IF;
     END IF;
 END

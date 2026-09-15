@@ -221,7 +221,7 @@ tp_check_bm25_build_allowed(Relation heap)
 	check_bm25_build_allowed(RelationGetRelid(heap));
 }
 
-void
+bool
 tp_check_bm25_index_create_allowed(Oid indexrelid)
 {
 	Oid		 bm25_am_oid;
@@ -232,7 +232,7 @@ tp_check_bm25_index_create_allowed(Oid indexrelid)
 
 	bm25_am_oid = get_am_oid("bm25", true);
 	if (!OidIsValid(bm25_am_oid))
-		return;
+		return false;
 
 	index	= relation_open(indexrelid, NoLock);
 	is_bm25 = (index->rd_rel->relkind == RELKIND_INDEX ||
@@ -241,7 +241,7 @@ tp_check_bm25_index_create_allowed(Oid indexrelid)
 	relation_close(index, NoLock);
 
 	if (!is_bm25)
-		return;
+		return false;
 
 	heaprelid = find_index_heap_relation(indexrelid);
 	if (!OidIsValid(heaprelid))
@@ -252,6 +252,8 @@ tp_check_bm25_index_create_allowed(Oid indexrelid)
 	heap = table_open(heaprelid, NoLock);
 	tp_check_bm25_build_allowed(heap);
 	table_close(heap, NoLock);
+
+	return true;
 }
 
 void

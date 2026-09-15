@@ -154,10 +154,11 @@ typedef struct TpProcessUtilityContext
 	struct TpProcessUtilityContext *previous;
 	bool							check_rls_enable;
 	bool							check_hierarchy_change;
+	bool							track_relation_create;
 	bool							serialize_rls_ddl;
+	bool							retain_rls_ddl_lock;
 	bool							allow_rls;
 	bool							rls_ddl_lock_acquired;
-	LOCKMODE						rls_ddl_lock_mode;
 	Oid								rls_ddl_lock_object;
 	List						   *altered_relids;
 	List						   *hierarchy_relids;
@@ -174,16 +175,27 @@ tp_rls_allowed_for_current_utility(void)
 	return tp_allow_rls;
 }
 
+void
+tp_rls_note_bm25_build(void)
+{
+	if (current_utility_context != NULL)
+		current_utility_context->retain_rls_ddl_lock = true;
+}
+
 /*
- * The session-owned lock survives internal commits in concurrent and
- * multi-relation index commands.  The transaction-owned copy covers the
- * interval from utility completion through the caller's eventual commit.
+ * All protected DDL takes the same exclusive lock so nested utility commands
+ * cannot deadlock while upgrading from a shared policy lock.  The
+ * session-owned lock survives internal commits in concurrent and
+ * multi-relation index commands.  After a real protected change completes,
+ * a transaction-owned copy covers the interval through the caller's eventual
+ * commit.
  */
 static Oid
-acquire_rls_ddl_lock(LOCKMODE lockmode)
+acquire_rls_ddl_lock(bool dont_wait)
 {
-	LOCKTAG tag;
-	Oid		extension_oid;
+	LOCKTAG			  tag;
+	LockAcquireResult result;
+	Oid				  extension_oid;
 
 	extension_oid = get_extension_oid("pg_textsearch", true);
 	if (!OidIsValid(extension_oid))
@@ -191,22 +203,44 @@ acquire_rls_ddl_lock(LOCKMODE lockmode)
 
 	SET_LOCKTAG_OBJECT(
 			tag, MyDatabaseId, ExtensionRelationId, extension_oid, 0);
-	(void)LockAcquire(&tag, lockmode, true, false);
-	(void)LockAcquire(&tag, lockmode, false, false);
+	result = LockAcquire(&tag, ExclusiveLock, true, dont_wait);
+	if (result == LOCKACQUIRE_NOT_AVAIL)
+		ereport(ERROR,
+				(errcode(ERRCODE_LOCK_NOT_AVAILABLE),
+				 errmsg("could not acquire the pg_textsearch RLS DDL lock"),
+				 errdetail(
+						 "Protected DDL was invoked from a nested utility "
+						 "command whose outer command does not hold the "
+						 "pg_textsearch DDL lock."),
+				 errhint("Retry the outer command.")));
 	return extension_oid;
 }
 
 static void
-release_rls_ddl_lock(
-		Oid extension_oid, LOCKMODE lockmode, bool keep_transaction_lock)
+release_rls_ddl_lock(Oid extension_oid, bool keep_transaction_lock)
 {
 	LOCKTAG tag;
 
 	SET_LOCKTAG_OBJECT(
 			tag, MyDatabaseId, ExtensionRelationId, extension_oid, 0);
 	if (keep_transaction_lock)
-		(void)LockAcquire(&tag, lockmode, false, false);
-	(void)LockRelease(&tag, lockmode, true);
+		(void)LockAcquire(&tag, ExclusiveLock, false, false);
+	(void)LockRelease(&tag, ExclusiveLock, true);
+}
+
+static bool
+enclosing_utility_holds_rls_ddl_lock(TpProcessUtilityContext *utility_context)
+{
+	TpProcessUtilityContext *enclosing = utility_context->previous;
+
+	while (enclosing != NULL)
+	{
+		if (enclosing->rls_ddl_lock_acquired)
+			return true;
+		enclosing = enclosing->previous;
+	}
+
+	return false;
 }
 
 /* Shared memory size calculation */
@@ -636,7 +670,13 @@ tp_object_access(
 
 	if (access == OAT_POST_CREATE && classId == RelationRelationId &&
 		subId == 0)
-		tp_check_bm25_index_create_allowed(objectId);
+	{
+		bool is_bm25 = tp_check_bm25_index_create_allowed(objectId);
+
+		if (current_utility_context != NULL &&
+			(is_bm25 || current_utility_context->track_relation_create))
+			current_utility_context->retain_rls_ddl_lock = true;
+	}
 
 	if (access == OAT_POST_ALTER && current_utility_context != NULL &&
 		subId == 0)
@@ -645,15 +685,21 @@ tp_object_access(
 			current_utility_context->check_rls_enable &&
 			!list_member_oid(
 					current_utility_context->altered_relids, objectId))
+		{
 			current_utility_context->altered_relids = lappend_oid(
 					current_utility_context->altered_relids, objectId);
+			current_utility_context->retain_rls_ddl_lock = true;
+		}
 		else if (
 				classId == InheritsRelationId &&
 				current_utility_context->check_hierarchy_change &&
 				!list_member_oid(
 						current_utility_context->hierarchy_relids, objectId))
+		{
 			current_utility_context->hierarchy_relids = lappend_oid(
 					current_utility_context->hierarchy_relids, objectId);
+			current_utility_context->retain_rls_ddl_lock = true;
+		}
 	}
 
 	/* We only care about DROP events on relations (indexes are relations) */
@@ -817,7 +863,10 @@ initialize_utility_context(
 		CreateStmt *create_stmt = castNode(CreateStmt, stmt);
 
 		if (create_stmt->inhRelations != NIL)
-			utility_context->serialize_rls_ddl = true;
+		{
+			utility_context->serialize_rls_ddl	   = true;
+			utility_context->track_relation_create = true;
+		}
 	}
 	else if (IsA(stmt, AlterTableStmt))
 	{
@@ -962,11 +1011,12 @@ tp_process_utility(
 	{
 		if (utility_context->serialize_rls_ddl)
 		{
-			utility_context->rls_ddl_lock_mode	 = utility_context->allow_rls
-														 ? ShareLock
-														 : ExclusiveLock;
+			bool dont_wait = utility_context->previous != NULL &&
+							 !enclosing_utility_holds_rls_ddl_lock(
+									 utility_context);
+
 			utility_context->rls_ddl_lock_object = acquire_rls_ddl_lock(
-					utility_context->rls_ddl_lock_mode);
+					dont_wait);
 			utility_context->rls_ddl_lock_acquired = OidIsValid(
 					utility_context->rls_ddl_lock_object);
 		}
@@ -993,8 +1043,7 @@ tp_process_utility(
 		{
 			release_rls_ddl_lock(
 					utility_context->rls_ddl_lock_object,
-					utility_context->rls_ddl_lock_mode,
-					true);
+					utility_context->retain_rls_ddl_lock);
 			utility_context->rls_ddl_lock_acquired = false;
 		}
 
@@ -1008,10 +1057,7 @@ tp_process_utility(
 		current_utility_context = utility_context->previous;
 		if (utility_context->rls_ddl_lock_acquired)
 		{
-			release_rls_ddl_lock(
-					utility_context->rls_ddl_lock_object,
-					utility_context->rls_ddl_lock_mode,
-					false);
+			release_rls_ddl_lock(utility_context->rls_ddl_lock_object, false);
 			utility_context->rls_ddl_lock_acquired = false;
 		}
 		pfree(utility_context);
