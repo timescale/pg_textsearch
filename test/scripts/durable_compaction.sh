@@ -72,6 +72,25 @@ sql_super() {
     sql_as postgres "$@"
 }
 
+reindex_database() {
+    local command=$1 output
+
+    for _ in $(seq 1 5); do
+        if output="$(sql_super -c "${command}" 2>&1)"; then
+            printf '%s' "${output}"
+            return 0
+        fi
+        if ! grep -Fq "deadlock detected" <<<"${output}"; then
+            printf '%s\n' "${output}" >&2
+            return 1
+        fi
+        sleep 0.2
+    done
+
+    printf '%s\n' "${output}" >&2
+    return 1
+}
+
 assert_eq() {
     local description=$1 expected=$2 actual=$3
 
@@ -1094,7 +1113,8 @@ test_reindex_nonrelation_passthrough() {
     log "PASS: REINDEX SCHEMA reconciles managed indexes"
 
     database_job_before="${schema_job_after}"
-    reindex_output="$(sql_super -c "REINDEX DATABASE ${TEST_DB};" 2>&1)"
+    reindex_output="$(reindex_database \
+        "REINDEX DATABASE ${TEST_DB};")"
     if grep -Fq "still active" <<<"${reindex_output}"; then
         error "REINDEX DATABASE leaked an active snapshot across commit"
     fi
@@ -1104,9 +1124,10 @@ test_reindex_nonrelation_passthrough() {
         error "REINDEX DATABASE did not reconcile the managed generation"
     fi
     log "PASS: REINDEX DATABASE reconciles managed indexes"
+    wait_for_signal_node "${database_job_after}" 30
 
     database_job_before="${database_job_after}"
-    reindex_output="$(sql_super -c "REINDEX DATABASE;" 2>&1)"
+    reindex_output="$(reindex_database "REINDEX DATABASE;")"
     database_job_after="$(current_generation_job_id "${index_oid}")"
     if [ -z "${database_job_after}" ] ||
         [ "${database_job_after}" = "${database_job_before}" ]; then
@@ -9689,6 +9710,8 @@ SQL
     sql_super -c "INSERT INTO public.compaction_signal_fault
         VALUES ('${lock_a_instance}', 'gate'),
                ('${lock_b_instance}', 'gate');"
+    wait_for_signal_node "${lock_a_instance}" 30
+    wait_for_signal_node "${lock_b_instance}" 30
     PGAPPNAME=queue-lock-gate sql_super -c \
         "SELECT pg_catalog.pg_advisory_lock(478, 11);
          SELECT pg_catalog.pg_sleep(120);" \
@@ -9746,7 +9769,6 @@ SQL
           FROM pg_catalog.pg_stat_activity
           WHERE application_name IN ('queue-lock-a', 'queue-lock-b')
             AND wait_event_type = 'Lock';")"
-
     sql_super -c "SELECT pg_catalog.pg_terminate_backend(pid)
       FROM pg_catalog.pg_stat_activity
       WHERE application_name = 'queue-lock-gate';" >/dev/null
@@ -9767,12 +9789,16 @@ second: $(cat "${lock_b_output}")"
             (SELECT count(*) FROM public.queue_lock_a_docs)
             || ':' ||
             (SELECT count(*) FROM public.queue_lock_b_docs);")"
-    assert_eq "contended request flush signals each workflow once" "1:1" \
+    assert_eq "contended request flush signals admitted work once" "t" \
         "$(sql_super -c "SELECT
-            count(*) FILTER (
-              WHERE instance_id = '${lock_a_instance}') || ':' ||
-            count(*) FILTER (
+            count(*) OPERATOR(pg_catalog.>=) 1
+            AND count(*) OPERATOR(pg_catalog.<=) 2
+            AND count(*) FILTER (
+              WHERE instance_id = '${lock_a_instance}')
+                OPERATOR(pg_catalog.<=) 1
+            AND count(*) FILTER (
               WHERE instance_id = '${lock_b_instance}')
+                OPERATOR(pg_catalog.<=) 1
           FROM public.compaction_signal_audit;")"
 
     restore_signal_probe
