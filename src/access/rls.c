@@ -78,10 +78,10 @@ find_rls_ancestor(Oid relid)
 		if (rel->rd_rel->relrowsecurity)
 		{
 			result = current;
-			table_close(rel, AccessShareLock);
+			table_close(rel, NoLock);
 			break;
 		}
-		table_close(rel, AccessShareLock);
+		table_close(rel, NoLock);
 
 		ScanKeyInit(
 				&key,

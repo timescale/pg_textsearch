@@ -77,6 +77,61 @@ CREATE INDEX rls_child_idx ON rls_child USING bm25(content)
     WITH (text_config='english');
 \set VERBOSITY default
 
+-- A direct partition-child index is protected by RLS on its parent.
+CREATE TABLE rls_direct_partitioned (id integer, content text)
+    PARTITION BY RANGE (id);
+CREATE TABLE rls_direct_partition PARTITION OF rls_direct_partitioned
+    FOR VALUES FROM (0) TO (10);
+ALTER TABLE rls_direct_partitioned ENABLE ROW LEVEL SECURITY;
+\set VERBOSITY terse
+CREATE INDEX rls_direct_partition_idx
+    ON rls_direct_partition USING bm25(content)
+    WITH (text_config='english');
+\set VERBOSITY default
+
+-- A multi-level partition descendant is protected by RLS at the top.
+CREATE TABLE rls_partition_top (id integer, content text)
+    PARTITION BY RANGE (id);
+CREATE TABLE rls_partition_mid PARTITION OF rls_partition_top
+    FOR VALUES FROM (0) TO (100) PARTITION BY RANGE (id);
+CREATE TABLE rls_partition_leaf PARTITION OF rls_partition_mid
+    FOR VALUES FROM (0) TO (10);
+ALTER TABLE rls_partition_top ENABLE ROW LEVEL SECURITY;
+\set VERBOSITY terse
+CREATE INDEX rls_partition_leaf_idx
+    ON rls_partition_leaf USING bm25(content)
+    WITH (text_config='english');
+\set VERBOSITY default
+
+-- A multiple-inheritance child is protected if either parent has RLS.
+CREATE TABLE rls_multi_parent_a (id integer, content text);
+CREATE TABLE rls_multi_parent_b (extra text);
+CREATE TABLE rls_multi_child ()
+    INHERITS (rls_multi_parent_a, rls_multi_parent_b);
+ALTER TABLE rls_multi_parent_b ENABLE ROW LEVEL SECURITY;
+\set VERBOSITY terse
+CREATE INDEX rls_multi_child_idx ON rls_multi_child USING bm25(content)
+    WITH (text_config='english');
+\set VERBOSITY default
+
+-- Successful checks retain locks on every traversed ancestor.
+CREATE TABLE rls_lock_root (id integer, content text);
+CREATE TABLE rls_lock_parent () INHERITS (rls_lock_root);
+CREATE TABLE rls_lock_child () INHERITS (rls_lock_parent);
+BEGIN;
+CREATE INDEX rls_lock_child_idx ON rls_lock_child USING bm25(content)
+    WITH (text_config='english');
+\pset format unaligned
+SELECT count(*) = 2 AS all_ancestor_locks_held
+FROM pg_locks
+WHERE pid = pg_backend_pid()
+  AND locktype = 'relation'
+  AND relation IN ('rls_lock_root'::regclass, 'rls_lock_parent'::regclass)
+  AND mode = 'AccessShareLock'
+  AND granted;
+\pset format aligned
+ROLLBACK;
+
 -- Enabling RLS on a parent is blocked by a BM25 index on a descendant.
 CREATE TABLE index_parent (id integer, content text);
 CREATE TABLE index_child () INHERITS (index_parent);
@@ -135,6 +190,9 @@ DROP ROLE rls_guc_user;
 DROP TABLE rls_existing, rls_before_index, index_before_rls CASCADE;
 DROP TABLE rls_child, rls_parent, index_child, index_parent CASCADE;
 DROP TABLE rls_partitioned, index_partitioned CASCADE;
+DROP TABLE rls_direct_partitioned, rls_partition_top CASCADE;
+DROP TABLE rls_multi_child, rls_multi_parent_a, rls_multi_parent_b CASCADE;
+DROP TABLE rls_lock_child, rls_lock_parent, rls_lock_root CASCADE;
 
 CREATE TABLE rls_without_extension (id integer);
 SET pg_textsearch.allow_rls = off;
