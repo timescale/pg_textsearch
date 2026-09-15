@@ -364,6 +364,7 @@ Setting | Default | Description
 `pg_textsearch.compaction_request_function` | (empty) | Schema-qualified name of a function taking one `regclass`, invoked for indexes set to `compaction = 'background'`
 `pg_textsearch.bulk_load_threshold` | 100000 | Terms per transaction before auto-spill (0 = disable)
 `pg_textsearch.memtable_pages_threshold` | 64 | Chain pages before auto-spill (0 = disable)
+`pg_textsearch.allow_rls` | on | Allow BM25 indexes on RLS-protected tables; superuser-only
 `pg_textsearch.memtable_cache_enabled` | on | Cache memtable data in shared memory for faster queries
 `pg_textsearch.memory_limit` | 2GB | Approximate shared-memory budget for the memtable cache across all indexes; changes take effect after a configuration reload without a restart (0 = no limit)
 
@@ -404,6 +405,18 @@ WHERE am.amname = 'bm25';
 ```
 
 ## Limitations
+
+### Row-Level Security
+
+BM25 corpus statistics include all indexed rows, including rows hidden by RLS.
+A user who already knows a term can infer frequency information affected by
+inaccessible rows, though the index does not reveal unknown terms. This is
+analogous to [Elastic's security limitation](https://www.elastic.co/docs/deploy-manage/security/limitations).
+
+`pg_textsearch.allow_rls` defaults to `on`. Set it to `off` as a superuser to
+reject creating or rebuilding BM25 indexes on RLS-protected tables and
+enabling RLS where BM25 indexes already exist. This does not disable
+combinations that already exist when the setting is changed.
 
 ### Phrase Queries
 
