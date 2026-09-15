@@ -27,6 +27,7 @@
 #include <catalog/pg_inherits.h>
 #include <catalog/pg_inherits_d.h>
 #include <catalog/pg_namespace_d.h>
+#include <catalog/pg_tablespace_d.h>
 #include <commands/dbcommands.h>
 #include <commands/extension.h>
 #include <commands/defrem.h>
@@ -1472,14 +1473,49 @@ tp_role_oids(List *roles)
 		RoleSpec *role		= lfirst_node(RoleSpec, lc);
 		Oid		  owner_oid = get_rolespec_oid(role, false);
 
-		if (!has_privs_of_role(GetUserId(), owner_oid))
-		{
-			list_free(owner_oids);
-			return list_make1_oid(InvalidOid);
-		}
 		owner_oids = list_append_unique_oid(owner_oids, owner_oid);
 	}
 	return owner_oids;
+}
+
+static bool
+tp_bulk_move_preflight(AlterTableMoveAllStmt *stmt, Oid *source_tablespace)
+{
+	AclResult aclresult;
+	Oid		  destination_tablespace;
+
+	*source_tablespace = get_tablespace_oid(stmt->orig_tablespacename, false);
+	destination_tablespace =
+			get_tablespace_oid(stmt->new_tablespacename, false);
+
+	if (*source_tablespace == GLOBALTABLESPACE_OID ||
+		destination_tablespace == GLOBALTABLESPACE_OID)
+		ereport(ERROR,
+				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+				 errmsg("cannot move relations in to or out of pg_global "
+						"tablespace")));
+
+	if (OidIsValid(destination_tablespace) &&
+		destination_tablespace != MyDatabaseTableSpace)
+	{
+		aclresult = object_aclcheck(
+				TableSpaceRelationId,
+				destination_tablespace,
+				GetUserId(),
+				ACL_CREATE);
+		if (aclresult != ACLCHECK_OK)
+			aclcheck_error(
+					aclresult,
+					OBJECT_TABLESPACE,
+					get_tablespace_name(destination_tablespace));
+	}
+
+	if (*source_tablespace == MyDatabaseTableSpace)
+		*source_tablespace = InvalidOid;
+	if (destination_tablespace == MyDatabaseTableSpace)
+		destination_tablespace = InvalidOid;
+
+	return *source_tablespace != destination_tablespace;
 }
 
 static bool
@@ -1686,7 +1722,8 @@ tp_reindex_index_lookup_callback(
 }
 
 static List *
-tp_reindex_initial_indexes(ReindexStmt *stmt, bool *tracks_commits)
+tp_reindex_initial_indexes(
+		ReindexStmt *stmt, bool *tracks_commits, bool is_top_level)
 {
 	TpReindexIndexLookupState lookup_state;
 	LOCKMODE				  relation_lockmode;
@@ -1760,7 +1797,10 @@ tp_reindex_initial_indexes(ReindexStmt *stmt, bool *tracks_commits)
 			return NIL;
 
 		if (relkind == RELKIND_PARTITIONED_INDEX)
+		{
+			PreventInTransactionBlock(is_top_level, "REINDEX INDEX");
 			return tp_index_tree_locked(relation_oid, ShareLock);
+		}
 		return list_make1_oid(relation_oid);
 	}
 
@@ -1777,10 +1817,62 @@ tp_reindex_initial_indexes(ReindexStmt *stmt, bool *tracks_commits)
 		return NIL;
 
 	if (relkind == RELKIND_PARTITIONED_TABLE)
+	{
+		PreventInTransactionBlock(is_top_level, "REINDEX TABLE");
 		return tp_relation_tree_indexes_locked(relation_oid, ShareLock);
+	}
 
 	indexoids = tp_relation_indexes_locked(relation_oid, NoLock);
 	return indexoids;
+}
+
+static void
+tp_reindex_preflight(ReindexStmt *stmt, bool is_top_level)
+{
+	ListCell *lc;
+	bool	  concurrently	  = false;
+	char	 *tablespace_name = NULL;
+
+	foreach (lc, stmt->params)
+	{
+		DefElem *option = lfirst_node(DefElem, lc);
+
+		if (strcmp(option->defname, "verbose") == 0)
+			(void)defGetBoolean(option);
+		else if (strcmp(option->defname, "concurrently") == 0)
+			concurrently = defGetBoolean(option);
+		else if (strcmp(option->defname, "tablespace") == 0)
+			tablespace_name = defGetString(option);
+		else
+			ereport(ERROR,
+					(errcode(ERRCODE_SYNTAX_ERROR),
+					 errmsg("unrecognized REINDEX option \"%s\"",
+							option->defname)));
+	}
+
+	if (concurrently)
+		PreventInTransactionBlock(is_top_level, "REINDEX CONCURRENTLY");
+
+	if (tablespace_name != NULL)
+	{
+		AclResult aclresult;
+		Oid		  tablespace_oid = get_tablespace_oid(tablespace_name, false);
+
+		if (OidIsValid(tablespace_oid) &&
+			tablespace_oid != MyDatabaseTableSpace)
+		{
+			aclresult = object_aclcheck(
+					TableSpaceRelationId,
+					tablespace_oid,
+					GetUserId(),
+					ACL_CREATE);
+			if (aclresult != ACLCHECK_OK)
+				aclcheck_error(
+						aclresult,
+						OBJECT_TABLESPACE,
+						get_tablespace_name(tablespace_oid));
+		}
+	}
 }
 
 static void
@@ -2379,6 +2471,23 @@ tp_vacuum_can_maintain_relation(Oid relation_oid)
 }
 
 static List *
+tp_vacuum_maintainable_indexes(List *indexoids)
+{
+	List	 *eligible = NIL;
+	ListCell *lc;
+
+	foreach (lc, indexoids)
+	{
+		Oid heap_oid = IndexGetRelation(lfirst_oid(lc), true);
+
+		if (OidIsValid(heap_oid) && tp_vacuum_can_maintain_relation(heap_oid))
+			eligible = lappend_oid(eligible, lfirst_oid(lc));
+	}
+	list_free(indexoids);
+	return eligible;
+}
+
+static List *
 tp_vacuum_skip_locked_relation_indexes(Oid relation_oid, bool include_children)
 {
 	List	 *relation_oids;
@@ -2492,7 +2601,8 @@ tp_vacuum_rewrite_indexes(VacuumStmt *stmt)
 		else
 			relation_indexes = tp_relation_tree_indexes_locked(
 					relation_oid, AccessExclusiveLock);
-		indexoids = list_concat_unique_oid(indexoids, relation_indexes);
+		relation_indexes = tp_vacuum_maintainable_indexes(relation_indexes);
+		indexoids		 = list_concat_unique_oid(indexoids, relation_indexes);
 	}
 	return indexoids;
 }
@@ -2791,6 +2901,37 @@ tp_alter_new_owner(AlterTableStmt *stmt)
 	return NULL;
 }
 
+static void
+tp_alter_owner_preflight(Oid relation_oid, RoleSpec *new_owner)
+{
+	HeapTuple	  relation_tuple;
+	Form_pg_class relation_form;
+	Oid			  new_owner_oid = get_rolespec_oid(new_owner, false);
+
+	relation_tuple = SearchSysCache1(RELOID, ObjectIdGetDatum(relation_oid));
+	if (!HeapTupleIsValid(relation_tuple))
+		elog(ERROR, "cache lookup failed for relation %u", relation_oid);
+	relation_form = (Form_pg_class)GETSTRUCT(relation_tuple);
+
+	if (relation_form->relowner != new_owner_oid && !superuser())
+	{
+		AclResult aclresult;
+
+		check_can_set_role(GetUserId(), new_owner_oid);
+		aclresult = object_aclcheck(
+				NamespaceRelationId,
+				relation_form->relnamespace,
+				new_owner_oid,
+				ACL_CREATE);
+		if (aclresult != ACLCHECK_OK)
+			aclcheck_error(
+					aclresult,
+					OBJECT_SCHEMA,
+					get_namespace_name(relation_form->relnamespace));
+	}
+	ReleaseSysCache(relation_tuple);
+}
+
 /*
  * ProcessUtility hook - detect CREATE INDEX USING bm25 and wrap
  * with build progress tracking. This collapses per-partition
@@ -3083,28 +3224,30 @@ tp_process_utility_impl(
 
 		if (stmt->objtype == OBJECT_INDEX)
 		{
-			Oid tablespace_oid =
-					get_tablespace_oid(stmt->orig_tablespacename, false);
-			List *owner_oids			= tp_role_oids(stmt->roles);
-			bool  require_current_owner = stmt->roles == NIL && !superuser();
+			Oid	  tablespace_oid;
+			List *owner_oids = tp_role_oids(stmt->roles);
 
-			tp_process_tracked_rewrite(
-					pstmt,
-					queryString,
-					readOnlyTree,
-					context,
-					params,
-					queryEnv,
-					dest,
-					qc,
-					tp_all_bm25_indexes(
-							tp_catalog_tablespace_oid(tablespace_oid),
-							true,
-							owner_oids,
-							require_current_owner),
-					stmt->nowait);
+			if (tp_bulk_move_preflight(stmt, &tablespace_oid))
+			{
+				tp_process_tracked_rewrite(
+						pstmt,
+						queryString,
+						readOnlyTree,
+						context,
+						params,
+						queryEnv,
+						dest,
+						qc,
+						tp_all_bm25_indexes(
+								tp_catalog_tablespace_oid(tablespace_oid),
+								true,
+								owner_oids,
+								!superuser()),
+						stmt->nowait);
+				list_free(owner_oids);
+				return;
+			}
 			list_free(owner_oids);
-			return;
 		}
 	}
 
@@ -3344,11 +3487,14 @@ tp_process_utility_impl(
 				object_ownercheck(
 						RelationRelationId, relation_oid, GetUserId()))
 			{
-				List *indexoids =
-						tp_relation_indexes_locked(relation_oid, NoLock);
-				List *candidates = tp_physical_bm25_indexes(indexoids, true);
-				List *locked	 = tp_prelock_compaction_indexes(candidates);
+				List *indexoids;
+				List *candidates;
+				List *locked;
 
+				tp_alter_owner_preflight(relation_oid, new_owner);
+				indexoids  = tp_relation_indexes_locked(relation_oid, NoLock);
+				candidates = tp_physical_bm25_indexes(indexoids, true);
+				locked	   = tp_prelock_compaction_indexes(candidates);
 				owner_targets = tp_capture_owner_change_targets(locked);
 				list_free(locked);
 				list_free(candidates);
@@ -3430,13 +3576,15 @@ tp_process_utility_impl(
 		List		   *indexoids;
 		bool			tracks_commits;
 		TpReindexState *reindex_state = NULL;
+		bool			is_top_level  = context == PROCESS_UTILITY_TOPLEVEL;
 
+		tp_reindex_preflight(stmt, is_top_level);
 		if (stmt->kind == REINDEX_OBJECT_SCHEMA ||
 			stmt->kind == REINDEX_OBJECT_DATABASE)
-			PreventInTransactionBlock(
-					context == PROCESS_UTILITY_TOPLEVEL, "REINDEX");
+			PreventInTransactionBlock(is_top_level, "REINDEX");
 
-		indexoids = tp_reindex_initial_indexes(stmt, &tracks_commits);
+		indexoids = tp_reindex_initial_indexes(
+				stmt, &tracks_commits, is_top_level);
 
 		PG_TRY();
 		{

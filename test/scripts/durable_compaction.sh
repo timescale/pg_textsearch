@@ -2533,6 +2533,126 @@ SQL
         "DROP TABLE public.lifecycle_skip_locked_docs;" >/dev/null
 }
 
+test_partition_vacuum_child_authorization() {
+    local blocker_pid child_index server_version vacuum_output vacuum_pid
+    local vacuum_status=0
+
+    server_version="$(sql_super -c \
+        "SELECT pg_catalog.current_setting('server_version_num')::integer;")"
+    if [ "${server_version}" -lt 180000 ]; then
+        log "PASS: partition-child VACUUM authorization is PG18-only"
+        return
+    fi
+
+    sql_as durable_owner <<'SQL' >/dev/null 2>&1
+CREATE FUNCTION public.lifecycle_vacuum_auth_pause(value text)
+RETURNS text
+LANGUAGE plpgsql
+IMMUTABLE
+AS $body$
+BEGIN
+    PERFORM pg_catalog.pg_advisory_lock(478, 11);
+    PERFORM pg_catalog.pg_advisory_unlock(478, 11);
+    RETURN value;
+END
+$body$;
+CREATE TABLE public.lifecycle_vacuum_auth_docs
+    (id integer, body text)
+    PARTITION BY RANGE (id);
+CREATE TABLE public.lifecycle_vacuum_auth_low
+    PARTITION OF public.lifecycle_vacuum_auth_docs
+    FOR VALUES FROM (0) TO (100);
+CREATE TABLE public.lifecycle_vacuum_auth_high
+    PARTITION OF public.lifecycle_vacuum_auth_docs
+    FOR VALUES FROM (100) TO (200);
+CREATE INDEX lifecycle_vacuum_auth_idx
+    ON public.lifecycle_vacuum_auth_docs
+    USING bm25(public.lifecycle_vacuum_auth_pause(body))
+    WITH (text_config = 'english',
+          compaction = 'background',
+          compaction_schedule = '0 0 1 1 *');
+INSERT INTO public.lifecycle_vacuum_auth_low VALUES (1, 'alpha');
+SQL
+    sql_super -c "
+        ALTER TABLE public.lifecycle_vacuum_auth_high
+          OWNER TO durable_owner_two;
+        GRANT MAINTAIN ON public.lifecycle_vacuum_auth_docs,
+          public.lifecycle_vacuum_auth_low TO durable_writer;" >/dev/null
+    child_index="$(sql_super -c "
+        SELECT child_index.oid::regclass::text
+        FROM pg_catalog.pg_inherits AS inheritance
+        JOIN pg_catalog.pg_class AS child_index
+          ON child_index.oid = inheritance.inhrelid
+        JOIN pg_catalog.pg_index AS index_info
+          ON index_info.indexrelid = child_index.oid
+        WHERE inheritance.inhparent =
+              'public.lifecycle_vacuum_auth_idx'::regclass
+          AND index_info.indrelid =
+              'public.lifecycle_vacuum_auth_high'::regclass;")"
+
+    PGAPPNAME=lifecycle-vacuum-auth-gate \
+        sql_super -c "
+        SELECT pg_catalog.pg_advisory_lock(478, 11);
+        SELECT pg_catalog.pg_sleep(120);" \
+        >"${DATA_DIR}/vacuum-auth-gate.out" 2>&1 &
+    blocker_pid=$!
+    for _ in $(seq 1 100); do
+        if [ "$(sql_super -c "SELECT pg_catalog.count(*)
+              FROM pg_catalog.pg_locks
+              WHERE locktype = 'advisory'
+                AND classid = 478
+                AND objid = 11
+                AND granted;")" = "1" ]; then
+            break
+        fi
+        sleep 0.1
+    done
+
+    vacuum_output="${DATA_DIR}/vacuum-auth-child.out"
+    PGAPPNAME=lifecycle-vacuum-auth-child \
+        sql_as durable_writer -c "
+        VACUUM (FULL) public.lifecycle_vacuum_auth_docs;" \
+        >"${vacuum_output}" 2>&1 &
+    vacuum_pid=$!
+    for _ in $(seq 1 100); do
+        if [ "$(sql_super -c "SELECT pg_catalog.count(*)
+              FROM pg_catalog.pg_stat_activity
+              WHERE application_name = 'lifecycle-vacuum-auth-child'
+                AND wait_event = 'advisory';")" = "1" ]; then
+            break
+        fi
+        sleep 0.1
+    done
+    assert_eq "authorized child VACUUM reaches the rewrite gate" "1" \
+        "$(sql_super -c "SELECT pg_catalog.count(*)
+          FROM pg_catalog.pg_stat_activity
+          WHERE application_name = 'lifecycle-vacuum-auth-child'
+            AND wait_event = 'advisory';")"
+    assert_eq "VACUUM does not prelock an unauthorized child index" "0" \
+        "$(sql_super -c "SELECT pg_catalog.count(*)
+          FROM pg_catalog.pg_stat_activity AS activity
+          JOIN pg_catalog.pg_locks AS relation_lock
+            ON relation_lock.pid = activity.pid
+          WHERE activity.application_name =
+                'lifecycle-vacuum-auth-child'
+            AND relation_lock.locktype = 'relation'
+            AND relation_lock.relation = '${child_index}'::regclass
+            AND relation_lock.mode = 'ShareUpdateExclusiveLock'
+            AND relation_lock.granted;")"
+
+    sql_super -c "SELECT pg_catalog.pg_terminate_backend(pid)
+      FROM pg_catalog.pg_stat_activity
+      WHERE application_name = 'lifecycle-vacuum-auth-gate';" >/dev/null
+    wait "${blocker_pid}" || true
+    wait "${vacuum_pid}" || vacuum_status=$?
+    if [ "${vacuum_status}" -ne 0 ]; then
+        error "authorized child VACUUM failed: $(cat "${vacuum_output}")"
+    fi
+    sql_super -c "DROP TABLE public.lifecycle_vacuum_auth_docs;
+                   DROP FUNCTION public.lifecycle_vacuum_auth_pause(text);" \
+        >/dev/null
+}
+
 test_global_cluster_scope() {
     local blocker_pid clustered_file_before clustered_index_oid
     local clustered_job_before cluster_output unclustered_index_oid
@@ -2998,6 +3118,19 @@ test_tablespace_move_without_owned_by() {
         error "owner move without OWNED BY did not reconcile the workflow"
     fi
 
+    sql_as durable_owner -c "
+        ALTER INDEX public.lifecycle_owner_move_idx
+          SET TABLESPACE lifecycle_owner_tablespace;" >/dev/null 2>&1
+    job_before="$(current_generation_job_id "${index_oid}")"
+    sql_as durable_owner -c "
+        ALTER INDEX ALL IN TABLESPACE lifecycle_owner_tablespace
+          OWNED BY durable_owner, durable_writer
+          SET TABLESPACE pg_default;" >/dev/null 2>&1
+    job_after="$(current_generation_job_id "${index_oid}")"
+    if [ -z "${job_after}" ] || [ "${job_after}" = "${job_before}" ]; then
+        error "mixed OWNED BY move did not reconcile the caller-owned index"
+    fi
+
     sql_super -c "DROP TABLE public.lifecycle_owner_move_docs;" >/dev/null
     sql_super -c "DROP TABLESPACE lifecycle_owner_tablespace;" >/dev/null
 }
@@ -3328,7 +3461,7 @@ test_reassign_owned_heap_lock_order() {
 }
 
 test_rewrite_preflight_ordering() {
-    local blocker_pid vacuum_error
+    local alter_error blocker_pid bulk_error tablespace_dir vacuum_error
 
     sql_as durable_owner -c "
         CREATE TABLE public.lifecycle_preflight_a (body text);
@@ -3343,11 +3476,28 @@ test_rewrite_preflight_ordering() {
           WITH (text_config = 'english',
                 compaction = 'background',
                 compaction_schedule = '0 0 1 1 *');" >/dev/null 2>&1
+    sql_super -c "
+        CREATE SCHEMA lifecycle_preflight_private
+          AUTHORIZATION durable_owner;" >/dev/null
+    sql_as durable_owner -c "
+        CREATE TABLE lifecycle_preflight_private.docs (body text);
+        CREATE INDEX docs_idx
+          ON lifecycle_preflight_private.docs USING bm25(body)
+          WITH (text_config = 'english',
+                compaction = 'background',
+                compaction_schedule = '0 0 1 1 *');" >/dev/null 2>&1
+    tablespace_dir="${DATA_DIR}-lifecycle-preflight-tablespace"
+    mkdir -p "${tablespace_dir}"
+    sql_super -c "
+        CREATE TABLESPACE lifecycle_preflight_tablespace
+          OWNER durable_writer LOCATION '${tablespace_dir}';" >/dev/null
 
     PGAPPNAME=lifecycle-vacuum-preflight \
         sql_as durable_owner -c "
         BEGIN;
         ALTER INDEX public.lifecycle_preflight_b_idx
+          SET (compaction_schedule = '1 2 3 4 *');
+        ALTER INDEX lifecycle_preflight_private.docs_idx
           SET (compaction_schedule = '1 2 3 4 *');
         SELECT pg_catalog.pg_sleep(120);" \
         >"${DATA_DIR}/vacuum-preflight-lock.out" 2>&1 &
@@ -3376,12 +3526,77 @@ test_rewrite_preflight_ordering() {
 ${vacuum_error}"
     fi
 
+    if alter_error="$(sql_as durable_owner -c "
+        SET statement_timeout = '2s';
+        ALTER TABLE public.lifecycle_preflight_b
+          OWNER TO durable_usage_only;" 2>&1)"; then
+        error "ALTER OWNER unexpectedly accepted an unauthorized target role"
+    fi
+    if ! grep -Fq \
+        "must be able to SET ROLE \"durable_usage_only\"" \
+        <<<"${alter_error}"; then
+        error "ALTER OWNER prelocked indexes before its target-role check: \
+${alter_error}"
+    fi
+
+    sql_super -c "GRANT durable_owner_two TO durable_owner;" >/dev/null
+    if alter_error="$(sql_as durable_owner -c "
+        SET statement_timeout = '2s';
+        ALTER TABLE lifecycle_preflight_private.docs
+          OWNER TO durable_owner_two;" 2>&1)"; then
+        error "ALTER OWNER unexpectedly bypassed target schema CREATE"
+    fi
+    if ! grep -Fq \
+        "permission denied for schema lifecycle_preflight_private" \
+        <<<"${alter_error}"; then
+        error "ALTER OWNER prelocked indexes before its schema check: \
+${alter_error}"
+    fi
+    sql_super -c "REVOKE durable_owner_two FROM durable_owner;" >/dev/null
+
+    if bulk_error="$(sql_as durable_owner -c "
+        SET statement_timeout = '2s';
+        ALTER INDEX ALL IN TABLESPACE pg_default
+          SET TABLESPACE lifecycle_preflight_missing;" 2>&1)"; then
+        error "bulk move unexpectedly accepted a missing tablespace"
+    fi
+    if ! grep -Fq \
+        'tablespace "lifecycle_preflight_missing" does not exist' \
+        <<<"${bulk_error}"; then
+        error "bulk move prelocked indexes before tablespace lookup: \
+${bulk_error}"
+    fi
+
+    if bulk_error="$(sql_as durable_owner -c "
+        SET statement_timeout = '2s';
+        ALTER INDEX ALL IN TABLESPACE pg_default
+          SET TABLESPACE lifecycle_preflight_tablespace;" 2>&1)"; then
+        error "bulk move unexpectedly bypassed tablespace CREATE privilege"
+    fi
+    if ! grep -Fq \
+        "permission denied for tablespace lifecycle_preflight_tablespace" \
+        <<<"${bulk_error}"; then
+        error "bulk move prelocked indexes before tablespace ACL checks: \
+${bulk_error}"
+    fi
+
+    if ! bulk_error="$(sql_as durable_owner -c "
+        SET statement_timeout = '2s';
+        ALTER INDEX ALL IN TABLESPACE pg_default
+          SET TABLESPACE pg_default;" 2>&1)"; then
+        error "bulk move no-op waited for index locks: ${bulk_error}"
+    fi
+
     sql_super -c "SELECT pg_catalog.pg_terminate_backend(pid)
       FROM pg_catalog.pg_stat_activity
       WHERE application_name = 'lifecycle-vacuum-preflight';" >/dev/null
     wait "${blocker_pid}" || true
     sql_super -c "DROP TABLE public.lifecycle_preflight_a,
-                             public.lifecycle_preflight_b;"
+                             public.lifecycle_preflight_b;
+                   DROP SCHEMA lifecycle_preflight_private CASCADE;" \
+        >/dev/null
+    sql_super -c "DROP TABLESPACE lifecycle_preflight_tablespace;" \
+        >/dev/null
 }
 
 test_concurrent_reindex_reconciliation() {
@@ -5253,7 +5468,9 @@ $(cat "${reindex_output}")"
 test_reindex_authorization_ordering() {
     local blocker_pid index_error index_oid jobs_before lineage_before
     local lock_output="${DATA_DIR}/reindex-auth-lock.out"
-    local partition_error partition_jobs_before partition_parent_oid
+    local partition_child_index partition_error partition_jobs_before
+    local partition_parent_oid
+    local tablespace_dir tablespace_error transaction_error
 
     sql_as durable_owner <<'SQL' >/dev/null 2>&1
 CREATE TABLE public.lifecycle_auth_docs (body text);
@@ -5278,6 +5495,11 @@ CREATE INDEX lifecycle_auth_partitioned_idx
           compaction = 'background',
           compaction_schedule = '0 0 1 1 *');
 SQL
+    tablespace_dir="${DATA_DIR}-lifecycle-auth-tablespace"
+    mkdir -p "${tablespace_dir}"
+    sql_super -c "
+        CREATE TABLESPACE lifecycle_auth_tablespace
+          OWNER durable_writer LOCATION '${tablespace_dir}';" >/dev/null
     index_oid="$(sql_super -c \
         "SELECT 'public.lifecycle_auth_idx'::regclass::oid;")"
     lineage_before="$(index_lineage public.lifecycle_auth_idx)"
@@ -5299,10 +5521,45 @@ SQL
         fi
         sleep 0.1
     done
-    if index_error="$(sql_as durable_writer -c "
-        SET statement_timeout = '1s';
+    if transaction_error="$(sql_as durable_owner -c "
+        BEGIN;
+        SET LOCAL statement_timeout = '1s';
         REINDEX INDEX CONCURRENTLY
           public.lifecycle_auth_idx;" 2>&1)"; then
+        error "concurrent REINDEX unexpectedly ran inside a transaction"
+    fi
+    if ! grep -Fq "cannot run inside a transaction block" \
+        <<<"${transaction_error}"; then
+        error "concurrent REINDEX waited before its transaction check: \
+${transaction_error}"
+    fi
+    if tablespace_error="$(sql_as durable_owner -c "
+        SET statement_timeout = '1s';
+        REINDEX (TABLESPACE lifecycle_auth_missing)
+          INDEX public.lifecycle_auth_idx;" 2>&1)"; then
+        error "REINDEX unexpectedly accepted a missing tablespace"
+    fi
+    if ! grep -Fq \
+        'tablespace "lifecycle_auth_missing" does not exist' \
+        <<<"${tablespace_error}"; then
+        error "REINDEX waited before destination tablespace lookup: \
+${tablespace_error}"
+    fi
+    if tablespace_error="$(sql_as durable_owner -c "
+        SET statement_timeout = '1s';
+        REINDEX (TABLESPACE lifecycle_auth_tablespace)
+          INDEX public.lifecycle_auth_idx;" 2>&1)"; then
+        error "REINDEX unexpectedly bypassed tablespace CREATE privilege"
+    fi
+    if ! grep -Fq \
+        "permission denied for tablespace lifecycle_auth_tablespace" \
+        <<<"${tablespace_error}"; then
+        error "REINDEX waited before destination tablespace ACL checks: \
+${tablespace_error}"
+    fi
+    if index_error="$(PGOPTIONS='-c statement_timeout=1s' \
+        sql_as durable_writer -c "
+        REINDEX INDEX CONCURRENTLY public.lifecycle_auth_idx;" 2>&1)"; then
         error "unauthorized concurrent REINDEX unexpectedly succeeded"
     fi
     if ! grep -Fq "permission denied for index lifecycle_auth_idx" \
@@ -5328,6 +5585,49 @@ ${index_error}"
     partition_parent_oid="$(sql_super -c "SELECT
       'public.lifecycle_auth_partitioned_idx'::regclass::oid;")"
     partition_jobs_before="$(managed_job_count)"
+    partition_child_index="$(sql_super -c "
+        SELECT child_index.oid::regclass::text
+        FROM pg_catalog.pg_inherits AS inheritance
+        JOIN pg_catalog.pg_class AS child_index
+          ON child_index.oid = inheritance.inhrelid
+        WHERE inheritance.inhparent = ${partition_parent_oid}
+        ORDER BY child_index.oid
+        LIMIT 1;")"
+    PGAPPNAME=lifecycle-auth-partition-child-lock \
+        sql_as durable_owner -c "
+        BEGIN;
+        ALTER INDEX ${partition_child_index}
+          SET (compaction_schedule = '1 2 3 4 *');
+        SELECT pg_catalog.pg_sleep(120);" >"${lock_output}" 2>&1 &
+    blocker_pid=$!
+    for _ in $(seq 1 100); do
+        if [ "$(sql_super -c "SELECT pg_catalog.count(*)
+              FROM pg_catalog.pg_locks
+              WHERE relation = '${partition_child_index}'::regclass
+                AND mode = 'AccessExclusiveLock'
+                AND granted;")" = "1" ]; then
+            break
+        fi
+        sleep 0.1
+    done
+    if transaction_error="$(sql_as durable_owner -c "
+        BEGIN;
+        SET LOCAL statement_timeout = '1s';
+        REINDEX TABLE
+          public.lifecycle_auth_partitioned_docs;" 2>&1)"; then
+        error "partitioned REINDEX unexpectedly ran inside a transaction"
+    fi
+    if ! grep -Fq "cannot run inside a transaction block" \
+        <<<"${transaction_error}"; then
+        error "partitioned REINDEX prelocked descendants before preflight: \
+${transaction_error}"
+    fi
+    sql_super -c "SELECT pg_catalog.pg_terminate_backend(pid)
+      FROM pg_catalog.pg_stat_activity
+      WHERE application_name =
+            'lifecycle-auth-partition-child-lock';" >/dev/null
+    wait "${blocker_pid}" || true
+
     PGAPPNAME=lifecycle-auth-partition-lock sql_as durable_owner -c \
         "BEGIN;
          LOCK TABLE public.lifecycle_auth_partitioned_docs
@@ -5345,6 +5645,18 @@ ${index_error}"
         fi
         sleep 0.1
     done
+    if transaction_error="$(sql_as durable_owner -c "
+        BEGIN;
+        SET LOCAL statement_timeout = '1s';
+        REINDEX TABLE CONCURRENTLY
+          public.lifecycle_auth_partitioned_docs;" 2>&1)"; then
+        error "partitioned concurrent REINDEX ran inside a transaction"
+    fi
+    if ! grep -Fq "cannot run inside a transaction block" \
+        <<<"${transaction_error}"; then
+        error "partitioned REINDEX enumerated descendants before preflight: \
+${transaction_error}"
+    fi
     if partition_error="$(sql_as durable_writer -c "
         SET statement_timeout = '1s';
         REINDEX TABLE
@@ -5377,7 +5689,9 @@ ${partition_error}"
     log "PASS: MAINTAIN permits tracked concurrent REINDEX"
 
     sql_super -c "DROP TABLE public.lifecycle_auth_docs,
-                             public.lifecycle_auth_partitioned_docs;"
+                             public.lifecycle_auth_partitioned_docs;" \
+        >/dev/null
+    sql_super -c "DROP TABLESPACE lifecycle_auth_tablespace;" >/dev/null
 }
 
 test_create_authorization_ordering() {
@@ -7580,6 +7894,7 @@ run_test test_reindex_reconciliation
 run_test test_physical_rewrite_reconciliation
 run_test test_database_owner_vacuum_full
 run_test test_vacuum_full_skip_locked
+run_test test_partition_vacuum_child_authorization
 run_test test_global_cluster_scope
 run_test test_inheritance_vacuum_full_scope
 run_test test_inheritance_alter_rewrite_scope
