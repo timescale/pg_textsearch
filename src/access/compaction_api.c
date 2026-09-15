@@ -306,8 +306,8 @@ tp_compact_index_step_if_current(PG_FUNCTION_ARGS)
 				(errcode(ERRCODE_READ_ONLY_SQL_TRANSACTION),
 				 errmsg("cannot compact a bm25 index during recovery")));
 
-	index_rel = tp_open_current_bm25_target(
-			&target, RowExclusiveLock, true, false);
+	index_rel =
+			tp_open_current_bm25_target(&target, RowExclusiveLock, true, true);
 	if (index_rel == NULL)
 		PG_RETURN_BOOL(false);
 

@@ -92,6 +92,9 @@ SELECT bm25_level_counts('compaction_step_idx'::regclass) =
 step_starts_with_debt
 t
 (1 row)
+UPDATE pg_catalog.pg_class
+SET reloptions = reloptions || ARRAY['compaction=background']
+WHERE oid = 'compaction_step_idx'::regclass;
 SELECT d.oid AS db_oid,
        c.oid AS index_oid,
        coalesce(nullif(c.reltablespace, 0), d.dattablespace) AS spc_oid,
@@ -209,6 +212,18 @@ CREATE TABLE compaction_background_target (id integer, body text);
 CREATE INDEX compaction_background_target_idx
     ON compaction_background_target USING bm25(body)
     WITH (text_config = 'english', compaction = 'manual');
+DO $$
+DECLARE
+    n integer;
+BEGIN
+    FOR n IN 1..4 LOOP
+        INSERT INTO compaction_background_target (body)
+        SELECT format('background batch %s document %s', n, i)
+        FROM generate_series(1, 20) i;
+        PERFORM bm25_spill_index('compaction_background_target_idx');
+    END LOOP;
+END
+$$;
 UPDATE pg_catalog.pg_class
 SET reloptions = pg_catalog.array_replace(
         reloptions, 'compaction=manual', 'compaction=background')
@@ -238,6 +253,16 @@ SELECT NOT bm25_background_target_is_current(
                :background_owner_oid::oid)
        AS manual_target_is_not_current;
 manual_target_is_not_current
+t
+(1 row)
+SELECT NOT bm25_compact_step_if_current(
+               :background_index_oid::oid, :background_db_oid::oid,
+               :background_spc_oid::oid, :background_relfilenumber::oid,
+               :background_owner_oid::oid)
+       AND bm25_level_counts('compaction_background_target_idx'::regclass) =
+           ARRAY[4, 0, 0, 0, 0, 0, 0, 0]
+       AS manual_target_is_not_compacted;
+manual_target_is_not_compacted
 t
 (1 row)
 -- Inspection is public, but only the index owner may mutate it.

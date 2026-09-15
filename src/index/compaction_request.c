@@ -49,46 +49,39 @@ static bool	 tp_pending_registered	= false;
 /* True while tp_compaction_flush_requests() is signaling managed jobs. */
 static bool tp_dispatch_active = false;
 
-#define TP_COMPACTION_INDEX_LOCK_MAX 0x7fffU
-#define TP_COMPACTION_LINEAGE_LOCK	 0x8000U
+#define TP_COMPACTION_INDEX_LOCK_SUBID	 1
+#define TP_COMPACTION_LINEAGE_LOCK_SUBID 2
 
 static void
-tp_take_compaction_lock(uint16 discriminator)
+tp_take_compaction_lock(Oid object_id, uint16 discriminator)
 {
-	Oid am_oid = get_am_oid("bm25", false);
-
 	/*
 	 * pg_am has no subobjects, so its object-subid space is private to the
 	 * access method.  LOCKTAG_OBJECT also keeps these locks disjoint from
 	 * SQL-visible advisory locks.
 	 */
 	LockDatabaseObject(
-			AccessMethodRelationId, am_oid, discriminator, ExclusiveLock);
+			AccessMethodRelationId, object_id, discriminator, ExclusiveLock);
 }
 
-static void
-tp_take_index_lineage_lock(Oid indexoid)
+void
+tp_lock_compaction_index(Oid indexoid)
 {
-	uint16 discriminator;
-
-	discriminator = (uint16)(indexoid % TP_COMPACTION_INDEX_LOCK_MAX) + 1;
-	tp_take_compaction_lock(discriminator);
+	tp_take_compaction_lock(indexoid, TP_COMPACTION_INDEX_LOCK_SUBID);
 }
 
 void
 tp_lock_compaction_lineage(const char *lineage)
 {
-	uint16 discriminator;
 	uint32 hash;
 
 	hash = hash_bytes(
 			(const unsigned char *)lineage, TP_COMPACTION_LINEAGE_LENGTH);
-	discriminator = (uint16)(TP_COMPACTION_LINEAGE_LOCK | (hash & 0x7fffU));
-	tp_take_compaction_lock(discriminator);
+	tp_take_compaction_lock(hash, TP_COMPACTION_LINEAGE_LOCK_SUBID);
 }
 
 List *
-tp_prelock_compaction_indexes(List *indexoids)
+tp_prelock_compaction_indexes_nowait(List *indexoids, bool nowait)
 {
 	List	 *sorted = list_copy(indexoids);
 	List	 *locked = NIL;
@@ -102,12 +95,29 @@ tp_prelock_compaction_indexes(List *indexoids)
 
 		if (!OidIsValid(indexoid) || indexoid == previous)
 			continue;
-		LockRelationOid(indexoid, ShareUpdateExclusiveLock);
+		if (nowait)
+		{
+			if (!ConditionalLockRelationOid(
+						indexoid, ShareUpdateExclusiveLock))
+				ereport(ERROR,
+						(errcode(ERRCODE_LOCK_NOT_AVAILABLE),
+						 errmsg("could not obtain lock on relation with OID "
+								"%u",
+								indexoid)));
+		}
+		else
+			LockRelationOid(indexoid, ShareUpdateExclusiveLock);
 		locked	 = lappend_oid(locked, indexoid);
 		previous = indexoid;
 	}
 	list_free(sorted);
 	return locked;
+}
+
+List *
+tp_prelock_compaction_indexes(List *indexoids)
+{
+	return tp_prelock_compaction_indexes_nowait(indexoids, false);
 }
 
 /*
@@ -332,7 +342,7 @@ tp_ensure_index_compaction_lineage(Oid indexoid, bool *created)
 	index_rel = try_index_open(indexoid, ShareUpdateExclusiveLock);
 	if (index_rel == NULL)
 		return NULL;
-	tp_take_index_lineage_lock(indexoid);
+	tp_lock_compaction_index(indexoid);
 	if (index_rel->rd_indam == NULL ||
 		index_rel->rd_indam->ambuild != tp_build ||
 		index_rel->rd_rel->relkind != RELKIND_INDEX ||
@@ -402,7 +412,7 @@ tp_reconcile_index_compaction_options(
 		ereport(ERROR,
 				(errcode(ERRCODE_UNDEFINED_OBJECT),
 				 errmsg("partition index with OID %u disappeared", indexoid)));
-	tp_take_index_lineage_lock(indexoid);
+	tp_lock_compaction_index(indexoid);
 
 	if (index_rel->rd_indam == NULL ||
 		index_rel->rd_indam->ambuild != tp_build ||
@@ -544,15 +554,17 @@ tp_run_request(Oid indexoid)
 	/*
 	 * PRE_COMMIT leaves the top-level block in TBLOCK_END.  An outer
 	 * subtransaction keeps the recoverable inner transaction on a normal
-	 * TBLOCK_SUBINPROGRESS parent.  A successful signal is released into
-	 * the writer transaction; an ordinary failure rolls back only the
-	 * inner transaction and becomes a warning.
+	 * TBLOCK_SUBINPROGRESS parent.  A successful call releases the inner
+	 * subtransaction into the writer transaction.  pg_durable delivers the
+	 * event through an independent connection, so its worker may observe the
+	 * already-published index state before the writer commits.  An ordinary
+	 * failure rolls back only the inner transaction and becomes a warning.
 	 */
 	BeginInternalSubTransaction(NULL);
 	BeginInternalSubTransaction(NULL);
 	PG_TRY();
 	{
-		PushActiveSnapshot(GetTransactionSnapshot());
+		PushActiveSnapshot(GetLatestSnapshot());
 		tp_compaction_job_signal(indexoid);
 		PopActiveSnapshot();
 		ReleaseCurrentSubTransaction();

@@ -41,7 +41,6 @@
 #include <utils/acl.h>
 #include <utils/builtins.h>
 #include <utils/fmgroids.h>
-#include <utils/fmgrprotos.h>
 #include <utils/guc.h>
 #include <utils/lsyscache.h>
 #include <utils/rel.h>
@@ -78,6 +77,7 @@ typedef struct TpCompactionJobTarget
 typedef struct TpCompactionJobObjects
 {
 	Oid	  durable_extension_oid;
+	Oid	  durable_extension_owner;
 	Oid	  durable_namespace_oid;
 	Oid	  textsearch_namespace_oid;
 	Oid	  textsearch_extension_owner;
@@ -115,6 +115,34 @@ static char *tp_copy_spi_text(
 		TupleDesc	  tuple_desc,
 		int			  column,
 		MemoryContext context);
+
+static int
+tp_set_safe_elevated_gucs(void)
+{
+	int save_nestlevel = NewGUCNestLevel();
+
+	/* Never inherit caller-controlled name resolution across a user switch. */
+	(void)set_config_option(
+			"search_path",
+			"pg_catalog, pg_temp",
+			PGC_USERSET,
+			PGC_S_SESSION,
+			GUC_ACTION_SAVE,
+			true,
+			0,
+			false);
+	/* pg_dump emits row_security=off, which cannot be inherited here. */
+	(void)set_config_option(
+			"row_security",
+			"on",
+			PGC_USERSET,
+			PGC_S_SESSION,
+			GUC_ACTION_SAVE,
+			true,
+			0,
+			false);
+	return save_nestlevel;
+}
 
 static void
 tp_durable_required(void)
@@ -548,16 +576,7 @@ tp_compaction_job_lineage_exists(
 
 	/* RLS must not hide a retained lineage from this internal collision check.
 	 */
-	save_nestlevel = NewGUCNestLevel();
-	(void)set_config_option(
-			"row_security",
-			"on",
-			PGC_USERSET,
-			PGC_S_SESSION,
-			GUC_ACTION_SAVE,
-			true,
-			0,
-			false);
+	save_nestlevel = tp_set_safe_elevated_gucs();
 	GetUserIdAndSecContext(&save_userid, &save_sec_context);
 	SetUserIdAndSecContext(
 			durable_owner, save_sec_context | SECURITY_LOCAL_USERID_CHANGE);
@@ -616,10 +635,11 @@ tp_compaction_job_lineage_exists(
 }
 
 static void
-tp_discover_job_objects(TpCompactionJobObjects *objects)
+tp_discover_job_objects_as_owner(TpCompactionJobObjects *objects)
 {
 	char	   *version;
 	Oid			durable_oid;
+	Oid			durable_owner;
 	Oid			rechecked_oid;
 	Oid			start_oid;
 	Oid			durable_namespace_oid;
@@ -649,7 +669,7 @@ tp_discover_job_objects(TpCompactionJobObjects *objects)
 	if (rechecked_oid != durable_oid)
 		tp_durable_required();
 
-	if (!tp_extension_lookup(durable_oid, NULL, &version))
+	if (!tp_extension_lookup(durable_oid, &durable_owner, &version))
 		tp_durable_required();
 	if (version == NULL)
 		tp_durable_required();
@@ -677,13 +697,14 @@ tp_discover_job_objects(TpCompactionJobObjects *objects)
 	if (durable_schema == NULL)
 		tp_durable_not_initialized("the pg_durable schema is missing");
 
-	objects->durable_extension_oid = durable_oid;
-	objects->durable_namespace_oid = durable_namespace_oid;
-	objects->durable_schema		   = pstrdup(durable_schema);
-	objects->start_function_oid	   = start_oid;
-	objects->start_function		   = tp_qualified_function_name(start_oid);
-	objects->explain_function_oid  = tp_resolve_extension_function(
-			 durable_oid, durable_schema, "explain", 1, text_args);
+	objects->durable_extension_oid	 = durable_oid;
+	objects->durable_extension_owner = durable_owner;
+	objects->durable_namespace_oid	 = durable_namespace_oid;
+	objects->durable_schema			 = pstrdup(durable_schema);
+	objects->start_function_oid		 = start_oid;
+	objects->start_function			 = tp_qualified_function_name(start_oid);
+	objects->explain_function_oid	 = tp_resolve_extension_function(
+			   durable_oid, durable_schema, "explain", 1, text_args);
 	objects->explain_function = tp_qualified_function_name(
 			objects->explain_function_oid);
 
@@ -767,6 +788,33 @@ tp_discover_job_objects(TpCompactionJobObjects *objects)
 			objects->step_function_oid);
 	objects->current_function = tp_qualified_function_name(
 			objects->current_function_oid);
+}
+
+static void
+tp_discover_job_objects(TpCompactionJobObjects *objects)
+{
+	Oid durable_oid;
+	Oid durable_owner;
+	Oid save_userid;
+	int save_sec_context;
+
+	durable_oid = get_extension_oid("pg_durable", true);
+	if (!OidIsValid(durable_oid) ||
+		!tp_extension_lookup(durable_oid, &durable_owner, NULL))
+		tp_durable_required();
+
+	GetUserIdAndSecContext(&save_userid, &save_sec_context);
+	SetUserIdAndSecContext(
+			durable_owner, save_sec_context | SECURITY_LOCAL_USERID_CHANGE);
+	PG_TRY();
+	{
+		tp_discover_job_objects_as_owner(objects);
+	}
+	PG_FINALLY();
+	{
+		SetUserIdAndSecContext(save_userid, save_sec_context);
+	}
+	PG_END_TRY();
 }
 
 static void
@@ -1264,8 +1312,6 @@ tp_capture_target(
 	 * and dependency are admitted against this physical generation.
 	 */
 	relation_close(index_rel, NoLock);
-	tp_require_owner_login(target->owner_oid);
-	tp_require_owner_database_connect(target->owner_oid);
 	target->history_prefix = tp_build_history_prefix(target);
 	target->family_prefix  = tp_build_family_prefix(target);
 }
@@ -1355,10 +1401,7 @@ tp_pin_durable_dependency(const TpCompactionJobObjects *objects)
 static void
 tp_take_admission_lock(const TpCompactionJobTarget *target)
 {
-	DirectFunctionCall2(
-			pg_advisory_xact_lock_int4,
-			Int32GetDatum((int32)target->database_oid),
-			Int32GetDatum((int32)target->index_oid));
+	tp_lock_compaction_index(target->index_oid);
 }
 
 static void
@@ -1368,6 +1411,7 @@ tp_grant_helper_access(const TpCompactionJobObjects *objects, Oid owner_oid)
 	AclResult	   current_acl;
 	Oid			   save_userid;
 	int			   save_sec_context;
+	int			   save_nestlevel;
 	bool		   spi_connected = false;
 	StringInfoData sql;
 	const char	  *owner_name;
@@ -1407,6 +1451,7 @@ tp_grant_helper_access(const TpCompactionJobObjects *objects, Oid owner_oid)
 			quoted_owner);
 
 	GetUserIdAndSecContext(&save_userid, &save_sec_context);
+	save_nestlevel = tp_set_safe_elevated_gucs();
 	SetUserIdAndSecContext(
 			objects->textsearch_extension_owner,
 			save_sec_context | SECURITY_LOCAL_USERID_CHANGE);
@@ -1424,6 +1469,7 @@ tp_grant_helper_access(const TpCompactionJobObjects *objects, Oid owner_oid)
 	{
 		if (spi_connected)
 			SPI_finish();
+		AtEOXact_GUC(false, save_nestlevel);
 		SetUserIdAndSecContext(save_userid, save_sec_context);
 	}
 	PG_END_TRY();
@@ -1811,11 +1857,30 @@ tp_build_worker_queries(
 		char						**current_sql)
 {
 	char *family_literal = quote_literal_cstr(target->family_prefix);
+	char *step_signature;
+	char *step_signature_literal;
+	char *current_signature;
+	char *current_signature_literal;
+
+	step_signature = psprintf(
+			"%s(pg_catalog.oid,pg_catalog.oid,pg_catalog.oid,"
+			"pg_catalog.oid,pg_catalog.oid)",
+			objects->step_function);
+	step_signature_literal = quote_literal_cstr(step_signature);
+	current_signature = psprintf(
+			"%s(pg_catalog.oid,pg_catalog.oid,pg_catalog.oid,"
+			"pg_catalog.oid,pg_catalog.oid)",
+			objects->current_function);
+	current_signature_literal = quote_literal_cstr(current_signature);
 
 	*step_sql = psprintf(
-			"SELECT %s(%u::pg_catalog.oid, %u::pg_catalog.oid, "
+			"SELECT CASE WHEN pg_catalog.to_regprocedure(%s)::pg_catalog.oid "
+			"OPERATOR(pg_catalog.=) %u::pg_catalog.oid THEN "
+			"%s(%u::pg_catalog.oid, %u::pg_catalog.oid, "
 			"%u::pg_catalog.oid, %u::pg_catalog.oid, "
-			"%u::pg_catalog.oid) AS ran",
+			"%u::pg_catalog.oid) ELSE false END AS ran",
+			step_signature_literal,
+			objects->step_function_oid,
 			objects->step_function,
 			target->index_oid,
 			target->database_oid,
@@ -1824,9 +1889,12 @@ tp_build_worker_queries(
 			target->owner_oid);
 
 	*current_sql = psprintf(
-			"SELECT (%s(%u::pg_catalog.oid, %u::pg_catalog.oid, "
+			"SELECT ((CASE WHEN "
+			"pg_catalog.to_regprocedure(%s)::pg_catalog.oid "
+			"OPERATOR(pg_catalog.=) %u::pg_catalog.oid THEN "
+			"%s(%u::pg_catalog.oid, %u::pg_catalog.oid, "
 			"%u::pg_catalog.oid, %u::pg_catalog.oid, "
-			"%u::pg_catalog.oid) AND coalesce(("
+			"%u::pg_catalog.oid) ELSE false END) AND coalesce(("
 			"SELECT instance.id OPERATOR(pg_catalog.=) "
 			"'{sys_instance_id}' "
 			"FROM %s AS instance "
@@ -1838,6 +1906,8 @@ tp_build_worker_queries(
 			"ANY (ARRAY['pending', 'running']::pg_catalog.text[]) "
 			"ORDER BY instance.created_at DESC, instance.id DESC "
 			"LIMIT 1), false)) AS current",
+			current_signature_literal,
+			objects->current_function_oid,
 			objects->current_function,
 			target->index_oid,
 			target->database_oid,
@@ -1849,6 +1919,10 @@ tp_build_worker_queries(
 			family_literal,
 			target->owner_oid);
 	pfree(family_literal);
+	pfree(step_signature);
+	pfree(step_signature_literal);
+	pfree(current_signature);
+	pfree(current_signature_literal);
 }
 
 static void
@@ -1978,6 +2052,7 @@ tp_validate_graph_as_owner(
 	MemoryContext  result_context = CurrentMemoryContext;
 	Oid			   save_userid;
 	int			   save_sec_context;
+	int			   save_nestlevel;
 	bool		   spi_connected = false;
 	StringInfoData sql;
 	char		  *step_sql;
@@ -1988,6 +2063,7 @@ tp_validate_graph_as_owner(
 	int			   rc;
 
 	GetUserIdAndSecContext(&save_userid, &save_sec_context);
+	save_nestlevel = tp_set_safe_elevated_gucs();
 	SetUserIdAndSecContext(
 			target->owner_oid,
 			save_sec_context | SECURITY_LOCAL_USERID_CHANGE);
@@ -2027,6 +2103,7 @@ tp_validate_graph_as_owner(
 	{
 		if (spi_connected)
 			SPI_finish();
+		AtEOXact_GUC(false, save_nestlevel);
 		SetUserIdAndSecContext(save_userid, save_sec_context);
 	}
 	PG_END_TRY();
@@ -2187,26 +2264,19 @@ tp_reconcile_as_owner(
 	Oid	  save_userid;
 	int	  save_sec_context;
 	int	  save_nestlevel;
-	bool  spi_connected = false;
-	char *instance_id	= NULL;
+	bool  spi_connected	  = false;
+	bool  snapshot_pushed = false;
+	char *instance_id	  = NULL;
 
-	/* pg_dump emits row_security=off, which cannot be inherited here. */
-	save_nestlevel = NewGUCNestLevel();
-	(void)set_config_option(
-			"row_security",
-			"on",
-			PGC_USERSET,
-			PGC_S_SESSION,
-			GUC_ACTION_SAVE,
-			true,
-			0,
-			false);
+	save_nestlevel = tp_set_safe_elevated_gucs();
 	GetUserIdAndSecContext(&save_userid, &save_sec_context);
 	SetUserIdAndSecContext(
 			target->owner_oid,
 			save_sec_context | SECURITY_LOCAL_USERID_CHANGE);
 	PG_TRY();
 	{
+		PushActiveSnapshot(GetLatestSnapshot());
+		snapshot_pushed = true;
 		if (SPI_connect() != SPI_OK_CONNECT)
 			elog(ERROR, "SPI_connect failed");
 		spi_connected = true;
@@ -2216,17 +2286,81 @@ tp_reconcile_as_owner(
 			tp_signal_instance(objects, instance_id);
 		SPI_finish();
 		spi_connected = false;
+		PopActiveSnapshot();
+		snapshot_pushed = false;
 	}
 	PG_FINALLY();
 	{
 		if (spi_connected)
 			SPI_finish();
+		if (snapshot_pushed)
+			PopActiveSnapshot();
 		AtEOXact_GUC(false, save_nestlevel);
 		SetUserIdAndSecContext(save_userid, save_sec_context);
 	}
 	PG_END_TRY();
 
 	return instance_id;
+}
+
+static char *
+tp_schedule_as_trusted(
+		const TpCompactionJobObjects *objects,
+		const TpCompactionJobTarget	 *target,
+		MemoryContext				  result_context)
+{
+	Oid	  save_userid;
+	int	  save_sec_context;
+	int	  save_nestlevel;
+	bool  spi_connected	  = false;
+	bool  snapshot_pushed = false;
+	char *instance_id	  = NULL;
+	char *schedule		  = NULL;
+
+	save_nestlevel = tp_set_safe_elevated_gucs();
+	GetUserIdAndSecContext(&save_userid, &save_sec_context);
+	SetUserIdAndSecContext(
+			objects->durable_extension_owner,
+			save_sec_context | SECURITY_LOCAL_USERID_CHANGE);
+	PG_TRY();
+	{
+		PushActiveSnapshot(GetLatestSnapshot());
+		snapshot_pushed = true;
+		if (SPI_connect() != SPI_OK_CONNECT)
+			elog(ERROR, "SPI_connect failed");
+		spi_connected = true;
+		instance_id	  = tp_find_family_instance(
+				  objects, target, false, &schedule, result_context);
+		if (instance_id == NULL)
+			instance_id = tp_find_family_instance(
+					objects, target, true, &schedule, result_context);
+		if (instance_id == NULL && target->lineage_backfilled)
+		{
+			instance_id = tp_find_legacy_family_instance(
+					objects, target, false, &schedule, result_context);
+			if (instance_id == NULL)
+				instance_id = tp_find_legacy_family_instance(
+						objects, target, true, &schedule, result_context);
+		}
+		if (instance_id != NULL)
+			pfree(instance_id);
+		SPI_finish();
+		spi_connected = false;
+		PopActiveSnapshot();
+		snapshot_pushed = false;
+	}
+	PG_FINALLY();
+	{
+		if (spi_connected)
+			SPI_finish();
+		if (snapshot_pushed)
+			PopActiveSnapshot();
+		AtEOXact_GUC(false, save_nestlevel);
+		SetUserIdAndSecContext(save_userid, save_sec_context);
+	}
+	PG_END_TRY();
+
+	return schedule;
 }
 
 void
@@ -2253,27 +2387,69 @@ tp_compaction_job_preflight(Oid owner_oid, const char *schedule)
 	tp_validate_graph_as_owner(&objects, &target);
 }
 
-void
-tp_compaction_job_activate(Oid indexoid, bool refresh_default)
+static void
+tp_activate_captured_target(
+		TpCompactionJobTarget *target, bool refresh_default)
 {
-	TpCompactionJobTarget  target;
 	TpCompactionJobObjects objects;
 	char *instance_id	   PG_USED_FOR_ASSERTS_ONLY;
 
-	tp_capture_target(indexoid, refresh_default, &target);
+	tp_require_owner_login(target->owner_oid);
+	tp_require_owner_database_connect(target->owner_oid);
 	tp_discover_job_objects(&objects);
-	tp_require_owner_superuser_policy(target.owner_oid);
-	tp_require_owner_durable_privileges(&objects, target.owner_oid);
+	tp_require_owner_superuser_policy(target->owner_oid);
+	tp_require_owner_durable_privileges(&objects, target->owner_oid);
 	tp_pin_durable_dependency(&objects);
-	tp_grant_helper_access(&objects, target.owner_oid);
-	tp_take_admission_lock(&target);
+	tp_grant_helper_access(&objects, target->owner_oid);
+	tp_take_admission_lock(target);
 	instance_id = tp_reconcile_as_owner(
-			&objects, &target, refresh_default, false, CurrentMemoryContext);
+			&objects, target, refresh_default, false, CurrentMemoryContext);
 	Assert(instance_id != NULL);
 
 	ereport(WARNING,
 			(errmsg("pg_textsearch background compaction is a preview "
 					"feature")));
+}
+
+void
+tp_compaction_job_activate(Oid indexoid, bool refresh_default)
+{
+	TpCompactionJobTarget target;
+
+	tp_capture_target(indexoid, refresh_default, &target);
+	tp_activate_captured_target(&target, refresh_default);
+}
+
+void
+tp_compaction_job_activate_with_schedule(Oid indexoid, const char *schedule)
+{
+	TpCompactionJobTarget target;
+
+	if (schedule == NULL)
+		elog(ERROR, "background compaction schedule is not initialized");
+
+	tp_capture_target(indexoid, true, &target);
+	pfree(target.schedule);
+	target.schedule = pstrdup(schedule);
+	tp_activate_captured_target(&target, true);
+}
+
+char *
+tp_compaction_job_schedule(Oid indexoid, bool lineage_backfilled)
+{
+	TpCompactionJobTarget  target;
+	TpCompactionJobObjects objects;
+	char				  *schedule;
+
+	tp_capture_target(indexoid, true, &target);
+	target.lineage_backfilled = target.lineage_backfilled ||
+								lineage_backfilled;
+
+	tp_discover_job_objects(&objects);
+	schedule = tp_schedule_as_trusted(&objects, &target, CurrentMemoryContext);
+	if (schedule == NULL)
+		schedule = pstrdup(target.schedule);
+	return schedule;
 }
 
 void
@@ -2286,6 +2462,9 @@ tp_compaction_job_signal(Oid indexoid)
 	char *instance_id	   PG_USED_FOR_ASSERTS_ONLY;
 
 	tp_capture_target(indexoid, false, &target);
+
+	tp_require_owner_login(target.owner_oid);
+	tp_require_owner_database_connect(target.owner_oid);
 
 	/* Function lookup checks schema USAGE, which writers need not have. */
 	GetUserIdAndSecContext(&save_userid, &save_sec_context);

@@ -179,7 +179,7 @@ test_cic_owner_privilege_preflight() {
                    GRANT CONNECT ON DATABASE durable_compaction_test
                    TO postgres, durable_owner, durable_owner_two,
                       durable_usage_only, durable_read_only, durable_bypass,
-                      durable_actor, durable_writer;"
+                      durable_actor, durable_writer, durable_maintainer;"
 
     jobs_before="$(managed_job_count)"
     sql_super -c "CREATE TABLE no_connect_docs (body text);
@@ -211,7 +211,7 @@ ${create_error}"
                    TO postgres, durable_owner, durable_owner_two,
                       durable_nologin, durable_usage_only, durable_read_only,
                       durable_bypass, durable_no_connect, durable_actor,
-                      durable_writer;"
+                      durable_writer, durable_maintainer;"
 
     jobs_before="$(managed_job_count)"
     sql_super -c "CREATE TABLE no_textsearch_schema_docs (body text);
@@ -607,7 +607,8 @@ initialize_database() {
     sql_super -c "GRANT CREATE ON SCHEMA public
                    TO durable_owner, durable_owner_two, durable_usage_only,
                       durable_read_only, durable_bypass, durable_actor,
-                      durable_writer;"
+                      durable_writer, durable_maintainer;"
+    sql_super -c "GRANT pg_maintain TO durable_maintainer;"
     sql_super -c "SELECT df.grant_usage('durable_owner');" >/dev/null
     sql_super -c "SELECT df.grant_usage('durable_owner_two');" >/dev/null
     sql_super -c "SELECT df.grant_usage('durable_bypass');" >/dev/null
@@ -886,6 +887,7 @@ setup_cluster() {
     sql_super -c "CREATE ROLE durable_no_textsearch_schema LOGIN;"
     sql_super -c "CREATE ROLE durable_actor LOGIN;"
     sql_super -c "CREATE ROLE durable_writer LOGIN;"
+    sql_super -c "CREATE ROLE durable_maintainer LOGIN;"
     sql_super -c "GRANT durable_no_connect TO durable_actor;
                    GRANT durable_no_textsearch_schema TO durable_writer;"
 }
@@ -1048,28 +1050,122 @@ ${create_output}"
 }
 
 test_reindex_nonrelation_passthrough() {
+    local database_job_after database_job_before index_oid
+    local reindex_output schema_job_after schema_job_before
+
     sql_super -c "
         CREATE SCHEMA lifecycle_reindex_scope
           AUTHORIZATION durable_owner;
         CREATE TABLE lifecycle_reindex_scope.documents
           (id integer PRIMARY KEY, body text);
         INSERT INTO lifecycle_reindex_scope.documents
-        VALUES (1, 'one'), (2, 'two');" >/dev/null
+        VALUES (1, 'one'), (2, 'two');
+        ALTER TABLE lifecycle_reindex_scope.documents
+          OWNER TO durable_owner;" >/dev/null
+    sql_as durable_owner -c "
+        CREATE INDEX documents_bm25_idx
+          ON lifecycle_reindex_scope.documents USING bm25(body)
+          WITH (text_config = 'english',
+                compaction = 'background',
+                compaction_schedule = '0 0 1 1 *');" >/dev/null 2>&1
+    index_oid="$(sql_super -c "SELECT
+        'lifecycle_reindex_scope.documents_bm25_idx'::regclass::oid;")"
+    schema_job_before="$(current_generation_job_id "${index_oid}")"
 
-    log "Running REINDEX SCHEMA passthrough"
-    sql_super -c \
-        "REINDEX SCHEMA lifecycle_reindex_scope;" >/dev/null
-    log "PASS: REINDEX SCHEMA passes through without relation tracking"
+    reindex_output="$(sql_as durable_owner -c \
+        "REINDEX SCHEMA lifecycle_reindex_scope;" 2>&1)"
+    if grep -Fq "still active" <<<"${reindex_output}"; then
+        error "REINDEX SCHEMA leaked an active snapshot across commit"
+    fi
+    schema_job_after="$(current_generation_job_id "${index_oid}")"
+    if [ -z "${schema_job_after}" ] ||
+        [ "${schema_job_after}" = "${schema_job_before}" ]; then
+        error "REINDEX SCHEMA did not reconcile the managed generation"
+    fi
+    log "PASS: REINDEX SCHEMA reconciles managed indexes"
 
-    log "Running REINDEX DATABASE passthrough"
-    sql_super -c "REINDEX DATABASE ${TEST_DB};" >/dev/null
-    assert_eq "REINDEX DATABASE passes through and leaves server responsive" \
-        "2" \
-        "$(sql_super -c "SELECT count(*)
-          FROM lifecycle_reindex_scope.documents;")"
+    database_job_before="${schema_job_after}"
+    reindex_output="$(sql_super -c "REINDEX DATABASE ${TEST_DB};" 2>&1)"
+    if grep -Fq "still active" <<<"${reindex_output}"; then
+        error "REINDEX DATABASE leaked an active snapshot across commit"
+    fi
+    database_job_after="$(current_generation_job_id "${index_oid}")"
+    if [ -z "${database_job_after}" ] ||
+        [ "${database_job_after}" = "${database_job_before}" ]; then
+        error "REINDEX DATABASE did not reconcile the managed generation"
+    fi
+    log "PASS: REINDEX DATABASE reconciles managed indexes"
+
+    database_job_before="${database_job_after}"
+    reindex_output="$(sql_super -c "REINDEX DATABASE;" 2>&1)"
+    database_job_after="$(current_generation_job_id "${index_oid}")"
+    if [ -z "${database_job_after}" ] ||
+        [ "${database_job_after}" = "${database_job_before}" ]; then
+        error "bare REINDEX DATABASE did not reconcile the managed generation"
+    fi
+    log "PASS: bare REINDEX DATABASE reconciles managed indexes"
 
     sql_as durable_owner -c \
         "DROP SCHEMA lifecycle_reindex_scope CASCADE;" >/dev/null
+}
+
+test_failed_bulk_reindex_reconciliation() {
+    local index_oid job_after job_before reindex_error
+
+    sql_super -c "CREATE SCHEMA lifecycle_reindex_failure
+                   AUTHORIZATION durable_owner;" >/dev/null
+    sql_as durable_owner <<'SQL'
+CREATE TABLE lifecycle_reindex_failure.first_docs
+    (id integer, body text);
+INSERT INTO lifecycle_reindex_failure.first_docs VALUES (1, 'one');
+CREATE INDEX first_docs_idx
+    ON lifecycle_reindex_failure.first_docs USING bm25(body)
+    WITH (text_config = 'english',
+          compaction = 'background',
+          compaction_schedule = '0 0 1 1 *');
+
+CREATE FUNCTION lifecycle_reindex_failure.fail_when_enabled(value text)
+RETURNS text
+LANGUAGE plpgsql
+IMMUTABLE
+AS $body$
+BEGIN
+    IF pg_catalog.current_setting(
+            'lifecycle.fail_reindex', true) = 'on' THEN
+        RAISE EXCEPTION 'intentional later REINDEX failure';
+    END IF;
+    RETURN value;
+END
+$body$;
+
+CREATE TABLE lifecycle_reindex_failure.second_docs (body text);
+INSERT INTO lifecycle_reindex_failure.second_docs VALUES ('two');
+CREATE INDEX second_docs_idx
+    ON lifecycle_reindex_failure.second_docs
+    (lifecycle_reindex_failure.fail_when_enabled(body));
+SQL
+    index_oid="$(sql_super -c "SELECT
+        'lifecycle_reindex_failure.first_docs_idx'::regclass::oid;")"
+    job_before="$(current_generation_job_id "${index_oid}")"
+
+    if reindex_error="$(PGOPTIONS='-c lifecycle.fail_reindex=on' \
+        sql_as durable_owner -c \
+        "REINDEX SCHEMA lifecycle_reindex_failure;" 2>&1)"; then
+        error "bulk REINDEX failure test unexpectedly succeeded"
+    fi
+    if ! grep -Fq "intentional later REINDEX failure" \
+        <<<"${reindex_error}"; then
+        error "bulk REINDEX failed for the wrong reason: ${reindex_error}"
+    fi
+
+    job_after="$(current_generation_job_id "${index_oid}")"
+    if [ -z "${job_after}" ] || [ "${job_after}" = "${job_before}" ]; then
+        error "failed bulk REINDEX stranded an already committed generation"
+    fi
+    log "PASS: failed bulk REINDEX reconciles committed generations"
+
+    sql_super -c \
+        "DROP SCHEMA lifecycle_reindex_failure CASCADE;" >/dev/null
 }
 
 test_partitioned_create_activation() {
@@ -1127,6 +1223,65 @@ test_partitioned_create_activation() {
     assert_eq "partitioned CREATE activates every physical leaf" "2" \
         "${leaf_jobs}"
 
+    sql_as durable_owner -c "
+        CREATE TABLE public.lifecycle_partitioned_docs_later
+          PARTITION OF public.lifecycle_partitioned_docs
+          FOR VALUES FROM (200) TO (300);" >/dev/null 2>&1
+    assert_eq "new partition inherits one managed workflow" "1" \
+        "$(sql_super -c "SELECT count(*)
+          FROM pg_catalog.pg_inherits AS inheritance
+          JOIN pg_catalog.pg_class AS relation
+            ON relation.oid = inheritance.inhrelid
+          JOIN pg_catalog.pg_index AS index_catalog
+            ON index_catalog.indexrelid = relation.oid
+          WHERE inheritance.inhparent = ${parent_oid}
+            AND relation.relkind = 'i'
+            AND index_catalog.indrelid =
+                'public.lifecycle_partitioned_docs_later'::regclass
+            AND EXISTS (
+              SELECT 1 FROM df.instances AS instance
+              WHERE instance.label OPERATOR(pg_catalog.~~)
+                    ('pg_textsearch:bg:v1:%:' ||
+                     relation.oid::pg_catalog.text || ':%')
+                AND instance.status OPERATOR(pg_catalog.=)
+                    ANY (ARRAY['pending', 'running']::pg_catalog.text[]));")"
+
+    sql_as durable_owner -c "
+        CREATE TABLE public.lifecycle_partitioned_attach
+          (id integer, body text);
+        CREATE INDEX lifecycle_partitioned_attach_idx
+          ON public.lifecycle_partitioned_attach USING bm25(body)
+          WITH (text_config = 'english',
+                compaction = 'manual');
+        ALTER TABLE public.lifecycle_partitioned_docs
+          ATTACH PARTITION public.lifecycle_partitioned_attach
+          FOR VALUES FROM (300) TO (400);" >/dev/null 2>&1
+    assert_eq "attached index inherits managed parent options" "t:t:t" \
+        "$(sql_super -c "SELECT pg_catalog.concat_ws(
+            ':',
+            relation.reloptions @> ARRAY['compaction=background'],
+            relation.reloptions @>
+              ARRAY['compaction_schedule=0 0 1 1 *'],
+            relation.reloptions @>
+              ARRAY['compaction_lineage=' || pg_catalog.substr(
+                parent_option,
+                pg_catalog.length('compaction_lineage=') + 1)])
+          FROM pg_catalog.pg_class AS relation
+          CROSS JOIN LATERAL (
+            SELECT option AS parent_option
+            FROM pg_catalog.pg_class AS parent,
+                 LATERAL pg_catalog.unnest(parent.reloptions) AS option
+            WHERE parent.oid = ${parent_oid}
+              AND option OPERATOR(pg_catalog.~~)
+                  'compaction_lineage=%'
+          ) AS lineage
+          WHERE relation.oid =
+                'public.lifecycle_partitioned_attach_idx'::regclass;")"
+    assert_eq "attached existing index receives a managed workflow" "1" \
+        "$(active_jobs_for_index \
+          "$(sql_super -c "SELECT
+            'public.lifecycle_partitioned_attach_idx'::regclass::oid;")")"
+
     sql_as durable_owner -c "SELECT df.cancel(
         instance.id, 'partitioned lifecycle test complete')
       FROM df.instances AS instance
@@ -1140,6 +1295,60 @@ test_partitioned_create_activation() {
         >/dev/null
     sql_as durable_owner -c \
         "DROP TABLE public.lifecycle_partitioned_docs;"
+}
+
+test_direct_index_partition_attach() {
+    local child_oid parent_oid
+
+    sql_as durable_owner <<'SQL'
+CREATE TABLE public.lifecycle_direct_attach_docs
+    (id integer, body text)
+    PARTITION BY RANGE (id);
+CREATE TABLE public.lifecycle_direct_attach_leaf
+    PARTITION OF public.lifecycle_direct_attach_docs
+    FOR VALUES FROM (0) TO (100);
+CREATE INDEX lifecycle_direct_attach_parent_idx
+    ON ONLY public.lifecycle_direct_attach_docs USING bm25(body)
+    WITH (text_config = 'english',
+          compaction = 'background',
+          compaction_schedule = '0 0 1 1 *');
+CREATE INDEX lifecycle_direct_attach_child_idx
+    ON public.lifecycle_direct_attach_leaf USING bm25(body)
+    WITH (text_config = 'english', compaction = 'manual');
+ALTER INDEX public.lifecycle_direct_attach_parent_idx
+    ATTACH PARTITION public.lifecycle_direct_attach_child_idx;
+SQL
+    parent_oid="$(sql_super -c "SELECT
+        'public.lifecycle_direct_attach_parent_idx'::regclass::oid;")"
+    child_oid="$(sql_super -c "SELECT
+        'public.lifecycle_direct_attach_child_idx'::regclass::oid;")"
+
+    assert_eq "directly attached index inherits managed parent options" \
+        "t:t:t" \
+        "$(sql_super -c "SELECT pg_catalog.concat_ws(
+            ':',
+            child.reloptions @> ARRAY['compaction=background'],
+            child.reloptions @>
+              ARRAY['compaction_schedule=0 0 1 1 *'],
+            child.reloptions @>
+              ARRAY['compaction_lineage=' || pg_catalog.substr(
+                parent_option,
+                pg_catalog.length('compaction_lineage=') + 1)])
+          FROM pg_catalog.pg_class AS child
+          CROSS JOIN LATERAL (
+            SELECT option AS parent_option
+            FROM pg_catalog.pg_class AS parent,
+                 LATERAL pg_catalog.unnest(parent.reloptions) AS option
+            WHERE parent.oid = ${parent_oid}
+              AND option OPERATOR(pg_catalog.~~)
+                  'compaction_lineage=%'
+          ) AS lineage
+          WHERE child.oid = ${child_oid};")"
+    assert_eq "directly attached index receives a managed workflow" "1" \
+        "$(current_generation_job_count "${child_oid}")"
+
+    sql_super -c \
+        "DROP TABLE public.lifecycle_direct_attach_docs;" >/dev/null
 }
 
 test_partitioned_existing_leaf_reconciliation() {
@@ -1342,6 +1551,65 @@ SQL
             active_jobs_for_index "${nested_oid}")"
 
     sql_super -c "DROP TABLE public.lifecycle_create_reentry_docs;"
+}
+
+test_cached_create_uses_fresh_lineage() {
+    local first_lineage second_lineage
+
+    sql_super -c "
+CREATE SCHEMA lifecycle_cached_create_a AUTHORIZATION durable_owner;
+CREATE SCHEMA lifecycle_cached_create_b AUTHORIZATION durable_owner;" \
+        >/dev/null
+    sql_as durable_owner <<'SQL' >/dev/null
+CREATE TABLE lifecycle_cached_create_a.docs (body text);
+CREATE TABLE lifecycle_cached_create_b.docs (body text);
+CREATE FUNCTION public.lifecycle_cached_create()
+RETURNS void
+LANGUAGE plpgsql
+AS $body$
+DECLARE
+    schema_name text;
+BEGIN
+    FOREACH schema_name IN ARRAY ARRAY[
+        'lifecycle_cached_create_a',
+        'lifecycle_cached_create_b'
+    ] LOOP
+        PERFORM pg_catalog.set_config(
+            'search_path',
+            pg_catalog.format('%I, public, pg_catalog', schema_name),
+            true);
+        CREATE INDEX lifecycle_cached_create_idx
+          ON docs USING bm25(body)
+          WITH (text_config = 'english',
+                compaction = 'background',
+                compaction_schedule = '0 0 1 1 *');
+    END LOOP;
+END
+$body$;
+
+SELECT public.lifecycle_cached_create();
+SQL
+    first_lineage="$(
+        index_lineage lifecycle_cached_create_a.lifecycle_cached_create_idx
+    )"
+    second_lineage="$(
+        index_lineage lifecycle_cached_create_b.lifecycle_cached_create_idx
+    )"
+
+    if [ "${second_lineage}" = "${first_lineage}" ]; then
+        error "cached CREATE INDEX reused its prior compaction lineage"
+    fi
+    assert_eq "cached CREATE INDEX creates one workflow per heap" "2" \
+        "$(( $(active_jobs_for_index "$(sql_super -c "SELECT
+          'lifecycle_cached_create_a.lifecycle_cached_create_idx'
+             ::regclass::oid;")") +
+             $(active_jobs_for_index "$(sql_super -c "SELECT
+          'lifecycle_cached_create_b.lifecycle_cached_create_idx'
+             ::regclass::oid;")") ))"
+
+    sql_super -c "DROP SCHEMA lifecycle_cached_create_a CASCADE;
+                   DROP SCHEMA lifecycle_cached_create_b CASCADE;
+                   DROP FUNCTION public.lifecycle_cached_create();"
 }
 
 test_create_tracking_concurrent() {
@@ -1557,6 +1825,44 @@ $(cat "${outer_output}")"
     sql_super -c "DROP TABLE public.lifecycle_create_renamed_docs;"
 }
 
+test_create_like_regenerates_lineage() {
+    local clone_index clone_lineage create_output source_lineage
+
+    sql_as durable_owner -c "
+        CREATE TABLE public.lifecycle_like_source (body text);
+        CREATE INDEX lifecycle_like_source_idx
+          ON public.lifecycle_like_source USING bm25(body)
+          WITH (text_config = 'english',
+                compaction = 'background',
+                compaction_schedule = '0 0 1 1 *');" >/dev/null 2>&1
+    source_lineage="$(index_lineage public.lifecycle_like_source_idx)"
+
+    if ! create_output="$(sql_as durable_owner -c "
+        CREATE TABLE public.lifecycle_like_clone
+          (LIKE public.lifecycle_like_source INCLUDING INDEXES);" 2>&1)"; then
+        if ! grep -Fq \
+            "background compaction lineage is already in use" \
+            <<<"${create_output}"; then
+            error "CREATE TABLE LIKE failed unexpectedly: ${create_output}"
+        fi
+        error "CREATE TABLE LIKE reused the source managed lineage"
+    fi
+    clone_index="$(sql_super -c "SELECT indexrelid::regclass::text
+      FROM pg_catalog.pg_index
+      WHERE indrelid = 'public.lifecycle_like_clone'::regclass;")"
+    clone_lineage="$(index_lineage "${clone_index}")"
+    if [ -z "${clone_lineage}" ] ||
+        [ "${clone_lineage}" = "${source_lineage}" ]; then
+        error "CREATE TABLE LIKE did not assign a fresh managed lineage"
+    fi
+    assert_eq "CREATE TABLE LIKE activates the cloned managed index" "1" \
+        "$(active_jobs_for_index \
+            "$(sql_super -c "SELECT '${clone_index}'::regclass::oid;")")"
+
+    sql_super -c "DROP TABLE public.lifecycle_like_clone,
+                             public.lifecycle_like_source;"
+}
+
 test_owner_reconciliation() {
     local alter_error alter_output dependencies_before index_oid job_before
     local job_after jobs_before filenumber_before filenumber_after
@@ -1730,6 +2036,108 @@ ordering: ${alter_error}"
                     public.lifecycle_owner_reject_docs;"
 }
 
+test_owner_change_preserves_captured_schedule() {
+    local index_oid job_after
+
+    sql_super -c "ALTER ROLE durable_owner IN DATABASE ${TEST_DB}
+      SET pg_textsearch.background_compaction_schedule = '1 2 3 4 *';"
+    sql_as durable_owner -c "
+        CREATE TABLE public.lifecycle_owner_schedule_docs (body text);
+        CREATE INDEX lifecycle_owner_schedule_idx
+          ON public.lifecycle_owner_schedule_docs USING bm25(body)
+          WITH (text_config = 'english',
+                compaction = 'background');" >/dev/null 2>&1
+    index_oid="$(sql_super -c \
+        "SELECT 'public.lifecycle_owner_schedule_idx'::regclass::oid;")"
+
+    sql_super -c "
+        SET pg_textsearch.background_compaction_schedule = '5 6 7 8 *';
+        ALTER TABLE public.lifecycle_owner_schedule_docs
+          OWNER TO durable_owner_two;" >/dev/null 2>&1
+    job_after="$(current_generation_job_id "${index_oid}")"
+    assert_eq "ALTER OWNER preserves the captured default schedule" "t" \
+        "$(sql_super -c "SELECT label OPERATOR(pg_catalog.~~)
+            ('%:' || pg_catalog.encode(pg_catalog.convert_to(
+                '1 2 3 4 *', 'UTF8'), 'hex'))
+          FROM df.instances WHERE id = '${job_after}';")"
+
+    sql_as durable_owner_two -c \
+        "SELECT df.cancel('${job_after}', 'owner schedule test complete');" \
+        >/dev/null
+    sql_super -c "DROP TABLE public.lifecycle_owner_schedule_docs;"
+    sql_super -c "ALTER ROLE durable_owner IN DATABASE ${TEST_DB}
+      RESET pg_textsearch.background_compaction_schedule;"
+}
+
+test_reassign_owned_reconciliation() {
+    local create_output index_oid job_after job_before reassign_output
+
+    sql_super -c "
+        CREATE ROLE lifecycle_reassign_old LOGIN;
+        CREATE ROLE lifecycle_reassign_new LOGIN;
+        GRANT CONNECT ON DATABASE ${TEST_DB}
+          TO lifecycle_reassign_old, lifecycle_reassign_new;
+        GRANT USAGE, CREATE ON SCHEMA public TO lifecycle_reassign_old;
+        GRANT USAGE ON SCHEMA public TO lifecycle_reassign_new;
+        ALTER ROLE lifecycle_reassign_old IN DATABASE ${TEST_DB}
+          SET pg_textsearch.background_compaction_schedule = '1 2 3 4 *';
+        SELECT df.grant_usage('lifecycle_reassign_old');
+        SELECT df.grant_usage('lifecycle_reassign_new');" >/dev/null
+    if ! create_output="$(sql_as lifecycle_reassign_old -c "
+        CREATE TABLE public.lifecycle_reassign_docs (body text);
+        CREATE INDEX lifecycle_reassign_idx
+          ON public.lifecycle_reassign_docs USING bm25(body)
+          WITH (text_config = 'english',
+                compaction = 'background');" 2>&1)"; then
+        error "REASSIGN OWNED setup failed: ${create_output}"
+    fi
+    index_oid="$(sql_super -c \
+        "SELECT 'public.lifecycle_reassign_idx'::regclass::oid;")"
+    job_before="$(current_generation_job_id "${index_oid}")"
+
+    if ! reassign_output="$(sql_super -c "
+        SET pg_textsearch.background_compaction_schedule = '5 6 7 8 *';
+        REASSIGN OWNED BY lifecycle_reassign_old
+          TO lifecycle_reassign_new;" 2>&1)"; then
+        error "REASSIGN OWNED failed: ${reassign_output}"
+    fi
+    job_after="$(current_generation_job_id "${index_oid}")"
+    assert_eq "REASSIGN OWNED changes the physical index owner" \
+        "lifecycle_reassign_new" \
+        "$(sql_super -c "SELECT pg_catalog.pg_get_userbyid(relowner)
+          FROM pg_catalog.pg_class WHERE oid = ${index_oid};")"
+    if [ -z "${job_after}" ] || [ "${job_after}" = "${job_before}" ]; then
+        error "REASSIGN OWNED did not create a new-owner workflow"
+    fi
+    assert_eq "REASSIGN OWNED submits the replacement as the new owner" \
+        "lifecycle_reassign_new" \
+        "$(sql_super -c "SELECT submitted_by::pg_catalog.text
+          FROM df.instances WHERE id = '${job_after}';")"
+    assert_eq "REASSIGN OWNED preserves the captured default schedule" "t" \
+        "$(sql_super -c "SELECT label OPERATOR(pg_catalog.~~)
+            ('%:' || pg_catalog.encode(pg_catalog.convert_to(
+                '1 2 3 4 *', 'UTF8'), 'hex'))
+          FROM df.instances WHERE id = '${job_after}';")"
+
+    sql_as lifecycle_reassign_new -c "
+        INSERT INTO public.lifecycle_reassign_docs
+        SELECT pg_catalog.format('reassigned document %s', value)
+        FROM pg_catalog.generate_series(1, 20) AS value;
+        SELECT bm25_spill_index('public.lifecycle_reassign_idx');" \
+        >/dev/null 2>&1
+    assert_eq "reassigned owner can signal the current workflow" "1" \
+        "$(current_generation_job_count "${index_oid}")"
+
+    sql_as lifecycle_reassign_new -c \
+        "SELECT df.cancel('${job_after}', 'reassign lifecycle complete');" \
+        >/dev/null
+    sql_super -c "
+        DROP OWNED BY lifecycle_reassign_old;
+        DROP OWNED BY lifecycle_reassign_new CASCADE;
+        DROP ROLE lifecycle_reassign_old;
+        DROP ROLE lifecycle_reassign_new;" >/dev/null
+}
+
 test_reindex_reconciliation() {
     local a_before a_after a_table_after b_before b_after
     local a_file_before a_file_after a_table_file_before a_table_file_after
@@ -1805,6 +2213,1123 @@ test_reindex_reconciliation() {
             ANY (ARRAY['pending', 'running']::pg_catalog.text[]);" \
         >/dev/null
     sql_as durable_owner -c "DROP TABLE public.lifecycle_reindex_docs;"
+}
+
+test_physical_rewrite_reconciliation() {
+    local excluded_oid external_oid file_after file_before index_oid
+    local job_after job_before
+    local lock_error lock_pid tablespace_dir
+
+    sql_super -c "ALTER ROLE durable_owner IN DATABASE ${TEST_DB}
+      SET pg_textsearch.background_compaction_schedule = '1 2 3 4 *';"
+    sql_as durable_owner -c "
+        CREATE TABLE public.lifecycle_rewrite_docs
+          (id integer, body text);
+        INSERT INTO public.lifecycle_rewrite_docs
+          SELECT value, pg_catalog.format('document %s', value)
+          FROM pg_catalog.generate_series(1, 100) AS value;
+        CREATE INDEX lifecycle_rewrite_cluster_idx
+          ON public.lifecycle_rewrite_docs(id);
+        CREATE INDEX lifecycle_rewrite_idx
+          ON public.lifecycle_rewrite_docs USING bm25(body)
+          WITH (text_config = 'english',
+                compaction = 'background');" >/dev/null 2>&1
+    index_oid="$(sql_super -c \
+        "SELECT 'public.lifecycle_rewrite_idx'::regclass::oid;")"
+    file_before="$(sql_super -c \
+        "SELECT pg_catalog.pg_relation_filenode(${index_oid});")"
+    job_before="$(current_generation_job_id "${index_oid}")"
+    sql_super -c "ALTER ROLE postgres IN DATABASE ${TEST_DB}
+      SET pg_textsearch.background_compaction_schedule = '5 6 7 8 *';"
+
+    sql_super -c \
+        "VACUUM (FULL) public.lifecycle_rewrite_docs;" >/dev/null 2>&1
+    file_after="$(sql_super -c \
+        "SELECT pg_catalog.pg_relation_filenode(${index_oid});")"
+    job_after="$(current_generation_job_id "${index_oid}")"
+    if [ "${file_after}" = "${file_before}" ]; then
+        error "VACUUM FULL did not replace the BM25 physical generation"
+    fi
+    if [ -z "${job_after}" ] || [ "${job_after}" = "${job_before}" ]; then
+        error "VACUUM FULL did not reconcile the replacement workflow"
+    fi
+
+    file_before="${file_after}"
+    job_before="${job_after}"
+    sql_super -c "CLUSTER public.lifecycle_rewrite_docs
+      USING lifecycle_rewrite_cluster_idx;" >/dev/null 2>&1
+    file_after="$(sql_super -c \
+        "SELECT pg_catalog.pg_relation_filenode(${index_oid});")"
+    job_after="$(current_generation_job_id "${index_oid}")"
+    if [ "${file_after}" = "${file_before}" ]; then
+        error "CLUSTER did not replace the BM25 physical generation"
+    fi
+    if [ -z "${job_after}" ] || [ "${job_after}" = "${job_before}" ]; then
+        error "CLUSTER did not reconcile the replacement workflow"
+    fi
+
+    tablespace_dir="${DATA_DIR}-lifecycle-rewrite-tablespace"
+    mkdir -p "${tablespace_dir}"
+    sql_super -c "
+        CREATE TABLESPACE lifecycle_rewrite_tablespace
+          OWNER durable_owner LOCATION '${tablespace_dir}';" >/dev/null
+    job_before="${job_after}"
+    sql_super -c "
+        ALTER INDEX public.lifecycle_rewrite_idx
+          SET TABLESPACE lifecycle_rewrite_tablespace;" >/dev/null 2>&1
+    job_after="$(current_generation_job_id "${index_oid}")"
+    if [ -z "${job_after}" ] || [ "${job_after}" = "${job_before}" ]; then
+        error "ALTER INDEX SET TABLESPACE did not reconcile the workflow"
+    fi
+
+    job_before="${job_after}"
+    sql_super -c "
+        ALTER INDEX ALL IN TABLESPACE lifecycle_rewrite_tablespace
+          OWNED BY durable_owner SET TABLESPACE pg_default;" >/dev/null 2>&1
+    job_after="$(current_generation_job_id "${index_oid}")"
+    if [ -z "${job_after}" ] || [ "${job_after}" = "${job_before}" ]; then
+        error "ALTER INDEX ALL IN TABLESPACE did not reconcile the workflow"
+    fi
+
+    sql_as durable_owner -c "
+        CREATE TABLE public.lifecycle_rewrite_external (body text);
+        CREATE INDEX lifecycle_rewrite_external_idx
+          ON public.lifecycle_rewrite_external USING bm25(body)
+          WITH (text_config = 'english',
+                compaction = 'background',
+                compaction_schedule = '0 0 1 1 *')
+          TABLESPACE lifecycle_rewrite_tablespace;" \
+        >/dev/null 2>&1
+    external_oid="$(sql_super -c "SELECT
+        'public.lifecycle_rewrite_external_idx'::regclass::oid;")"
+    remove_index_lineage public.lifecycle_rewrite_external_idx
+
+    sql_as durable_owner_two -c "
+        CREATE TABLE public.lifecycle_rewrite_excluded (body text);
+        CREATE INDEX lifecycle_rewrite_excluded_idx
+          ON public.lifecycle_rewrite_excluded USING bm25(body)
+          WITH (text_config = 'english',
+                compaction = 'background',
+                compaction_schedule = '0 0 1 1 *');" >/dev/null 2>&1
+    excluded_oid="$(sql_super -c "SELECT
+        'public.lifecycle_rewrite_excluded_idx'::regclass::oid;")"
+    remove_index_lineage public.lifecycle_rewrite_excluded_idx
+
+    PGAPPNAME=lifecycle-tablespace-nowait \
+        sql_as durable_owner -c "
+        BEGIN;
+        ALTER INDEX public.lifecycle_rewrite_idx
+          SET (compaction_schedule = '1 2 3 4 *');
+        SELECT pg_catalog.pg_sleep(120);" \
+        >"${DATA_DIR}/tablespace-nowait-lock.out" 2>&1 &
+    lock_pid=$!
+    for _ in $(seq 1 100); do
+        if [ "$(sql_super -c "SELECT count(*)
+              FROM pg_catalog.pg_locks
+              WHERE relation = ${index_oid}
+                AND mode = 'AccessExclusiveLock'
+                AND granted;")" = "1" ]; then
+            break
+        fi
+        sleep 0.1
+    done
+    if lock_error="$(sql_super -c "
+        SET statement_timeout = '2s';
+        ALTER INDEX ALL IN TABLESPACE pg_default
+          OWNED BY durable_owner SET TABLESPACE
+          lifecycle_rewrite_tablespace NOWAIT;" 2>&1)"; then
+        error "ALTER INDEX ALL NOWAIT unexpectedly moved a locked index"
+    fi
+    if grep -Fq "canceling statement due to statement timeout" \
+        <<<"${lock_error}"; then
+        error "ALTER INDEX ALL NOWAIT blocked behind an extension prelock"
+    fi
+    sql_super -c "SELECT pg_catalog.pg_terminate_backend(pid)
+      FROM pg_catalog.pg_stat_activity
+      WHERE application_name = 'lifecycle-tablespace-nowait';" >/dev/null
+    wait "${lock_pid}" || true
+
+    job_before="${job_after}"
+    sql_super -c "
+        ALTER INDEX ALL IN TABLESPACE pg_default
+          OWNED BY durable_owner SET TABLESPACE
+          lifecycle_rewrite_tablespace;" >/dev/null 2>&1
+    job_after="$(current_generation_job_id "${index_oid}")"
+    if [ -z "${job_after}" ] || [ "${job_after}" = "${job_before}" ]; then
+        error "pg_default bulk move did not reconcile the workflow"
+    fi
+    assert_eq "OWNED BY leaves excluded legacy lineage untouched" "" \
+        "$(index_lineage "${excluded_oid}")"
+    assert_eq "pg_default move leaves another tablespace untouched" "" \
+        "$(index_lineage "${external_oid}")"
+    assert_eq "physical rewrites preserve the captured default schedule" "t" \
+        "$(sql_super -c "SELECT label OPERATOR(pg_catalog.~~)
+            ('%:' || pg_catalog.encode(pg_catalog.convert_to(
+                '1 2 3 4 *', 'UTF8'), 'hex'))
+          FROM df.instances WHERE id = '${job_after}';")"
+
+    sql_as durable_owner -c \
+        "SELECT df.cancel('${job_after}', 'rewrite lifecycle test complete');" \
+        >/dev/null
+    sql_super -c "DROP TABLE public.lifecycle_rewrite_docs,
+                             public.lifecycle_rewrite_excluded,
+                             public.lifecycle_rewrite_external;"
+    sql_super -c "DROP TABLESPACE lifecycle_rewrite_tablespace;"
+    sql_super -c "ALTER ROLE durable_owner IN DATABASE ${TEST_DB}
+      RESET pg_textsearch.background_compaction_schedule;"
+    sql_super -c "ALTER ROLE postgres IN DATABASE ${TEST_DB}
+      RESET pg_textsearch.background_compaction_schedule;"
+}
+
+test_database_owner_vacuum_full() {
+    local file_after file_before index_oid job_after job_before
+    local vacuum_output
+
+    sql_as durable_owner <<'SQL' >/dev/null 2>&1
+CREATE TABLE public.lifecycle_database_vacuum_docs (body text);
+INSERT INTO public.lifecycle_database_vacuum_docs VALUES ('alpha');
+CREATE INDEX lifecycle_database_vacuum_idx
+    ON public.lifecycle_database_vacuum_docs USING bm25(body)
+    WITH (text_config = 'english',
+          compaction = 'background',
+          compaction_schedule = '0 0 1 1 *');
+SQL
+    index_oid="$(sql_super -c "SELECT
+        'public.lifecycle_database_vacuum_idx'::regclass::oid;")"
+    file_before="$(sql_super -c \
+        "SELECT pg_catalog.pg_relation_filenode(${index_oid});")"
+    job_before="$(current_generation_job_id "${index_oid}")"
+
+    sql_super -c "GRANT USAGE ON SCHEMA public TO durable_actor;
+                   ALTER DATABASE ${TEST_DB} OWNER TO durable_actor;" \
+        >/dev/null
+    if ! vacuum_output="$(sql_as durable_actor -c \
+        "VACUUM (FULL) public.lifecycle_database_vacuum_docs;" 2>&1)"; then
+        sql_super -c "ALTER DATABASE ${TEST_DB} OWNER TO postgres;" \
+            >/dev/null
+        error "database-owner VACUUM FULL failed: ${vacuum_output}"
+    fi
+    sql_super -c "ALTER DATABASE ${TEST_DB} OWNER TO postgres;" >/dev/null
+
+    file_after="$(sql_super -c \
+        "SELECT pg_catalog.pg_relation_filenode(${index_oid});")"
+    job_after="$(current_generation_job_id "${index_oid}")"
+    if [ "${file_after}" = "${file_before}" ]; then
+        error "database-owner VACUUM FULL did not rewrite the index"
+    fi
+    if [ -z "${job_after}" ] || [ "${job_after}" = "${job_before}" ]; then
+        error "database-owner VACUUM FULL did not reconcile the workflow"
+    fi
+    log "PASS: database-owner VACUUM FULL reconciles managed indexes"
+
+    sql_super -c \
+        "DROP TABLE public.lifecycle_database_vacuum_docs;" >/dev/null
+}
+
+test_vacuum_full_skip_locked() {
+    local blocker_pid index_oid job_before vacuum_output
+
+    sql_as durable_owner <<'SQL' >/dev/null 2>&1
+CREATE TABLE public.lifecycle_skip_locked_docs (body text);
+INSERT INTO public.lifecycle_skip_locked_docs VALUES ('alpha');
+CREATE INDEX lifecycle_skip_locked_idx
+    ON public.lifecycle_skip_locked_docs USING bm25(body)
+    WITH (text_config = 'english',
+          compaction = 'background',
+          compaction_schedule = '0 0 1 1 *');
+SQL
+    index_oid="$(sql_super -c "SELECT
+        'public.lifecycle_skip_locked_idx'::regclass::oid;")"
+    job_before="$(current_generation_job_id "${index_oid}")"
+
+    PGAPPNAME=lifecycle-vacuum-skip-lock \
+        sql_as durable_owner -c "
+        BEGIN;
+        LOCK TABLE public.lifecycle_skip_locked_docs
+          IN ACCESS EXCLUSIVE MODE;
+        SELECT pg_catalog.pg_sleep(120);" \
+        >"${DATA_DIR}/vacuum-skip-lock.out" 2>&1 &
+    blocker_pid=$!
+    for _ in $(seq 1 100); do
+        if [ "$(sql_super -c "SELECT count(*)
+              FROM pg_catalog.pg_locks
+              WHERE relation =
+                    'public.lifecycle_skip_locked_docs'::regclass
+                AND mode = 'AccessExclusiveLock'
+                AND granted;")" = "1" ]; then
+            break
+        fi
+        sleep 0.1
+    done
+
+    if ! vacuum_output="$(PGOPTIONS='-c statement_timeout=2s' \
+        sql_as durable_owner -c \
+        "VACUUM (FULL, SKIP_LOCKED)
+           public.lifecycle_skip_locked_docs;" 2>&1)"; then
+        kill "${blocker_pid}" 2>/dev/null || true
+        wait "${blocker_pid}" 2>/dev/null || true
+        error "VACUUM FULL SKIP_LOCKED blocked or failed: ${vacuum_output}"
+    fi
+    kill "${blocker_pid}" 2>/dev/null || true
+    wait "${blocker_pid}" 2>/dev/null || true
+
+    assert_eq "VACUUM FULL SKIP_LOCKED leaves the workflow unchanged" \
+        "${job_before}" "$(current_generation_job_id "${index_oid}")"
+    log "PASS: VACUUM FULL SKIP_LOCKED preserves core lock skipping"
+
+    sql_super -c \
+        "DROP TABLE public.lifecycle_skip_locked_docs;" >/dev/null
+}
+
+test_global_cluster_scope() {
+    local blocker_pid clustered_file_before clustered_index_oid
+    local clustered_job_before cluster_output unclustered_index_oid
+    local unclustered_job_before
+
+    sql_as durable_owner <<'SQL' >/dev/null 2>&1
+CREATE TABLE public.lifecycle_global_cluster_docs
+    (id integer, body text);
+INSERT INTO public.lifecycle_global_cluster_docs VALUES (1, 'alpha');
+CREATE INDEX lifecycle_global_cluster_order_idx
+    ON public.lifecycle_global_cluster_docs(id);
+CREATE INDEX lifecycle_global_cluster_idx
+    ON public.lifecycle_global_cluster_docs USING bm25(body)
+    WITH (text_config = 'english',
+          compaction = 'background',
+          compaction_schedule = '0 0 1 1 *');
+CLUSTER public.lifecycle_global_cluster_docs
+    USING lifecycle_global_cluster_order_idx;
+
+CREATE TABLE public.lifecycle_global_unclustered_docs (body text);
+CREATE INDEX lifecycle_global_unclustered_idx
+    ON public.lifecycle_global_unclustered_docs USING bm25(body)
+    WITH (text_config = 'english',
+          compaction = 'background',
+          compaction_schedule = '0 0 1 1 *');
+SQL
+    clustered_index_oid="$(sql_super -c "SELECT
+        'public.lifecycle_global_cluster_idx'::regclass::oid;")"
+    unclustered_index_oid="$(sql_super -c "SELECT
+        'public.lifecycle_global_unclustered_idx'::regclass::oid;")"
+    clustered_file_before="$(sql_super -c "SELECT
+        pg_catalog.pg_relation_filenode(${clustered_index_oid});")"
+    clustered_job_before="$(
+        current_generation_job_id "${clustered_index_oid}"
+    )"
+    unclustered_job_before="$(
+        current_generation_job_id "${unclustered_index_oid}"
+    )"
+
+    PGAPPNAME=lifecycle-global-cluster-lock \
+        sql_as durable_owner -c "
+        BEGIN;
+        ALTER INDEX public.lifecycle_global_unclustered_idx
+          SET (compaction_schedule = '1 2 3 4 *');
+        SELECT pg_catalog.pg_sleep(120);" \
+        >"${DATA_DIR}/global-cluster-lock.out" 2>&1 &
+    blocker_pid=$!
+    for _ in $(seq 1 100); do
+        if [ "$(sql_super -c "SELECT count(*)
+              FROM pg_catalog.pg_locks
+              WHERE relation = ${unclustered_index_oid}
+                AND mode = 'AccessExclusiveLock'
+                AND granted;")" = "1" ]; then
+            break
+        fi
+        sleep 0.1
+    done
+
+    if ! cluster_output="$(PGOPTIONS='-c statement_timeout=2s' \
+        sql_as durable_owner -c "CLUSTER;" 2>&1)"; then
+        kill "${blocker_pid}" 2>/dev/null || true
+        wait "${blocker_pid}" 2>/dev/null || true
+        error "global CLUSTER touched an unclustered heap: ${cluster_output}"
+    fi
+    kill "${blocker_pid}" 2>/dev/null || true
+    wait "${blocker_pid}" 2>/dev/null || true
+
+    if [ "$(sql_super -c "SELECT
+              pg_catalog.pg_relation_filenode(${clustered_index_oid});")" =
+         "${clustered_file_before}" ]; then
+        error "global CLUSTER did not rewrite the clustered managed index"
+    fi
+    if [ "$(current_generation_job_id "${clustered_index_oid}")" =
+         "${clustered_job_before}" ]; then
+        error "global CLUSTER did not reconcile the clustered workflow"
+    fi
+    assert_eq "global CLUSTER ignores unclustered managed indexes" \
+        "${unclustered_job_before}" \
+        "$(current_generation_job_id "${unclustered_index_oid}")"
+
+    sql_super -c "DROP TABLE public.lifecycle_global_cluster_docs,
+                             public.lifecycle_global_unclustered_docs;" \
+        >/dev/null
+}
+
+test_inheritance_vacuum_full_scope() {
+    local child_file_after child_file_before child_index_oid
+    local child_job_after child_job_before parent_file_after
+    local parent_file_before parent_index_oid parent_job_after
+    local parent_job_before
+    local server_version_num
+
+    server_version_num="$(sql_super -c \
+        "SHOW server_version_num;")"
+    if [ "${server_version_num}" -lt 180000 ]; then
+        log "PASS: recursive ordinary-inheritance VACUUM is PostgreSQL 18+"
+        return
+    fi
+
+    sql_as durable_owner <<'SQL' >/dev/null 2>&1
+CREATE TABLE public.lifecycle_vacuum_parent (body text);
+CREATE TABLE public.lifecycle_vacuum_child ()
+    INHERITS (public.lifecycle_vacuum_parent);
+INSERT INTO public.lifecycle_vacuum_parent VALUES ('parent');
+INSERT INTO public.lifecycle_vacuum_child VALUES ('child');
+CREATE INDEX lifecycle_vacuum_parent_idx
+    ON public.lifecycle_vacuum_parent USING bm25(body)
+    WITH (text_config = 'english',
+          compaction = 'background',
+          compaction_schedule = '0 0 1 1 *');
+CREATE INDEX lifecycle_vacuum_child_idx
+    ON public.lifecycle_vacuum_child USING bm25(body)
+    WITH (text_config = 'english',
+          compaction = 'background',
+          compaction_schedule = '0 0 1 1 *');
+SQL
+    parent_index_oid="$(sql_super -c "SELECT
+        'public.lifecycle_vacuum_parent_idx'::regclass::oid;")"
+    child_index_oid="$(sql_super -c "SELECT
+        'public.lifecycle_vacuum_child_idx'::regclass::oid;")"
+    parent_file_before="$(sql_super -c "SELECT
+        pg_catalog.pg_relation_filenode(${parent_index_oid});")"
+    child_file_before="$(sql_super -c "SELECT
+        pg_catalog.pg_relation_filenode(${child_index_oid});")"
+    parent_job_before="$(current_generation_job_id "${parent_index_oid}")"
+    child_job_before="$(current_generation_job_id "${child_index_oid}")"
+
+    sql_as durable_owner -c \
+        "VACUUM (FULL) public.lifecycle_vacuum_parent;" >/dev/null 2>&1
+    parent_file_after="$(sql_super -c "SELECT
+        pg_catalog.pg_relation_filenode(${parent_index_oid});")"
+    child_file_after="$(sql_super -c "SELECT
+        pg_catalog.pg_relation_filenode(${child_index_oid});")"
+    parent_job_after="$(current_generation_job_id "${parent_index_oid}")"
+    child_job_after="$(current_generation_job_id "${child_index_oid}")"
+    if [ "${parent_file_after}" = "${parent_file_before}" ] ||
+       [ "${child_file_after}" = "${child_file_before}" ]; then
+        error "recursive VACUUM FULL did not rewrite parent and child indexes"
+    fi
+    if [ "${parent_job_after}" = "${parent_job_before}" ] ||
+       [ "${child_job_after}" = "${child_job_before}" ]; then
+        error "recursive VACUUM FULL did not reconcile parent and child"
+    fi
+
+    parent_file_before="$(sql_super -c "SELECT
+        pg_catalog.pg_relation_filenode(${parent_index_oid});")"
+    child_file_before="$(sql_super -c "SELECT
+        pg_catalog.pg_relation_filenode(${child_index_oid});")"
+    child_job_before="$(current_generation_job_id "${child_index_oid}")"
+    sql_as durable_owner -c \
+        "VACUUM (FULL) ONLY public.lifecycle_vacuum_parent;" >/dev/null 2>&1
+    parent_file_after="$(sql_super -c "SELECT
+        pg_catalog.pg_relation_filenode(${parent_index_oid});")"
+    if [ "${parent_file_after}" = "${parent_file_before}" ]; then
+        error "VACUUM FULL ONLY did not rewrite the parent index"
+    fi
+    assert_eq "VACUUM FULL ONLY leaves child storage unchanged" \
+        "${child_file_before}" \
+        "$(sql_super -c "SELECT
+          pg_catalog.pg_relation_filenode(${child_index_oid});")"
+    assert_eq "VACUUM FULL ONLY leaves child workflow unchanged" \
+        "${child_job_before}" \
+        "$(current_generation_job_id "${child_index_oid}")"
+
+    sql_super -c "DROP TABLE public.lifecycle_vacuum_child,
+                             public.lifecycle_vacuum_parent;" >/dev/null
+}
+
+test_inheritance_alter_rewrite_scope() {
+    local child_file_after child_file_before child_index_oid
+    local child_job_after child_job_before parent_file_after
+    local parent_file_before parent_index_oid parent_job_after
+    local parent_job_before
+
+    sql_as durable_owner <<'SQL' >/dev/null 2>&1
+CREATE TABLE public.lifecycle_alter_parent
+    (marker integer, body text);
+CREATE TABLE public.lifecycle_alter_child ()
+    INHERITS (public.lifecycle_alter_parent);
+INSERT INTO public.lifecycle_alter_parent VALUES (1, 'parent');
+INSERT INTO public.lifecycle_alter_child VALUES (2, 'child');
+CREATE INDEX lifecycle_alter_parent_idx
+    ON public.lifecycle_alter_parent USING bm25(body)
+    WITH (text_config = 'english',
+          compaction = 'background',
+          compaction_schedule = '0 0 1 1 *');
+CREATE INDEX lifecycle_alter_child_idx
+    ON public.lifecycle_alter_child USING bm25(body)
+    WITH (text_config = 'english',
+          compaction = 'background',
+          compaction_schedule = '0 0 1 1 *');
+SQL
+    parent_index_oid="$(sql_super -c "SELECT
+        'public.lifecycle_alter_parent_idx'::regclass::oid;")"
+    child_index_oid="$(sql_super -c "SELECT
+        'public.lifecycle_alter_child_idx'::regclass::oid;")"
+    parent_file_before="$(sql_super -c "SELECT
+        pg_catalog.pg_relation_filenode(${parent_index_oid});")"
+    child_file_before="$(sql_super -c "SELECT
+        pg_catalog.pg_relation_filenode(${child_index_oid});")"
+    parent_job_before="$(current_generation_job_id "${parent_index_oid}")"
+    child_job_before="$(current_generation_job_id "${child_index_oid}")"
+
+    sql_as durable_owner -c "
+        ALTER TABLE public.lifecycle_alter_parent
+          ALTER COLUMN marker TYPE bigint
+          USING marker::pg_catalog.bigint;" >/dev/null 2>&1
+    parent_file_after="$(sql_super -c "SELECT
+        pg_catalog.pg_relation_filenode(${parent_index_oid});")"
+    child_file_after="$(sql_super -c "SELECT
+        pg_catalog.pg_relation_filenode(${child_index_oid});")"
+    parent_job_after="$(current_generation_job_id "${parent_index_oid}")"
+    child_job_after="$(current_generation_job_id "${child_index_oid}")"
+    if [ "${parent_file_after}" = "${parent_file_before}" ] ||
+       [ "${child_file_after}" = "${child_file_before}" ]; then
+        error "recursive ALTER TABLE did not rewrite parent and child indexes"
+    fi
+    if [ "${parent_job_after}" = "${parent_job_before}" ] ||
+       [ "${child_job_after}" = "${child_job_before}" ]; then
+        error "recursive ALTER TABLE did not reconcile parent and child"
+    fi
+
+    parent_file_before="$(sql_super -c "SELECT
+        pg_catalog.pg_relation_filenode(${parent_index_oid});")"
+    child_file_before="$(sql_super -c "SELECT
+        pg_catalog.pg_relation_filenode(${child_index_oid});")"
+    child_job_before="$(current_generation_job_id "${child_index_oid}")"
+    sql_as durable_owner -c "
+        ALTER TABLE ONLY public.lifecycle_alter_parent
+          SET UNLOGGED;" >/dev/null 2>&1
+    parent_file_after="$(sql_super -c "SELECT
+        pg_catalog.pg_relation_filenode(${parent_index_oid});")"
+    if [ "${parent_file_after}" = "${parent_file_before}" ]; then
+        error "ALTER TABLE ONLY did not rewrite the parent index"
+    fi
+    assert_eq "ALTER TABLE ONLY leaves child storage unchanged" \
+        "${child_file_before}" \
+        "$(sql_super -c "SELECT
+          pg_catalog.pg_relation_filenode(${child_index_oid});")"
+    assert_eq "ALTER TABLE ONLY leaves child workflow unchanged" \
+        "${child_job_before}" \
+        "$(current_generation_job_id "${child_index_oid}")"
+
+    sql_super -c "DROP TABLE public.lifecycle_alter_child,
+                             public.lifecycle_alter_parent;" >/dev/null
+}
+
+test_additional_rewrite_reconciliation() {
+    local index_oid job_after job_before mv_index_oid mv_job_after
+    local mv_job_before
+
+    sql_as durable_owner -c "
+        CREATE TABLE public.lifecycle_additional_rewrite_docs
+          (id integer, body text);
+        INSERT INTO public.lifecycle_additional_rewrite_docs
+          VALUES (1, 'one');
+        CREATE INDEX lifecycle_additional_rewrite_idx
+          ON public.lifecycle_additional_rewrite_docs USING bm25(body)
+          WITH (text_config = 'english',
+                compaction = 'background',
+                compaction_schedule = '0 0 1 1 *');" >/dev/null 2>&1
+    index_oid="$(sql_super -c "SELECT
+        'public.lifecycle_additional_rewrite_idx'::regclass::oid;")"
+
+    job_before="$(current_generation_job_id "${index_oid}")"
+    sql_as durable_owner -c "
+        ALTER TABLE public.lifecycle_additional_rewrite_docs
+          ALTER COLUMN id TYPE bigint;" >/dev/null 2>&1
+    job_after="$(current_generation_job_id "${index_oid}")"
+    if [ -z "${job_after}" ] || [ "${job_after}" = "${job_before}" ]; then
+        error "ALTER COLUMN TYPE did not reconcile the workflow"
+    fi
+
+    sql_as durable_owner -c "
+        ALTER TABLE public.lifecycle_additional_rewrite_docs
+          ADD COLUMN generated_body text
+          GENERATED ALWAYS AS (body) STORED;" >/dev/null 2>&1
+    job_before="${job_after}"
+    sql_as durable_owner -c "
+        ALTER TABLE public.lifecycle_additional_rewrite_docs
+          ALTER COLUMN generated_body
+          SET EXPRESSION AS (body OPERATOR(pg_catalog.||) ' changed');" \
+        >/dev/null 2>&1
+    job_after="$(current_generation_job_id "${index_oid}")"
+    if [ -z "${job_after}" ] || [ "${job_after}" = "${job_before}" ]; then
+        error "ALTER COLUMN SET EXPRESSION did not reconcile the workflow"
+    fi
+
+    job_before="${job_after}"
+    sql_as durable_owner -c \
+        "TRUNCATE public.lifecycle_additional_rewrite_docs;" \
+        >/dev/null 2>&1
+    job_after="$(current_generation_job_id "${index_oid}")"
+    if [ -z "${job_after}" ] || [ "${job_after}" = "${job_before}" ]; then
+        error "TRUNCATE did not reconcile the workflow"
+    fi
+
+    sql_as durable_owner -c "
+        CREATE MATERIALIZED VIEW public.lifecycle_rewrite_mv
+          AS SELECT body FROM public.lifecycle_additional_rewrite_docs;
+        CREATE INDEX lifecycle_rewrite_mv_idx
+          ON public.lifecycle_rewrite_mv USING bm25(body)
+          WITH (text_config = 'english',
+                compaction = 'background',
+                compaction_schedule = '0 0 1 1 *');" >/dev/null 2>&1
+    mv_index_oid="$(sql_super -c "SELECT
+        'public.lifecycle_rewrite_mv_idx'::regclass::oid;")"
+    mv_job_before="$(current_generation_job_id "${mv_index_oid}")"
+    sql_as durable_owner -c \
+        "REFRESH MATERIALIZED VIEW public.lifecycle_rewrite_mv;" \
+        >/dev/null 2>&1
+    mv_job_after="$(current_generation_job_id "${mv_index_oid}")"
+    if [ -z "${mv_job_after}" ] ||
+        [ "${mv_job_after}" = "${mv_job_before}" ]; then
+        error "REFRESH MATERIALIZED VIEW did not reconcile the workflow"
+    fi
+
+    sql_super -c "DROP MATERIALIZED VIEW public.lifecycle_rewrite_mv;
+                   DROP TABLE public.lifecycle_additional_rewrite_docs;"
+}
+
+test_truncate_cascade_reconciliation() {
+    local child_oid child_job_after child_job_before
+
+    sql_as durable_owner <<'SQL' >/dev/null 2>&1
+CREATE TABLE public.lifecycle_truncate_parent (
+    id integer PRIMARY KEY);
+CREATE TABLE public.lifecycle_truncate_child (
+    parent_id integer REFERENCES public.lifecycle_truncate_parent(id),
+    body text);
+INSERT INTO public.lifecycle_truncate_parent VALUES (1);
+INSERT INTO public.lifecycle_truncate_child VALUES (1, 'one');
+CREATE INDEX lifecycle_truncate_child_idx
+    ON public.lifecycle_truncate_child USING bm25(body)
+    WITH (text_config = 'english',
+          compaction = 'background',
+          compaction_schedule = '0 0 1 1 *');
+SQL
+    child_oid="$(sql_super -c "SELECT
+        'public.lifecycle_truncate_child_idx'::regclass::oid;")"
+    child_job_before="$(current_generation_job_id "${child_oid}")"
+
+    sql_as durable_owner -c \
+        "TRUNCATE public.lifecycle_truncate_parent CASCADE;" \
+        >/dev/null 2>&1
+    child_job_after="$(current_generation_job_id "${child_oid}")"
+    if [ -z "${child_job_after}" ] ||
+        [ "${child_job_after}" = "${child_job_before}" ]; then
+        error "TRUNCATE CASCADE did not reconcile the cascaded workflow"
+    fi
+
+    sql_super -c "DROP TABLE public.lifecycle_truncate_child,
+                             public.lifecycle_truncate_parent;" >/dev/null
+}
+
+test_maintenance_privilege_compatibility() {
+    local cluster_oid cluster_job_after cluster_job_before
+    local global_job_after matview_oid matview_job_after matview_job_before
+    local schema_job_after schema_job_before
+
+    sql_super -c "CREATE SCHEMA lifecycle_maintain
+                   AUTHORIZATION durable_owner;" >/dev/null
+    sql_as durable_owner <<'SQL'
+CREATE TABLE lifecycle_maintain.cluster_docs
+    (id integer, body text);
+INSERT INTO lifecycle_maintain.cluster_docs
+VALUES (2, 'two'), (1, 'one');
+CREATE INDEX lifecycle_cluster_order_idx
+    ON lifecycle_maintain.cluster_docs(id);
+CREATE INDEX lifecycle_cluster_bm25_idx
+    ON lifecycle_maintain.cluster_docs USING bm25(body)
+    WITH (text_config = 'english',
+          compaction = 'background',
+          compaction_schedule = '0 0 1 1 *');
+ALTER TABLE lifecycle_maintain.cluster_docs
+    CLUSTER ON lifecycle_cluster_order_idx;
+CREATE MATERIALIZED VIEW lifecycle_maintain.docs_mv
+    AS SELECT body FROM lifecycle_maintain.cluster_docs;
+CREATE INDEX lifecycle_docs_mv_idx
+    ON lifecycle_maintain.docs_mv USING bm25(body)
+    WITH (text_config = 'english',
+          compaction = 'background',
+          compaction_schedule = '0 0 1 1 *');
+SQL
+    sql_super -c "GRANT USAGE ON SCHEMA lifecycle_maintain
+                   TO durable_maintainer;
+                   GRANT MAINTAIN ON
+                     lifecycle_maintain.cluster_docs,
+                     lifecycle_maintain.docs_mv
+                   TO durable_maintainer;" >/dev/null
+
+    cluster_oid="$(sql_super -c "SELECT
+        'lifecycle_maintain.lifecycle_cluster_bm25_idx'::regclass::oid;")"
+    cluster_job_before="$(current_generation_job_id "${cluster_oid}")"
+    sql_as durable_maintainer -c "
+        BEGIN;
+        CLUSTER lifecycle_maintain.cluster_docs
+          USING lifecycle_cluster_order_idx;
+        COMMIT;" >/dev/null
+    cluster_job_after="$(current_generation_job_id "${cluster_oid}")"
+    if [ -z "${cluster_job_after}" ] ||
+        [ "${cluster_job_after}" = "${cluster_job_before}" ]; then
+        error "transactional MAINTAIN CLUSTER did not reconcile the workflow"
+    fi
+
+    matview_oid="$(sql_super -c "SELECT
+        'lifecycle_maintain.lifecycle_docs_mv_idx'::regclass::oid;")"
+    matview_job_before="$(current_generation_job_id "${matview_oid}")"
+    sql_as durable_maintainer -c \
+        "REFRESH MATERIALIZED VIEW lifecycle_maintain.docs_mv;" \
+        >/dev/null
+    matview_job_after="$(current_generation_job_id "${matview_oid}")"
+    if [ -z "${matview_job_after}" ] ||
+        [ "${matview_job_after}" = "${matview_job_before}" ]; then
+        error "MAINTAIN REFRESH did not reconcile the workflow"
+    fi
+
+    schema_job_before="${cluster_job_after}"
+    sql_as durable_maintainer -c \
+        "REINDEX SCHEMA lifecycle_maintain;" >/dev/null
+    schema_job_after="$(current_generation_job_id "${cluster_oid}")"
+    if [ -z "${schema_job_after}" ] ||
+        [ "${schema_job_after}" = "${schema_job_before}" ]; then
+        error "pg_maintain REINDEX SCHEMA did not reconcile the workflow"
+    fi
+
+    sql_as durable_maintainer -c "CLUSTER;" >/dev/null
+    global_job_after="$(current_generation_job_id "${cluster_oid}")"
+    if [ -z "${global_job_after}" ] ||
+        [ "${global_job_after}" = "${schema_job_after}" ]; then
+        error "database-wide MAINTAIN CLUSTER did not reconcile the workflow"
+    fi
+
+    sql_super -c "DROP SCHEMA lifecycle_maintain CASCADE;" >/dev/null
+}
+
+test_tablespace_move_without_owned_by() {
+    local index_oid job_after job_before tablespace_dir
+
+    tablespace_dir="${DATA_DIR}-lifecycle-owner-tablespace"
+    mkdir -p "${tablespace_dir}"
+    sql_super -c "CREATE TABLESPACE lifecycle_owner_tablespace
+                   OWNER durable_owner LOCATION '${tablespace_dir}';" \
+        >/dev/null
+    sql_as durable_owner -c "
+        CREATE TABLE public.lifecycle_owner_move_docs (body text);
+        CREATE INDEX lifecycle_owner_move_idx
+          ON public.lifecycle_owner_move_docs USING bm25(body)
+          WITH (text_config = 'english',
+                compaction = 'background',
+                compaction_schedule = '0 0 1 1 *')
+          TABLESPACE lifecycle_owner_tablespace;" \
+        >/dev/null 2>&1
+    index_oid="$(sql_super -c "SELECT
+        'public.lifecycle_owner_move_idx'::regclass::oid;")"
+    job_before="$(current_generation_job_id "${index_oid}")"
+
+    sql_as durable_owner -c "
+        ALTER INDEX ALL IN TABLESPACE lifecycle_owner_tablespace
+          SET TABLESPACE pg_default;" >/dev/null 2>&1
+    job_after="$(current_generation_job_id "${index_oid}")"
+    if [ -z "${job_after}" ] || [ "${job_after}" = "${job_before}" ]; then
+        error "owner move without OWNED BY did not reconcile the workflow"
+    fi
+
+    sql_super -c "DROP TABLE public.lifecycle_owner_move_docs;" >/dev/null
+    sql_super -c "DROP TABLESPACE lifecycle_owner_tablespace;" >/dev/null
+}
+
+test_repeatable_read_direct_activation_snapshot() {
+    local index_oid initial_job reader_output reader_pid
+
+    sql_as durable_owner -c "
+        CREATE TABLE public.lifecycle_rr_activation_docs (body text);
+        CREATE INDEX lifecycle_rr_activation_idx
+          ON public.lifecycle_rr_activation_docs USING bm25(body)
+          WITH (text_config = 'english',
+                compaction = 'background',
+                compaction_schedule = '0 0 1 1 *');" >/dev/null 2>&1
+    index_oid="$(sql_super -c "SELECT
+        'public.lifecycle_rr_activation_idx'::regclass::oid;")"
+    initial_job="$(current_generation_job_id "${index_oid}")"
+    sql_as durable_owner -c \
+        "SELECT df.cancel('${initial_job}', 'repeatable-read setup');" \
+        >/dev/null
+    wait_for_terminal "${initial_job}" 30
+
+    reader_output="${DATA_DIR}/repeatable-read-activation.out"
+    PGAPPNAME=lifecycle-repeatable-read-activation \
+        sql_as durable_owner <<'SQL' >"${reader_output}" 2>&1 &
+BEGIN ISOLATION LEVEL REPEATABLE READ;
+SELECT count(*) FROM df.instances;
+SELECT pg_catalog.pg_sleep(5);
+ALTER INDEX public.lifecycle_rr_activation_idx
+    SET (compaction_schedule = '1 2 3 4 *');
+COMMIT;
+SQL
+    reader_pid=$!
+    for _ in $(seq 1 100); do
+        if [ "$(sql_super -c "SELECT count(*)
+              FROM pg_catalog.pg_stat_activity
+              WHERE application_name =
+                    'lifecycle-repeatable-read-activation'
+                AND query OPERATOR(pg_catalog.~~) '%pg_sleep%';")" = "1" ]; then
+            break
+        fi
+        sleep 0.1
+    done
+
+    sql_as durable_owner -c "
+        ALTER INDEX public.lifecycle_rr_activation_idx
+          SET (compaction_schedule = '1 2 3 4 *');" >/dev/null 2>&1
+    wait "${reader_pid}" || {
+        cat "${reader_output}" >&2
+        error "repeatable-read activation failed"
+    }
+    assert_eq "repeatable-read direct activation keeps one workflow" "1" \
+        "$(current_generation_job_count "${index_oid}")"
+
+    sql_super -c \
+        "DROP TABLE public.lifecycle_rr_activation_docs;" >/dev/null
+}
+
+test_owner_repair_without_old_durable_acl() {
+    local index_oid job_after
+
+    sql_as durable_owner -c "
+        CREATE TABLE public.lifecycle_revoked_owner_docs (body text);
+        CREATE INDEX lifecycle_revoked_owner_idx
+          ON public.lifecycle_revoked_owner_docs USING bm25(body)
+          WITH (text_config = 'english',
+                compaction = 'background',
+                compaction_schedule = '1 2 3 4 *');" >/dev/null 2>&1
+    index_oid="$(sql_super -c "SELECT
+        'public.lifecycle_revoked_owner_idx'::regclass::oid;")"
+
+    sql_super -c "REVOKE USAGE ON SCHEMA df FROM durable_owner;
+                   REVOKE ALL ON df.instances FROM durable_owner;" >/dev/null
+    sql_super -c "ALTER TABLE public.lifecycle_revoked_owner_docs
+                   OWNER TO durable_owner_two;" >/dev/null 2>&1
+    job_after="$(current_generation_job_id "${index_oid}")"
+    assert_eq "revoked old-owner ACL permits ownership repair" \
+        "durable_owner_two:t" \
+        "$(sql_super -c "SELECT pg_catalog.concat_ws(
+            ':',
+            submitted_by::pg_catalog.text,
+            label OPERATOR(pg_catalog.~~)
+              ('%:' || pg_catalog.encode(pg_catalog.convert_to(
+                '1 2 3 4 *', 'UTF8'), 'hex')))
+          FROM df.instances WHERE id = '${job_after}';")"
+
+    sql_super -c "SELECT df.grant_usage('durable_owner');" >/dev/null
+    sql_super -c \
+        "DROP TABLE public.lifecycle_revoked_owner_docs;" >/dev/null
+}
+
+test_writer_search_path_isolation() {
+    local memtable_threshold_before
+
+    sql_as durable_owner -c "
+        CREATE TABLE public.lifecycle_search_path_docs
+          (id integer, body text);
+        CREATE INDEX lifecycle_search_path_idx
+          ON public.lifecycle_search_path_docs USING bm25(body)
+          WITH (text_config = 'english',
+                compaction = 'background',
+                compaction_schedule = '0 0 1 1 *');" >/dev/null 2>&1
+    sql_super <<'SQL' >/dev/null
+CREATE TABLE public.lifecycle_search_path_audit (
+    role_name name NOT NULL
+);
+ALTER TABLE public.lifecycle_search_path_audit OWNER TO durable_owner;
+REVOKE ALL ON public.lifecycle_search_path_audit FROM PUBLIC;
+
+CREATE SCHEMA lifecycle_writer_shadow AUTHORIZATION durable_writer;
+GRANT USAGE ON SCHEMA lifecycle_writer_shadow TO durable_owner;
+GRANT INSERT ON public.lifecycle_search_path_docs TO durable_writer;
+SQL
+    sql_as durable_writer <<'SQL' >/dev/null
+CREATE FUNCTION lifecycle_writer_shadow.hijack_varchar_text(
+    left_value varchar, right_value text)
+RETURNS boolean
+LANGUAGE plpgsql
+VOLATILE
+AS $body$
+BEGIN
+    INSERT INTO public.lifecycle_search_path_audit(role_name)
+    VALUES (current_user);
+    RETURN left_value::pg_catalog.text
+           OPERATOR(pg_catalog.=) right_value;
+END
+$body$;
+
+CREATE OPERATOR lifecycle_writer_shadow.= (
+    LEFTARG = pg_catalog.varchar,
+    RIGHTARG = pg_catalog.text,
+    FUNCTION = lifecycle_writer_shadow.hijack_varchar_text
+);
+SQL
+
+    memtable_threshold_before="$(sql_super -c \
+        "SHOW pg_textsearch.memtable_pages_threshold;")"
+    sql_super -c "ALTER SYSTEM SET
+                     pg_textsearch.memtable_pages_threshold = 1;" >/dev/null
+    sql_super -c "SELECT pg_catalog.pg_reload_conf();" >/dev/null
+    sql_as durable_writer <<'SQL' >/dev/null
+SET search_path = lifecycle_writer_shadow, pg_catalog, public;
+INSERT INTO public.lifecycle_search_path_docs
+SELECT document_number,
+       (SELECT pg_catalog.string_agg(
+                   pg_catalog.format(
+                       'searchpath%sterm%s', document_number, term_number),
+                   ' ')
+        FROM pg_catalog.generate_series(1, 200) AS term_number)
+FROM pg_catalog.generate_series(1, 6) AS document_number;
+SQL
+    sql_super -c "ALTER SYSTEM RESET
+                     pg_textsearch.memtable_pages_threshold;" >/dev/null
+    sql_super -c "SELECT pg_catalog.pg_reload_conf();" >/dev/null
+    assert_eq "writer spill threshold is restored" \
+        "${memtable_threshold_before}" \
+        "$(sql_super -c \
+            "SHOW pg_textsearch.memtable_pages_threshold;")"
+    assert_eq "writer search_path cannot execute as the index owner" "0" \
+        "$(sql_super -c \
+            "SELECT count(*) FROM public.lifecycle_search_path_audit;")"
+
+    sql_super -c "DROP TABLE public.lifecycle_search_path_docs,
+                             public.lifecycle_search_path_audit;
+                   DROP SCHEMA lifecycle_writer_shadow CASCADE;" >/dev/null
+}
+
+test_persisted_helper_oid_guard() {
+    local index_oid instance_id
+
+    sql_as durable_owner -c "
+        CREATE TABLE public.lifecycle_helper_oid_docs (body text);
+        CREATE INDEX lifecycle_helper_oid_idx
+          ON public.lifecycle_helper_oid_docs USING bm25(body)
+          WITH (text_config = 'english',
+                compaction = 'background',
+                compaction_schedule = '0 0 1 1 *');" >/dev/null 2>&1
+    index_oid="$(sql_super -c "SELECT
+        'public.lifecycle_helper_oid_idx'::regclass::oid;")"
+    instance_id="$(current_generation_job_id "${index_oid}")"
+    wait_for_signal_node "${instance_id}" 90
+
+    sql_super <<'SQL' >/dev/null
+CREATE TABLE public.lifecycle_helper_oid_audit (
+    role_name name NOT NULL
+);
+ALTER TABLE public.lifecycle_helper_oid_audit OWNER TO durable_owner;
+REVOKE ALL ON public.lifecycle_helper_oid_audit FROM PUBLIC;
+GRANT INSERT ON public.lifecycle_helper_oid_audit TO durable_owner;
+
+ALTER DATABASE durable_compaction_test OWNER TO durable_actor;
+SET ROLE durable_actor;
+ALTER SCHEMA public RENAME TO lifecycle_original_public;
+CREATE SCHEMA public AUTHORIZATION durable_actor;
+CREATE FUNCTION public.lifecycle_helper_oid_payload()
+RETURNS boolean
+LANGUAGE plpgsql
+VOLATILE
+AS $body$
+BEGIN
+    INSERT INTO lifecycle_original_public.lifecycle_helper_oid_audit(
+        role_name)
+    VALUES (current_user);
+    RETURN false;
+END
+$body$;
+CREATE FUNCTION public.bm25_background_target_is_current(
+    index_oid oid, database_oid oid, tablespace_oid oid,
+    relfilenumber oid, owner_oid oid)
+RETURNS boolean
+LANGUAGE sql
+IMMUTABLE
+AS 'SELECT public.lifecycle_helper_oid_payload()';
+GRANT USAGE ON SCHEMA public TO durable_owner;
+GRANT EXECUTE ON FUNCTION public.lifecycle_helper_oid_payload()
+    TO durable_owner;
+GRANT EXECUTE ON FUNCTION
+    public.bm25_background_target_is_current(oid, oid, oid, oid, oid)
+    TO durable_owner;
+RESET ROLE;
+SQL
+
+    sql_as durable_owner -c \
+        "SELECT df.signal('${instance_id}', 'compact', '{}');" >/dev/null
+    wait_for_terminal "${instance_id}" 30
+    assert_eq "persisted workflow verifies the helper function OID" "0" \
+        "$(sql_super -c "SELECT count(*)
+          FROM lifecycle_original_public.lifecycle_helper_oid_audit;")"
+
+    sql_super <<'SQL' >/dev/null
+DROP SCHEMA public CASCADE;
+ALTER SCHEMA lifecycle_original_public RENAME TO public;
+ALTER DATABASE durable_compaction_test OWNER TO postgres;
+DROP TABLE public.lifecycle_helper_oid_docs,
+           public.lifecycle_helper_oid_audit;
+SQL
+}
+
+test_reassign_owned_heap_lock_order() {
+    local blocker_pid index_oid reassign_output reassign_pid
+
+    sql_super -c "CREATE ROLE lifecycle_reassign_lock_old LOGIN;
+                   CREATE ROLE lifecycle_reassign_lock_new LOGIN;
+                   SELECT df.grant_usage('lifecycle_reassign_lock_old');
+                   SELECT df.grant_usage('lifecycle_reassign_lock_new');
+                   GRANT CONNECT ON DATABASE ${TEST_DB}
+                     TO lifecycle_reassign_lock_old,
+                        lifecycle_reassign_lock_new;
+                   GRANT USAGE ON SCHEMA public
+                     TO lifecycle_reassign_lock_old,
+                        lifecycle_reassign_lock_new;
+                   GRANT CREATE ON SCHEMA public
+                     TO lifecycle_reassign_lock_old,
+                        lifecycle_reassign_lock_new;" >/dev/null
+    sql_as lifecycle_reassign_lock_old -c "
+        CREATE TABLE public.lifecycle_reassign_lock_docs (body text);
+        CREATE INDEX lifecycle_reassign_lock_idx
+          ON public.lifecycle_reassign_lock_docs USING bm25(body)
+          WITH (text_config = 'english',
+                compaction = 'background',
+                compaction_schedule = '0 0 1 1 *');" >/dev/null 2>&1
+    index_oid="$(sql_super -c "SELECT
+        'public.lifecycle_reassign_lock_idx'::regclass::oid;")"
+
+    PGAPPNAME=lifecycle-reassign-lock-blocker \
+        sql_super -c "
+        BEGIN;
+        LOCK TABLE public.lifecycle_reassign_lock_docs
+          IN ACCESS EXCLUSIVE MODE;
+        SELECT pg_catalog.pg_sleep(120);" \
+        >"${DATA_DIR}/reassign-lock-blocker.out" 2>&1 &
+    blocker_pid=$!
+    for _ in $(seq 1 100); do
+        if [ "$(sql_super -c "SELECT count(*)
+              FROM pg_catalog.pg_locks
+              WHERE relation =
+                    'public.lifecycle_reassign_lock_docs'::regclass
+                AND mode = 'AccessExclusiveLock'
+                AND granted;")" = "1" ]; then
+            break
+        fi
+        sleep 0.1
+    done
+
+    reassign_output="${DATA_DIR}/reassign-lock-order.out"
+    PGAPPNAME=lifecycle-reassign-lock-order \
+        sql_super -c "
+        REASSIGN OWNED BY lifecycle_reassign_lock_old
+          TO lifecycle_reassign_lock_new;" \
+        >"${reassign_output}" 2>&1 &
+    reassign_pid=$!
+    for _ in $(seq 1 100); do
+        if [ "$(sql_super -c "SELECT count(*)
+              FROM pg_catalog.pg_stat_activity
+              WHERE application_name = 'lifecycle-reassign-lock-order'
+                AND wait_event_type = 'Lock';")" = "1" ]; then
+            break
+        fi
+        sleep 0.1
+    done
+    assert_eq "REASSIGN waits for the heap before locking its index" "0" \
+        "$(sql_super -c "SELECT count(*)
+          FROM pg_catalog.pg_stat_activity AS activity
+          JOIN pg_catalog.pg_locks AS relation_lock
+            ON relation_lock.pid = activity.pid
+          WHERE activity.application_name =
+                'lifecycle-reassign-lock-order'
+            AND relation_lock.locktype = 'relation'
+            AND relation_lock.relation = ${index_oid}
+            AND relation_lock.mode = 'ShareUpdateExclusiveLock'
+            AND relation_lock.granted;")"
+
+    sql_super -c "SELECT pg_catalog.pg_terminate_backend(pid)
+      FROM pg_catalog.pg_stat_activity
+      WHERE application_name =
+            'lifecycle-reassign-lock-blocker';" >/dev/null
+    wait "${blocker_pid}" || true
+    wait "${reassign_pid}" || {
+        cat "${reassign_output}" >&2
+        error "REASSIGN lock-order test failed"
+    }
+
+    sql_super -c "DROP TABLE public.lifecycle_reassign_lock_docs;
+                   DROP OWNED BY lifecycle_reassign_lock_old,
+                                 lifecycle_reassign_lock_new;
+                   DROP ROLE lifecycle_reassign_lock_old;
+                   DROP ROLE lifecycle_reassign_lock_new;" >/dev/null
+}
+
+test_rewrite_preflight_ordering() {
+    local blocker_pid vacuum_error
+
+    sql_as durable_owner -c "
+        CREATE TABLE public.lifecycle_preflight_a (body text);
+        CREATE INDEX lifecycle_preflight_a_idx
+          ON public.lifecycle_preflight_a USING bm25(body)
+          WITH (text_config = 'english',
+                compaction = 'background',
+                compaction_schedule = '0 0 1 1 *');
+        CREATE TABLE public.lifecycle_preflight_b (body text);
+        CREATE INDEX lifecycle_preflight_b_idx
+          ON public.lifecycle_preflight_b USING bm25(body)
+          WITH (text_config = 'english',
+                compaction = 'background',
+                compaction_schedule = '0 0 1 1 *');" >/dev/null 2>&1
+
+    PGAPPNAME=lifecycle-vacuum-preflight \
+        sql_as durable_owner -c "
+        BEGIN;
+        ALTER INDEX public.lifecycle_preflight_b_idx
+          SET (compaction_schedule = '1 2 3 4 *');
+        SELECT pg_catalog.pg_sleep(120);" \
+        >"${DATA_DIR}/vacuum-preflight-lock.out" 2>&1 &
+    blocker_pid=$!
+    for _ in $(seq 1 100); do
+        if [ "$(sql_super -c "SELECT count(*)
+              FROM pg_catalog.pg_locks
+              WHERE relation =
+                    'public.lifecycle_preflight_b_idx'::regclass
+                AND mode = 'AccessExclusiveLock'
+                AND granted;")" = "1" ]; then
+            break
+        fi
+        sleep 0.1
+    done
+
+    if vacuum_error="$(sql_as durable_owner -c "
+        BEGIN;
+        SET LOCAL statement_timeout = '2s';
+        VACUUM (FULL);" 2>&1)"; then
+        error "VACUUM FULL unexpectedly ran inside a transaction block"
+    fi
+    if ! grep -Fq "cannot run inside a transaction block" \
+        <<<"${vacuum_error}"; then
+        error "VACUUM FULL prelocked indexes before its transaction check: \
+${vacuum_error}"
+    fi
+
+    sql_super -c "SELECT pg_catalog.pg_terminate_backend(pid)
+      FROM pg_catalog.pg_stat_activity
+      WHERE application_name = 'lifecycle-vacuum-preflight';" >/dev/null
+    wait "${blocker_pid}" || true
+    sql_super -c "DROP TABLE public.lifecycle_preflight_a,
+                             public.lifecycle_preflight_b;"
 }
 
 test_concurrent_reindex_reconciliation() {
@@ -2404,7 +3929,8 @@ test_ordinary_inheritance_reindex_scope() {
 test_legacy_lineage_backfill() {
     local legacy_instance legacy_lineage legacy_oid owner_job
     local replacement_instance
-    local owner_lineage reindex_lineage reindex_oid_before reindex_oid_after
+    local owner_instance owner_lineage reindex_lineage reindex_oid_before
+    local reindex_oid_after
 
     install_signal_probe
     sql_as durable_owner <<'SQL' >/dev/null 2>&1
@@ -2499,6 +4025,26 @@ SQL
     wait_for_terminal "${legacy_instance}" 30
     log "PASS: stale legacy workflow retires through its current guard"
 
+    owner_instance="$(current_generation_job_id \
+        "$(sql_super -c "SELECT
+          'public.lifecycle_legacy_owner_idx'::regclass::oid;")")"
+    sql_super -c "UPDATE df.instances AS instance
+      SET label = pg_catalog.format(
+        'pg_textsearch:bg:v1:%s:%s:%s:%s:%s:%s',
+        database.oid,
+        relation.oid,
+        coalesce(nullif(relation.reltablespace, 0),
+                 database.dattablespace),
+        pg_catalog.pg_relation_filenode(relation.oid),
+        relation.relowner,
+        pg_catalog.encode(
+          pg_catalog.convert_to('1 2 3 4 *', 'UTF8'), 'hex'))
+      FROM pg_catalog.pg_class AS relation,
+           pg_catalog.pg_database AS database
+      WHERE instance.id = '${owner_instance}'
+        AND relation.oid =
+            'public.lifecycle_legacy_owner_idx'::regclass
+        AND database.datname = pg_catalog.current_database();"
     remove_index_lineage public.lifecycle_legacy_owner_idx
     sql_super -c "ALTER TABLE public.lifecycle_legacy_owner_docs
                    OWNER TO durable_owner_two;" >/dev/null 2>&1
@@ -2513,6 +4059,11 @@ SQL
         "$(sql_super -c "SELECT submitted_by::pg_catalog.text
                           FROM df.instances
                           WHERE id = '${owner_job}';")"
+    assert_eq "legacy owner reconciliation preserves its schedule" "t" \
+        "$(sql_super -c "SELECT label OPERATOR(pg_catalog.~~)
+            ('%:' || pg_catalog.encode(pg_catalog.convert_to(
+                '1 2 3 4 *', 'UTF8'), 'hex'))
+          FROM df.instances WHERE id = '${owner_job}';")"
 
     reindex_oid_before="$(sql_super -c "SELECT
         'public.lifecycle_legacy_reindex_idx'::regclass::oid;")"
@@ -2535,6 +4086,65 @@ SQL
     sql_super -c "DROP TABLE public.lifecycle_legacy_signal_docs,
                              public.lifecycle_legacy_owner_docs,
                              public.lifecycle_legacy_reindex_docs;"
+}
+
+test_legacy_reconciliation_edges() {
+    local index_oid job_after legacy_instance
+
+    sql_as durable_owner -c "
+        CREATE TABLE public.lifecycle_legacy_noop_docs (body text);
+        CREATE INDEX lifecycle_legacy_noop_idx
+          ON public.lifecycle_legacy_noop_docs USING bm25(body)
+          WITH (text_config = 'english',
+                compaction = 'background',
+                compaction_schedule = '0 0 1 1 *');" >/dev/null 2>&1
+    index_oid="$(sql_super -c "SELECT
+        'public.lifecycle_legacy_noop_idx'::regclass::oid;")"
+    legacy_instance="$(current_generation_job_id "${index_oid}")"
+    sql_super -c "UPDATE df.instances AS instance
+      SET label = pg_catalog.format(
+        'pg_textsearch:bg:v1:%s:%s:%s:%s:%s:%s',
+        database.oid,
+        relation.oid,
+        coalesce(nullif(relation.reltablespace, 0),
+                 database.dattablespace),
+        pg_catalog.pg_relation_filenode(relation.oid),
+        relation.relowner,
+        pg_catalog.encode(
+          pg_catalog.convert_to('1 2 3 4 *', 'UTF8'), 'hex'))
+      FROM pg_catalog.pg_class AS relation,
+           pg_catalog.pg_database AS database
+      WHERE instance.id = '${legacy_instance}'
+        AND relation.oid = ${index_oid}
+        AND database.datname = pg_catalog.current_database();"
+    remove_index_lineage public.lifecycle_legacy_noop_idx
+
+    sql_as durable_owner -c "
+        ALTER INDEX public.lifecycle_legacy_noop_idx
+          SET TABLESPACE pg_default;" >/dev/null 2>&1
+    job_after="$(current_generation_job_id "${index_oid}")"
+    if [ -z "${job_after}" ]; then
+        error "no-op rewrite did not migrate the legacy workflow"
+    fi
+    assert_eq "legacy migration preserves the captured schedule" "t" \
+        "$(sql_super -c "SELECT label OPERATOR(pg_catalog.~~)
+            ('%:' || pg_catalog.encode(pg_catalog.convert_to(
+                '1 2 3 4 *', 'UTF8'), 'hex'))
+          FROM df.instances WHERE id = '${job_after}';")"
+
+    sql_super -c "ALTER ROLE durable_owner NOLOGIN;" >/dev/null
+    if ! sql_super -c "
+        ALTER TABLE public.lifecycle_legacy_noop_docs
+          OWNER TO durable_owner_two;" >/dev/null 2>&1; then
+        sql_super -c "ALTER ROLE durable_owner LOGIN;" >/dev/null
+        error "ineligible old owner prevented ownership repair"
+    fi
+    sql_super -c "ALTER ROLE durable_owner LOGIN;" >/dev/null
+    assert_eq "ineligible old owner can be replaced" "durable_owner_two" \
+        "$(sql_super -c "SELECT pg_catalog.pg_get_userbyid(relowner)
+          FROM pg_catalog.pg_class WHERE oid = ${index_oid};")"
+
+    sql_super -c "DROP TABLE public.lifecycle_legacy_noop_docs;"
 }
 
 test_refresh_selects_requested_workflow() {
@@ -2927,10 +4537,8 @@ SQL
             AND private_lock.locktype = 'object'
             AND private_lock.classid =
                 'pg_catalog.pg_am'::pg_catalog.regclass
-            AND private_lock.objid = (
-              SELECT oid FROM pg_catalog.pg_am WHERE amname = 'bm25')
-            AND private_lock.objsubid =
-                ((${target_oid} % 32767) + 1)
+            AND private_lock.objid = ${target_oid}
+            AND private_lock.objsubid = 1
             AND private_lock.mode = 'ExclusiveLock'
             AND private_lock.granted;")"
 
@@ -2972,7 +4580,7 @@ spill: $(cat "${spill_output}")"
 }
 
 test_internal_lock_namespace() {
-    local gate_pid index_oid lock_key owner_error
+    local admission_error database_oid gate_pid index_oid lock_key owner_error
 
     sql_as durable_owner <<'SQL' >/dev/null 2>&1
 CREATE TABLE public.lifecycle_private_lock_docs (body text);
@@ -3034,6 +4642,49 @@ ${owner_error}"
       FROM pg_catalog.pg_stat_activity
       WHERE application_name =
             'lifecycle-public-advisory-lock';" >/dev/null
+    wait "${gate_pid}" || true
+
+    database_oid="$(sql_super -c \
+        "SELECT oid FROM pg_catalog.pg_database
+          WHERE datname = pg_catalog.current_database();")"
+    PGAPPNAME=lifecycle-admission-advisory-lock \
+        sql_as durable_writer -c \
+        "SELECT pg_catalog.pg_advisory_lock(
+             ${database_oid}::integer, ${index_oid}::integer);
+         SELECT pg_catalog.pg_sleep(120);" \
+        >"${DATA_DIR}/admission-advisory-lock.out" 2>&1 &
+    gate_pid=$!
+    for _ in $(seq 1 100); do
+        if [ "$(sql_super -c "SELECT pg_catalog.count(*)
+              FROM pg_catalog.pg_locks
+              WHERE locktype = 'advisory'
+                AND classid = ${database_oid}
+                AND objid = ${index_oid}
+                AND granted;")" = "1" ]; then
+            break
+        fi
+        sleep 0.1
+    done
+    assert_eq "public admission collision gate is held" "1" \
+        "$(sql_super -c "SELECT pg_catalog.count(*)
+          FROM pg_catalog.pg_locks
+          WHERE locktype = 'advisory'
+            AND classid = ${database_oid}
+            AND objid = ${index_oid}
+            AND granted;")"
+
+    if ! admission_error="$(sql_as durable_owner_two -c "
+        SET statement_timeout = '2s';
+        ALTER INDEX public.lifecycle_private_lock_idx SET (
+          compaction_schedule = '1 0 1 1 *');" 2>&1)"; then
+        error "public advisory lock blocked workflow admission: \
+${admission_error}"
+    fi
+
+    sql_super -c "SELECT pg_catalog.pg_terminate_backend(pid)
+      FROM pg_catalog.pg_stat_activity
+      WHERE application_name =
+            'lifecycle-admission-advisory-lock';" >/dev/null
     wait "${gate_pid}" || true
     sql_super -c "DROP TABLE public.lifecycle_private_lock_docs;"
 }
@@ -4649,6 +6300,261 @@ second: $(cat "${lock_b_output}")"
                               public.queue_lock_b_docs;"
 }
 
+test_precommit_signal_observes_published_spill() {
+    local blocker_pid blocker_output index_oid instance_id
+    local writer_pid writer_output writer_status=0
+
+    sql_as durable_owner -c "
+        CREATE TABLE public.precommit_signal_docs (id integer, body text);
+        CREATE INDEX precommit_signal_idx
+          ON public.precommit_signal_docs USING bm25(body)
+          WITH (text_config = 'english',
+                compaction = 'background',
+                compaction_schedule = '0 0 1 1 *');" >/dev/null 2>&1
+    index_oid="$(sql_super -c \
+        "SELECT 'public.precommit_signal_idx'::regclass::oid;")"
+    instance_id="$(current_generation_job_id "${index_oid}")"
+    wait_for_signal_node "${instance_id}" 90
+
+    sql_super <<'SQL'
+CREATE TABLE public.precommit_compaction_audit (
+    role_name name NOT NULL
+);
+ALTER TABLE public.precommit_compaction_audit OWNER TO durable_owner;
+REVOKE ALL ON public.precommit_compaction_audit FROM PUBLIC;
+GRANT INSERT ON public.precommit_compaction_audit TO durable_owner;
+
+CREATE FUNCTION bm25_compact_step_if_current_precommit_test_c(
+    index_oid oid, database_oid oid, tablespace_oid oid,
+    relfilenumber oid, owner_oid oid)
+RETURNS boolean
+AS '$libdir/pg_textsearch', 'tp_compact_index_step_if_current'
+LANGUAGE C VOLATILE STRICT;
+
+REVOKE ALL ON FUNCTION
+    bm25_compact_step_if_current_precommit_test_c(oid, oid, oid, oid, oid)
+    FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION
+    bm25_compact_step_if_current_precommit_test_c(oid, oid, oid, oid, oid)
+    TO durable_owner;
+
+CREATE OR REPLACE FUNCTION bm25_compact_step_if_current(
+    index_oid oid, database_oid oid, tablespace_oid oid,
+    relfilenumber oid, owner_oid oid)
+RETURNS boolean
+LANGUAGE plpgsql
+VOLATILE
+STRICT
+SET search_path = pg_catalog, pg_temp
+AS $body$
+BEGIN
+    INSERT INTO public.precommit_compaction_audit(role_name)
+    VALUES (current_user);
+    RETURN public.bm25_compact_step_if_current_precommit_test_c(
+        index_oid, database_oid, tablespace_oid, relfilenumber, owner_oid);
+END
+$body$;
+
+ALTER FUNCTION df.signal(text, text, text) RENAME TO signal_v028;
+
+CREATE FUNCTION df.signal(
+    instance_id text,
+    signal_name text,
+    signal_data text DEFAULT '{}')
+RETURNS text
+LANGUAGE plpgsql
+STRICT
+SET search_path = pg_catalog, pg_temp
+AS $body$
+DECLARE
+    result text;
+BEGIN
+    result := df.signal_v028($1, $2, $3);
+    PERFORM pg_catalog.pg_advisory_xact_lock_shared(478, 12);
+    RETURN result;
+END
+$body$;
+
+ALTER EXTENSION pg_durable ADD FUNCTION df.signal(text, text, text);
+REVOKE ALL ON FUNCTION df.signal(text, text, text) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION df.signal(text, text, text) TO durable_owner;
+SQL
+
+    blocker_output="${DATA_DIR}/precommit-signal-blocker.out"
+    PGAPPNAME=precommit-signal-blocker sql_super -c \
+        "SELECT pg_catalog.pg_advisory_lock(478, 12);
+         SELECT pg_catalog.pg_sleep(120);" \
+        >"${blocker_output}" 2>&1 &
+    blocker_pid=$!
+    for _ in $(seq 1 100); do
+        if [ "$(sql_super -c "SELECT count(*)
+              FROM pg_catalog.pg_locks
+              WHERE locktype = 'advisory'
+                AND classid = 478
+                AND objid = 12
+                AND mode = 'ExclusiveLock'
+                AND granted;")" = "1" ]; then
+            break
+        fi
+        sleep 0.1
+    done
+
+    writer_output="${DATA_DIR}/precommit-signal-writer.out"
+    PGAPPNAME=precommit-signal-writer \
+        "${PGBINDIR}/psql" -h "${SOCKET_DIR}" -p "${TEST_PORT}" \
+        -U durable_owner -d "${TEST_DB}" -qAt -v ON_ERROR_STOP=1 \
+        -c "BEGIN;
+            INSERT INTO public.precommit_signal_docs
+            SELECT value, pg_catalog.format(
+                'precommit first row %s filler', value)
+            FROM pg_catalog.generate_series(1, 20) AS value;
+            SELECT bm25_spill_index('public.precommit_signal_idx');
+            INSERT INTO public.precommit_signal_docs
+            SELECT value + 20, pg_catalog.format(
+                'precommit second row %s filler', value)
+            FROM pg_catalog.generate_series(1, 20) AS value;
+            SELECT bm25_spill_index('public.precommit_signal_idx');
+            COMMIT;" >"${writer_output}" 2>&1 &
+    writer_pid=$!
+
+    for _ in $(seq 1 300); do
+        if [ "$(sql_super -c "SELECT count(*)
+              FROM pg_catalog.pg_stat_activity
+              WHERE application_name = 'precommit-signal-writer'
+                AND wait_event_type = 'Lock';")" = "1" ]; then
+            break
+        fi
+        sleep 0.1
+    done
+    assert_eq "writer waits after sending the PRE_COMMIT signal" "1" \
+        "$(sql_super -c "SELECT count(*)
+          FROM pg_catalog.pg_stat_activity
+          WHERE application_name = 'precommit-signal-writer'
+            AND wait_event_type = 'Lock';")"
+    assert_eq "writer rows remain uncommitted while the signal is live" "0" \
+        "$(sql_super -c \
+            "SELECT count(*) FROM public.precommit_signal_docs;")"
+
+    for _ in $(seq 1 300); do
+        if [ "$(sql_super -c \
+            "SELECT count(*) FROM public.precommit_compaction_audit;")" \
+            -gt 0 ]; then
+            break
+        fi
+        sleep 0.1
+    done
+    assert_eq "worker runs before the spilling writer commits" "t" \
+        "$(sql_super -c "SELECT count(*) > 0
+                                AND pg_catalog.bool_and(
+                                    role_name = 'durable_owner')
+                          FROM public.precommit_compaction_audit;")"
+    assert_eq "pre-commit worker consumes the published compaction debt" "f" \
+        "$(sql_super -c "SELECT bm25_needs_compaction(
+                              'public.precommit_signal_idx'::regclass);")"
+
+    sql_super -c "SELECT pg_catalog.pg_terminate_backend(pid)
+      FROM pg_catalog.pg_stat_activity
+      WHERE application_name = 'precommit-signal-blocker';" >/dev/null
+    wait "${blocker_pid}" || true
+    wait "${writer_pid}" || writer_status=$?
+    if [ "${writer_status}" -ne 0 ]; then
+        error "writer failed after PRE_COMMIT signal gate:
+$(cat "${writer_output}")"
+    fi
+    assert_eq "writer commits after the worker has compacted" "40" \
+        "$(sql_super -c \
+            "SELECT count(*) FROM public.precommit_signal_docs;")"
+
+    sql_super <<'SQL'
+CREATE OR REPLACE FUNCTION bm25_compact_step_if_current(
+    index_oid oid, database_oid oid, tablespace_oid oid,
+    relfilenumber oid, owner_oid oid)
+RETURNS boolean
+AS '$libdir/pg_textsearch', 'tp_compact_index_step_if_current'
+LANGUAGE C VOLATILE STRICT;
+
+ALTER EXTENSION pg_durable DROP FUNCTION df.signal(text, text, text);
+DROP FUNCTION df.signal(text, text, text);
+ALTER FUNCTION df.signal_v028(text, text, text) RENAME TO signal;
+DROP FUNCTION
+    bm25_compact_step_if_current_precommit_test_c(oid, oid, oid, oid, oid);
+DROP TABLE public.precommit_compaction_audit;
+SQL
+    sql_as durable_owner -c \
+        "SELECT df.cancel('${instance_id}', 'precommit test complete');" \
+        >/dev/null
+    wait_for_terminal "${instance_id}" 30
+    sql_as durable_owner -c "DROP TABLE public.precommit_signal_docs;"
+}
+
+test_repeatable_read_admission_snapshot() {
+    local index_oid initial_job reader_output reader_pid
+
+    sql_as durable_owner -c "
+        CREATE TABLE public.lifecycle_rr_docs
+          (id integer, body text);
+        CREATE INDEX lifecycle_rr_idx
+          ON public.lifecycle_rr_docs USING bm25(body)
+          WITH (text_config = 'english',
+                compaction = 'background',
+                compaction_schedule = '0 0 1 1 *');" >/dev/null 2>&1
+    index_oid="$(sql_super -c "SELECT
+        'public.lifecycle_rr_idx'::regclass::oid;")"
+    initial_job="$(current_generation_job_id "${index_oid}")"
+    sql_as durable_owner -c \
+        "SELECT df.cancel('${initial_job}', 'repeatable-read setup');" \
+        >/dev/null
+    wait_for_terminal "${initial_job}" 30
+
+    reader_output="${DATA_DIR}/repeatable-read-admission.out"
+    PGAPPNAME=lifecycle-repeatable-read sql_as durable_owner <<'SQL' \
+        >"${reader_output}" 2>&1 &
+BEGIN ISOLATION LEVEL REPEATABLE READ;
+SELECT count(*) FROM df.instances;
+SELECT pg_catalog.pg_sleep(5);
+INSERT INTO public.lifecycle_rr_docs
+SELECT value, pg_catalog.format('reader document %s alpha beta gamma', value)
+FROM pg_catalog.generate_series(1, 20) AS value;
+SELECT bm25_spill_index('public.lifecycle_rr_idx');
+INSERT INTO public.lifecycle_rr_docs
+SELECT 100 + value,
+       pg_catalog.format('reader second document %s delta epsilon', value)
+FROM pg_catalog.generate_series(1, 20) AS value;
+SELECT bm25_spill_index('public.lifecycle_rr_idx');
+COMMIT;
+SQL
+    reader_pid=$!
+    for _ in $(seq 1 100); do
+        if [ "$(sql_super -c "SELECT count(*)
+              FROM pg_catalog.pg_stat_activity
+              WHERE application_name = 'lifecycle-repeatable-read'
+                AND query OPERATOR(pg_catalog.~~) '%pg_sleep%';")" = "1" ]; then
+            break
+        fi
+        sleep 0.1
+    done
+
+    sql_as durable_owner -c "
+        INSERT INTO public.lifecycle_rr_docs
+        SELECT 1000 + value,
+               pg_catalog.format('writer document %s one two three', value)
+        FROM pg_catalog.generate_series(1, 20) AS value;
+        SELECT bm25_spill_index('public.lifecycle_rr_idx');
+        INSERT INTO public.lifecycle_rr_docs
+        SELECT 2000 + value,
+               pg_catalog.format('writer second %s four five six', value)
+        FROM pg_catalog.generate_series(1, 20) AS value;
+        SELECT bm25_spill_index('public.lifecycle_rr_idx');" >/dev/null 2>&1
+    wait "${reader_pid}" || {
+        cat "${reader_output}" >&2
+        error "repeatable-read writer failed"
+    }
+    assert_eq "repeatable-read admission keeps one current workflow" "1" \
+        "$(current_generation_job_count "${index_oid}")"
+
+    sql_super -c "DROP TABLE public.lifecycle_rr_docs;"
+}
+
 test_actor_writer_worker_identity() {
     local activation_audit_id activation_audit_rows index_oid instance_id
     local memtable_threshold_before writer_audit_id writer_audit_rows
@@ -5601,18 +7507,35 @@ stage_durable_package
 setup_cluster
 run_test test_missing_durable_cic
 initialize_database
-run_test test_reindex_nonrelation_passthrough
 run_test test_cic_preflight_rejections
 run_test test_cic_owner_privilege_preflight
 run_test test_alter_preflight_rejections
 run_test test_defaulted_start_arity
+run_test test_reindex_nonrelation_passthrough
+run_test test_failed_bulk_reindex_reconciliation
 run_test test_partitioned_create_activation
+run_test test_direct_index_partition_attach
 run_test test_partitioned_existing_leaf_reconciliation
 run_test test_create_tracking_reentry
+run_test test_cached_create_uses_fresh_lineage
+run_test test_create_like_regenerates_lineage
 run_test test_create_tracking_concurrent
 run_test test_create_tracking_table_rename
 run_test test_owner_reconciliation
+run_test test_owner_change_preserves_captured_schedule
+run_test test_reassign_owned_reconciliation
 run_test test_reindex_reconciliation
+run_test test_physical_rewrite_reconciliation
+run_test test_database_owner_vacuum_full
+run_test test_vacuum_full_skip_locked
+run_test test_global_cluster_scope
+run_test test_inheritance_vacuum_full_scope
+run_test test_inheritance_alter_rewrite_scope
+run_test test_additional_rewrite_reconciliation
+run_test test_truncate_cascade_reconciliation
+run_test test_maintenance_privilege_compatibility
+run_test test_tablespace_move_without_owned_by
+run_test test_rewrite_preflight_ordering
 run_test test_concurrent_reindex_reconciliation
 run_test test_partitioned_reindex_reconciliation
 run_test test_partitioned_reindex_failure_reconciliation
@@ -5620,6 +7543,7 @@ run_test test_partitioned_reindex_rename_reconciliation
 run_test test_reindex_tracking_reentry
 run_test test_ordinary_inheritance_reindex_scope
 run_test test_legacy_lineage_backfill
+run_test test_legacy_reconciliation_edges
 run_test test_refresh_selects_requested_workflow
 run_test test_concurrent_legacy_lineage_backfill
 run_test test_legacy_reindex_spill_lock_order
@@ -5635,6 +7559,13 @@ run_test test_lineage_guard_name_race
 run_test test_reindex_authorization_resolution_race
 run_test test_prior_generation_spill_adoption
 run_test test_request_queue_runtime
+run_test test_precommit_signal_observes_published_spill
+run_test test_repeatable_read_admission_snapshot
+run_test test_repeatable_read_direct_activation_snapshot
+run_test test_owner_repair_without_old_durable_acl
+run_test test_writer_search_path_isolation
+run_test test_persisted_helper_oid_guard
+run_test test_reassign_owned_heap_lock_order
 run_test test_actor_writer_worker_identity
 run_test test_create_activation
 run_test test_scheduled_failure_continuation
