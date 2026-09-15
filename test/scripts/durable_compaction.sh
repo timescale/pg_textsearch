@@ -9736,12 +9736,12 @@ SQL
         if [ "$(sql_super -c "SELECT pg_catalog.count(*)
               FROM pg_catalog.pg_stat_activity
               WHERE application_name IN ('queue-lock-a', 'queue-lock-b')
-                AND wait_event_type = 'Lock';")" = "2" ]; then
+                AND wait_event_type = 'Lock';")" = "1" ]; then
             break
         fi
         sleep 0.1
     done
-    assert_eq "reverse-order request flush reaches both lock waits" "2" \
+    assert_eq "reverse-order request flush has one admitted writer" "1" \
         "$(sql_super -c "SELECT pg_catalog.count(*)
           FROM pg_catalog.pg_stat_activity
           WHERE application_name IN ('queue-lock-a', 'queue-lock-b')
@@ -9767,8 +9767,7 @@ second: $(cat "${lock_b_output}")"
             (SELECT count(*) FROM public.queue_lock_a_docs)
             || ':' ||
             (SELECT count(*) FROM public.queue_lock_b_docs);")"
-    assert_eq "reverse-order request flush signals both workflows twice" \
-        "2:2" \
+    assert_eq "contended request flush signals each workflow once" "1:1" \
         "$(sql_super -c "SELECT
             count(*) FILTER (
               WHERE instance_id = '${lock_a_instance}') || ':' ||
