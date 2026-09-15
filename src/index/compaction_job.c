@@ -2253,27 +2253,37 @@ tp_build_worker_queries(
 	current_signature_literal = quote_literal_cstr(current_signature);
 
 	*step_sql = psprintf(
-			"SELECT CASE WHEN pg_catalog.to_regprocedure(%s)::pg_catalog.oid "
-			"OPERATOR(pg_catalog.=) %u::pg_catalog.oid THEN "
-			"%s(%u::pg_catalog.oid, %u::pg_catalog.oid, "
-			"%u::pg_catalog.oid, %u::pg_catalog.oid, "
-			"%u::pg_catalog.oid) ELSE false END AS ran",
-			step_signature_literal,
-			objects->step_function_oid,
-			objects->step_function,
+			"SELECT coalesce((WITH helper_args("
+			"index_oid, database_oid, tablespace_oid, relfilenumber, "
+			"owner_oid) AS MATERIALIZED (SELECT %u::pg_catalog.oid, "
+			"%u::pg_catalog.oid, %u::pg_catalog.oid, %u::pg_catalog.oid, "
+			"%u::pg_catalog.oid WHERE "
+			"pg_catalog.to_regprocedure(%s)::pg_catalog.oid "
+			"OPERATOR(pg_catalog.=) %u::pg_catalog.oid) SELECT "
+			"%s(helper_args.index_oid, helper_args.database_oid, "
+			"helper_args.tablespace_oid, helper_args.relfilenumber, "
+			"helper_args.owner_oid) FROM helper_args), false) AS ran",
 			target->index_oid,
 			target->database_oid,
 			target->tablespace_oid,
 			(Oid)target->relfilenumber,
-			target->owner_oid);
+			target->owner_oid,
+			step_signature_literal,
+			objects->step_function_oid,
+			objects->step_function);
 
 	*current_sql = psprintf(
-			"SELECT ((CASE WHEN "
+			"SELECT (coalesce((WITH helper_args("
+			"index_oid, database_oid, tablespace_oid, relfilenumber, "
+			"owner_oid) AS MATERIALIZED (SELECT %u::pg_catalog.oid, "
+			"%u::pg_catalog.oid, %u::pg_catalog.oid, %u::pg_catalog.oid, "
+			"%u::pg_catalog.oid WHERE "
 			"pg_catalog.to_regprocedure(%s)::pg_catalog.oid "
-			"OPERATOR(pg_catalog.=) %u::pg_catalog.oid THEN "
-			"%s(%u::pg_catalog.oid, %u::pg_catalog.oid, "
-			"%u::pg_catalog.oid, %u::pg_catalog.oid, "
-			"%u::pg_catalog.oid) ELSE false END) AND coalesce(("
+			"OPERATOR(pg_catalog.=) %u::pg_catalog.oid) SELECT "
+			"%s(helper_args.index_oid, helper_args.database_oid, "
+			"helper_args.tablespace_oid, helper_args.relfilenumber, "
+			"helper_args.owner_oid) FROM helper_args), false) "
+			"AND coalesce(("
 			"SELECT instance.id OPERATOR(pg_catalog.=) "
 			"'{sys_instance_id}' "
 			"FROM %s AS instance "
@@ -2285,14 +2295,14 @@ tp_build_worker_queries(
 			"ANY (ARRAY['pending', 'running']::pg_catalog.text[]) "
 			"ORDER BY instance.created_at DESC, instance.id DESC "
 			"LIMIT 1), false)) AS current",
-			current_signature_literal,
-			objects->current_function_oid,
-			objects->current_function,
 			target->index_oid,
 			target->database_oid,
 			target->tablespace_oid,
 			(Oid)target->relfilenumber,
 			target->owner_oid,
+			current_signature_literal,
+			objects->current_function_oid,
+			objects->current_function,
 			objects->instances_relation,
 			strlen(target->family_prefix),
 			family_literal,
