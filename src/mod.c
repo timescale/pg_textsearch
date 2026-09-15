@@ -2142,21 +2142,101 @@ tp_reindex_current_indexes(ReindexStmt *stmt)
 }
 
 static bool
-tp_vacuum_rewrites_storage(VacuumStmt *stmt)
+tp_vacuum_option_enabled(VacuumStmt *stmt, const char *name)
 {
 	ListCell *lc;
-
-	if (!stmt->is_vacuumcmd)
-		return false;
 
 	foreach (lc, stmt->options)
 	{
 		DefElem *option = lfirst_node(DefElem, lc);
 
-		if (strcmp(option->defname, "full") == 0)
+		if (strcmp(option->defname, name) == 0)
 			return defGetBoolean(option);
 	}
 	return false;
+}
+
+static bool
+tp_vacuum_rewrites_storage(VacuumStmt *stmt)
+{
+	return stmt->is_vacuumcmd && tp_vacuum_option_enabled(stmt, "full");
+}
+
+static bool
+tp_vacuum_can_maintain_relation(Oid relation_oid)
+{
+	return object_ownercheck(DatabaseRelationId, MyDatabaseId, GetUserId()) ||
+		   tp_can_maintain_relation(relation_oid);
+}
+
+static List *
+tp_vacuum_skip_locked_relation_indexes(Oid relation_oid, bool include_children)
+{
+	List	 *relation_oids;
+	List	 *indexoids = NIL;
+	ListCell *lc;
+
+	if (include_children)
+		relation_oids = find_all_inheritors(relation_oid, NoLock, NULL);
+	else
+		relation_oids = list_make1_oid(relation_oid);
+
+	foreach (lc, relation_oids)
+	{
+		Oid		 child_oid = lfirst_oid(lc);
+		Relation child;
+		List	*child_indexes;
+
+		if (child_oid != relation_oid &&
+			!ConditionalLockRelationOid(child_oid, AccessShareLock))
+			continue;
+		if (!tp_vacuum_can_maintain_relation(child_oid))
+			continue;
+
+		child = try_relation_open(child_oid, NoLock);
+		if (child == NULL)
+			continue;
+		child_indexes = list_copy(RelationGetIndexList(child));
+		relation_close(child, NoLock);
+		indexoids = list_concat_unique_oid(indexoids, child_indexes);
+	}
+	list_free(relation_oids);
+	return indexoids;
+}
+
+static List *
+tp_vacuum_skip_locked_all_indexes(void)
+{
+	List	 *all_indexes;
+	List	 *indexoids		= NIL;
+	List	 *locked_heaps	= NIL;
+	List	 *skipped_heaps = NIL;
+	ListCell *lc;
+
+	all_indexes = tp_all_bm25_indexes(InvalidOid, false, NIL, false);
+	foreach (lc, all_indexes)
+	{
+		Oid index_oid = lfirst_oid(lc);
+		Oid heap_oid  = IndexGetRelation(index_oid, true);
+
+		if (!OidIsValid(heap_oid) || list_member_oid(skipped_heaps, heap_oid))
+			continue;
+		if (!list_member_oid(locked_heaps, heap_oid))
+		{
+			if (!ConditionalLockRelationOid(heap_oid, AccessShareLock))
+			{
+				skipped_heaps = lappend_oid(skipped_heaps, heap_oid);
+				continue;
+			}
+			locked_heaps = lappend_oid(locked_heaps, heap_oid);
+		}
+		if (tp_vacuum_can_maintain_relation(heap_oid))
+			indexoids = lappend_oid(indexoids, index_oid);
+	}
+	list_free(skipped_heaps);
+	list_free(locked_heaps);
+	list_free(all_indexes);
+	return indexoids;
 }
 
 static List *
@@ -2164,10 +2244,15 @@ tp_vacuum_rewrite_indexes(VacuumStmt *stmt)
 {
 	List	 *indexoids = NIL;
 	ListCell *lc;
+	bool	  skip_locked = tp_vacuum_option_enabled(stmt, "skip_locked");
 
 	if (stmt->rels == NIL)
+	{
+		if (skip_locked)
+			return tp_vacuum_skip_locked_all_indexes();
 		return tp_maintainable_indexes(
 				tp_all_bm25_indexes(InvalidOid, false, NIL, false), true);
+	}
 
 	foreach (lc, stmt->rels)
 	{
@@ -2176,17 +2261,28 @@ tp_vacuum_rewrite_indexes(VacuumStmt *stmt)
 		List		   *relation_indexes;
 
 		if (!OidIsValid(relation_oid) && vacuum_rel->relation != NULL)
-			relation_oid = RangeVarGetRelid(
-					vacuum_rel->relation, AccessShareLock, true);
+			relation_oid = RangeVarGetRelidExtended(
+					vacuum_rel->relation,
+					AccessShareLock,
+					RVR_MISSING_OK | (skip_locked ? RVR_SKIP_LOCKED : 0),
+					NULL,
+					NULL);
+		else if (
+				skip_locked && OidIsValid(relation_oid) &&
+				!ConditionalLockRelationOid(relation_oid, AccessShareLock))
+			continue;
 		if (!OidIsValid(relation_oid))
 			continue;
-		if (!object_ownercheck(
-					DatabaseRelationId, MyDatabaseId, GetUserId()) &&
-			!tp_can_maintain_relation(relation_oid))
+		if (!tp_vacuum_can_maintain_relation(relation_oid))
 			continue;
 
-		relation_indexes = tp_relation_tree_indexes_locked(
-				relation_oid, AccessExclusiveLock);
+		if (skip_locked)
+			relation_indexes = tp_vacuum_skip_locked_relation_indexes(
+					relation_oid,
+					vacuum_rel->relation != NULL && vacuum_rel->relation->inh);
+		else
+			relation_indexes = tp_relation_tree_indexes_locked(
+					relation_oid, AccessExclusiveLock);
 		indexoids = list_concat_unique_oid(indexoids, relation_indexes);
 	}
 	return indexoids;

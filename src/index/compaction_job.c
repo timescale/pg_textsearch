@@ -799,7 +799,7 @@ static void
 tp_discover_job_objects(TpCompactionJobObjects *objects)
 {
 	Oid durable_oid;
-	Oid durable_owner;
+	Oid durable_owner = InvalidOid;
 	Oid save_userid;
 	int save_sec_context;
 
