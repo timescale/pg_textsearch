@@ -34,7 +34,18 @@ typedef struct TpScanOpaqueData
 	bool		  is_boolean_scan;
 	bool		  boolean_recheck;
 	BufFile		 *boolean_results;
-	Oid			  index_oid; /* Index OID */
+
+	/*
+	 * Combined Boolean + ranked scans evaluate the Boolean query once.
+	 * boolean_matches keeps every matching CTID for the zero-score tail, and
+	 * boolean_matched_ctids rejects ranked candidates before PostgreSQL
+	 * fetches their heap tuples.  The lookup set stays NULL when the match
+	 * set does not fit in work_mem.
+	 */
+	BufFile		*boolean_matches;
+	struct HTAB *boolean_matched_ctids;
+
+	Oid index_oid; /* Index OID */
 
 	/* Scan results state */
 	ItemPointer result_ctids;  /* Array of matching CTIDs */

@@ -138,8 +138,10 @@ ORDER BY content <@> 'database system'
 LIMIT 5;
 ```
 
-The index produces candidates in BM25 order, and PostgreSQL rechecks the
-Boolean predicate against each table row.
+The index produces candidates in BM25 order. If many candidates fail the
+Boolean predicate, it switches to filtering them in the index before
+PostgreSQL reads their table rows. Phrase and prefix conditions are still
+rechecked against each surviving row.
 
 ### Verifying Index Usage
 

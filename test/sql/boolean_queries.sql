@@ -88,6 +88,18 @@ WHERE body @@ to_tsquery('english', 'billing <-> refund')
 ORDER BY body <@> to_bm25query('refund', 'boolean_docs_body_idx')
 LIMIT 2;
 
+SELECT id
+FROM boolean_docs
+WHERE body @@ to_tsquery('english', 'billing & !fraud')
+ORDER BY body <@> to_bm25query('refund', 'boolean_docs_body_idx')
+LIMIT 2;
+
+SELECT id
+FROM boolean_docs
+WHERE body @@ to_tsquery('english', 'refund & mysql')
+ORDER BY body <@> to_bm25query('refund', 'boolean_docs_body_idx')
+LIMIT 2;
+
 SET plan_cache_mode = force_generic_plan;
 PREPARE combined_ranked_scan(tsquery) AS
 SELECT id
