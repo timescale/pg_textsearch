@@ -2534,7 +2534,8 @@ SQL
 }
 
 test_partition_vacuum_child_authorization() {
-    local blocker_pid child_index server_version vacuum_output vacuum_pid
+    local blocker_pid child_index child_job_before low_index low_job_after
+    local low_job_before only_output server_version vacuum_output vacuum_pid
     local vacuum_status=0
 
     server_version="$(sql_super -c \
@@ -2576,8 +2577,8 @@ SQL
     sql_super -c "
         ALTER TABLE public.lifecycle_vacuum_auth_high
           OWNER TO durable_owner_two;
-        GRANT MAINTAIN ON public.lifecycle_vacuum_auth_docs,
-          public.lifecycle_vacuum_auth_low TO durable_writer;" >/dev/null
+        GRANT MAINTAIN ON public.lifecycle_vacuum_auth_low
+          TO durable_writer;" >/dev/null
     child_index="$(sql_super -c "
         SELECT child_index.oid::regclass::text
         FROM pg_catalog.pg_inherits AS inheritance
@@ -2589,6 +2590,21 @@ SQL
               'public.lifecycle_vacuum_auth_idx'::regclass
           AND index_info.indrelid =
               'public.lifecycle_vacuum_auth_high'::regclass;")"
+    low_index="$(sql_super -c "
+        SELECT child_index.oid::regclass::text
+        FROM pg_catalog.pg_inherits AS inheritance
+        JOIN pg_catalog.pg_class AS child_index
+          ON child_index.oid = inheritance.inhrelid
+        JOIN pg_catalog.pg_index AS index_info
+          ON index_info.indexrelid = child_index.oid
+        WHERE inheritance.inhparent =
+              'public.lifecycle_vacuum_auth_idx'::regclass
+          AND index_info.indrelid =
+              'public.lifecycle_vacuum_auth_low'::regclass;")"
+    child_job_before="$(current_generation_job_id \
+        "$(sql_super -c "SELECT '${child_index}'::regclass::oid;")")"
+    low_job_before="$(current_generation_job_id \
+        "$(sql_super -c "SELECT '${low_index}'::regclass::oid;")")"
 
     PGAPPNAME=lifecycle-vacuum-auth-gate \
         sql_super -c "
@@ -2628,18 +2644,6 @@ SQL
           FROM pg_catalog.pg_stat_activity
           WHERE application_name = 'lifecycle-vacuum-auth-child'
             AND wait_event = 'advisory';")"
-    assert_eq "VACUUM does not prelock an unauthorized child index" "0" \
-        "$(sql_super -c "SELECT pg_catalog.count(*)
-          FROM pg_catalog.pg_stat_activity AS activity
-          JOIN pg_catalog.pg_locks AS relation_lock
-            ON relation_lock.pid = activity.pid
-          WHERE activity.application_name =
-                'lifecycle-vacuum-auth-child'
-            AND relation_lock.locktype = 'relation'
-            AND relation_lock.relation = '${child_index}'::regclass
-            AND relation_lock.mode = 'ShareUpdateExclusiveLock'
-            AND relation_lock.granted;")"
-
     sql_super -c "SELECT pg_catalog.pg_terminate_backend(pid)
       FROM pg_catalog.pg_stat_activity
       WHERE application_name = 'lifecycle-vacuum-auth-gate';" >/dev/null
@@ -2648,6 +2652,49 @@ SQL
     if [ "${vacuum_status}" -ne 0 ]; then
         error "authorized child VACUUM failed: $(cat "${vacuum_output}")"
     fi
+    low_job_after="$(current_generation_job_id \
+        "$(sql_super -c "SELECT '${low_index}'::regclass::oid;")")"
+    if [ -z "${low_job_after}" ] ||
+        [ "${low_job_after}" = "${low_job_before}" ]; then
+        error "VACUUM did not reconcile an authorized child of an \
+unauthorized root"
+    fi
+    assert_eq "VACUUM leaves an unauthorized child workflow unchanged" \
+        "${child_job_before}" \
+        "$(current_generation_job_id \
+          "$(sql_super -c "SELECT '${child_index}'::regclass::oid;")")"
+
+    sql_super -c "GRANT MAINTAIN ON public.lifecycle_vacuum_auth_docs
+                   TO durable_writer;" >/dev/null
+    PGAPPNAME=lifecycle-vacuum-auth-only-lock \
+        sql_as durable_owner_two -c "
+        BEGIN;
+        ALTER INDEX ${child_index}
+          SET (compaction_schedule = '2 3 4 5 *');
+        SELECT pg_catalog.pg_sleep(120);" \
+        >"${DATA_DIR}/vacuum-auth-only-lock.out" 2>&1 &
+    blocker_pid=$!
+    for _ in $(seq 1 100); do
+        if [ "$(sql_super -c "SELECT pg_catalog.count(*)
+              FROM pg_catalog.pg_locks
+              WHERE relation = '${child_index}'::regclass
+                AND mode = 'AccessExclusiveLock'
+                AND granted;")" = "1" ]; then
+            break
+        fi
+        sleep 0.1
+    done
+    if ! only_output="$(PGOPTIONS='-c statement_timeout=2s' \
+        sql_as durable_writer -c "
+        VACUUM (FULL) ONLY public.lifecycle_vacuum_auth_docs;" 2>&1)"; then
+        error "VACUUM ONLY prelocked a child index: ${only_output}"
+    fi
+    sql_super -c "SELECT pg_catalog.pg_terminate_backend(pid)
+      FROM pg_catalog.pg_stat_activity
+      WHERE application_name = 'lifecycle-vacuum-auth-only-lock';" \
+        >/dev/null
+    wait "${blocker_pid}" || true
+
     sql_super -c "DROP TABLE public.lifecycle_vacuum_auth_docs;
                    DROP FUNCTION public.lifecycle_vacuum_auth_pause(text);" \
         >/dev/null
@@ -3090,7 +3137,8 @@ SQL
 }
 
 test_tablespace_move_without_owned_by() {
-    local index_oid job_after job_before tablespace_dir
+    local blocker_pid error_output error_tablespace_dir index_oid
+    local job_after job_before tablespace_dir
 
     tablespace_dir="${DATA_DIR}-lifecycle-owner-tablespace"
     mkdir -p "${tablespace_dir}"
@@ -3131,8 +3179,68 @@ test_tablespace_move_without_owned_by() {
         error "mixed OWNED BY move did not reconcile the caller-owned index"
     fi
 
+    error_tablespace_dir="${DATA_DIR}-lifecycle-owner-error-tablespace"
+    mkdir -p "${error_tablespace_dir}"
+    sql_super -c "
+        CREATE TABLESPACE lifecycle_owner_error_tablespace
+          OWNER durable_owner LOCATION '${error_tablespace_dir}';" >/dev/null
+    sql_super -c "
+        CREATE TABLE public.lifecycle_owner_conflict_docs (value integer);
+        ALTER TABLE public.lifecycle_owner_conflict_docs
+          OWNER TO durable_writer;
+        CREATE INDEX lifecycle_owner_conflict_idx
+          ON public.lifecycle_owner_conflict_docs(value)
+          TABLESPACE lifecycle_owner_error_tablespace;" >/dev/null
+    sql_as durable_owner -c "
+        CREATE TABLE public.lifecycle_owner_locked_docs (body text);
+        CREATE INDEX lifecycle_owner_locked_idx
+          ON public.lifecycle_owner_locked_docs USING bm25(body)
+          WITH (text_config = 'english',
+                compaction = 'background',
+                compaction_schedule = '0 0 1 1 *')
+          TABLESPACE lifecycle_owner_error_tablespace;" >/dev/null 2>&1
+
+    PGAPPNAME=lifecycle-owner-mixed-lock \
+        sql_as durable_owner -c "
+        BEGIN;
+        ALTER INDEX public.lifecycle_owner_locked_idx
+          SET (compaction_schedule = '1 2 3 4 *');
+        SELECT pg_catalog.pg_sleep(120);" \
+        >"${DATA_DIR}/owner-mixed-lock.out" 2>&1 &
+    blocker_pid=$!
+    for _ in $(seq 1 100); do
+        if [ "$(sql_super -c "SELECT pg_catalog.count(*)
+              FROM pg_catalog.pg_locks
+              WHERE relation =
+                    'public.lifecycle_owner_locked_idx'::regclass
+                AND mode = 'AccessExclusiveLock'
+                AND granted;")" = "1" ]; then
+            break
+        fi
+        sleep 0.1
+    done
+    if error_output="$(sql_as durable_owner -c "
+        ALTER INDEX ALL IN TABLESPACE lifecycle_owner_error_tablespace
+          OWNED BY durable_owner, durable_writer
+          SET TABLESPACE pg_default NOWAIT;" 2>&1)"; then
+        error "mixed OWNED BY moved an index owned by another role"
+    fi
+    if ! grep -Fq "must be owner of index lifecycle_owner_conflict_idx" \
+        <<<"${error_output}"; then
+        error "mixed OWNED BY prelocked before core ownership checks: \
+${error_output}"
+    fi
+    sql_super -c "SELECT pg_catalog.pg_terminate_backend(pid)
+      FROM pg_catalog.pg_stat_activity
+      WHERE application_name = 'lifecycle-owner-mixed-lock';" >/dev/null
+    wait "${blocker_pid}" || true
+
     sql_super -c "DROP TABLE public.lifecycle_owner_move_docs;" >/dev/null
     sql_super -c "DROP TABLESPACE lifecycle_owner_tablespace;" >/dev/null
+    sql_super -c "DROP TABLE public.lifecycle_owner_conflict_docs,
+                             public.lifecycle_owner_locked_docs;" >/dev/null
+    sql_super -c \
+        "DROP TABLESPACE lifecycle_owner_error_tablespace;" >/dev/null
 }
 
 test_repeatable_read_direct_activation_snapshot() {
@@ -3524,6 +3632,17 @@ test_rewrite_preflight_ordering() {
         <<<"${vacuum_error}"; then
         error "VACUUM FULL prelocked indexes before its transaction check: \
 ${vacuum_error}"
+    fi
+
+    if alter_error="$(sql_as durable_owner -c "
+        SET statement_timeout = '2s';
+        ALTER MATERIALIZED VIEW public.lifecycle_preflight_b
+          OWNER TO durable_usage_only;" 2>&1)"; then
+        error "ALTER MATERIALIZED VIEW accepted an ordinary table"
+    fi
+    if ! grep -Fq "is not a materialized view" <<<"${alter_error}"; then
+        error "ALTER OWNER target checks preceded relation-kind validation: \
+${alter_error}"
     fi
 
     if alter_error="$(sql_as durable_owner -c "
