@@ -68,6 +68,46 @@ WHERE oid = 'index_before_rls'::regclass;
 \pset format aligned
 \set VERBOSITY default
 
+-- A child index is protected by RLS enabled on an inheritance ancestor.
+CREATE TABLE rls_parent (id integer, content text);
+CREATE TABLE rls_child () INHERITS (rls_parent);
+ALTER TABLE rls_parent ENABLE ROW LEVEL SECURITY;
+\set VERBOSITY terse
+CREATE INDEX rls_child_idx ON rls_child USING bm25(content)
+    WITH (text_config='english');
+\set VERBOSITY default
+
+-- Enabling RLS on a parent is blocked by a BM25 index on a descendant.
+CREATE TABLE index_parent (id integer, content text);
+CREATE TABLE index_child () INHERITS (index_parent);
+CREATE INDEX index_child_idx ON index_child USING bm25(content)
+    WITH (text_config='english');
+\set VERBOSITY terse
+ALTER TABLE index_parent ENABLE ROW LEVEL SECURITY;
+\set VERBOSITY default
+
+-- A partition build is protected by RLS enabled on the partitioned parent.
+CREATE TABLE rls_partitioned (id integer, content text)
+    PARTITION BY RANGE (id);
+CREATE TABLE rls_partition PARTITION OF rls_partitioned
+    FOR VALUES FROM (0) TO (10);
+ALTER TABLE rls_partitioned ENABLE ROW LEVEL SECURITY;
+\set VERBOSITY terse
+CREATE INDEX rls_partitioned_idx ON rls_partitioned USING bm25(content)
+    WITH (text_config='english');
+\set VERBOSITY default
+
+-- Enabling RLS on a partitioned parent is blocked by descendant BM25 indexes.
+CREATE TABLE index_partitioned (id integer, content text)
+    PARTITION BY RANGE (id);
+CREATE TABLE index_partition PARTITION OF index_partitioned
+    FOR VALUES FROM (0) TO (10);
+CREATE INDEX index_partition_idx ON index_partition USING bm25(content)
+    WITH (text_config='english');
+\set VERBOSITY terse
+ALTER TABLE index_partitioned ENABLE ROW LEVEL SECURITY;
+\set VERBOSITY default
+
 RESET pg_textsearch.allow_rls;
 ALTER TABLE index_before_rls ENABLE ROW LEVEL SECURITY;
 
@@ -93,6 +133,8 @@ RESET ROLE;
 DROP OWNED BY rls_guc_user;
 DROP ROLE rls_guc_user;
 DROP TABLE rls_existing, rls_before_index, index_before_rls CASCADE;
+DROP TABLE rls_child, rls_parent, index_child, index_parent CASCADE;
+DROP TABLE rls_partitioned, index_partitioned CASCADE;
 
 CREATE TABLE rls_without_extension (id integer);
 SET pg_textsearch.allow_rls = off;
