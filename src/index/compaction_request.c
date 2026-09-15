@@ -53,22 +53,38 @@ static bool tp_dispatch_active = false;
 #define TP_COMPACTION_INDEX_LOCK_SUBID	 1
 #define TP_COMPACTION_LINEAGE_LOCK_SUBID 2
 
-static void
-tp_take_compaction_lock(Oid object_id, uint16 discriminator)
+static bool
+tp_take_compaction_lock(
+		Oid object_id, uint16 discriminator, LOCKMODE lockmode, bool nowait)
 {
+	LOCKTAG tag;
+
 	/*
 	 * pg_am has no subobjects, so its object-subid space is private to the
 	 * access method.  LOCKTAG_OBJECT also keeps these locks disjoint from
 	 * SQL-visible advisory locks.
 	 */
+	SET_LOCKTAG_OBJECT(
+			tag,
+			MyDatabaseId,
+			AccessMethodRelationId,
+			object_id,
+			discriminator);
+	if (LockHeldByMe(&tag, lockmode, true))
+		return true;
+	if (nowait)
+		return ConditionalLockDatabaseObject(
+				AccessMethodRelationId, object_id, discriminator, lockmode);
 	LockDatabaseObject(
-			AccessMethodRelationId, object_id, discriminator, ExclusiveLock);
+			AccessMethodRelationId, object_id, discriminator, lockmode);
+	return true;
 }
 
 void
 tp_lock_compaction_index(Oid indexoid)
 {
-	tp_take_compaction_lock(indexoid, TP_COMPACTION_INDEX_LOCK_SUBID);
+	(void)tp_take_compaction_lock(
+			indexoid, TP_COMPACTION_INDEX_LOCK_SUBID, ExclusiveLock, false);
 }
 
 void
@@ -78,7 +94,8 @@ tp_lock_compaction_lineage(const char *lineage)
 
 	hash = hash_bytes(
 			(const unsigned char *)lineage, TP_COMPACTION_LINEAGE_LENGTH);
-	tp_take_compaction_lock(hash, TP_COMPACTION_LINEAGE_LOCK_SUBID);
+	(void)tp_take_compaction_lock(
+			hash, TP_COMPACTION_LINEAGE_LOCK_SUBID, ExclusiveLock, false);
 }
 
 List *
@@ -112,6 +129,27 @@ tp_prelock_compaction_indexes_nowait(List *indexoids, bool nowait)
 		previous = indexoid;
 	}
 	list_free(sorted);
+
+	foreach (lc, locked)
+	{
+		Oid indexoid = lfirst_oid(lc);
+
+		if (nowait)
+		{
+			if (!tp_take_compaction_lock(
+						indexoid,
+						TP_COMPACTION_INDEX_LOCK_SUBID,
+						ExclusiveLock,
+						true))
+				ereport(ERROR,
+						(errcode(ERRCODE_LOCK_NOT_AVAILABLE),
+						 errmsg("could not obtain lock on relation with OID "
+								"%u",
+								indexoid)));
+		}
+		else
+			tp_lock_compaction_index(indexoid);
+	}
 	return locked;
 }
 
@@ -413,7 +451,6 @@ tp_reconcile_index_compaction_options(
 		ereport(ERROR,
 				(errcode(ERRCODE_UNDEFINED_OBJECT),
 				 errmsg("partition index with OID %u disappeared", indexoid)));
-	tp_lock_compaction_index(indexoid);
 
 	if (index_rel->rd_indam == NULL ||
 		index_rel->rd_indam->ambuild != tp_build ||
@@ -677,6 +714,13 @@ tp_prelock_requests(List *pending)
 		targets = lappend_oid(targets, indexoid);
 	}
 	list_free(sorted);
+
+	foreach (lc, targets)
+	{
+		Oid indexoid = lfirst_oid(lc);
+
+		tp_lock_compaction_index(indexoid);
+	}
 	return targets;
 }
 

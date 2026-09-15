@@ -293,6 +293,14 @@ if ! grep -Fq "list_sort(sorted, list_oid_cmp)" \
     echo "pending requests are not safely prelocked in OID order" >&2
     exit 1
 fi
+if ! grep -Fq "tp_lock_compaction_index(indexoid)" \
+    <<<"${prelock_requests_body}" ||
+    [ "$(grep -Fc "foreach (lc, targets)" \
+        <<<"${prelock_requests_body}")" -lt 1 ]; then
+    echo "pending requests do not prelock every admission before signaling" \
+        >&2
+    exit 1
+fi
 if grep -Fq "tp_alter_index_ensure_lineage" "${MODULE_SOURCE}"; then
     echo "ALTER still injects a legacy lineage before serialized activation" \
         >&2
@@ -307,7 +315,7 @@ if grep -Fq "SET_LOCKTAG_ADVISORY" "${REQUEST_SOURCE}" ||
     exit 1
 fi
 if grep -Fq "pg_advisory_xact_lock" "${JOB_SOURCE}" ||
-    ! grep -Fq "tp_lock_compaction_index(target->index_oid)" \
+    ! grep -Fq "tp_lock_compaction_index(indexoid)" \
         "${JOB_SOURCE}"; then
     echo "workflow admission shares PostgreSQL's advisory-lock namespace" \
         >&2
@@ -323,10 +331,110 @@ index_lock_body="$(
     sed -n '/^tp_lock_compaction_index(Oid indexoid)/,/^}/p' \
         "${REQUEST_SOURCE}"
 )"
+compaction_lock_body="$(
+    sed -n '/^tp_take_compaction_lock(/,/^}/p' "${REQUEST_SOURCE}"
+)"
 if ! grep -Fq \
-    "tp_take_compaction_lock(indexoid, TP_COMPACTION_INDEX_LOCK_SUBID)" \
+    "indexoid, TP_COMPACTION_INDEX_LOCK_SUBID, ExclusiveLock, false" \
     <<<"${index_lock_body}"; then
     echo "per-index admission locks must use indexoid as the object ID" >&2
+    exit 1
+fi
+if ! grep -Fq "LockHeldByMe" <<<"${compaction_lock_body}"; then
+    echo "reentrant admission calls can reacquire after the dependency lock" \
+        >&2
+    exit 1
+fi
+
+prelock_indexes_body="$(
+    sed -n \
+        '/^tp_prelock_compaction_indexes_nowait(/,/^}/p' \
+        "${REQUEST_SOURCE}"
+)"
+if ! grep -Fq "list_sort(sorted, list_oid_cmp)" \
+    <<<"${prelock_indexes_body}" ||
+    ! grep -Fq "foreach (lc, locked)" <<<"${prelock_indexes_body}" ||
+    ! grep -Fq "tp_lock_compaction_index(indexoid)" \
+    <<<"${prelock_indexes_body}"; then
+    echo "multi-index lifecycle paths do not prelock admissions in OID order" \
+        >&2
+    exit 1
+fi
+
+option_reconcile_body="$(
+    sed -n \
+        '/^tp_reconcile_index_compaction_options(/,/^}/p' \
+        "${REQUEST_SOURCE}"
+)"
+if grep -Fq "tp_lock_compaction_index" <<<"${option_reconcile_body}"; then
+    echo "partition option reconciliation reacquires admission after discovery" \
+        >&2
+    exit 1
+fi
+
+dependency_lock_body="$(
+    sed -n '/^tp_lock_durable_dependency(void)/,/^}/p' "${JOB_SOURCE}"
+)"
+if ! grep -Fq "ShareRowExclusiveLock" <<<"${dependency_lock_body}" ||
+    ! grep -Fq "LockDatabaseObject" <<<"${dependency_lock_body}"; then
+    echo "managed lifecycle dependency serialization is not explicit" >&2
+    exit 1
+fi
+
+pin_dependency_body="$(
+    sed -n '/^tp_pin_durable_dependency(/,/^}/p' "${JOB_SOURCE}"
+)"
+if grep -Fq "LockDatabaseObject" <<<"${pin_dependency_body}"; then
+    echo "dependency catalog work still acquires its serialization lock" >&2
+    exit 1
+fi
+
+job_target_lock_body="$(
+    sed -n '/^tp_lock_job_target(Oid indexoid)/,/^}/p' "${JOB_SOURCE}"
+)"
+job_admission_line="$(
+    grep -n "tp_take_admission_lock(indexoid)" \
+        <<<"${job_target_lock_body}" | cut -d: -f1
+)"
+job_dependency_line="$(
+    grep -n "tp_lock_durable_dependency()" \
+        <<<"${job_target_lock_body}" | cut -d: -f1
+)"
+if [[ -z "${job_admission_line}" || -z "${job_dependency_line}" ||
+      "${job_admission_line}" -ge "${job_dependency_line}" ]]; then
+    echo "managed job targets do not lock admission before dependency" >&2
+    exit 1
+fi
+
+for entrypoint in \
+    tp_compaction_job_activate \
+    tp_compaction_job_activate_with_schedule \
+    tp_compaction_job_schedule \
+    tp_compaction_job_signal; do
+    entrypoint_body="$(
+        sed -n "/^${entrypoint}(/,/^}/p" "${JOB_SOURCE}"
+    )"
+    target_lock_line="$(
+        grep -n "tp_lock_job_target(indexoid)" \
+            <<<"${entrypoint_body}" | cut -d: -f1
+    )"
+    capture_line="$(
+        grep -n "tp_capture_target(indexoid" \
+            <<<"${entrypoint_body}" | cut -d: -f1
+    )"
+    if [[ -z "${target_lock_line}" || -z "${capture_line}" ||
+          "${target_lock_line}" -ge "${capture_line}" ]]; then
+        echo "${entrypoint} enters discovery before managed lock ordering" >&2
+        exit 1
+    fi
+done
+
+activation_body="$(
+    sed -n '/^tp_activate_captured_target(/,/^}/p' "${JOB_SOURCE}"
+)"
+if grep -Eq 'tp_take_admission_lock|tp_lock_durable_dependency' \
+    <<<"${activation_body}"; then
+    echo "captured activation can acquire locks after dependency discovery" >&2
     exit 1
 fi
 

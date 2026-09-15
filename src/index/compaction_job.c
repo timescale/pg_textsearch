@@ -1373,6 +1373,15 @@ tp_dependency_exists(
 }
 
 static void
+tp_lock_durable_dependency(void)
+{
+	Oid bm25_am_oid = get_index_am_oid("bm25", false);
+
+	LockDatabaseObject(
+			AccessMethodRelationId, bm25_am_oid, 0, ShareRowExclusiveLock);
+}
+
+static void
 tp_pin_durable_dependency(const TpCompactionJobObjects *objects)
 {
 	ObjectAddress bm25_am = {
@@ -1386,16 +1395,6 @@ tp_pin_durable_dependency(const TpCompactionJobObjects *objects)
 			.objectSubId = 0,
 	};
 
-	/*
-	 * Different indexes have different admission advisory locks.  Serialize
-	 * the first dependency check/insert on the one stable dependent object.
-	 */
-	LockDatabaseObject(
-			AccessMethodRelationId,
-			bm25_am.objectId,
-			0,
-			ShareRowExclusiveLock);
-
 	if (!tp_dependency_exists(&bm25_am, &durable_ext))
 	{
 		recordDependencyOn(&bm25_am, &durable_ext, DEPENDENCY_NORMAL);
@@ -1404,9 +1403,22 @@ tp_pin_durable_dependency(const TpCompactionJobObjects *objects)
 }
 
 static void
-tp_take_admission_lock(const TpCompactionJobTarget *target)
+tp_take_admission_lock(Oid indexoid)
 {
-	tp_lock_compaction_index(target->index_oid);
+	tp_lock_compaction_index(indexoid);
+}
+
+static void
+tp_lock_job_target(Oid indexoid)
+{
+	/*
+	 * Multi-target callers prelock every admission in OID order, making
+	 * their per-entry calls no-ops.  Single-target callers acquire here.
+	 * Both paths take the dependency lock before pg_durable catalog or SPI
+	 * work.
+	 */
+	tp_take_admission_lock(indexoid);
+	tp_lock_durable_dependency();
 }
 
 static void
@@ -2406,7 +2418,6 @@ tp_activate_captured_target(
 	tp_require_owner_durable_privileges(&objects, target->owner_oid);
 	tp_pin_durable_dependency(&objects);
 	tp_grant_helper_access(&objects, target->owner_oid);
-	tp_take_admission_lock(target);
 	instance_id = tp_reconcile_as_owner(
 			&objects, target, refresh_default, false, CurrentMemoryContext);
 	Assert(instance_id != NULL);
@@ -2421,6 +2432,7 @@ tp_compaction_job_activate(Oid indexoid, bool refresh_default)
 {
 	TpCompactionJobTarget target;
 
+	tp_lock_job_target(indexoid);
 	tp_capture_target(indexoid, refresh_default, &target);
 	tp_activate_captured_target(&target, refresh_default);
 }
@@ -2433,6 +2445,7 @@ tp_compaction_job_activate_with_schedule(Oid indexoid, const char *schedule)
 	if (schedule == NULL)
 		elog(ERROR, "background compaction schedule is not initialized");
 
+	tp_lock_job_target(indexoid);
 	tp_capture_target(indexoid, true, &target);
 	pfree(target.schedule);
 	target.schedule = pstrdup(schedule);
@@ -2446,6 +2459,7 @@ tp_compaction_job_schedule(Oid indexoid, bool lineage_backfilled)
 	TpCompactionJobObjects objects;
 	char				  *schedule;
 
+	tp_lock_job_target(indexoid);
 	tp_capture_target(indexoid, true, &target);
 	target.lineage_backfilled = target.lineage_backfilled ||
 								lineage_backfilled;
@@ -2466,6 +2480,7 @@ tp_compaction_job_signal(Oid indexoid)
 	int					   save_sec_context;
 	char *instance_id	   PG_USED_FOR_ASSERTS_ONLY;
 
+	tp_lock_job_target(indexoid);
 	tp_capture_target(indexoid, false, &target);
 
 	tp_require_owner_login(target.owner_oid);
@@ -2489,7 +2504,6 @@ tp_compaction_job_signal(Oid indexoid)
 	tp_require_owner_durable_privileges(&objects, target.owner_oid);
 	tp_pin_durable_dependency(&objects);
 	tp_grant_helper_access(&objects, target.owner_oid);
-	tp_take_admission_lock(&target);
 	instance_id = tp_reconcile_as_owner(
 			&objects, &target, false, true, CurrentMemoryContext);
 	Assert(instance_id != NULL);
