@@ -54,18 +54,24 @@ DDL that can create the opposite half of an RLS/BM25 combination. Otherwise,
 one transaction can observe no RLS ancestor while another observes no BM25
 descendant, and both can commit.
 
-When `pg_textsearch.allow_rls` is off, relevant utility statements acquire one
-transaction-scoped exclusive PostgreSQL object lock on the `pg_textsearch`
-extension before core PostgreSQL acquires relation locks. This serializes BM25
-index creation and rebuilds with RLS enablement and hierarchy attachment
-within the database.
+Relevant utility statements acquire one PostgreSQL object lock on the
+`pg_textsearch` extension before core PostgreSQL acquires relation locks. A
+session-owned copy spans the complete utility command, including internal
+commits performed by concurrent and multi-relation index operations. A
+transaction-owned copy remains until the surrounding transaction commits.
+This serializes BM25 index creation and rebuilds with RLS enablement and
+hierarchy attachment within the database.
 
-Hierarchy traversal uses relation locks only while each catalog object is
-being inspected and releases them immediately. It does not retain a lock on
-every ancestor or descendant until transaction end. The extension object lock
-therefore provides the serialization point without reversing PostgreSQL's
-parent-to-child DDL lock order or consuming one shared lock-table entry per
-relation in a large hierarchy.
+Relevant commands running with the setting enabled take a compatible shared
+object lock, while commands running with it disabled take the exclusive lock.
+This ensures an enforcing command also serializes against concurrent commands
+whose sessions allow RLS.
+
+Hierarchy traversal reads `pg_class`, `pg_index`, and `pg_inherits` directly
+without locking each ancestor or descendant relation. The extension object
+lock therefore provides the serialization point without reversing
+PostgreSQL's parent-to-child DDL lock order or consuming one shared lock-table
+entry per relation in a large hierarchy.
 
 Errors use `ERRCODE_FEATURE_NOT_SUPPORTED`, identify the conflicting
 relation, name `pg_textsearch.allow_rls`, and hint that enabling the setting

@@ -415,7 +415,8 @@ analogous to [Elastic's security limitation](https://www.elastic.co/docs/deploy-
 
 `pg_textsearch.allow_rls` defaults to `on`. Set it to `off` as a superuser to
 reject creating or rebuilding BM25 indexes on RLS-protected tables and
-enabling RLS where BM25 indexes already exist.
+enabling RLS where BM25 indexes already exist. This does not disable
+combinations that already exist when the setting is changed.
 
 ### Phrase Queries
 

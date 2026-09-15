@@ -16,13 +16,16 @@
 #include <catalog/indexing.h>
 #include <catalog/objectaccess.h>
 #include <catalog/pg_class_d.h>
+#include <catalog/pg_extension_d.h>
 #include <catalog/pg_inherits_d.h>
+#include <commands/extension.h>
 #include <fmgr.h>
 #include <limits.h>
 #include <miscadmin.h>
 #include <nodes/parsenodes.h>
 #include <pg_config.h>
 #include <storage/ipc.h>
+#include <storage/lock.h>
 #include <storage/shmem.h>
 #include <tcop/utility.h>
 #include <utils/fmgroids.h>
@@ -152,12 +155,51 @@ typedef struct TpProcessUtilityContext
 	bool							track_index_build;
 	bool							check_rls_enable;
 	bool							check_hierarchy_change;
+	bool							serialize_rls_ddl;
+	bool							rls_ddl_lock_acquired;
 	bool							build_progress_started;
+	LOCKMODE						rls_ddl_lock_mode;
+	Oid								rls_ddl_lock_object;
 	List						   *altered_relids;
 	List						   *hierarchy_relids;
 } TpProcessUtilityContext;
 
 static TpProcessUtilityContext *current_utility_context = NULL;
+
+/*
+ * The session-owned lock survives internal commits in concurrent and
+ * multi-relation index commands.  The transaction-owned copy covers the
+ * interval from utility completion through the caller's eventual commit.
+ */
+static Oid
+acquire_rls_ddl_lock(LOCKMODE lockmode)
+{
+	LOCKTAG tag;
+	Oid		extension_oid;
+
+	extension_oid = get_extension_oid("pg_textsearch", true);
+	if (!OidIsValid(extension_oid))
+		return InvalidOid;
+
+	SET_LOCKTAG_OBJECT(
+			tag, MyDatabaseId, ExtensionRelationId, extension_oid, 0);
+	(void)LockAcquire(&tag, lockmode, true, false);
+	(void)LockAcquire(&tag, lockmode, false, false);
+	return extension_oid;
+}
+
+static void
+release_rls_ddl_lock(
+		Oid extension_oid, LOCKMODE lockmode, bool keep_transaction_lock)
+{
+	LOCKTAG tag;
+
+	SET_LOCKTAG_OBJECT(
+			tag, MyDatabaseId, ExtensionRelationId, extension_oid, 0);
+	if (keep_transaction_lock)
+		(void)LockAcquire(&tag, lockmode, false, false);
+	(void)LockRelease(&tag, lockmode, true);
+}
 
 /* Shared memory size calculation */
 static void tp_shmem_request(void);
@@ -761,7 +803,24 @@ initialize_utility_context(
 	utility_context->previous = current_utility_context;
 
 	if (IsA(stmt, IndexStmt))
+	{
+		IndexStmt *index_stmt = castNode(IndexStmt, stmt);
+
 		utility_context->track_index_build = true;
+		utility_context->serialize_rls_ddl = index_stmt->accessMethod !=
+													 NULL &&
+											 strcmp(index_stmt->accessMethod,
+													"bm25") == 0;
+	}
+	else if (IsA(stmt, ReindexStmt))
+		utility_context->serialize_rls_ddl = true;
+	else if (IsA(stmt, CreateStmt))
+	{
+		CreateStmt *create_stmt = castNode(CreateStmt, stmt);
+
+		if (create_stmt->inhRelations != NIL)
+			utility_context->serialize_rls_ddl = true;
+	}
 	else if (IsA(stmt, AlterTableStmt))
 	{
 		AlterTableStmt *alter_stmt = castNode(AlterTableStmt, stmt);
@@ -772,12 +831,18 @@ initialize_utility_context(
 			AlterTableCmd *cmd = lfirst_node(AlterTableCmd, lc);
 
 			if (cmd->subtype == AT_EnableRowSecurity)
-				utility_context->check_rls_enable = true;
+			{
+				utility_context->check_rls_enable  = true;
+				utility_context->serialize_rls_ddl = true;
+			}
 			else if (
 					cmd->subtype == AT_AddInherit ||
 					(cmd->subtype == AT_AttachPartition &&
 					 alter_stmt->objtype == OBJECT_TABLE))
+			{
 				utility_context->check_hierarchy_change = true;
+				utility_context->serialize_rls_ddl		= true;
+			}
 		}
 	}
 }
@@ -887,6 +952,16 @@ tp_process_utility(
 
 	PG_TRY();
 	{
+		if (utility_context->serialize_rls_ddl)
+		{
+			utility_context->rls_ddl_lock_mode	 = tp_allow_rls ? ShareLock
+																: ExclusiveLock;
+			utility_context->rls_ddl_lock_object = acquire_rls_ddl_lock(
+					utility_context->rls_ddl_lock_mode);
+			utility_context->rls_ddl_lock_acquired = OidIsValid(
+					utility_context->rls_ddl_lock_object);
+		}
+
 		call_next_process_utility(
 				pstmt,
 				queryString,
@@ -905,6 +980,15 @@ tp_process_utility(
 			tp_build_progress_end();
 		}
 
+		if (utility_context->rls_ddl_lock_acquired)
+		{
+			release_rls_ddl_lock(
+					utility_context->rls_ddl_lock_object,
+					utility_context->rls_ddl_lock_mode,
+					true);
+			utility_context->rls_ddl_lock_acquired = false;
+		}
+
 		current_utility_context = utility_context->previous;
 		list_free(utility_context->altered_relids);
 		list_free(utility_context->hierarchy_relids);
@@ -917,6 +1001,14 @@ tp_process_utility(
 		{
 			utility_context->build_progress_started = false;
 			tp_build_progress_abort();
+		}
+		if (utility_context->rls_ddl_lock_acquired)
+		{
+			release_rls_ddl_lock(
+					utility_context->rls_ddl_lock_object,
+					utility_context->rls_ddl_lock_mode,
+					false);
+			utility_context->rls_ddl_lock_acquired = false;
 		}
 		pfree(utility_context);
 		PG_RE_THROW();

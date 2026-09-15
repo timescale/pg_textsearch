@@ -169,7 +169,7 @@ SELECT NOT EXISTS (
 \pset format aligned
 \set VERBOSITY default
 
--- Successful checks retain locks on every traversed ancestor.
+-- Successful checks do not retain locks on traversed relations.
 CREATE TABLE rls_lock_root (id integer, content text);
 CREATE TABLE rls_lock_parent () INHERITS (rls_lock_root);
 CREATE TABLE rls_lock_child () INHERITS (rls_lock_parent);
@@ -177,11 +177,27 @@ BEGIN;
 CREATE INDEX rls_lock_child_idx ON rls_lock_child USING bm25(content)
     WITH (text_config='english');
 \pset format unaligned
-SELECT count(*) = 2 AS all_ancestor_locks_held
+SELECT count(*) = 0 AS no_ancestor_locks_held
 FROM pg_locks
 WHERE pid = pg_backend_pid()
   AND locktype = 'relation'
   AND relation IN ('rls_lock_root'::regclass, 'rls_lock_parent'::regclass)
+  AND mode = 'AccessShareLock'
+  AND granted;
+\pset format aligned
+ROLLBACK;
+
+CREATE TABLE rls_lock_enable_root (id integer, content text);
+CREATE TABLE rls_lock_enable_child ()
+    INHERITS (rls_lock_enable_root);
+BEGIN;
+ALTER TABLE rls_lock_enable_root ENABLE ROW LEVEL SECURITY;
+\pset format unaligned
+SELECT count(*) = 0 AS no_descendant_locks_held
+FROM pg_locks
+WHERE pid = pg_backend_pid()
+  AND locktype = 'relation'
+  AND relation = 'rls_lock_enable_child'::regclass
   AND mode = 'AccessShareLock'
   AND granted;
 \pset format aligned

@@ -12,6 +12,7 @@
 #include <access/skey.h>
 #include <access/table.h>
 #include <catalog/indexing.h>
+#include <catalog/pg_class.h>
 #include <catalog/pg_index.h>
 #include <catalog/pg_inherits.h>
 #include <commands/defrem.h>
@@ -19,37 +20,71 @@
 #include <utils/lsyscache.h>
 #include <utils/relcache.h>
 #include <utils/snapmgr.h>
+#include <utils/syscache.h>
 
 #include "access/rls.h"
 #include "constants.h"
 
 static bool
-relation_has_bm25_index(Relation rel)
+relation_has_rls(Oid relid)
 {
-	List	 *indexes;
-	ListCell *lc;
-	Oid		  bm25_am_oid;
-	bool	  found = false;
+	HeapTuple tuple;
+	bool	  has_rls;
+
+	tuple = SearchSysCache1(RELOID, ObjectIdGetDatum(relid));
+	if (!HeapTupleIsValid(tuple))
+		return false;
+
+	has_rls = ((Form_pg_class)GETSTRUCT(tuple))->relrowsecurity;
+	ReleaseSysCache(tuple);
+	return has_rls;
+}
+
+static bool
+relation_has_bm25_index(Oid relid)
+{
+	Relation	indexrel;
+	ScanKeyData key;
+	SysScanDesc scan;
+	HeapTuple	tuple;
+	Oid			bm25_am_oid;
+	bool		found = false;
 
 	bm25_am_oid = get_am_oid("bm25", true);
 	if (!OidIsValid(bm25_am_oid))
 		return false;
 
-	indexes = RelationGetIndexList(rel);
-
-	foreach (lc, indexes)
+	indexrel = table_open(IndexRelationId, AccessShareLock);
+	ScanKeyInit(
+			&key,
+			Anum_pg_index_indrelid,
+			BTEqualStrategyNumber,
+			F_OIDEQ,
+			ObjectIdGetDatum(relid));
+	scan = systable_beginscan(
+			indexrel, IndexIndrelidIndexId, true, SnapshotSelf, 1, &key);
+	while (HeapTupleIsValid(tuple = systable_getnext(scan)))
 	{
-		Relation index = index_open(lfirst_oid(lc), AccessShareLock);
+		Form_pg_index indexform = (Form_pg_index)GETSTRUCT(tuple);
+		HeapTuple	  classtuple;
 
-		if (index->rd_rel->relam == bm25_am_oid)
-			found = true;
+		if (!indexform->indislive)
+			continue;
 
-		index_close(index, AccessShareLock);
+		classtuple = SearchSysCache1(
+				RELOID, ObjectIdGetDatum(indexform->indexrelid));
+		if (HeapTupleIsValid(classtuple))
+		{
+			found = ((Form_pg_class)GETSTRUCT(classtuple))->relam ==
+					bm25_am_oid;
+			ReleaseSysCache(classtuple);
+		}
 		if (found)
 			break;
 	}
 
-	list_free(indexes);
+	systable_endscan(scan);
+	table_close(indexrel, AccessShareLock);
 	return found;
 }
 
@@ -66,7 +101,6 @@ find_rls_ancestor(Oid relid)
 	while (pending != NIL)
 	{
 		Oid			current = linitial_oid(pending);
-		Relation	rel;
 		ScanKeyData key;
 		SysScanDesc scan;
 		HeapTuple	tuple;
@@ -76,14 +110,11 @@ find_rls_ancestor(Oid relid)
 			continue;
 		visited = lappend_oid(visited, current);
 
-		rel = table_open(current, AccessShareLock);
-		if (rel->rd_rel->relrowsecurity)
+		if (relation_has_rls(current))
 		{
 			result = current;
-			table_close(rel, NoLock);
 			break;
 		}
-		table_close(rel, NoLock);
 
 		ScanKeyInit(
 				&key,
@@ -115,16 +146,14 @@ find_bm25_indexed_relation(Oid relid)
 	ListCell *lc;
 	Oid		  result = InvalidOid;
 
-	relations = find_all_inheritors(relid, AccessShareLock, NULL);
+	relations = find_all_inheritors(relid, NoLock, NULL);
 	foreach (lc, relations)
 	{
-		Oid		 current = lfirst_oid(lc);
-		Relation rel	 = table_open(current, NoLock);
+		Oid current = lfirst_oid(lc);
 
-		if (relation_has_bm25_index(rel))
+		if (relation_has_bm25_index(current))
 			result = current;
 
-		table_close(rel, NoLock);
 		if (OidIsValid(result))
 			break;
 	}
@@ -160,15 +189,15 @@ find_index_heap_relation(Oid indexrelid)
 	return heaprelid;
 }
 
-void
-tp_check_bm25_build_allowed(Relation heap)
+static void
+check_bm25_build_allowed(Oid heaprelid)
 {
 	Oid rls_relid;
 
 	if (tp_allow_rls)
 		return;
 
-	rls_relid = find_rls_ancestor(RelationGetRelid(heap));
+	rls_relid = find_rls_ancestor(heaprelid);
 	if (!OidIsValid(rls_relid))
 		return;
 
@@ -181,9 +210,15 @@ tp_check_bm25_build_allowed(Relation heap)
 			 errdetail(
 					 "Relation \"%s\" is in the protected relation's "
 					 "inheritance hierarchy.",
-					 RelationGetRelationName(heap)),
+					 get_rel_name(heaprelid)),
 			 errhint("Set pg_textsearch.allow_rls to on to accept the "
 					 "documented term-frequency leakage risk.")));
+}
+
+void
+tp_check_bm25_build_allowed(Relation heap)
+{
+	check_bm25_build_allowed(RelationGetRelid(heap));
 }
 
 bool
@@ -230,15 +265,13 @@ tp_check_bm25_hierarchy_allowed(Oid relid)
 	if (tp_allow_rls)
 		return;
 
-	relations = find_all_inheritors(relid, AccessShareLock, NULL);
+	relations = find_all_inheritors(relid, NoLock, NULL);
 	foreach (lc, relations)
 	{
-		Relation rel = table_open(lfirst_oid(lc), NoLock);
+		Oid current = lfirst_oid(lc);
 
-		if (relation_has_bm25_index(rel))
-			tp_check_bm25_build_allowed(rel);
-
-		table_close(rel, NoLock);
+		if (relation_has_bm25_index(current))
+			check_bm25_build_allowed(current);
 	}
 
 	list_free(relations);
@@ -247,19 +280,15 @@ tp_check_bm25_hierarchy_allowed(Oid relid)
 void
 tp_check_rls_enable_allowed(Oid relid)
 {
-	Oid		 indexed_relid;
-	Relation rel;
+	Oid indexed_relid;
 
 	if (tp_allow_rls)
 		return;
 
-	rel = table_open(relid, NoLock);
-	if (!rel->rd_rel->relrowsecurity)
+	if (!relation_has_rls(relid))
 	{
-		table_close(rel, NoLock);
 		return;
 	}
-	table_close(rel, NoLock);
 
 	indexed_relid = find_bm25_indexed_relation(relid);
 	if (!OidIsValid(indexed_relid))
