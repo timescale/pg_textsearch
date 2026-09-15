@@ -81,6 +81,15 @@ assert_eq() {
     log "PASS: ${description}"
 }
 
+assert_ne() {
+    local description=$1 unexpected=$2 actual=$3
+
+    if [ "${actual}" = "${unexpected}" ]; then
+        error "${description}: did not expect '${unexpected}'"
+    fi
+    log "PASS: ${description}"
+}
+
 helper_privileges_for_role() {
     local role=$1
 
@@ -1620,6 +1629,260 @@ SQL
     sql_super -c "
         DROP TABLE public.lifecycle_intermediate_table_root,
                    public.lifecycle_intermediate_direct_root;" >/dev/null
+}
+
+test_partition_detach_lineage() {
+    local branch_index_oid concurrent_child_index_oid concurrent_detach_output
+    local concurrent_detach_pid concurrent_new_lineage concurrent_old_job
+    local concurrent_old_lineage concurrent_reader_pid detach_backend_pid
+    local detach_dump detached_job detached_lineage detached_low_index_oid
+    local old_job old_lineage restore_output root_index_oid sibling_index_oid
+    local restored_detached_lineage restored_parent_lineage
+
+    detach_dump="${DATA_DIR}/partition-detach-lineage.sql"
+    sql_as durable_owner <<'SQL' >/dev/null 2>&1
+CREATE TABLE public.lifecycle_detach_root
+    (id integer, subid integer, body text)
+    PARTITION BY RANGE (id);
+CREATE TABLE public.lifecycle_detach_branch
+    (id integer, subid integer, body text)
+    PARTITION BY RANGE (subid);
+ALTER TABLE public.lifecycle_detach_root
+    ATTACH PARTITION public.lifecycle_detach_branch
+    FOR VALUES FROM (0) TO (100);
+CREATE TABLE public.lifecycle_detach_branch_low
+    PARTITION OF public.lifecycle_detach_branch
+    FOR VALUES FROM (0) TO (100);
+CREATE TABLE public.lifecycle_detach_sibling
+    PARTITION OF public.lifecycle_detach_root
+    FOR VALUES FROM (100) TO (200);
+CREATE INDEX lifecycle_detach_root_idx
+    ON public.lifecycle_detach_root USING bm25(body)
+    WITH (text_config = 'english',
+          compaction = 'background',
+          compaction_schedule = '0 0 1 1 *');
+SQL
+    root_index_oid="$(sql_super -c "SELECT
+        'public.lifecycle_detach_root_idx'::regclass::oid;")"
+    branch_index_oid="$(sql_super -c "SELECT indexrelid
+      FROM pg_catalog.pg_index
+      WHERE indrelid = 'public.lifecycle_detach_branch'::regclass;")"
+    detached_low_index_oid="$(sql_super -c "SELECT indexrelid
+      FROM pg_catalog.pg_index
+      WHERE indrelid = 'public.lifecycle_detach_branch_low'::regclass;")"
+    sibling_index_oid="$(sql_super -c "SELECT indexrelid
+      FROM pg_catalog.pg_index
+      WHERE indrelid = 'public.lifecycle_detach_sibling'::regclass;")"
+    old_lineage="$(index_lineage public.lifecycle_detach_root_idx)"
+    old_job="$(current_generation_job_id "${detached_low_index_oid}")"
+
+    sql_as durable_owner -c "
+        ALTER TABLE public.lifecycle_detach_root
+          DETACH PARTITION public.lifecycle_detach_branch;" >/dev/null 2>&1
+    detached_lineage="$(sql_super -c "SELECT
+        pg_catalog.substr(
+          option, pg_catalog.length('compaction_lineage=') + 1)
+      FROM pg_catalog.pg_class AS relation
+      CROSS JOIN LATERAL
+        pg_catalog.unnest(relation.reloptions) AS option
+      WHERE relation.oid = ${branch_index_oid}
+        AND option OPERATOR(pg_catalog.~~) 'compaction_lineage=%';")"
+    assert_ne "plain detach assigns a fresh hierarchy lineage" \
+        "${old_lineage}" "${detached_lineage}"
+    assert_eq "plain detach lineage remains 128-bit" "32" \
+        "${#detached_lineage}"
+    assert_eq "detached physical leaves share the fresh lineage" \
+        "${detached_lineage}" \
+        "$(sql_super -c "SELECT pg_catalog.substr(
+            option, pg_catalog.length('compaction_lineage=') + 1)
+          FROM pg_catalog.pg_class AS relation
+          CROSS JOIN LATERAL
+            pg_catalog.unnest(relation.reloptions) AS option
+          WHERE relation.oid = ${detached_low_index_oid}
+            AND option OPERATOR(pg_catalog.~~)
+                'compaction_lineage=%';")"
+    assert_eq "former parent hierarchy retains its lineage" \
+        "${old_lineage}:${old_lineage}" \
+        "$(index_lineage public.lifecycle_detach_root_idx):$(
+            sql_super -c "SELECT pg_catalog.substr(
+                option, pg_catalog.length('compaction_lineage=') + 1)
+              FROM pg_catalog.pg_class AS relation
+              CROSS JOIN LATERAL
+                pg_catalog.unnest(relation.reloptions) AS option
+              WHERE relation.oid = ${sibling_index_oid}
+                AND option OPERATOR(pg_catalog.~~)
+                    'compaction_lineage=%';"
+        )"
+    detached_job="$(current_generation_job_id "${detached_low_index_oid}")"
+    assert_ne "plain detach replaces the detached workflow" \
+        "${old_job}" "${detached_job}"
+    assert_eq "plain detach preserves the workflow schedule" "t" \
+        "$(sql_super -c "SELECT label OPERATOR(pg_catalog.~~)
+            ('%:' || pg_catalog.encode(pg_catalog.convert_to(
+                '0 0 1 1 *', 'UTF8'), 'hex'))
+          FROM df.instances WHERE id = '${detached_job}';")"
+
+    "${PGBINDIR}/pg_dump" -h "${SOCKET_DIR}" -p "${TEST_PORT}" \
+        -U durable_owner -d "${TEST_DB}" --schema-only --no-owner \
+        --table=public.lifecycle_detach_root \
+        --table=public.lifecycle_detach_branch \
+        --table=public.lifecycle_detach_branch_low \
+        --table=public.lifecycle_detach_sibling >"${detach_dump}"
+    sql_as durable_owner -c "
+        DROP TABLE public.lifecycle_detach_root,
+                   public.lifecycle_detach_branch;" >/dev/null
+    if ! restore_output="$(sql_as durable_owner -f "${detach_dump}" 2>&1)"; then
+        error "detached hierarchies failed schema-only restore: \
+${restore_output}"
+    fi
+    restored_parent_lineage="$(
+        index_lineage public.lifecycle_detach_root_idx
+    )"
+    restored_detached_lineage="$(sql_super -c "SELECT pg_catalog.substr(
+        option, pg_catalog.length('compaction_lineage=') + 1)
+      FROM pg_catalog.pg_class AS relation
+      CROSS JOIN LATERAL
+        pg_catalog.unnest(relation.reloptions) AS option
+      WHERE relation.oid = (
+          SELECT indexrelid FROM pg_catalog.pg_index
+          WHERE indrelid = 'public.lifecycle_detach_branch'::regclass)
+        AND option OPERATOR(pg_catalog.~~) 'compaction_lineage=%';")"
+    assert_eq "restored parent lineage remains 128-bit" "32" \
+        "${#restored_parent_lineage}"
+    assert_eq "restored detached lineage remains 128-bit" "32" \
+        "${#restored_detached_lineage}"
+    assert_ne "restored detached hierarchies retain distinct lineages" \
+        "${restored_parent_lineage}" "${restored_detached_lineage}"
+    sql_as durable_owner -c "
+        DROP TABLE public.lifecycle_detach_root,
+                   public.lifecycle_detach_branch;" >/dev/null
+
+    sql_as durable_owner <<'SQL' >/dev/null 2>&1
+CREATE TABLE public.lifecycle_detach_concurrent_root
+    (id integer, body text)
+    PARTITION BY RANGE (id);
+CREATE TABLE public.lifecycle_detach_concurrent_low
+    PARTITION OF public.lifecycle_detach_concurrent_root
+    FOR VALUES FROM (0) TO (100);
+CREATE TABLE public.lifecycle_detach_concurrent_high
+    PARTITION OF public.lifecycle_detach_concurrent_root
+    FOR VALUES FROM (100) TO (200);
+CREATE INDEX lifecycle_detach_concurrent_idx
+    ON public.lifecycle_detach_concurrent_root USING bm25(body)
+    WITH (text_config = 'english',
+          compaction = 'background',
+          compaction_schedule = '0 0 1 1 *');
+SQL
+    concurrent_child_index_oid="$(sql_super -c "SELECT indexrelid
+      FROM pg_catalog.pg_index
+      WHERE indrelid =
+            'public.lifecycle_detach_concurrent_high'::regclass;")"
+    concurrent_old_lineage="$(
+        index_lineage public.lifecycle_detach_concurrent_idx
+    )"
+    concurrent_old_job="$(
+        current_generation_job_id "${concurrent_child_index_oid}"
+    )"
+
+    PGAPPNAME=lifecycle-detach-reader sql_as durable_owner <<'SQL' \
+        >/dev/null 2>&1 &
+BEGIN ISOLATION LEVEL REPEATABLE READ;
+SELECT count(*) FROM public.lifecycle_detach_concurrent_root;
+SELECT pg_catalog.pg_sleep(30);
+COMMIT;
+SQL
+    concurrent_reader_pid=$!
+    for _ in $(seq 1 100); do
+        if [ "$(sql_super -c "SELECT count(*)
+              FROM pg_catalog.pg_stat_activity
+              WHERE application_name = 'lifecycle-detach-reader'
+                AND query OPERATOR(pg_catalog.~~) '%pg_sleep%';")" = "1" ]; then
+            break
+        fi
+        sleep 0.1
+    done
+    assert_eq "concurrent detach reader holds an old snapshot" "1" \
+        "$(sql_super -c "SELECT count(*)
+          FROM pg_catalog.pg_stat_activity
+          WHERE application_name = 'lifecycle-detach-reader'
+            AND query OPERATOR(pg_catalog.~~) '%pg_sleep%';")"
+
+    concurrent_detach_output="${DATA_DIR}/partition-detach-concurrent.out"
+    PGAPPNAME=lifecycle-detach-concurrent sql_as durable_owner -c "
+        ALTER TABLE public.lifecycle_detach_concurrent_root
+          DETACH PARTITION public.lifecycle_detach_concurrent_high
+          CONCURRENTLY;" >"${concurrent_detach_output}" 2>&1 &
+    concurrent_detach_pid=$!
+    for _ in $(seq 1 100); do
+        if [ "$(sql_super -c "SELECT count(*)
+              FROM pg_catalog.pg_inherits
+              WHERE inhrelid =
+                    'public.lifecycle_detach_concurrent_high'::regclass
+                AND inhdetachpending;")" = "1" ]; then
+            break
+        fi
+        sleep 0.1
+    done
+    assert_eq "concurrent detach reaches pending phase" "1" \
+        "$(sql_super -c "SELECT count(*)
+          FROM pg_catalog.pg_inherits
+          WHERE inhrelid =
+                'public.lifecycle_detach_concurrent_high'::regclass
+            AND inhdetachpending;")"
+    assert_eq "concurrent detach phase one preserves lineage" \
+        "${concurrent_old_lineage}" \
+        "$(sql_super -c "SELECT pg_catalog.substr(
+            option, pg_catalog.length('compaction_lineage=') + 1)
+          FROM pg_catalog.pg_class AS relation
+          CROSS JOIN LATERAL
+            pg_catalog.unnest(relation.reloptions) AS option
+          WHERE relation.oid = ${concurrent_child_index_oid}
+            AND option OPERATOR(pg_catalog.~~)
+                'compaction_lineage=%';")"
+
+    detach_backend_pid="$(sql_super -c "SELECT pid
+      FROM pg_catalog.pg_stat_activity
+      WHERE application_name = 'lifecycle-detach-concurrent';")"
+    sql_super -c \
+        "SELECT pg_catalog.pg_terminate_backend(${detach_backend_pid});" \
+        >/dev/null
+    if wait "${concurrent_detach_pid}"; then
+        error "concurrent detach completed before forced finalization"
+    fi
+    sql_super -c "SELECT pg_catalog.pg_terminate_backend(pid)
+      FROM pg_catalog.pg_stat_activity
+      WHERE application_name = 'lifecycle-detach-reader';" >/dev/null
+    wait "${concurrent_reader_pid}" 2>/dev/null || true
+    assert_eq "interrupted concurrent detach remains pending" "1" \
+        "$(sql_super -c "SELECT count(*)
+          FROM pg_catalog.pg_inherits
+          WHERE inhrelid =
+                'public.lifecycle_detach_concurrent_high'::regclass
+            AND inhdetachpending;")"
+
+    sql_as durable_owner -c "
+        ALTER TABLE public.lifecycle_detach_concurrent_root
+          DETACH PARTITION public.lifecycle_detach_concurrent_high
+          FINALIZE;" >/dev/null 2>&1
+    concurrent_new_lineage="$(sql_super -c "SELECT pg_catalog.substr(
+        option, pg_catalog.length('compaction_lineage=') + 1)
+      FROM pg_catalog.pg_class AS relation
+      CROSS JOIN LATERAL
+        pg_catalog.unnest(relation.reloptions) AS option
+      WHERE relation.oid = ${concurrent_child_index_oid}
+        AND option OPERATOR(pg_catalog.~~) 'compaction_lineage=%';")"
+    assert_ne "concurrent finalize assigns a fresh lineage" \
+        "${concurrent_old_lineage}" "${concurrent_new_lineage}"
+    assert_eq "concurrent finalize leaves parent lineage unchanged" \
+        "${concurrent_old_lineage}" \
+        "$(index_lineage public.lifecycle_detach_concurrent_idx)"
+    assert_ne "concurrent finalize replaces the detached workflow" \
+        "${concurrent_old_job}" \
+        "$(current_generation_job_id "${concurrent_child_index_oid}")"
+
+    sql_super -c "
+        DROP TABLE public.lifecycle_detach_concurrent_root,
+                   public.lifecycle_detach_concurrent_high;" >/dev/null
 }
 
 test_partitioned_existing_leaf_reconciliation() {
@@ -10746,6 +11009,7 @@ run_test test_failed_bulk_reindex_reconciliation
 run_test test_partitioned_create_activation
 run_test test_direct_index_partition_attach
 run_test test_reused_intermediate_partition_options
+run_test test_partition_detach_lineage
 run_test test_partitioned_existing_leaf_reconciliation
 run_test test_create_tracking_reentry
 run_test test_cached_create_uses_fresh_lineage

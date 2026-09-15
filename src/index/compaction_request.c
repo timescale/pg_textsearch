@@ -589,6 +589,81 @@ tp_set_partitioned_index_compaction_options(
 }
 
 void
+tp_reconcile_index_compaction_lineage(Oid indexoid, const char *lineage)
+{
+	AlterTableCmd *cmd;
+	Relation	   index_rel;
+	const char	  *existing_lineage;
+	List		  *set_options;
+	Oid			   owner_oid;
+	Oid			   save_userid;
+	int			   save_sec_context;
+
+	index_rel = try_index_open(indexoid, ShareUpdateExclusiveLock);
+	if (index_rel == NULL)
+		ereport(ERROR,
+				(errcode(ERRCODE_UNDEFINED_OBJECT),
+				 errmsg("partition index with OID %u disappeared", indexoid)));
+
+	if (index_rel->rd_indam == NULL ||
+		index_rel->rd_indam->ambuild != tp_build ||
+		(index_rel->rd_rel->relkind != RELKIND_INDEX &&
+		 index_rel->rd_rel->relkind != RELKIND_PARTITIONED_INDEX) ||
+		index_rel->rd_index == NULL)
+	{
+		char *index_name = pstrdup(RelationGetRelationName(index_rel));
+
+		index_close(index_rel, ShareUpdateExclusiveLock);
+		ereport(ERROR,
+				(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
+				 errmsg("cannot reconcile partition index \"%s\" for "
+						"background compaction",
+						index_name),
+				 errdetail("The detached index is not a BM25 index.")));
+	}
+
+	existing_lineage = tp_index_compaction_lineage(index_rel);
+	if (existing_lineage != NULL && strcmp(existing_lineage, lineage) == 0)
+	{
+		index_close(index_rel, NoLock);
+		return;
+	}
+
+	set_options = list_make1(makeDefElem(
+			"compaction_lineage", (Node *)makeString(pstrdup(lineage)), -1));
+	if (index_rel->rd_rel->relkind == RELKIND_PARTITIONED_INDEX)
+	{
+		tp_set_partitioned_index_compaction_options(
+				index_rel, set_options, false);
+		index_close(index_rel, NoLock);
+		CommandCounterIncrement();
+		return;
+	}
+
+	owner_oid = index_rel->rd_rel->relowner;
+	index_close(index_rel, NoLock);
+
+	cmd			  = makeNode(AlterTableCmd);
+	cmd->subtype  = AT_SetRelOptions;
+	cmd->def	  = (Node *)set_options;
+	cmd->behavior = DROP_RESTRICT;
+
+	GetUserIdAndSecContext(&save_userid, &save_sec_context);
+	SetUserIdAndSecContext(
+			owner_oid, save_sec_context | SECURITY_LOCAL_USERID_CHANGE);
+	PG_TRY();
+	{
+		AlterTableInternal(indexoid, list_make1(cmd), false);
+		CommandCounterIncrement();
+	}
+	PG_FINALLY();
+	{
+		SetUserIdAndSecContext(save_userid, save_sec_context);
+	}
+	PG_END_TRY();
+}
+
+void
 tp_reconcile_index_compaction_options(
 		Oid indexoid, const char *schedule, const char *lineage)
 {
