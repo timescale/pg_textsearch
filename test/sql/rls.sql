@@ -218,6 +218,208 @@ CREATE INDEX index_partition_idx ON index_partition USING bm25(content)
 ALTER TABLE index_partitioned ENABLE ROW LEVEL SECURITY;
 \set VERBOSITY default
 
+-- Event-trigger DDL must be attributed to the command that actually creates
+-- or alters each catalog object, not to a stale pre-trigger name lookup.
+CREATE FUNCTION rls_ddl_race_start()
+RETURNS event_trigger AS $$
+DECLARE
+    action text := current_setting('rls_test.action', true);
+BEGIN
+    IF action IS NULL OR action IN ('', 'running', 'done') THEN
+        RETURN;
+    END IF;
+
+    PERFORM set_config('rls_test.action', 'running', true);
+
+    IF action = 'swap_enable' THEN
+        EXECUTE 'ALTER TABLE rls_evt_enable_target '
+                'RENAME TO rls_evt_enable_swap';
+        EXECUTE 'ALTER TABLE rls_evt_enable_guarded '
+                'RENAME TO rls_evt_enable_target';
+        EXECUTE 'ALTER TABLE rls_evt_enable_swap '
+                'RENAME TO rls_evt_enable_guarded';
+        PERFORM set_config('rls_test.action', 'restore_enable', true);
+    ELSIF action = 'swap_inherit' THEN
+        EXECUTE 'ALTER TABLE rls_evt_inherit_target '
+                'RENAME TO rls_evt_inherit_swap';
+        EXECUTE 'ALTER TABLE rls_evt_inherit_guarded '
+                'RENAME TO rls_evt_inherit_target';
+        EXECUTE 'ALTER TABLE rls_evt_inherit_swap '
+                'RENAME TO rls_evt_inherit_guarded';
+        PERFORM set_config('rls_test.action', 'restore_inherit', true);
+    ELSIF action = 'swap_attach' THEN
+        EXECUTE 'ALTER TABLE rls_evt_attach_target '
+                'RENAME TO rls_evt_attach_swap';
+        EXECUTE 'ALTER TABLE rls_evt_attach_guarded '
+                'RENAME TO rls_evt_attach_target';
+        EXECUTE 'ALTER TABLE rls_evt_attach_swap '
+                'RENAME TO rls_evt_attach_guarded';
+        PERFORM set_config('rls_test.action', 'restore_attach', true);
+    ELSIF action = 'drop_ifne_collision' THEN
+        EXECUTE 'DROP INDEX rls_evt_ifne_idx';
+        PERFORM set_config('rls_test.action', 'done', true);
+    ELSIF action = 'drop_extension' THEN
+        PERFORM set_config('client_min_messages', 'warning', true);
+        EXECUTE 'DROP EXTENSION pg_textsearch CASCADE';
+        PERFORM set_config('rls_test.action', 'done', true);
+    END IF;
+END
+$$ LANGUAGE plpgsql;
+
+CREATE FUNCTION rls_ddl_race_end()
+RETURNS event_trigger AS $$
+DECLARE
+    action text := current_setting('rls_test.action', true);
+BEGIN
+    IF action IS NULL OR action NOT IN
+       ('restore_enable', 'restore_inherit', 'restore_attach') THEN
+        RETURN;
+    END IF;
+
+    PERFORM set_config('rls_test.action', 'running', true);
+
+    IF action = 'restore_enable' THEN
+        EXECUTE 'ALTER TABLE rls_evt_enable_target '
+                'RENAME TO rls_evt_enable_swap';
+        EXECUTE 'ALTER TABLE rls_evt_enable_guarded '
+                'RENAME TO rls_evt_enable_target';
+        EXECUTE 'ALTER TABLE rls_evt_enable_swap '
+                'RENAME TO rls_evt_enable_guarded';
+    ELSIF action = 'restore_inherit' THEN
+        EXECUTE 'ALTER TABLE rls_evt_inherit_target '
+                'RENAME TO rls_evt_inherit_swap';
+        EXECUTE 'ALTER TABLE rls_evt_inherit_guarded '
+                'RENAME TO rls_evt_inherit_target';
+        EXECUTE 'ALTER TABLE rls_evt_inherit_swap '
+                'RENAME TO rls_evt_inherit_guarded';
+    ELSE
+        EXECUTE 'ALTER TABLE rls_evt_attach_target '
+                'RENAME TO rls_evt_attach_swap';
+        EXECUTE 'ALTER TABLE rls_evt_attach_guarded '
+                'RENAME TO rls_evt_attach_target';
+        EXECUTE 'ALTER TABLE rls_evt_attach_swap '
+                'RENAME TO rls_evt_attach_guarded';
+    END IF;
+
+    PERFORM set_config('rls_test.action', 'done', true);
+END
+$$ LANGUAGE plpgsql;
+
+CREATE EVENT TRIGGER rls_ddl_race_start_trigger
+ON ddl_command_start
+WHEN TAG IN ('ALTER TABLE', 'CREATE INDEX')
+EXECUTE FUNCTION rls_ddl_race_start();
+
+CREATE EVENT TRIGGER rls_ddl_race_end_trigger
+ON ddl_command_end
+WHEN TAG IN ('ALTER TABLE')
+EXECUTE FUNCTION rls_ddl_race_end();
+
+CREATE TABLE rls_evt_enable_target (id integer, content text);
+CREATE TABLE rls_evt_enable_guarded (id integer, content text);
+CREATE INDEX rls_evt_enable_idx
+    ON rls_evt_enable_guarded USING bm25(content)
+    WITH (text_config='english');
+SET rls_test.action = 'swap_enable';
+\set VERBOSITY terse
+ALTER TABLE rls_evt_enable_target ENABLE ROW LEVEL SECURITY;
+\set VERBOSITY default
+RESET rls_test.action;
+\pset format unaligned
+SELECT relrowsecurity AS swapped_enable_rolled_back
+FROM pg_class
+WHERE oid = 'rls_evt_enable_guarded'::regclass;
+\pset format aligned
+
+CREATE TABLE rls_evt_inherit_parent (id integer, content text);
+ALTER TABLE rls_evt_inherit_parent ENABLE ROW LEVEL SECURITY;
+CREATE TABLE rls_evt_inherit_target (id integer, content text);
+CREATE TABLE rls_evt_inherit_guarded (id integer, content text);
+CREATE INDEX rls_evt_inherit_idx
+    ON rls_evt_inherit_guarded USING bm25(content)
+    WITH (text_config='english');
+SET rls_test.action = 'swap_inherit';
+\set VERBOSITY terse
+ALTER TABLE rls_evt_inherit_target INHERIT rls_evt_inherit_parent;
+\set VERBOSITY default
+RESET rls_test.action;
+\pset format unaligned
+SELECT NOT EXISTS (
+    SELECT 1
+    FROM pg_inherits
+    WHERE inhrelid = 'rls_evt_inherit_guarded'::regclass
+      AND inhparent = 'rls_evt_inherit_parent'::regclass
+) AS swapped_inherit_rolled_back;
+\pset format aligned
+
+CREATE TABLE rls_evt_attach_parent (id integer, content text)
+    PARTITION BY RANGE (id);
+ALTER TABLE rls_evt_attach_parent ENABLE ROW LEVEL SECURITY;
+CREATE TABLE rls_evt_attach_target (id integer, content text);
+CREATE TABLE rls_evt_attach_guarded (id integer, content text);
+CREATE INDEX rls_evt_attach_idx
+    ON rls_evt_attach_guarded USING bm25(content)
+    WITH (text_config='english');
+SET rls_test.action = 'swap_attach';
+\set VERBOSITY terse
+ALTER TABLE rls_evt_attach_parent
+    ATTACH PARTITION rls_evt_attach_target FOR VALUES FROM (0) TO (10);
+\set VERBOSITY default
+RESET rls_test.action;
+\pset format unaligned
+SELECT NOT EXISTS (
+    SELECT 1
+    FROM pg_inherits
+    WHERE inhrelid = 'rls_evt_attach_guarded'::regclass
+      AND inhparent = 'rls_evt_attach_parent'::regclass
+) AS swapped_attach_rolled_back;
+\pset format aligned
+
+CREATE TABLE rls_evt_ifne_heap (id integer, content text);
+ALTER TABLE rls_evt_ifne_heap ENABLE ROW LEVEL SECURITY;
+CREATE TABLE rls_evt_ifne_collision (id integer);
+CREATE INDEX rls_evt_ifne_idx ON rls_evt_ifne_collision(id);
+SET rls_test.action = 'drop_ifne_collision';
+\set VERBOSITY terse
+CREATE INDEX CONCURRENTLY IF NOT EXISTS rls_evt_ifne_idx
+    ON rls_evt_ifne_heap USING bm25(content)
+    WITH (text_config='english');
+\set VERBOSITY default
+RESET rls_test.action;
+\pset format unaligned
+SELECT EXISTS (
+    SELECT 1
+    FROM pg_index
+    WHERE indexrelid = 'rls_evt_ifne_idx'::regclass
+      AND indrelid = 'rls_evt_ifne_collision'::regclass
+      AND indisvalid
+) AS ifne_collision_restored,
+NOT EXISTS (
+    SELECT 1
+    FROM pg_index
+    WHERE indrelid = 'rls_evt_ifne_heap'::regclass
+) AS no_forbidden_ifne_index;
+\pset format aligned
+
+CREATE TABLE rls_evt_progress_heap (id integer, content text);
+CREATE INDEX rls_evt_progress_idx
+    ON rls_evt_progress_heap USING bm25(content)
+    WITH (text_config='english');
+CREATE TABLE rls_evt_missing_am_heap (id integer, content text);
+SET rls_test.action = 'drop_extension';
+\set VERBOSITY terse
+CREATE INDEX rls_evt_missing_am_idx
+    ON rls_evt_missing_am_heap USING bm25(content)
+    WITH (text_config='english');
+\set VERBOSITY default
+RESET rls_test.action;
+REINDEX INDEX rls_evt_progress_idx;
+
+DROP EVENT TRIGGER rls_ddl_race_start_trigger;
+DROP EVENT TRIGGER rls_ddl_race_end_trigger;
+DROP FUNCTION rls_ddl_race_start();
+DROP FUNCTION rls_ddl_race_end();
+
 RESET pg_textsearch.allow_rls;
 ALTER TABLE index_before_rls ENABLE ROW LEVEL SECURITY;
 
@@ -250,6 +452,13 @@ DROP TABLE rls_multi_child, rls_multi_parent_a, rls_multi_parent_b CASCADE;
 DROP TABLE rls_attach_child, rls_attach_parent CASCADE;
 DROP TABLE rls_attach_partitioned, rls_attach_partition CASCADE;
 DROP TABLE rls_lock_child, rls_lock_parent, rls_lock_root CASCADE;
+DROP TABLE rls_evt_enable_target, rls_evt_enable_guarded CASCADE;
+DROP TABLE rls_evt_inherit_target, rls_evt_inherit_guarded,
+    rls_evt_inherit_parent CASCADE;
+DROP TABLE rls_evt_attach_target, rls_evt_attach_guarded,
+    rls_evt_attach_parent CASCADE;
+DROP TABLE rls_evt_ifne_heap, rls_evt_ifne_collision CASCADE;
+DROP TABLE rls_evt_progress_heap, rls_evt_missing_am_heap CASCADE;
 
 CREATE TABLE rls_without_extension (id integer);
 SET pg_textsearch.allow_rls = off;

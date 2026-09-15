@@ -12,11 +12,13 @@
 #include <access/skey.h>
 #include <access/table.h>
 #include <catalog/indexing.h>
+#include <catalog/pg_index.h>
 #include <catalog/pg_inherits.h>
 #include <commands/defrem.h>
 #include <utils/fmgroids.h>
 #include <utils/lsyscache.h>
 #include <utils/relcache.h>
+#include <utils/snapmgr.h>
 
 #include "access/rls.h"
 #include "constants.h"
@@ -131,6 +133,33 @@ find_bm25_indexed_relation(Oid relid)
 	return result;
 }
 
+static Oid
+find_index_heap_relation(Oid indexrelid)
+{
+	Relation	indexrel;
+	ScanKeyData key;
+	SysScanDesc scan;
+	HeapTuple	tuple;
+	Oid			heaprelid = InvalidOid;
+
+	indexrel = table_open(IndexRelationId, AccessShareLock);
+	ScanKeyInit(
+			&key,
+			Anum_pg_index_indexrelid,
+			BTEqualStrategyNumber,
+			F_OIDEQ,
+			ObjectIdGetDatum(indexrelid));
+	scan = systable_beginscan(
+			indexrel, IndexRelidIndexId, true, SnapshotSelf, 1, &key);
+	tuple = systable_getnext(scan);
+	if (HeapTupleIsValid(tuple))
+		heaprelid = ((Form_pg_index)GETSTRUCT(tuple))->indrelid;
+	systable_endscan(scan);
+	table_close(indexrel, AccessShareLock);
+
+	return heaprelid;
+}
+
 void
 tp_check_bm25_build_allowed(Relation heap)
 {
@@ -155,6 +184,41 @@ tp_check_bm25_build_allowed(Relation heap)
 					 RelationGetRelationName(heap)),
 			 errhint("Set pg_textsearch.allow_rls to on to accept the "
 					 "documented term-frequency leakage risk.")));
+}
+
+bool
+tp_check_bm25_index_create_allowed(Oid indexrelid)
+{
+	Oid		 bm25_am_oid;
+	Oid		 heaprelid;
+	Relation index;
+	Relation heap;
+	bool	 is_bm25;
+
+	bm25_am_oid = get_am_oid("bm25", true);
+	if (!OidIsValid(bm25_am_oid))
+		return false;
+
+	index	= relation_open(indexrelid, NoLock);
+	is_bm25 = (index->rd_rel->relkind == RELKIND_INDEX ||
+			   index->rd_rel->relkind == RELKIND_PARTITIONED_INDEX) &&
+			  index->rd_rel->relam == bm25_am_oid;
+	relation_close(index, NoLock);
+
+	if (!is_bm25)
+		return false;
+
+	heaprelid = find_index_heap_relation(indexrelid);
+	if (!OidIsValid(heaprelid))
+		elog(ERROR,
+			 "could not find heap relation for newly created BM25 index %u",
+			 indexrelid);
+
+	heap = table_open(heaprelid, NoLock);
+	tp_check_bm25_build_allowed(heap);
+	table_close(heap, NoLock);
+
+	return true;
 }
 
 void

@@ -8,14 +8,11 @@
 
 #include <access/relation.h>
 #include <access/reloptions.h>
-#include <access/table.h>
 #include <access/xact.h>
 #include <catalog/dependency.h>
-#include <catalog/namespace.h>
 #include <catalog/objectaccess.h>
 #include <catalog/pg_class_d.h>
-#include <commands/defrem.h>
-#include <commands/tablecmds.h>
+#include <catalog/pg_inherits_d.h>
 #include <fmgr.h>
 #include <limits.h>
 #include <miscadmin.h>
@@ -26,7 +23,6 @@
 #include <tcop/utility.h>
 #include <utils/guc.h>
 #include <utils/inval.h>
-#include <utils/lsyscache.h>
 
 #include "access/am.h"
 #include "access/rls.h"
@@ -144,13 +140,26 @@ static shmem_request_hook_type prev_shmem_request_hook = NULL;
 /* Previous ProcessUtility hook */
 static ProcessUtility_hook_type prev_process_utility_hook = NULL;
 
+typedef struct TpProcessUtilityContext
+{
+	struct TpProcessUtilityContext *previous;
+	bool							track_index_build;
+	bool							check_rls_enable;
+	bool							check_hierarchy_change;
+	bool							build_progress_started;
+	List						   *altered_relids;
+	List						   *hierarchy_relids;
+} TpProcessUtilityContext;
+
+static TpProcessUtilityContext *current_utility_context = NULL;
+
 /* Shared memory size calculation */
 static void tp_shmem_request(void);
 
 /* Shared memory startup hook */
 static void tp_shmem_startup(void);
 
-/* Object access hook for DROP INDEX detection */
+/* Object access hook for catalog-object validation and DROP INDEX cleanup */
 static void tp_object_access(
 		ObjectAccessType access,
 		Oid				 classId,
@@ -168,7 +177,7 @@ static void tp_subxact_callback(
 		SubTransactionId parentSubid,
 		void			*arg);
 
-/* ProcessUtility hook for tracking CREATE INDEX USING bm25 */
+/* ProcessUtility hook for nestable DDL validation and build tracking */
 static void tp_process_utility(
 		PlannedStmt			 *pstmt,
 		const char			 *queryString,
@@ -555,7 +564,7 @@ _PG_init(void)
 }
 
 /*
- * Object access hook - handle DROP INDEX
+ * Object access hook - enforce catalog-object RLS checks and handle drops.
  */
 static void
 tp_object_access(
@@ -565,11 +574,41 @@ tp_object_access(
 		int				 subId,
 		void			*arg)
 {
-	(void)arg; /* unused - we don't care about drop flags */
-
 	/* Call previous hook if exists */
 	if (prev_object_access_hook)
 		prev_object_access_hook(access, classId, objectId, subId, arg);
+
+	if (access == OAT_POST_CREATE && classId == RelationRelationId &&
+		subId == 0)
+	{
+		bool is_bm25 = tp_check_bm25_index_create_allowed(objectId);
+
+		if (is_bm25 && current_utility_context != NULL &&
+			current_utility_context->track_index_build &&
+			!current_utility_context->build_progress_started)
+		{
+			tp_build_progress_begin();
+			current_utility_context->build_progress_started = true;
+		}
+	}
+
+	if (access == OAT_POST_ALTER && current_utility_context != NULL &&
+		subId == 0)
+	{
+		if (classId == RelationRelationId &&
+			current_utility_context->check_rls_enable &&
+			!list_member_oid(
+					current_utility_context->altered_relids, objectId))
+			current_utility_context->altered_relids = lappend_oid(
+					current_utility_context->altered_relids, objectId);
+		else if (
+				classId == InheritsRelationId &&
+				current_utility_context->check_hierarchy_change &&
+				!list_member_oid(
+						current_utility_context->hierarchy_relids, objectId))
+			current_utility_context->hierarchy_relids = lappend_oid(
+					current_utility_context->hierarchy_relids, objectId);
+	}
 
 	/* We only care about DROP events on relations (indexes are relations) */
 	if (access == OAT_DROP && classId == RelationRelationId && subId == 0)
@@ -708,73 +747,49 @@ tp_subxact_callback(
 	}
 }
 
-static bool
-alter_table_needs_rls_check(AlterTableStmt *stmt)
-{
-	ListCell *lc;
-
-	foreach (lc, stmt->cmds)
-	{
-		AlterTableCmd *cmd = lfirst_node(AlterTableCmd, lc);
-
-		if (cmd->subtype == AT_EnableRowSecurity ||
-			cmd->subtype == AT_AddInherit ||
-			(cmd->subtype == AT_AttachPartition &&
-			 stmt->objtype == OBJECT_TABLE))
-			return true;
-	}
-
-	return false;
-}
-
 static void
-check_altered_rls_hierarchy(AlterTableStmt *stmt, Oid relid)
+initialize_utility_context(
+		TpProcessUtilityContext *utility_context, Node *stmt)
 {
-	ListCell *lc;
+	memset(utility_context, 0, sizeof(*utility_context));
+	utility_context->previous = current_utility_context;
 
-	if (!OidIsValid(relid))
-		return;
-
-	foreach (lc, stmt->cmds)
+	if (IsA(stmt, IndexStmt))
+		utility_context->track_index_build = true;
+	else if (IsA(stmt, AlterTableStmt))
 	{
-		AlterTableCmd *cmd = lfirst_node(AlterTableCmd, lc);
+		AlterTableStmt *alter_stmt = castNode(AlterTableStmt, stmt);
+		ListCell	   *lc;
 
-		switch (cmd->subtype)
+		foreach (lc, alter_stmt->cmds)
 		{
-		case AT_EnableRowSecurity:
-			tp_check_rls_enable_allowed(relid);
-			break;
+			AlterTableCmd *cmd = lfirst_node(AlterTableCmd, lc);
 
-		case AT_AddInherit:
-			tp_check_bm25_hierarchy_allowed(relid);
-			break;
-
-		case AT_AttachPartition:
-		{
-			PartitionCmd *partcmd = castNode(PartitionCmd, cmd->def);
-			Oid			  partrelid;
-
-			if (stmt->objtype != OBJECT_TABLE)
-				break;
-
-			partrelid = RangeVarGetRelid(partcmd->name, NoLock, false);
-			tp_check_bm25_hierarchy_allowed(partrelid);
-		}
-		break;
-
-		default:
-			break;
+			if (cmd->subtype == AT_EnableRowSecurity)
+				utility_context->check_rls_enable = true;
+			else if (
+					cmd->subtype == AT_AddInherit ||
+					(cmd->subtype == AT_AttachPartition &&
+					 alter_stmt->objtype == OBJECT_TABLE))
+				utility_context->check_hierarchy_change = true;
 		}
 	}
 }
 
-/*
- * ProcessUtility hook - detect CREATE INDEX USING bm25 and wrap
- * with build progress tracking. This collapses per-partition
- * NOTICEs into a single summary for partitioned tables.
- */
 static void
-tp_process_utility(
+validate_utility_context(TpProcessUtilityContext *utility_context)
+{
+	ListCell *lc;
+
+	foreach (lc, utility_context->altered_relids)
+		tp_check_rls_enable_allowed(lfirst_oid(lc));
+
+	foreach (lc, utility_context->hierarchy_relids)
+		tp_check_bm25_hierarchy_allowed(lfirst_oid(lc));
+}
+
+static void
+call_next_process_utility(
 		PlannedStmt			 *pstmt,
 		const char			 *queryString,
 		bool				  readOnlyTree,
@@ -784,116 +799,6 @@ tp_process_utility(
 		DestReceiver		 *dest,
 		QueryCompletion		 *qc)
 {
-	Node *parsetree = pstmt->utilityStmt;
-
-	if (IsA(parsetree, IndexStmt))
-	{
-		IndexStmt *stmt = (IndexStmt *)parsetree;
-
-		if (stmt->accessMethod && strcmp(stmt->accessMethod, "bm25") == 0)
-		{
-			LOCKMODE lockmode;
-			Oid		 relid;
-
-			if (stmt->concurrent)
-			{
-				PreventInTransactionBlock(
-						context == PROCESS_UTILITY_TOPLEVEL,
-						"CREATE INDEX CONCURRENTLY");
-				lockmode = ShareUpdateExclusiveLock;
-			}
-			else
-				lockmode = ShareLock;
-
-			relid = RangeVarGetRelidExtended(
-					stmt->relation,
-					lockmode,
-					0,
-					RangeVarCallbackOwnsRelation,
-					NULL);
-
-			if (OidIsValid(get_am_oid(stmt->accessMethod, true)))
-			{
-				Relation rel = table_open(relid, NoLock);
-				bool	 name_exists;
-
-				name_exists = stmt->if_not_exists && stmt->idxname != NULL &&
-							  OidIsValid(get_relname_relid(
-									  stmt->idxname,
-									  RelationGetNamespace(rel)));
-
-				if (!name_exists)
-					tp_check_bm25_build_allowed(rel);
-				table_close(rel, NoLock);
-
-				if (!name_exists)
-				{
-					tp_build_progress_begin();
-
-					if (prev_process_utility_hook)
-						prev_process_utility_hook(
-								pstmt,
-								queryString,
-								readOnlyTree,
-								context,
-								params,
-								queryEnv,
-								dest,
-								qc);
-					else
-						standard_ProcessUtility(
-								pstmt,
-								queryString,
-								readOnlyTree,
-								context,
-								params,
-								queryEnv,
-								dest,
-								qc);
-
-					tp_build_progress_end();
-					return;
-				}
-			}
-		}
-	}
-
-	if (IsA(parsetree, AlterTableStmt))
-	{
-		AlterTableStmt *stmt = (AlterTableStmt *)parsetree;
-
-		if (alter_table_needs_rls_check(stmt))
-		{
-			LOCKMODE lockmode = AlterTableGetLockLevel(stmt->cmds);
-			Oid		 relid	  = AlterTableLookupRelation(stmt, lockmode);
-
-			if (prev_process_utility_hook)
-				prev_process_utility_hook(
-						pstmt,
-						queryString,
-						readOnlyTree,
-						context,
-						params,
-						queryEnv,
-						dest,
-						qc);
-			else
-				standard_ProcessUtility(
-						pstmt,
-						queryString,
-						readOnlyTree,
-						context,
-						params,
-						queryEnv,
-						dest,
-						qc);
-
-			check_altered_rls_hierarchy(stmt, relid);
-			return;
-		}
-	}
-
-	/* Not a bm25 CREATE INDEX - pass through */
 	if (prev_process_utility_hook)
 		prev_process_utility_hook(
 				pstmt,
@@ -914,6 +819,68 @@ tp_process_utility(
 				queryEnv,
 				dest,
 				qc);
+}
+
+/*
+ * ProcessUtility hook - isolate each utility command's object-access events,
+ * post-validate ALTER TABLE catalog state, and aggregate partitioned build
+ * progress only after an actual BM25 index object is created.
+ */
+static void
+tp_process_utility(
+		PlannedStmt			 *pstmt,
+		const char			 *queryString,
+		bool				  readOnlyTree,
+		ProcessUtilityContext context,
+		ParamListInfo		  params,
+		QueryEnvironment	 *queryEnv,
+		DestReceiver		 *dest,
+		QueryCompletion		 *qc)
+{
+	TpProcessUtilityContext *utility_context;
+
+	utility_context =
+			MemoryContextAllocZero(TopMemoryContext, sizeof(*utility_context));
+	initialize_utility_context(utility_context, pstmt->utilityStmt);
+	current_utility_context = utility_context;
+
+	PG_TRY();
+	{
+		call_next_process_utility(
+				pstmt,
+				queryString,
+				readOnlyTree,
+				context,
+				params,
+				queryEnv,
+				dest,
+				qc);
+
+		validate_utility_context(utility_context);
+
+		if (utility_context->build_progress_started)
+		{
+			utility_context->build_progress_started = false;
+			tp_build_progress_end();
+		}
+
+		current_utility_context = utility_context->previous;
+		list_free(utility_context->altered_relids);
+		list_free(utility_context->hierarchy_relids);
+		pfree(utility_context);
+	}
+	PG_CATCH();
+	{
+		current_utility_context = utility_context->previous;
+		if (utility_context->build_progress_started)
+		{
+			utility_context->build_progress_started = false;
+			tp_build_progress_abort();
+		}
+		pfree(utility_context);
+		PG_RE_THROW();
+	}
+	PG_END_TRY();
 }
 
 /*
