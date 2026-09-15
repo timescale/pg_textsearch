@@ -24,6 +24,7 @@
 #include <catalog/pg_class_d.h>
 #include <catalog/pg_database.h>
 #include <catalog/pg_extension_d.h>
+#include <catalog/pg_index.h>
 #include <catalog/pg_inherits.h>
 #include <catalog/pg_inherits_d.h>
 #include <catalog/pg_namespace_d.h>
@@ -2659,6 +2660,47 @@ tp_vacuum_rewrite_indexes(VacuumStmt *stmt)
 }
 
 static List *
+tp_global_cluster_bm25_indexes(void)
+{
+	Relation	index_rel;
+	SysScanDesc scan;
+	HeapTuple	tuple;
+	List	   *bm25_indexes;
+	List	   *clustered_heaps = NIL;
+	List	   *indexoids		= NIL;
+	ListCell   *lc;
+
+	index_rel = table_open(IndexRelationId, AccessShareLock);
+	scan = systable_beginscan(index_rel, InvalidOid, false, NULL, 0, NULL);
+	while ((tuple = systable_getnext(scan)) != NULL)
+	{
+		Form_pg_index index_form = (Form_pg_index)GETSTRUCT(tuple);
+
+		if (!index_form->indisclustered ||
+			!tp_can_maintain_relation(index_form->indrelid))
+			continue;
+
+		clustered_heaps =
+				list_append_unique_oid(clustered_heaps, index_form->indrelid);
+	}
+	systable_endscan(scan);
+	table_close(index_rel, AccessShareLock);
+
+	bm25_indexes = tp_all_bm25_indexes(InvalidOid, false, NIL, false);
+	foreach (lc, bm25_indexes)
+	{
+		Oid indexoid = lfirst_oid(lc);
+		Oid heap_oid = IndexGetRelation(indexoid, true);
+
+		if (OidIsValid(heap_oid) && list_member_oid(clustered_heaps, heap_oid))
+			indexoids = lappend_oid(indexoids, indexoid);
+	}
+	list_free(bm25_indexes);
+	list_free(clustered_heaps);
+	return indexoids;
+}
+
+static List *
 tp_cluster_rewrite_indexes(
 #if PG_VERSION_NUM >= 190000
 		RepackStmt *stmt,
@@ -2679,8 +2721,7 @@ tp_cluster_rewrite_indexes(
 	if (relation == NULL)
 	{
 		*multi_transaction = true;
-		return tp_maintainable_indexes(
-				tp_all_bm25_indexes(InvalidOid, false, NIL, false), true);
+		return tp_global_cluster_bm25_indexes();
 	}
 
 	relation_oid = RangeVarGetRelidExtended(
