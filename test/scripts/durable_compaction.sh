@@ -2912,7 +2912,7 @@ SQL
     sql_as durable_owner -c "
         ALTER TABLE public.lifecycle_alter_parent
           ALTER COLUMN marker TYPE bigint
-          USING marker::pg_catalog.bigint;" >/dev/null 2>&1
+          USING marker::pg_catalog.int8;" >/dev/null 2>&1
     parent_file_after="$(sql_super -c "SELECT
         pg_catalog.pg_relation_filenode(${parent_index_oid});")"
     child_file_after="$(sql_super -c "SELECT
@@ -2923,9 +2923,13 @@ SQL
        [ "${child_file_after}" = "${child_file_before}" ]; then
         error "recursive ALTER TABLE did not rewrite parent and child indexes"
     fi
-    if [ "${parent_job_after}" = "${parent_job_before}" ] ||
+    if [ -z "${parent_job_after}" ] ||
+       [ "${parent_job_after}" = "${parent_job_before}" ]; then
+        error "recursive ALTER TABLE did not reconcile parent"
+    fi
+    if [ -z "${child_job_after}" ] ||
        [ "${child_job_after}" = "${child_job_before}" ]; then
-        error "recursive ALTER TABLE did not reconcile parent and child"
+        error "recursive ALTER TABLE did not reconcile child"
     fi
 
     parent_file_before="$(sql_super -c "SELECT

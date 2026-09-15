@@ -3275,6 +3275,55 @@ tp_alter_table_may_rewrite(AlterTableStmt *stmt)
 }
 
 static bool
+tp_alter_table_rewrite_recurses(AlterTableStmt *stmt)
+{
+	ListCell *lc;
+
+	if (!stmt->relation->inh)
+		return false;
+
+	foreach (lc, stmt->cmds)
+	{
+		AlterTableCmd *cmd = lfirst_node(AlterTableCmd, lc);
+
+		switch (cmd->subtype)
+		{
+		case AT_AddColumn:
+		case AT_AlterColumnType:
+		case AT_SetExpression:
+			return true;
+		default:
+			break;
+		}
+	}
+	return false;
+}
+
+static List *
+tp_alter_table_rewrite_indexes(
+		AlterTableStmt *stmt, Oid relation_oid, LOCKMODE lockmode)
+{
+	List	 *relation_oids;
+	List	 *indexoids = NIL;
+	ListCell *lc;
+
+	if (!tp_alter_table_rewrite_recurses(stmt))
+		return tp_relation_indexes_locked(relation_oid, NoLock);
+
+	relation_oids = find_all_inheritors(relation_oid, lockmode, NULL);
+	foreach (lc, relation_oids)
+	{
+		Oid	  child_oid = lfirst_oid(lc);
+		List *child_indexes;
+
+		child_indexes = tp_relation_indexes_locked(child_oid, NoLock);
+		indexoids	  = list_concat_unique_oid(indexoids, child_indexes);
+	}
+	list_free(relation_oids);
+	return indexoids;
+}
+
+static bool
 tp_alter_table_attaches_partition(AlterTableStmt *stmt)
 {
 	ListCell *lc;
@@ -4035,7 +4084,8 @@ tp_process_utility_impl(
 						queryEnv,
 						dest,
 						qc,
-						tp_relation_tree_indexes_locked(relation_oid, NoLock),
+						tp_alter_table_rewrite_indexes(
+								stmt, relation_oid, lockmode),
 						false);
 			else if (prev_process_utility_hook)
 				prev_process_utility_hook(
