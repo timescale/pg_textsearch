@@ -328,6 +328,149 @@ release_session_a
 wait "${SESSION_B_PID}"
 SESSION_B_PID=
 
+psql -X -h "${DATA_DIR}" -p "${TEST_PORT}" -d "${TEST_DB}" \
+    -v ON_ERROR_STOP=1 >/dev/null << 'SQL'
+CREATE TABLE policy_pin_parent (id integer, content text);
+CREATE TABLE policy_pin_child () INHERITS (policy_pin_parent);
+CREATE TABLE policy_pin_nested (id integer, content text);
+CREATE INDEX policy_pin_nested_idx
+    ON policy_pin_nested USING bm25(content)
+    WITH (text_config='english');
+
+CREATE FUNCTION policy_pin_flip()
+RETURNS event_trigger AS $$
+DECLARE
+    action text := current_setting('rls_pin_test.action', true);
+BEGIN
+    IF action NOT IN ('flip', 'flip_nested') THEN
+        RETURN;
+    END IF;
+
+    PERFORM set_config('rls_pin_test.action', 'running', true);
+    PERFORM set_config('pg_textsearch.allow_rls', 'on', false);
+
+    IF action = 'flip_nested' THEN
+        EXECUTE 'ALTER TABLE policy_pin_nested ENABLE ROW LEVEL SECURITY';
+
+        IF NOT EXISTS (
+            SELECT 1
+            FROM pg_locks
+            WHERE pid = pg_backend_pid()
+              AND locktype = 'object'
+              AND classid = 'pg_extension'::regclass
+              AND objid = (
+                  SELECT oid
+                  FROM pg_extension
+                  WHERE extname = 'pg_textsearch'
+              )
+              AND mode = 'ShareLock'
+              AND granted
+        ) THEN
+            RAISE EXCEPTION
+                'nested utility command did not acquire a shared policy lock';
+        END IF;
+    END IF;
+END
+$$ LANGUAGE plpgsql;
+
+CREATE EVENT TRIGGER policy_pin_flip_trigger
+ON ddl_command_start
+WHEN TAG IN ('ALTER TABLE', 'CREATE INDEX')
+EXECUTE FUNCTION policy_pin_flip();
+SQL
+
+rm -f "${SESSION_A_INPUT}" "${SESSION_A_OUTPUT}"
+mkfifo "${SESSION_A_INPUT}"
+PGAPPNAME=rls-policy-pin-session-a \
+    psql -X -h "${DATA_DIR}" -p "${TEST_PORT}" -d "${TEST_DB}" \
+    -v ON_ERROR_STOP=1 < "${SESSION_A_INPUT}" \
+    > "${SESSION_A_OUTPUT}" 2>&1 &
+SESSION_A_PID=$!
+exec 3> "${SESSION_A_INPUT}"
+printf '%s\n' \
+    "SET pg_textsearch.allow_rls = off;" \
+    "SET rls_pin_test.action = 'flip_nested';" \
+    "BEGIN;" \
+    "ALTER TABLE policy_pin_parent ENABLE ROW LEVEL SECURITY;" >&3
+
+wait_for_true "
+    SELECT EXISTS (
+        SELECT 1
+        FROM pg_stat_activity AS a
+        JOIN pg_locks AS l ON l.pid = a.pid
+        WHERE a.application_name = 'rls-policy-pin-session-a'
+          AND a.state = 'idle in transaction'
+          AND l.locktype = 'object'
+          AND l.classid = 'pg_extension'::regclass
+          AND l.objid = (
+              SELECT oid
+              FROM pg_extension
+              WHERE extname = 'pg_textsearch'
+          )
+          AND l.mode = 'ExclusiveLock'
+          AND l.granted
+    );
+" "session A to finish RLS enablement with its pinned policy lock"
+
+PGAPPNAME=rls-policy-pin-session-b \
+    psql -X -h "${DATA_DIR}" -p "${TEST_PORT}" -d "${TEST_DB}" \
+    -v ON_ERROR_STOP=1 \
+    -c "SET pg_textsearch.allow_rls = off;
+        SET rls_pin_test.action = 'flip';
+        CREATE INDEX policy_pin_child_idx
+        ON policy_pin_child USING bm25(content)
+        WITH (text_config='english');" \
+    > "${SESSION_B_OUTPUT}" 2>&1 &
+SESSION_B_PID=$!
+
+wait_for_true "
+    SELECT EXISTS (
+        SELECT 1
+        FROM pg_stat_activity AS a
+        JOIN pg_locks AS l ON l.pid = a.pid
+        WHERE a.application_name = 'rls-policy-pin-session-b'
+          AND l.locktype = 'object'
+          AND l.classid = 'pg_extension'::regclass
+          AND l.objid = (
+              SELECT oid
+              FROM pg_extension
+              WHERE extname = 'pg_textsearch'
+          )
+          AND l.mode = 'ExclusiveLock'
+          AND NOT l.granted
+    );
+" "session B to wait on session A's pinned policy lock"
+
+release_session_a
+
+set +e
+wait "${SESSION_B_PID}"
+session_b_status=$?
+set -e
+SESSION_B_PID=
+
+if [ "${session_b_status}" -eq 0 ]; then
+    echo "GUC-changing trigger bypassed the pinned RLS policy" >&2
+    exit 1
+fi
+if ! grep -q "BM25 indexes are not allowed on row-level security" \
+    "${SESSION_B_OUTPUT}"; then
+    echo "Missing expected pinned-policy rejection" >&2
+    cat "${SESSION_B_OUTPUT}" >&2
+    exit 1
+fi
+
+policy_pin_state=$(run_value "
+    SELECT relrowsecurity,
+           to_regclass('policy_pin_child_idx') IS NULL
+    FROM pg_class
+    WHERE oid = 'policy_pin_parent'::regclass;
+")
+if [ "${policy_pin_state}" != "t|t" ]; then
+    echo "Opposite hierarchy mutations jointly committed" >&2
+    exit 1
+fi
+
 if [ "${PARTITION_ORDER_FAILED}" -ne 0 ]; then
     exit 1
 fi

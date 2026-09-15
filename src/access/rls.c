@@ -194,7 +194,7 @@ check_bm25_build_allowed(Oid heaprelid)
 {
 	Oid rls_relid;
 
-	if (tp_allow_rls)
+	if (tp_rls_allowed_for_current_utility())
 		return;
 
 	rls_relid = find_rls_ancestor(heaprelid);
@@ -262,7 +262,7 @@ tp_check_bm25_hierarchy_allowed(Oid relid)
 	List	 *relations;
 	ListCell *lc;
 
-	if (tp_allow_rls)
+	if (tp_rls_allowed_for_current_utility())
 		return;
 
 	relations = find_all_inheritors(relid, NoLock, NULL);
@@ -282,7 +282,7 @@ tp_check_rls_enable_allowed(Oid relid)
 {
 	Oid indexed_relid;
 
-	if (tp_allow_rls)
+	if (tp_rls_allowed_for_current_utility())
 		return;
 
 	if (!relation_has_rls(relid))

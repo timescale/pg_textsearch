@@ -156,6 +156,7 @@ typedef struct TpProcessUtilityContext
 	bool							check_rls_enable;
 	bool							check_hierarchy_change;
 	bool							serialize_rls_ddl;
+	bool							allow_rls;
 	bool							rls_ddl_lock_acquired;
 	bool							build_progress_started;
 	LOCKMODE						rls_ddl_lock_mode;
@@ -165,6 +166,15 @@ typedef struct TpProcessUtilityContext
 } TpProcessUtilityContext;
 
 static TpProcessUtilityContext *current_utility_context = NULL;
+
+bool
+tp_rls_allowed_for_current_utility(void)
+{
+	if (current_utility_context != NULL)
+		return current_utility_context->allow_rls;
+
+	return tp_allow_rls;
+}
 
 /*
  * The session-owned lock survives internal commits in concurrent and
@@ -800,7 +810,8 @@ initialize_utility_context(
 		TpProcessUtilityContext *utility_context, Node *stmt)
 {
 	memset(utility_context, 0, sizeof(*utility_context));
-	utility_context->previous = current_utility_context;
+	utility_context->previous  = current_utility_context;
+	utility_context->allow_rls = tp_allow_rls;
 
 	if (IsA(stmt, IndexStmt))
 	{
@@ -954,8 +965,9 @@ tp_process_utility(
 	{
 		if (utility_context->serialize_rls_ddl)
 		{
-			utility_context->rls_ddl_lock_mode	 = tp_allow_rls ? ShareLock
-																: ExclusiveLock;
+			utility_context->rls_ddl_lock_mode	 = utility_context->allow_rls
+														 ? ShareLock
+														 : ExclusiveLock;
 			utility_context->rls_ddl_lock_object = acquire_rls_ddl_lock(
 					utility_context->rls_ddl_lock_mode);
 			utility_context->rls_ddl_lock_acquired = OidIsValid(

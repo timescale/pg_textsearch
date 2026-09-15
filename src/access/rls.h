@@ -9,6 +9,7 @@
 
 #include <utils/rel.h>
 
+extern bool tp_rls_allowed_for_current_utility(void);
 extern void tp_check_bm25_build_allowed(Relation heap);
 extern bool tp_check_bm25_index_create_allowed(Oid indexrelid);
 extern void tp_check_bm25_hierarchy_allowed(Oid relid);
