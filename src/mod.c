@@ -1519,6 +1519,43 @@ tp_bulk_move_preflight(AlterTableMoveAllStmt *stmt, Oid *source_tablespace)
 }
 
 static bool
+tp_bulk_move_has_unauthorized_index(Oid tablespace_oid, List *owner_oids)
+{
+	Relation	class_rel;
+	SysScanDesc scan;
+	HeapTuple	tuple;
+	bool		unauthorized = false;
+
+	class_rel = table_open(RelationRelationId, AccessShareLock);
+	scan = systable_beginscan(class_rel, InvalidOid, false, NULL, 0, NULL);
+	while ((tuple = systable_getnext(scan)) != NULL)
+	{
+		Form_pg_class class_form = (Form_pg_class)GETSTRUCT(tuple);
+
+		if (class_form->reltablespace != tablespace_oid ||
+			(class_form->relkind != RELKIND_INDEX &&
+			 class_form->relkind != RELKIND_PARTITIONED_INDEX) ||
+			IsCatalogNamespace(class_form->relnamespace) ||
+			class_form->relisshared ||
+			isAnyTempNamespace(class_form->relnamespace) ||
+			IsToastNamespace(class_form->relnamespace) ||
+			(owner_oids != NIL &&
+			 !list_member_oid(owner_oids, class_form->relowner)))
+			continue;
+
+		if (!object_ownercheck(
+					RelationRelationId, class_form->oid, GetUserId()))
+		{
+			unauthorized = true;
+			break;
+		}
+	}
+	systable_endscan(scan);
+	table_close(class_rel, AccessShareLock);
+	return unauthorized;
+}
+
+static bool
 tp_can_maintain_relation(Oid relation_oid)
 {
 	return pg_class_aclcheck(relation_oid, GetUserId(), ACL_MAINTAIN) ==
@@ -2471,23 +2508,6 @@ tp_vacuum_can_maintain_relation(Oid relation_oid)
 }
 
 static List *
-tp_vacuum_maintainable_indexes(List *indexoids)
-{
-	List	 *eligible = NIL;
-	ListCell *lc;
-
-	foreach (lc, indexoids)
-	{
-		Oid heap_oid = IndexGetRelation(lfirst_oid(lc), true);
-
-		if (OidIsValid(heap_oid) && tp_vacuum_can_maintain_relation(heap_oid))
-			eligible = lappend_oid(eligible, lfirst_oid(lc));
-	}
-	list_free(indexoids);
-	return eligible;
-}
-
-static List *
 tp_vacuum_skip_locked_relation_indexes(Oid relation_oid, bool include_children)
 {
 	List	 *relation_oids;
@@ -2508,6 +2528,39 @@ tp_vacuum_skip_locked_relation_indexes(Oid relation_oid, bool include_children)
 		if (child_oid != relation_oid &&
 			!ConditionalLockRelationOid(child_oid, AccessShareLock))
 			continue;
+		if (!tp_vacuum_can_maintain_relation(child_oid))
+			continue;
+
+		child = try_relation_open(child_oid, NoLock);
+		if (child == NULL)
+			continue;
+		child_indexes = list_copy(RelationGetIndexList(child));
+		relation_close(child, NoLock);
+		indexoids = list_concat_unique_oid(indexoids, child_indexes);
+	}
+	list_free(relation_oids);
+	return indexoids;
+}
+
+static List *
+tp_vacuum_relation_indexes_locked(Oid relation_oid, bool include_children)
+{
+	List	 *relation_oids;
+	List	 *indexoids = NIL;
+	ListCell *lc;
+
+	if (include_children)
+		relation_oids =
+				find_all_inheritors(relation_oid, AccessExclusiveLock, NULL);
+	else
+		relation_oids = list_make1_oid(relation_oid);
+
+	foreach (lc, relation_oids)
+	{
+		Oid		 child_oid = lfirst_oid(lc);
+		Relation child;
+		List	*child_indexes;
+
 		if (!tp_vacuum_can_maintain_relation(child_oid))
 			continue;
 
@@ -2591,18 +2644,16 @@ tp_vacuum_rewrite_indexes(VacuumStmt *stmt)
 			continue;
 		if (!OidIsValid(relation_oid))
 			continue;
-		if (!tp_vacuum_can_maintain_relation(relation_oid))
-			continue;
 
 		if (skip_locked)
 			relation_indexes = tp_vacuum_skip_locked_relation_indexes(
 					relation_oid,
 					vacuum_rel->relation != NULL && vacuum_rel->relation->inh);
 		else
-			relation_indexes = tp_relation_tree_indexes_locked(
-					relation_oid, AccessExclusiveLock);
-		relation_indexes = tp_vacuum_maintainable_indexes(relation_indexes);
-		indexoids		 = list_concat_unique_oid(indexoids, relation_indexes);
+			relation_indexes = tp_vacuum_relation_indexes_locked(
+					relation_oid,
+					vacuum_rel->relation != NULL && vacuum_rel->relation->inh);
+		indexoids = list_concat_unique_oid(indexoids, relation_indexes);
 	}
 	return indexoids;
 }
@@ -3229,23 +3280,28 @@ tp_process_utility_impl(
 
 			if (tp_bulk_move_preflight(stmt, &tablespace_oid))
 			{
-				tp_process_tracked_rewrite(
-						pstmt,
-						queryString,
-						readOnlyTree,
-						context,
-						params,
-						queryEnv,
-						dest,
-						qc,
-						tp_all_bm25_indexes(
-								tp_catalog_tablespace_oid(tablespace_oid),
-								true,
-								owner_oids,
-								!superuser()),
-						stmt->nowait);
-				list_free(owner_oids);
-				return;
+				tablespace_oid = tp_catalog_tablespace_oid(tablespace_oid);
+				if (superuser() || !tp_bulk_move_has_unauthorized_index(
+										   tablespace_oid, owner_oids))
+				{
+					tp_process_tracked_rewrite(
+							pstmt,
+							queryString,
+							readOnlyTree,
+							context,
+							params,
+							queryEnv,
+							dest,
+							qc,
+							tp_all_bm25_indexes(
+									tablespace_oid,
+									true,
+									owner_oids,
+									!superuser()),
+							stmt->nowait);
+					list_free(owner_oids);
+					return;
+				}
 			}
 			list_free(owner_oids);
 		}
@@ -3477,12 +3533,8 @@ tp_process_utility_impl(
 			Oid	  relation_oid;
 			List *owner_targets = NIL;
 
-			relation_oid = RangeVarGetRelidExtended(
-					stmt->relation,
-					AlterTableGetLockLevel(stmt->cmds),
-					stmt->missing_ok ? RVR_MISSING_OK : 0,
-					RangeVarCallbackOwnsRelation,
-					NULL);
+			relation_oid = AlterTableLookupRelation(
+					stmt, AlterTableGetLockLevel(stmt->cmds));
 			if (OidIsValid(relation_oid) &&
 				object_ownercheck(
 						RelationRelationId, relation_oid, GetUserId()))
