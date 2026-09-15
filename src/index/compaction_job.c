@@ -263,8 +263,13 @@ tp_resolve_start_function(Oid extension_oid)
 
 	names = list_make2(
 			makeString(pstrdup("df")), makeString(pstrdup("start")));
+#if PG_VERSION_NUM >= 190000
+	candidates = FuncnameGetCandidates(
+			names, 4, NIL, false, true, false, true, NULL);
+#else
 	candidates =
 			FuncnameGetCandidates(names, 4, NIL, false, true, false, true);
+#endif
 	for (FuncCandidateList candidate = candidates; candidate != NULL;
 		 candidate					 = candidate->next)
 	{
@@ -1867,10 +1872,10 @@ tp_build_worker_queries(
 			"pg_catalog.oid,pg_catalog.oid)",
 			objects->step_function);
 	step_signature_literal = quote_literal_cstr(step_signature);
-	current_signature = psprintf(
-			"%s(pg_catalog.oid,pg_catalog.oid,pg_catalog.oid,"
-			"pg_catalog.oid,pg_catalog.oid)",
-			objects->current_function);
+	current_signature	   = psprintf(
+			 "%s(pg_catalog.oid,pg_catalog.oid,pg_catalog.oid,"
+				 "pg_catalog.oid,pg_catalog.oid)",
+			 objects->current_function);
 	current_signature_literal = quote_literal_cstr(current_signature);
 
 	*step_sql = psprintf(

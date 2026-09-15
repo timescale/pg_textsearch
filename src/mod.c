@@ -6,6 +6,7 @@
  */
 #include <postgres.h>
 
+#include <access/htup_details.h>
 #include <access/relation.h>
 #include <access/reloptions.h>
 #include <access/table.h>
@@ -2179,7 +2180,9 @@ tp_vacuum_rewrite_indexes(VacuumStmt *stmt)
 					vacuum_rel->relation, AccessShareLock, true);
 		if (!OidIsValid(relation_oid))
 			continue;
-		if (!tp_can_maintain_relation(relation_oid))
+		if (!object_ownercheck(
+					DatabaseRelationId, MyDatabaseId, GetUserId()) &&
+			!tp_can_maintain_relation(relation_oid))
 			continue;
 
 		relation_indexes = tp_relation_tree_indexes_locked(
@@ -2190,11 +2193,24 @@ tp_vacuum_rewrite_indexes(VacuumStmt *stmt)
 }
 
 static List *
-tp_cluster_rewrite_indexes(ClusterStmt *stmt, bool *multi_transaction)
+tp_cluster_rewrite_indexes(
+#if PG_VERSION_NUM >= 190000
+		RepackStmt *stmt,
+#else
+		ClusterStmt *stmt,
+#endif
+		bool *multi_transaction)
 {
-	Oid relation_oid;
+	RangeVar *relation;
+	Oid		  relation_oid;
 
-	if (stmt->relation == NULL)
+#if PG_VERSION_NUM >= 190000
+	relation = stmt->relation == NULL ? NULL : stmt->relation->relation;
+#else
+	relation = stmt->relation;
+#endif
+
+	if (relation == NULL)
 	{
 		*multi_transaction = true;
 		return tp_maintainable_indexes(
@@ -2202,7 +2218,7 @@ tp_cluster_rewrite_indexes(ClusterStmt *stmt, bool *multi_transaction)
 	}
 
 	relation_oid = RangeVarGetRelidExtended(
-			stmt->relation,
+			relation,
 			AccessExclusiveLock,
 			0,
 			RangeVarCallbackMaintainsTable,
@@ -2538,11 +2554,21 @@ tp_process_utility_impl(
 		return;
 	}
 
+#if PG_VERSION_NUM >= 190000
+	if (IsA(parsetree, RepackStmt) &&
+		castNode(RepackStmt, parsetree)->command == REPACK_COMMAND_CLUSTER)
+#else
 	if (IsA(parsetree, ClusterStmt))
+#endif
 	{
-		bool  multi_transaction;
+		bool multi_transaction;
+#if PG_VERSION_NUM >= 190000
+		List *indexoids = tp_cluster_rewrite_indexes(
+				castNode(RepackStmt, parsetree), &multi_transaction);
+#else
 		List *indexoids = tp_cluster_rewrite_indexes(
 				castNode(ClusterStmt, parsetree), &multi_transaction);
+#endif
 
 		if (multi_transaction)
 			PreventInTransactionBlock(

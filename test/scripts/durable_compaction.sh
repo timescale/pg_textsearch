@@ -1110,7 +1110,7 @@ test_reindex_nonrelation_passthrough() {
 }
 
 test_failed_bulk_reindex_reconciliation() {
-    local index_oid job_after job_before reindex_error
+    local failure_value index_oid job_after job_before reindex_error
 
     sql_super -c "CREATE SCHEMA lifecycle_reindex_failure
                    AUTHORIZATION durable_owner;" >/dev/null
@@ -1131,7 +1131,7 @@ IMMUTABLE
 AS $body$
 BEGIN
     IF pg_catalog.current_setting(
-            'lifecycle.fail_reindex', true) = 'on' THEN
+            'lifecycle.fail_reindex', true) = value THEN
         RAISE EXCEPTION 'intentional later REINDEX failure';
     END IF;
     RETURN value;
@@ -1141,14 +1141,43 @@ $body$;
 CREATE TABLE lifecycle_reindex_failure.second_docs (body text);
 INSERT INTO lifecycle_reindex_failure.second_docs VALUES ('two');
 CREATE INDEX second_docs_idx
+    ON lifecycle_reindex_failure.second_docs USING bm25(body)
+    WITH (text_config = 'english',
+          compaction = 'background',
+          compaction_schedule = '0 0 1 1 *');
+CREATE INDEX first_docs_fail_idx
+    ON lifecycle_reindex_failure.first_docs
+    (lifecycle_reindex_failure.fail_when_enabled(body));
+CREATE INDEX second_docs_fail_idx
     ON lifecycle_reindex_failure.second_docs
     (lifecycle_reindex_failure.fail_when_enabled(body));
 SQL
-    index_oid="$(sql_super -c "SELECT
-        'lifecycle_reindex_failure.first_docs_idx'::regclass::oid;")"
+    index_oid="$(sql_super -c "
+        SELECT pg_catalog.format(
+                   '%I.%I', namespace.nspname, relation.relname || '_idx'
+               )::regclass::oid
+        FROM pg_catalog.pg_class AS relation
+        JOIN pg_catalog.pg_namespace AS namespace
+          ON namespace.oid = relation.relnamespace
+        WHERE namespace.nspname = 'lifecycle_reindex_failure'
+          AND relation.relname IN ('first_docs', 'second_docs')
+        ORDER BY relation.ctid
+        LIMIT 1;")"
+    failure_value="$(sql_super -c "
+        SELECT CASE relation.relname
+                 WHEN 'first_docs' THEN 'one'
+                 ELSE 'two'
+               END
+        FROM pg_catalog.pg_class AS relation
+        JOIN pg_catalog.pg_namespace AS namespace
+          ON namespace.oid = relation.relnamespace
+        WHERE namespace.nspname = 'lifecycle_reindex_failure'
+          AND relation.relname IN ('first_docs', 'second_docs')
+        ORDER BY relation.ctid DESC
+        LIMIT 1;")"
     job_before="$(current_generation_job_id "${index_oid}")"
 
-    if reindex_error="$(PGOPTIONS='-c lifecycle.fail_reindex=on' \
+    if reindex_error="$(PGOPTIONS="-c lifecycle.fail_reindex=${failure_value}" \
         sql_as durable_owner -c \
         "REINDEX SCHEMA lifecycle_reindex_failure;" 2>&1)"; then
         error "bulk REINDEX failure test unexpectedly succeeded"
