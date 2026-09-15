@@ -746,19 +746,30 @@ tp_process_utility(
 
 		if (stmt->accessMethod && strcmp(stmt->accessMethod, "bm25") == 0)
 		{
-			if (!stmt->concurrent)
-			{
-				Oid relid = RangeVarGetRelidExtended(
-						stmt->relation,
-						ShareLock,
-						0,
-						RangeVarCallbackOwnsRelation,
-						NULL);
-				Relation rel = table_open(relid, NoLock);
+			LOCKMODE lockmode;
+			Oid		 relid;
+			Relation rel;
 
-				tp_check_bm25_build_allowed(rel);
-				table_close(rel, NoLock);
+			if (stmt->concurrent)
+			{
+				PreventInTransactionBlock(
+						context == PROCESS_UTILITY_TOPLEVEL,
+						"CREATE INDEX CONCURRENTLY");
+				lockmode = ShareUpdateExclusiveLock;
 			}
+			else
+				lockmode = ShareLock;
+
+			relid = RangeVarGetRelidExtended(
+					stmt->relation,
+					lockmode,
+					0,
+					RangeVarCallbackOwnsRelation,
+					NULL);
+			rel = table_open(relid, NoLock);
+
+			tp_check_bm25_build_allowed(rel);
+			table_close(rel, NoLock);
 
 			tp_build_progress_begin();
 

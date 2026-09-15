@@ -34,6 +34,13 @@ CREATE INDEX CONCURRENTLY rls_concurrent_idx
     ON rls_before_index USING bm25(content)
     WITH (text_config='english');
 ROLLBACK;
+CREATE INDEX CONCURRENTLY rls_concurrent_top_idx
+    ON rls_before_index USING bm25(content)
+    WITH (text_config='english');
+\pset format unaligned
+SELECT to_regclass('rls_concurrent_top_idx') IS NULL
+    AS no_index_catalog_entry;
+\pset format aligned
 CREATE INDEX rls_before_index_idx ON rls_before_index USING bm25(content)
     WITH (text_config='english');
 \set VERBOSITY default
