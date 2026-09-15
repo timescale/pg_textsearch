@@ -2499,12 +2499,35 @@ SQL
         wait "${blocker_pid}" 2>/dev/null || true
         error "VACUUM FULL SKIP_LOCKED blocked or failed: ${vacuum_output}"
     fi
-    kill "${blocker_pid}" 2>/dev/null || true
+    sql_super -c "SELECT pg_catalog.pg_terminate_backend(pid)
+      FROM pg_catalog.pg_stat_activity
+      WHERE application_name = 'lifecycle-vacuum-skip-lock';" >/dev/null
     wait "${blocker_pid}" 2>/dev/null || true
+    for _ in $(seq 1 100); do
+        if [ "$(sql_super -c "SELECT count(*)
+              FROM pg_catalog.pg_locks
+              WHERE relation =
+                    'public.lifecycle_skip_locked_docs'::regclass
+                AND mode = 'AccessExclusiveLock'
+                AND granted;")" = "0" ]; then
+            break
+        fi
+        sleep 0.1
+    done
 
     assert_eq "VACUUM FULL SKIP_LOCKED leaves the workflow unchanged" \
         "${job_before}" "$(current_generation_job_id "${index_oid}")"
     log "PASS: VACUUM FULL SKIP_LOCKED preserves core lock skipping"
+
+    if ! vacuum_output="$(sql_as durable_owner -c \
+        "VACUUM (FULL, SKIP_LOCKED)
+           public.lifecycle_skip_locked_docs;" 2>&1)"; then
+        error "unlocked VACUUM FULL SKIP_LOCKED failed: ${vacuum_output}"
+    fi
+    if [ "$(current_generation_job_id "${index_oid}")" = "${job_before}" ]; then
+        error "unlocked VACUUM FULL SKIP_LOCKED did not reconcile the workflow"
+    fi
+    log "PASS: unlocked VACUUM FULL SKIP_LOCKED reconciles the workflow"
 
     sql_super -c \
         "DROP TABLE public.lifecycle_skip_locked_docs;" >/dev/null
