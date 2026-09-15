@@ -152,13 +152,11 @@ static ProcessUtility_hook_type prev_process_utility_hook = NULL;
 typedef struct TpProcessUtilityContext
 {
 	struct TpProcessUtilityContext *previous;
-	bool							track_index_build;
 	bool							check_rls_enable;
 	bool							check_hierarchy_change;
 	bool							serialize_rls_ddl;
 	bool							allow_rls;
 	bool							rls_ddl_lock_acquired;
-	bool							build_progress_started;
 	LOCKMODE						rls_ddl_lock_mode;
 	Oid								rls_ddl_lock_object;
 	List						   *altered_relids;
@@ -638,17 +636,7 @@ tp_object_access(
 
 	if (access == OAT_POST_CREATE && classId == RelationRelationId &&
 		subId == 0)
-	{
-		bool is_bm25 = tp_check_bm25_index_create_allowed(objectId);
-
-		if (is_bm25 && current_utility_context != NULL &&
-			current_utility_context->track_index_build &&
-			!current_utility_context->build_progress_started)
-		{
-			tp_build_progress_begin();
-			current_utility_context->build_progress_started = true;
-		}
-	}
+		tp_check_bm25_index_create_allowed(objectId);
 
 	if (access == OAT_POST_ALTER && current_utility_context != NULL &&
 		subId == 0)
@@ -817,7 +805,6 @@ initialize_utility_context(
 	{
 		IndexStmt *index_stmt = castNode(IndexStmt, stmt);
 
-		utility_context->track_index_build = true;
 		utility_context->serialize_rls_ddl = index_stmt->accessMethod !=
 													 NULL &&
 											 strcmp(index_stmt->accessMethod,
@@ -940,8 +927,8 @@ call_next_process_utility(
 
 /*
  * ProcessUtility hook - isolate each utility command's object-access events,
- * post-validate ALTER TABLE catalog state, and aggregate partitioned build
- * progress only after an actual BM25 index object is created.
+ * post-validate ALTER TABLE catalog state, and preserve partitioned build
+ * progress tracking.
  */
 static void
 tp_process_utility(
@@ -955,10 +942,20 @@ tp_process_utility(
 		QueryCompletion		 *qc)
 {
 	TpProcessUtilityContext *utility_context;
+	Node					*stmt			   = pstmt->utilityStmt;
+	bool					 track_index_build = false;
+
+	if (IsA(stmt, IndexStmt))
+	{
+		IndexStmt *index_stmt = castNode(IndexStmt, stmt);
+
+		track_index_build = index_stmt->accessMethod != NULL &&
+							strcmp(index_stmt->accessMethod, "bm25") == 0;
+	}
 
 	utility_context =
 			MemoryContextAllocZero(TopMemoryContext, sizeof(*utility_context));
-	initialize_utility_context(utility_context, pstmt->utilityStmt);
+	initialize_utility_context(utility_context, stmt);
 	current_utility_context = utility_context;
 
 	PG_TRY();
@@ -974,6 +971,9 @@ tp_process_utility(
 					utility_context->rls_ddl_lock_object);
 		}
 
+		if (track_index_build)
+			tp_build_progress_begin();
+
 		call_next_process_utility(
 				pstmt,
 				queryString,
@@ -986,11 +986,8 @@ tp_process_utility(
 
 		validate_utility_context(utility_context);
 
-		if (utility_context->build_progress_started)
-		{
-			utility_context->build_progress_started = false;
+		if (track_index_build)
 			tp_build_progress_end();
-		}
 
 		if (utility_context->rls_ddl_lock_acquired)
 		{
@@ -1009,11 +1006,6 @@ tp_process_utility(
 	PG_CATCH();
 	{
 		current_utility_context = utility_context->previous;
-		if (utility_context->build_progress_started)
-		{
-			utility_context->build_progress_started = false;
-			tp_build_progress_abort();
-		}
 		if (utility_context->rls_ddl_lock_acquired)
 		{
 			release_rls_ddl_lock(

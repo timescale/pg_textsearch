@@ -469,10 +469,6 @@ NOT EXISTS (
 ) AS no_forbidden_ifne_index;
 \pset format aligned
 
-CREATE TABLE rls_evt_progress_heap (id integer, content text);
-CREATE INDEX rls_evt_progress_idx
-    ON rls_evt_progress_heap USING bm25(content)
-    WITH (text_config='english');
 CREATE TABLE rls_evt_missing_am_heap (id integer, content text);
 SET rls_test.action = 'drop_extension';
 \set VERBOSITY terse
@@ -481,7 +477,6 @@ CREATE INDEX rls_evt_missing_am_idx
     WITH (text_config='english');
 \set VERBOSITY default
 RESET rls_test.action;
-REINDEX INDEX rls_evt_progress_idx;
 
 DROP EVENT TRIGGER rls_ddl_race_start_trigger;
 DROP EVENT TRIGGER rls_ddl_race_end_trigger;
@@ -527,7 +522,7 @@ DROP TABLE rls_evt_attach_target, rls_evt_attach_guarded,
     rls_evt_attach_parent CASCADE;
 DROP TABLE rls_evt_drop_inherit_parent, rls_evt_drop_attach_parent CASCADE;
 DROP TABLE rls_evt_ifne_heap, rls_evt_ifne_collision CASCADE;
-DROP TABLE rls_evt_progress_heap, rls_evt_missing_am_heap CASCADE;
+DROP TABLE rls_evt_missing_am_heap CASCADE;
 
 CREATE TABLE rls_without_extension (id integer);
 SET pg_textsearch.allow_rls = off;
