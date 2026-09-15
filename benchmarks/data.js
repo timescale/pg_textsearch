@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789455889394,
+  "lastUpdate": 1789455892823,
   "repoUrl": "https://github.com/timescale/pg_textsearch",
   "entries": {
     "cranfield Benchmarks": [
@@ -261273,6 +261273,88 @@ window.BENCHMARK_DATA = {
           {
             "name": "paradedb_msmarco_insert (8.8M docs) - Index Size",
             "value": 950.92,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tjgreen@gmail.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "f8616b8498a665570cfa22b9676eabb3b8f6e66b",
+          "message": "Harden segment-build overflow guards against final-term wraparound (#458)\n\nFollow-up hardening to the uint32 limits from #432, fixing two overflow\ngaps in segment build.\n\n**`docs_capacity` doubling wraparound.** `build_context_grow_docs()`\ndoubled a `uint32` with no overflow check; at `2^31` the doubling\nwrapped to `0`, so `repalloc_huge` shrank the `fieldnorms`/`ctids`\narrays and the next write ran past their end. Now caps growth at\n`UINT32_MAX - 1` and sizes reallocations with `mul_size`.\n\n**String-pool offset guard.** The guard only checked the starting\noffset, so a final term crossing `PG_UINT32_MAX` was written past the\nformat limit. Now checks the entry size against the remaining range\nbefore assigning. Applied to all four copies: both paths in\n`build_context.c`, `tp_write_segment()`, and\n`write_merged_segment_to_sink()`.\n\nGuard-only changes; the trigger paths need a >4 GB string pool or >2^31\ndocuments.\n\n**Validation:** `make installcheck` (75/75), `make format-check` clean,\nPG 17.\n\n---------\n\nCo-authored-by: Todd J. Green <1738591+tjgreen42@users.noreply.github.com>\nCo-authored-by: Copilot <223556219+Copilot@users.noreply.github.com>",
+          "timestamp": "2026-09-14T16:42:18Z",
+          "url": "https://github.com/timescale/pg_textsearch/commit/f8616b8498a665570cfa22b9676eabb3b8f6e66b"
+        },
+        "date": 1789455892260,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "paradedb_msmarco_insert (8.8M docs) - Index Build Time",
+            "value": 4130.952,
+            "unit": "ms"
+          },
+          {
+            "name": "paradedb_msmarco_insert (8.8M docs) - Insert Time",
+            "value": 271858.237,
+            "unit": "ms"
+          },
+          {
+            "name": "paradedb_msmarco_insert (8.8M docs) - 1 Token Query (p50)",
+            "value": 107.78,
+            "unit": "ms"
+          },
+          {
+            "name": "paradedb_msmarco_insert (8.8M docs) - 2 Token Query (p50)",
+            "value": 105.07,
+            "unit": "ms"
+          },
+          {
+            "name": "paradedb_msmarco_insert (8.8M docs) - 3 Token Query (p50)",
+            "value": 111.87,
+            "unit": "ms"
+          },
+          {
+            "name": "paradedb_msmarco_insert (8.8M docs) - 4 Token Query (p50)",
+            "value": 114.07,
+            "unit": "ms"
+          },
+          {
+            "name": "paradedb_msmarco_insert (8.8M docs) - 5 Token Query (p50)",
+            "value": 115.31,
+            "unit": "ms"
+          },
+          {
+            "name": "paradedb_msmarco_insert (8.8M docs) - 6 Token Query (p50)",
+            "value": 117.4,
+            "unit": "ms"
+          },
+          {
+            "name": "paradedb_msmarco_insert (8.8M docs) - 7 Token Query (p50)",
+            "value": 116.77,
+            "unit": "ms"
+          },
+          {
+            "name": "paradedb_msmarco_insert (8.8M docs) - 8+ Token Query (p50)",
+            "value": 119.11,
+            "unit": "ms"
+          },
+          {
+            "name": "paradedb_msmarco_insert (8.8M docs) - Throughput (avg ms/query)",
+            "value": 75.78,
+            "unit": "ms"
+          },
+          {
+            "name": "paradedb_msmarco_insert (8.8M docs) - Index Size",
+            "value": 952.92,
             "unit": "MB"
           }
         ]
