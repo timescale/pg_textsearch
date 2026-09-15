@@ -439,8 +439,15 @@ precommit_reconcile_body="$(
     sed -n '/^tp_reconcile_managed_intents_at_precommit(/,/^}/p' \
         "${MODULE_SOURCE}"
 )"
+reindex_state_intent_body="$(
+    sed -n '/^tp_collect_reindex_state_intents(/,/^}/p' "${MODULE_SOURCE}"
+)"
 if ! grep -Fq "tp_managed_reconciling" <<<"${utility_wrapper_body}" ||
     ! grep -Fq "GrantStmt" <<<"${utility_wrapper_body}" ||
+    ! grep -Fq "tp_post_publication_reconciliation" \
+        <<<"${reindex_state_intent_body}" ||
+    ! grep -Fq "tp_post_publication_reconciliation" \
+        <<<"${precommit_reconcile_body}" ||
     ! grep -Fq "BeginInternalSubTransaction" \
         <<<"${precommit_reconcile_body}" ||
     ! grep -Fq "ERRCODE_QUERY_CANCELED" \
