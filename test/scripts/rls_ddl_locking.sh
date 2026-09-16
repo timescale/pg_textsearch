@@ -13,8 +13,10 @@ LOGFILE="${DATA_DIR}/postgres.log"
 SESSION_A_INPUT="${DATA_DIR}/session_a.in"
 SESSION_A_OUTPUT="${DATA_DIR}/session_a.out"
 SESSION_B_OUTPUT="${DATA_DIR}/session_b.out"
+SESSION_C_OUTPUT="${DATA_DIR}/session_c.out"
 SESSION_A_PID=
 SESSION_B_PID=
+SESSION_C_PID=
 PARTITION_ORDER_FAILED=0
 
 cleanup() {
@@ -30,6 +32,10 @@ cleanup() {
     if [ -n "${SESSION_B_PID}" ] && kill -0 "${SESSION_B_PID}" 2>/dev/null; then
         kill "${SESSION_B_PID}" 2>/dev/null || true
         wait "${SESSION_B_PID}" 2>/dev/null || true
+    fi
+    if [ -n "${SESSION_C_PID}" ] && kill -0 "${SESSION_C_PID}" 2>/dev/null; then
+        kill "${SESSION_C_PID}" 2>/dev/null || true
+        wait "${SESSION_C_PID}" 2>/dev/null || true
     fi
     if [ -f "${DATA_DIR}/postmaster.pid" ]; then
         pg_ctl stop -D "${DATA_DIR}" -m fast -w >/dev/null 2>&1 ||
@@ -127,7 +133,99 @@ CREATE TABLE noop_inherit_parent (id integer);
 CREATE TABLE noop_inherit_child () INHERITS (noop_inherit_parent);
 CREATE TABLE noop_reindex (id integer);
 CREATE INDEX noop_reindex_idx ON noop_reindex(id);
+CREATE TABLE extension_replace_parent (id integer, content text);
+CREATE TABLE extension_replace_child () INHERITS (extension_replace_parent);
 SQL
+
+rm -f "${SESSION_A_INPUT}" "${SESSION_A_OUTPUT}"
+mkfifo "${SESSION_A_INPUT}"
+PGAPPNAME=rls-extension-replace-session-a \
+    psql -X -h "${DATA_DIR}" -p "${TEST_PORT}" -d "${TEST_DB}" \
+    -v ON_ERROR_STOP=1 < "${SESSION_A_INPUT}" \
+    > "${SESSION_A_OUTPUT}" 2>&1 &
+SESSION_A_PID=$!
+exec 3> "${SESSION_A_INPUT}"
+printf '%s\n' \
+    "BEGIN;" \
+    "DROP EXTENSION pg_textsearch CASCADE;" \
+    "CREATE EXTENSION pg_textsearch;" >&3
+
+wait_for_true "
+    SELECT state = 'idle in transaction'
+    FROM pg_stat_activity
+    WHERE application_name = 'rls-extension-replace-session-a';
+" "session A to replace the extension"
+
+PGAPPNAME=rls-extension-replace-session-b \
+    psql -X -h "${DATA_DIR}" -p "${TEST_PORT}" -d "${TEST_DB}" \
+    -v ON_ERROR_STOP=1 \
+    -c "SET pg_textsearch.allow_rls = off;
+        BEGIN;
+        ALTER TABLE extension_replace_parent ENABLE ROW LEVEL SECURITY;
+        SELECT pg_sleep(5);
+        COMMIT;" \
+    > "${SESSION_B_OUTPUT}" 2>&1 &
+SESSION_B_PID=$!
+
+wait_for_true "
+    SELECT wait_event_type = 'Lock'
+    FROM pg_stat_activity
+    WHERE application_name = 'rls-extension-replace-session-b';
+" "session B to wait for extension replacement"
+
+release_session_a
+
+wait_for_true "
+    SELECT wait_event_type = 'Timeout'
+    FROM pg_stat_activity
+    WHERE application_name = 'rls-extension-replace-session-b';
+" "session B to finish RLS enablement"
+
+PGAPPNAME=rls-extension-replace-session-c \
+    psql -X -h "${DATA_DIR}" -p "${TEST_PORT}" -d "${TEST_DB}" \
+    -v ON_ERROR_STOP=1 \
+    -c "SET pg_textsearch.allow_rls = off;
+        CREATE INDEX extension_replace_child_idx
+        ON extension_replace_child USING bm25(content)
+        WITH (text_config='english');" \
+    > "${SESSION_C_OUTPUT}" 2>&1 &
+SESSION_C_PID=$!
+
+set +e
+wait "${SESSION_B_PID}"
+session_b_status=$?
+SESSION_B_PID=
+wait "${SESSION_C_PID}"
+session_c_status=$?
+SESSION_C_PID=
+set -e
+
+if [ "${session_b_status}" -ne 0 ]; then
+    echo "RLS enablement failed after extension replacement" >&2
+    cat "${SESSION_B_OUTPUT}" >&2
+    exit 1
+fi
+if [ "${session_c_status}" -eq 0 ]; then
+    echo "Extension replacement changed the RLS DDL lock identity" >&2
+    exit 1
+fi
+if ! grep -q "BM25 indexes are not allowed on row-level security" \
+    "${SESSION_C_OUTPUT}"; then
+    echo "Missing expected post-replacement RLS rejection" >&2
+    cat "${SESSION_C_OUTPUT}" >&2
+    exit 1
+fi
+
+extension_replace_state=$(run_value "
+    SELECT relrowsecurity,
+           to_regclass('extension_replace_child_idx') IS NULL
+    FROM pg_class
+    WHERE oid = 'extension_replace_parent'::regclass;
+")
+if [ "${extension_replace_state}" != "t|t" ]; then
+    echo "Extension replacement allowed opposite hierarchy mutations" >&2
+    exit 1
+fi
 
 rm -f "${SESSION_A_INPUT}" "${SESSION_A_OUTPUT}"
 mkfifo "${SESSION_A_INPUT}"
@@ -157,11 +255,7 @@ noop_object_locks=$(run_value "
     WHERE a.application_name = 'rls-noop-session'
       AND l.locktype = 'object'
       AND l.classid = 'pg_extension'::regclass
-      AND l.objid = (
-          SELECT oid
-          FROM pg_extension
-          WHERE extname = 'pg_textsearch'
-      )
+      AND l.objid = 0
       AND l.granted;
 ")
 if [ "${noop_object_locks}" != "0" ]; then
@@ -237,11 +331,7 @@ wait_for_true "
           AND a.wait_event_type = 'Timeout'
           AND l.locktype = 'object'
           AND l.classid = 'pg_extension'::regclass
-          AND l.objid = (
-              SELECT oid
-              FROM pg_extension
-              WHERE extname = 'pg_textsearch'
-          )
+          AND l.objid = 0
           AND l.mode = 'ShareLock'
           AND l.granted
     );
@@ -356,11 +446,7 @@ wait_for_true "
         WHERE a.application_name = 'rls-end-trigger-session-b'
           AND object_lock.locktype = 'object'
           AND object_lock.classid = 'pg_extension'::regclass
-          AND object_lock.objid = (
-              SELECT oid
-              FROM pg_extension
-              WHERE extname = 'pg_textsearch'
-          )
+          AND object_lock.objid = 0
           AND object_lock.mode = 'ExclusiveLock'
           AND object_lock.granted
           AND relation_lock.locktype = 'relation'
@@ -421,11 +507,7 @@ wait_for_true "
         WHERE a.application_name = 'rls-lock-session-b'
           AND l.locktype = 'object'
           AND l.classid = 'pg_extension'::regclass
-          AND l.objid = (
-              SELECT oid
-              FROM pg_extension
-              WHERE extname = 'pg_textsearch'
-          )
+          AND l.objid = 0
           AND l.mode = 'ExclusiveLock'
           AND NOT l.granted
     );
@@ -499,11 +581,7 @@ wait_for_true "
         WHERE a.application_name = 'rls-lock-session-b'
           AND l.locktype = 'object'
           AND l.classid = 'pg_extension'::regclass
-          AND l.objid = (
-              SELECT oid
-              FROM pg_extension
-              WHERE extname = 'pg_textsearch'
-          )
+          AND l.objid = 0
           AND l.mode = 'ExclusiveLock'
           AND NOT l.granted
     );
@@ -588,11 +666,7 @@ object_locks=$(run_value "
     WHERE a.application_name = 'rls-lock-session-b'
       AND l.locktype = 'object'
       AND l.classid = 'pg_extension'::regclass
-      AND l.objid = (
-          SELECT oid
-          FROM pg_extension
-          WHERE extname = 'pg_textsearch'
-      )
+      AND l.objid = 0
       AND l.mode = 'ExclusiveLock'
       AND l.granted;
 ")
@@ -635,11 +709,7 @@ BEGIN
             WHERE pid = pg_backend_pid()
               AND locktype = 'object'
               AND classid = 'pg_extension'::regclass
-              AND objid = (
-                  SELECT oid
-                  FROM pg_extension
-                  WHERE extname = 'pg_textsearch'
-              )
+              AND objid = 0
               AND mode = 'ShareLock'
               AND granted
         ) THEN
@@ -679,11 +749,7 @@ wait_for_true "
           AND a.state = 'idle in transaction'
           AND l.locktype = 'object'
           AND l.classid = 'pg_extension'::regclass
-          AND l.objid = (
-              SELECT oid
-              FROM pg_extension
-              WHERE extname = 'pg_textsearch'
-          )
+          AND l.objid = 0
           AND l.mode = 'ExclusiveLock'
           AND l.granted
     );
@@ -708,11 +774,7 @@ wait_for_true "
         WHERE a.application_name = 'rls-policy-pin-session-b'
           AND l.locktype = 'object'
           AND l.classid = 'pg_extension'::regclass
-          AND l.objid = (
-              SELECT oid
-              FROM pg_extension
-              WHERE extname = 'pg_textsearch'
-          )
+          AND l.objid = 0
           AND l.mode = 'ExclusiveLock'
           AND NOT l.granted
     );

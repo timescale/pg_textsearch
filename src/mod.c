@@ -152,6 +152,8 @@ static ProcessUtility_hook_type prev_process_utility_hook = NULL;
 typedef struct TpProcessUtilityContext
 {
 	struct TpProcessUtilityContext *previous;
+	bool							extension_lifecycle;
+	bool							track_index_build;
 	bool							check_rls_enable;
 	bool							check_hierarchy_change;
 	bool							track_relation_create;
@@ -160,6 +162,7 @@ typedef struct TpProcessUtilityContext
 	bool							allow_rls;
 	bool							rls_ddl_lock_acquired;
 	LOCKMODE						rls_ddl_lock_mode;
+	bool							build_progress_started;
 	Oid								rls_ddl_lock_object;
 	List						   *altered_relids;
 	List						   *hierarchy_relids;
@@ -185,35 +188,41 @@ tp_rls_note_bm25_build(void)
 
 /*
  * Commands allowed to create an RLS/BM25 combination take a shared lock;
- * commands enforcing the restriction take an exclusive lock.  Session
- * ownership survives internal commits.  After a real protected change
- * completes, transaction ownership covers the interval through the caller's
- * eventual commit.
+ * commands enforcing the restriction and extension lifecycle commands take
+ * an exclusive lock.  The stable lock serializes across extension OID
+ * replacement, while the current extension-object lock preserves core lock
+ * ordering.  Session ownership survives internal commits; transaction
+ * ownership covers completed protected changes through commit.
  *
  * Nested acquisition without an inherited lock, or an exclusive request while
  * this backend holds only a shared lock, must not wait.  Either case can
  * invert lock order with an outer command or deadlock with another backend
  * upgrading the same lock.
  */
-static Oid
-acquire_rls_ddl_lock(LOCKMODE lockmode, bool nested)
+static bool
+acquire_rls_ddl_lock(
+		LOCKMODE lockmode,
+		bool	 nested,
+		bool	 extension_lifecycle,
+		Oid		*extension_oid_out)
 {
-	LOCKTAG			  tag;
+	LOCKTAG			  stable_tag;
+	LOCKTAG			  extension_tag;
 	LockAcquireResult result;
-	Oid				  extension_oid;
+	Oid				  extension_oid = InvalidOid;
 	bool			  dont_wait;
 
-	extension_oid = get_extension_oid("pg_textsearch", true);
-	if (!OidIsValid(extension_oid))
-		return InvalidOid;
+	if (!extension_lifecycle &&
+		!OidIsValid(get_extension_oid("pg_textsearch", true)))
+		return false;
 
 	SET_LOCKTAG_OBJECT(
-			tag, MyDatabaseId, ExtensionRelationId, extension_oid, 0);
+			stable_tag, MyDatabaseId, ExtensionRelationId, InvalidOid, 0);
 	dont_wait = (lockmode == ExclusiveLock &&
-				 LockHeldByMe(&tag, ShareLock, false) &&
-				 !LockHeldByMe(&tag, ExclusiveLock, true)) ||
-				(nested && !LockHeldByMe(&tag, lockmode, true));
-	result = LockAcquire(&tag, lockmode, true, dont_wait);
+				 LockHeldByMe(&stable_tag, ShareLock, false) &&
+				 !LockHeldByMe(&stable_tag, ExclusiveLock, true)) ||
+				(nested && !LockHeldByMe(&stable_tag, lockmode, true));
+	result = LockAcquire(&stable_tag, lockmode, true, dont_wait);
 	if (result == LOCKACQUIRE_NOT_AVAIL)
 		ereport(ERROR,
 				(errcode(ERRCODE_LOCK_NOT_AVAILABLE),
@@ -223,20 +232,63 @@ acquire_rls_ddl_lock(LOCKMODE lockmode, bool nested)
 						 "command whose outer command does not hold the "
 						 "pg_textsearch DDL lock."),
 				 errhint("Retry the outer command.")));
-	return extension_oid;
+
+	extension_oid = get_extension_oid("pg_textsearch", true);
+	if (OidIsValid(extension_oid))
+	{
+		SET_LOCKTAG_OBJECT(
+				extension_tag,
+				MyDatabaseId,
+				ExtensionRelationId,
+				extension_oid,
+				0);
+		result = LockAcquire(&extension_tag, lockmode, true, dont_wait);
+		if (result == LOCKACQUIRE_NOT_AVAIL)
+		{
+			(void)LockRelease(&stable_tag, lockmode, true);
+			ereport(ERROR,
+					(errcode(ERRCODE_LOCK_NOT_AVAILABLE),
+					 errmsg("could not acquire the pg_textsearch RLS DDL "
+							"lock"),
+					 errdetail(
+							 "Protected DDL was invoked from a nested utility "
+							 "command whose outer command does not hold the "
+							 "pg_textsearch DDL lock."),
+					 errhint("Retry the outer command.")));
+		}
+	}
+
+	*extension_oid_out = extension_oid;
+	return true;
 }
 
 static void
 release_rls_ddl_lock(
 		Oid extension_oid, LOCKMODE lockmode, bool keep_transaction_lock)
 {
-	LOCKTAG tag;
+	LOCKTAG stable_tag;
+	LOCKTAG extension_tag;
 
 	SET_LOCKTAG_OBJECT(
-			tag, MyDatabaseId, ExtensionRelationId, extension_oid, 0);
+			stable_tag, MyDatabaseId, ExtensionRelationId, InvalidOid, 0);
+	if (OidIsValid(extension_oid))
+		SET_LOCKTAG_OBJECT(
+				extension_tag,
+				MyDatabaseId,
+				ExtensionRelationId,
+				extension_oid,
+				0);
+
 	if (keep_transaction_lock)
-		(void)LockAcquire(&tag, lockmode, false, false);
-	(void)LockRelease(&tag, lockmode, true);
+	{
+		(void)LockAcquire(&stable_tag, lockmode, false, false);
+		if (OidIsValid(extension_oid))
+			(void)LockAcquire(&extension_tag, lockmode, false, false);
+	}
+
+	if (OidIsValid(extension_oid))
+		(void)LockRelease(&extension_tag, lockmode, true);
+	(void)LockRelease(&stable_tag, lockmode, true);
 }
 
 /* Shared memory size calculation */
@@ -669,6 +721,14 @@ tp_object_access(
 	{
 		bool is_bm25 = tp_check_bm25_index_create_allowed(objectId);
 
+		if (is_bm25 && current_utility_context != NULL &&
+			current_utility_context->track_index_build &&
+			!current_utility_context->build_progress_started)
+		{
+			tp_build_progress_begin();
+			current_utility_context->build_progress_started = true;
+		}
+
 		if (current_utility_context != NULL &&
 			(is_bm25 || current_utility_context->track_relation_create))
 			current_utility_context->retain_rls_ddl_lock = true;
@@ -843,10 +903,59 @@ initialize_utility_context(
 	utility_context->previous  = current_utility_context;
 	utility_context->allow_rls = tp_allow_rls;
 
-	if (IsA(stmt, IndexStmt))
+	if (IsA(stmt, CreateExtensionStmt))
+	{
+		CreateExtensionStmt *create_stmt = castNode(CreateExtensionStmt, stmt);
+
+		utility_context->extension_lifecycle = strcmp(create_stmt->extname,
+													  "pg_textsearch") == 0;
+	}
+	else if (IsA(stmt, AlterExtensionStmt))
+	{
+		AlterExtensionStmt *alter_stmt = castNode(AlterExtensionStmt, stmt);
+
+		utility_context->extension_lifecycle = strcmp(alter_stmt->extname,
+													  "pg_textsearch") == 0;
+	}
+	else if (IsA(stmt, AlterExtensionContentsStmt))
+	{
+		AlterExtensionContentsStmt *alter_stmt =
+				castNode(AlterExtensionContentsStmt, stmt);
+
+		utility_context->extension_lifecycle = strcmp(alter_stmt->extname,
+													  "pg_textsearch") == 0;
+	}
+	else if (IsA(stmt, DropStmt))
+	{
+		DropStmt *drop_stmt = castNode(DropStmt, stmt);
+		ListCell *lc;
+
+		if (drop_stmt->removeType == OBJECT_EXTENSION)
+		{
+			foreach (lc, drop_stmt->objects)
+			{
+				List *name = lfirst(lc);
+
+				if (list_length(name) == 1 &&
+					strcmp(strVal(linitial(name)), "pg_textsearch") == 0)
+				{
+					utility_context->extension_lifecycle = true;
+					break;
+				}
+			}
+		}
+	}
+
+	if (utility_context->extension_lifecycle)
+	{
+		utility_context->serialize_rls_ddl	 = true;
+		utility_context->retain_rls_ddl_lock = true;
+	}
+	else if (IsA(stmt, IndexStmt))
 	{
 		IndexStmt *index_stmt = castNode(IndexStmt, stmt);
 
+		utility_context->track_index_build = true;
 		utility_context->serialize_rls_ddl = index_stmt->accessMethod !=
 													 NULL &&
 											 strcmp(index_stmt->accessMethod,
@@ -987,38 +1096,27 @@ tp_process_utility(
 		QueryCompletion		 *qc)
 {
 	TpProcessUtilityContext *utility_context;
-	Node					*stmt			   = pstmt->utilityStmt;
-	bool					 track_index_build = false;
-
-	if (IsA(stmt, IndexStmt))
-	{
-		IndexStmt *index_stmt = castNode(IndexStmt, stmt);
-
-		track_index_build = index_stmt->accessMethod != NULL &&
-							strcmp(index_stmt->accessMethod, "bm25") == 0;
-	}
 
 	utility_context =
 			MemoryContextAllocZero(TopMemoryContext, sizeof(*utility_context));
-	initialize_utility_context(utility_context, stmt);
+	initialize_utility_context(utility_context, pstmt->utilityStmt);
 	current_utility_context = utility_context;
 
 	PG_TRY();
 	{
 		if (utility_context->serialize_rls_ddl)
 		{
-			utility_context->rls_ddl_lock_mode	 = utility_context->allow_rls
-														 ? ShareLock
-														 : ExclusiveLock;
-			utility_context->rls_ddl_lock_object = acquire_rls_ddl_lock(
+			utility_context->rls_ddl_lock_mode =
+					utility_context->extension_lifecycle ||
+									!utility_context->allow_rls
+							? ExclusiveLock
+							: ShareLock;
+			utility_context->rls_ddl_lock_acquired = acquire_rls_ddl_lock(
 					utility_context->rls_ddl_lock_mode,
-					utility_context->previous != NULL);
-			utility_context->rls_ddl_lock_acquired = OidIsValid(
-					utility_context->rls_ddl_lock_object);
+					utility_context->previous != NULL,
+					utility_context->extension_lifecycle,
+					&utility_context->rls_ddl_lock_object);
 		}
-
-		if (track_index_build)
-			tp_build_progress_begin();
 
 		call_next_process_utility(
 				pstmt,
@@ -1032,8 +1130,11 @@ tp_process_utility(
 
 		validate_utility_context(utility_context);
 
-		if (track_index_build)
+		if (utility_context->build_progress_started)
+		{
+			utility_context->build_progress_started = false;
 			tp_build_progress_end();
+		}
 
 		if (utility_context->rls_ddl_lock_acquired)
 		{
@@ -1052,6 +1153,11 @@ tp_process_utility(
 	PG_CATCH();
 	{
 		current_utility_context = utility_context->previous;
+		if (utility_context->build_progress_started)
+		{
+			utility_context->build_progress_started = false;
+			tp_build_progress_abort();
+		}
 		if (utility_context->rls_ddl_lock_acquired)
 		{
 			release_rls_ddl_lock(

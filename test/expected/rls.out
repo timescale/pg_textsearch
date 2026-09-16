@@ -23,7 +23,6 @@ CREATE INDEX IF NOT EXISTS rls_existing_idx
     ON rls_existing USING bm25(content)
     WITH (text_config='english');
 NOTICE:  relation "rls_existing_idx" already exists, skipping
-NOTICE:  BM25 index build completed: 0 documents, avg_length=0.00
 \pset format unaligned
 SELECT indisvalid AS existing_index_valid
 FROM pg_index
@@ -573,6 +572,14 @@ ifne_collision_restored|no_forbidden_ifne_index
 t|t
 (1 row)
 \pset format aligned
+CREATE TABLE rls_evt_progress_heap (id integer, content text);
+CREATE INDEX rls_evt_progress_idx
+    ON rls_evt_progress_heap USING bm25(content)
+    WITH (text_config='english');
+NOTICE:  BM25 index build started for relation rls_evt_progress_idx
+NOTICE:  Using text search configuration: english
+NOTICE:  Using index options: k1=1.20, b=0.75
+NOTICE:  BM25 index build completed: 0 documents, avg_length=0.00
 CREATE TABLE rls_evt_missing_am_heap (id integer, content text);
 SET rls_test.action = 'drop_extension';
 \set VERBOSITY terse
@@ -582,6 +589,11 @@ CREATE INDEX rls_evt_missing_am_idx
 ERROR:  access method "bm25" does not exist
 \set VERBOSITY default
 RESET rls_test.action;
+REINDEX INDEX rls_evt_progress_idx;
+NOTICE:  BM25 index build started for relation rls_evt_progress_idx
+NOTICE:  Using text search configuration: english
+NOTICE:  Using index options: k1=1.20, b=0.75
+NOTICE:  BM25 index build completed: 0 documents, avg_length=0.00
 DROP EVENT TRIGGER rls_ddl_race_start_trigger;
 DROP EVENT TRIGGER rls_ddl_race_end_trigger;
 DROP FUNCTION rls_ddl_race_start();
@@ -626,7 +638,7 @@ DROP TABLE rls_evt_attach_target, rls_evt_attach_guarded,
     rls_evt_attach_parent CASCADE;
 DROP TABLE rls_evt_drop_inherit_parent, rls_evt_drop_attach_parent CASCADE;
 DROP TABLE rls_evt_ifne_heap, rls_evt_ifne_collision CASCADE;
-DROP TABLE rls_evt_missing_am_heap CASCADE;
+DROP TABLE rls_evt_progress_heap, rls_evt_missing_am_heap CASCADE;
 CREATE TABLE rls_without_extension (id integer);
 SET pg_textsearch.allow_rls = off;
 DROP EXTENSION pg_textsearch;
