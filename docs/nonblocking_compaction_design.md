@@ -66,7 +66,8 @@ reader lock lifetime and relies on fair admission to bound exclusive waits.
 - Allow a spill to prepend new L0 segments while compaction builds.
 - Keep compaction cancellable during its long build phase.
 - Preserve alive-bit correctness across VACUUM and compaction.
-- Preserve stock PostgreSQL physical replication through `GenericXLog`.
+- Preserve stock PostgreSQL physical replication without a custom resource
+  manager.
 - Preserve standby-safe deferred reclaim from #380.
 - Keep the compaction engine compatible with inline, manual, callback-driven,
   and #478 managed-background invocation.
@@ -252,7 +253,9 @@ Compaction holds only the heavyweight maintenance lock while it:
 4. collects all displaced source pages;
 5. builds a detached tombstone batch whose tail initially points to
    `InvalidBlockNumber` and whose reclaim stamp is provisionally invalid;
-6. flushes output WAL and dirty relation buffers needed before publication.
+6. flushes output WAL and dirty relation buffers needed before publication;
+7. validates every prepared output segment and detached tombstone link while
+   the structures remain unreachable.
 
 The maintenance lock prevents VACUUM or another compaction from changing the
 selected sources. Concurrent scans read the old graph. Concurrent inserts
@@ -309,8 +312,11 @@ Validation reads the current metapage and level chains. It requires:
   expected order;
 - non-L0 selected runs retain their expected predecessor and remainder;
 - an L0 selected run may have only a newly prepended prefix before it;
-- destination chains remain compatible with the prepared output;
-- output headers and detached tombstones are internally valid.
+- destination chains remain compatible with the prepared output.
+
+Complete prepared-output validation already ran before XID assignment,
+restamping, and reader exclusion. Publication retains only constant-time
+detached-tail checks before attachment.
 
 Concurrent memtable head/tail changes and a changed deferred-free head are
 expected and do not invalidate the plan. Current metapage values, not the
@@ -354,7 +360,14 @@ the FSM. This remains necessary for:
 - other no-extension-load replay contexts.
 
 Tombstone drain keeps its existing exclusive lock and horizon check.
-`hot_standby_feedback = on` remains required on query-serving standbys.
+`hot_standby_feedback = on` remains required on query-serving standbys so
+connected readers normally hold the primary reclaim horizon and complete
+without cancellation. Before a reclaimable tombstone batch enters the FSM,
+drain also emits PostgreSQL's stock `XLOG_BTREE_REUSE_PAGE` conflict-only WAL
+record. Its redo path does not inspect btree storage; it cancels old standby
+snapshots before subsequent WAL can reuse those pages. This protects a query
+that remains active while its standby disconnects and later resumes replay,
+without adding a pg_textsearch resource manager.
 
 ## VACUUM
 
@@ -503,6 +516,9 @@ Required cases:
 4. Pause after the unlocked build, advance primary XIDs, then start a
    hot-standby query on the old graph before publication. Verify its pages are
    not reused before feedback releases the publication-time horizon.
+5. Disconnect a standby while an old-graph cursor is open, reclaim on the
+   primary, reconnect, and verify stock WAL replay cancels the cursor before
+   replay can expose page reuse.
 
 ### Performance tests
 

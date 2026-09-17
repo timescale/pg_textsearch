@@ -29,8 +29,11 @@ segment chains for each LSM level, and the deferred-free tombstone chain.
 Writes append document records to the memtable chain under buffer locks.
 In-place and multi-page publication mutations use `GenericXLog`. Newly written
 segment pages use `log_newpage_buffer()` when `RelationNeedsWAL()` is true.
-pg_textsearch has no custom WAL resource manager. The on-disk chain is
-authoritative through crash recovery and physical replication.
+Before reclaimed segment pages enter the FSM, pg_textsearch emits PostgreSQL's
+stock btree page-reuse conflict record; its redo path only resolves old standby
+snapshots and does not inspect btree storage. pg_textsearch has no custom WAL
+resource manager. The on-disk chain is authoritative through crash recovery
+and physical replication.
 
 Queries compose postings from the memtable and all published segments. Each
 live heap TID occurs in at most one published segment. Segment-local numeric
@@ -134,13 +137,16 @@ Each runtime pass uses the same phase engine:
    with a provisional invalid reclaim stamp.
    Segment data pages, page-index pages, completed output roots, and tombstone
    container pages have explicit ownership records for handled-error cleanup.
+   Validate the complete prepared segment and tombstone chains while they
+   remain unreachable.
 4. **Stamp reclaim.** Assign the compactor's full transaction ID and restamp
    every detached tombstone container with it while the batch remains
    unreachable and no runtime per-index lock is held. The in-progress
    transaction pins primary and standby horizons through publication.
 5. **Validate.** Acquire fair `LW_EXCLUSIVE` and validate the selected runs,
-   prepared outputs, and detached tombstones against the current graph. L0 may
-   have only a newly prepended spill prefix; non-L0 chains must be unchanged.
+   against the current graph. L0 may have only a newly prepended spill prefix;
+   non-L0 chains must be unchanged. Prepared output attachment performs only
+   constant-time endpoint checks in this reader-excluding section.
 6. **Publish.** In one `GenericXLog` action, splice around any accepted L0
    prefix, replace the selected runs, rebase counts and corpus shrinkage from
    current metapage values, and attach the detached tombstone batch to the
@@ -209,6 +215,12 @@ horizon and returned to the free-space map only after
 Query-serving hot standbys require `hot_standby_feedback = on` so their oldest
 snapshots hold the primary's reclaim horizon back. Use
 `bm25_pending_free_pages()` to observe displaced segment pages awaiting reuse.
+As a safety fallback for a standby that disconnects while an old-graph query
+remains active, tombstone drain emits the stock `XLOG_BTREE_REUSE_PAGE`
+conflict-only WAL record before unlinking a reclaimable batch. Replay cancels
+any conflicting standby snapshot before later WAL can reuse those pages.
+Feedback therefore preserves query continuity; the conflict record preserves
+storage correctness when feedback is temporarily unavailable.
 
 Compaction constructs its tombstone containers as a detached chain whose tail
 initially points to `InvalidBlockNumber`. Publication links that tail to the

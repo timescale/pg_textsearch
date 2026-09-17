@@ -7,6 +7,9 @@
 #include <postgres.h>
 
 #include <access/generic_xlog.h>
+#include <access/nbtxlog.h>
+#include <access/xlog.h>
+#include <access/xloginsert.h>
 #include <miscadmin.h>
 #include <storage/bufmgr.h>
 #include <storage/indexfsm.h>
@@ -125,6 +128,32 @@ tombstone_write_page(
 		PG_RE_THROW();
 	}
 	PG_END_TRY();
+}
+
+/*
+ * Reuse the stock btree conflict-only WAL record before returning displaced
+ * segment pages to the FSM.  Its redo routine does not inspect or modify a
+ * btree page: it only resolves standby snapshots at or before the supplied
+ * horizon.  This keeps recovery extension-independent while protecting
+ * readers that remained active while their standby was disconnected.
+ */
+static void
+tombstone_log_reuse_conflict(
+		Relation index, BlockNumber block, FullTransactionId horizon)
+{
+	xl_btree_reuse_page xlrec;
+
+	if (!RelationNeedsWAL(index) || !XLogStandbyInfoActive())
+		return;
+
+	xlrec.locator				  = index->rd_locator;
+	xlrec.block					  = block;
+	xlrec.snapshotConflictHorizon = horizon;
+	xlrec.isCatalogRel			  = false;
+
+	XLogBeginInsert();
+	XLogRegisterData((char *)&xlrec, SizeOfBtreeReusePage);
+	XLogInsert(RM_BTREE_ID, XLOG_BTREE_REUSE_PAGE);
 }
 
 static void
@@ -482,17 +511,18 @@ tp_tombstone_drain(
 
 	for (;;)
 	{
-		BlockNumber	 nblocks;
-		BlockNumber	 prev = InvalidBlockNumber;
-		BlockNumber	 cur;
-		BlockNumber	 victim		   = InvalidBlockNumber;
-		BlockNumber	 victim_prev   = InvalidBlockNumber;
-		BlockNumber	 victim_next   = InvalidBlockNumber;
-		BlockNumber *victim_blocks = NULL;
-		uint32		 victim_count  = 0;
-		bool		 corrupt	   = false;
-		BlockNumber	 corrupt_at	   = InvalidBlockNumber;
-		BlockNumber	 corrupt_prev  = InvalidBlockNumber;
+		BlockNumber		  nblocks;
+		BlockNumber		  prev = InvalidBlockNumber;
+		BlockNumber		  cur;
+		BlockNumber		  victim		= InvalidBlockNumber;
+		BlockNumber		  victim_prev	= InvalidBlockNumber;
+		BlockNumber		  victim_next	= InvalidBlockNumber;
+		BlockNumber		 *victim_blocks = NULL;
+		uint32			  victim_count	= 0;
+		FullTransactionId victim_fxid	= InvalidFullTransactionId;
+		bool			  corrupt		= false;
+		BlockNumber		  corrupt_at	= InvalidBlockNumber;
+		BlockNumber		  corrupt_prev	= InvalidBlockNumber;
 
 		CHECK_FOR_INTERRUPTS();
 
@@ -537,6 +567,7 @@ tp_tombstone_drain(
 				victim_prev	  = prev;
 				victim_next	  = t->next_page;
 				victim_count  = t->num_blocks;
+				victim_fxid	  = t->merged_fxid;
 				victim_blocks = palloc(
 						sizeof(BlockNumber) * Max(victim_count, 1));
 				for (k = 0; k < victim_count; k++)
@@ -609,6 +640,11 @@ tp_tombstone_drain(
 				tp_release_index_lock(state);
 			break; /* nothing left to drain */
 		}
+
+		tombstone_log_reuse_conflict(
+				index,
+				victim_count > 0 ? victim_blocks[0] : victim,
+				victim_fxid);
 
 		/* Unlink first (corruption-safe; a crash here only leaks). */
 		tombstone_unlink(index, victim_prev, victim, victim_next);

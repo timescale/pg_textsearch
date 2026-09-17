@@ -143,6 +143,10 @@ publish_restamp_line="$(
     grep -n 'tp_tombstone_restamp_detached' <<<"${publish_body}" |
         head -1 | cut -d: -f1 || true
 )"
+publish_output_validation_line="$(
+    grep -n 'tp_validate_compaction_output' <<<"${publish_body}" |
+        head -1 | cut -d: -f1 || true
+)"
 publish_attach_line="$(
     grep -n 'tp_tombstone_attach_detached' <<<"${publish_body}" |
         head -1 | cut -d: -f1 || true
@@ -164,8 +168,10 @@ publish_xid_line="$(
         <<<"${publish_body}" | head -1 | cut -d: -f1 || true
 )"
 
-if [[ -z "${publish_xid_line}" || -z "${publish_restamp_line}" ||
+if [[ -z "${publish_output_validation_line}" ||
+      -z "${publish_xid_line}" || -z "${publish_restamp_line}" ||
       -z "${publish_acquire_line}" || -z "${publish_attach_line}" ||
+      "${publish_output_validation_line}" -ge "${publish_xid_line}" ||
       "${publish_xid_line}" -ge "${publish_restamp_line}" ||
       "${publish_restamp_line}" -ge "${publish_acquire_line}" ||
       "${publish_acquire_line}" -ge "${publish_attach_line}" ]] ||
@@ -253,6 +259,29 @@ if ! grep -Fq 'owned_pages' "${TOMBSTONE_HEADER}" ||
    ! grep -Fq 'batch->owned_pages[batch->owned_count++]' \
        "${TOMBSTONE_SOURCE}"; then
     echo "detached tombstone build must expose incremental page ownership" >&2
+    review_failures=$((review_failures + 1))
+fi
+
+drain_body="$(
+    sed -n '/^tp_tombstone_drain($/,/^}$/p' "${TOMBSTONE_SOURCE}"
+)"
+drain_conflict_line="$(
+    grep -n 'tombstone_log_reuse_conflict' <<<"${drain_body}" |
+        head -1 | cut -d: -f1 || true
+)"
+drain_unlink_line="$(
+    grep -n 'tombstone_unlink(index, victim_prev, victim, victim_next)' \
+        <<<"${drain_body}" | head -1 | cut -d: -f1 || true
+)"
+drain_free_line="$(
+    grep -n 'tp_record_free_index_page(index, victim_blocks' \
+        <<<"${drain_body}" | head -1 | cut -d: -f1 || true
+)"
+if [[ -z "${drain_conflict_line}" || -z "${drain_unlink_line}" ||
+      -z "${drain_free_line}" ||
+      "${drain_conflict_line}" -ge "${drain_unlink_line}" ||
+      "${drain_unlink_line}" -ge "${drain_free_line}" ]]; then
+    echo "tombstone drain must WAL-log standby conflict before unlink and FSM reuse" >&2
     review_failures=$((review_failures + 1))
 fi
 

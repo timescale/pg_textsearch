@@ -392,7 +392,9 @@ See [ARCHITECTURE.md](ARCHITECTURE.md#spill-and-compaction) for sizing,
 publication, locking, and page-reclaim details.
 
 Hot standbys serving queries must set `hot_standby_feedback = on` so active
-snapshots delay physical page reuse on the primary.
+snapshots delay physical page reuse on the primary. If a standby disconnects
+while an old snapshot remains active, stock PostgreSQL recovery-conflict WAL
+cancels that snapshot before reclaimed segment pages can be reused on replay.
 
 ### Settings
 

@@ -3,7 +3,8 @@
 # Start a ranked cursor on a hot standby's old segment graph after compaction
 # has finished its unlocked build but before publication.
 # hot_standby_feedback must keep the displaced source pages parked until the
-# cursor and snapshot end.
+# cursor and snapshot end. A second case disconnects the standby and verifies
+# that stock recovery-conflict WAL cancels the old reader before page reuse.
 
 set -euo pipefail
 
@@ -166,6 +167,45 @@ backend=${READER_BACKEND_PID:-unknown}, partial output=${result:-none}"
     printf '%s' "${result}"
 }
 
+reader_expect_recovery_conflict() {
+    local output
+    local reader_status
+    local backend_count=1
+
+    for _ in $(seq 1 100); do
+        backend_count=$(standby_sql_quiet "
+            SELECT count(*) FROM pg_stat_activity
+             WHERE pid = ${READER_BACKEND_PID};")
+        [ "${backend_count}" = "0" ] && break
+        sleep 0.1
+    done
+    [ "${backend_count}" = "0" ] ||
+        error "Old-graph reader was not canceled by recovery conflict WAL"
+
+    printf '%s\n' "SELECT 1;" >&9 || true
+    exec 9>&-
+    output=$(timeout 10 cat <&8)
+    exec 8<&-
+    set +e
+    wait "${READER_PID}"
+    reader_status=$?
+    set -e
+
+    READER_OPEN=false
+    READER_PID=
+    rm -rf "${STANDBY_DIR}/ranked_reader"
+
+    if [ "${reader_status}" -eq 0 ]; then
+        error "Old-graph reader completed without a recovery conflict"
+    fi
+    if ! grep -Eq 'conflict with recovery|recovery conflict' <<<"${output}" &&
+       ! grep -Eq 'conflict with recovery|recovery conflict' \
+           "${STANDBY_DIR}/log/postgres.log"; then
+        error "Old-graph reader failed without a recovery-conflict message: \
+${output:-no output}"
+    fi
+}
+
 wait_for_feedback_xmin() {
     local xmin=""
 
@@ -225,6 +265,84 @@ assert_ranked_plan() {
          LIMIT 8000;")
     grep -Fq "Index Scan using rec_idx on rec" <<<"${plan}" ||
         error "Port ${port} ranked query did not use rec_idx: ${plan}"
+}
+
+test_disconnected_standby_conflict() {
+    local graph
+    local parked
+
+    log "Case: reclaim WAL conflicts with disconnected standby readers..."
+    cat >> "${STANDBY_DIR}/postgresql.conf" <<EOF
+max_standby_streaming_delay = 0
+EOF
+    pg_ctl restart -D "${STANDBY_DIR}" \
+        -l "${STANDBY_DIR}/postgres.log" -w -t 30 >/dev/null
+
+    primary_sql "
+        CREATE TABLE conflict_rec (
+            id integer PRIMARY KEY,
+            body text NOT NULL
+        ) WITH (autovacuum_enabled = false);
+        INSERT INTO conflict_rec
+        SELECT g, 'delta epsilon disconnected standby document ' || g
+          FROM generate_series(1, 4000) g;
+        CREATE INDEX conflict_idx ON conflict_rec USING bm25(body)
+            WITH (text_config = 'english', compaction = 'off');
+        INSERT INTO conflict_rec
+        SELECT g, 'delta epsilon disconnected standby document ' || g
+          FROM generate_series(4001, 8000) g;" >/dev/null
+    [ "$(primary_sql_quiet \
+        "SELECT bm25_spill_index('conflict_idx') > 0;")" = "t" ] ||
+        error "Disconnected-standby case did not create a second L0 segment"
+    primary_sql "CREATE TABLE conflict_flush_marker (id integer);" >/dev/null
+    wait_for_standby_catchup 30 ||
+        error "Standby did not catch up before disconnected cursor setup"
+    graph=$(standby_sql_quiet \
+        "SELECT bm25_level_counts('conflict_idx'::regclass)::text;")
+    [ "${graph}" = "{2,0,0,0,0,0,0,0}" ] ||
+        error "Disconnected-standby old graph is ${graph}"
+
+    reader_open
+    READER_BACKEND_PID=$(reader_query "SELECT pg_backend_pid();")
+    reader_query "BEGIN ISOLATION LEVEL REPEATABLE READ;" >/dev/null
+    reader_query "SET enable_seqscan = off;" >/dev/null
+    reader_query "
+        DECLARE held_ranked NO SCROLL CURSOR FOR
+        SELECT id
+          FROM conflict_rec
+         ORDER BY body <@> to_bm25query('delta', 'conflict_idx')
+         LIMIT 8000;" >/dev/null
+    [ -n "$(reader_query "FETCH FORWARD 1 FROM held_ranked;")" ] ||
+        error "Disconnected-standby cursor returned no first document"
+
+    cat >> "${PRIMARY_DIR}/postgresql.conf" <<EOF
+max_wal_senders = 0
+EOF
+    pg_ctl restart -D "${PRIMARY_DIR}" \
+        -l "${PRIMARY_DIR}/postgres.log" -w -t 30 >/dev/null
+    [ "$(primary_sql_quiet \
+        "SELECT count(*) FROM pg_stat_replication;")" = "0" ] ||
+        error "Standby remained connected after disabling WAL senders"
+
+    primary_sql "SELECT bm25_force_merge('conflict_idx');" >/dev/null
+    for _ in $(seq 1 32); do
+        primary_sql_quiet "SELECT txid_current();" >/dev/null
+    done
+    primary_sql "VACUUM conflict_rec;" >/dev/null
+    parked=$(primary_sql_quiet \
+        "SELECT bm25_pending_free_pages('conflict_idx');")
+    [ "${parked}" = "0" ] ||
+        error "Disconnected-standby reclaim left ${parked} pages parked"
+
+    cat >> "${PRIMARY_DIR}/postgresql.conf" <<EOF
+max_wal_senders = 8
+EOF
+    pg_ctl restart -D "${PRIMARY_DIR}" \
+        -l "${PRIMARY_DIR}/postgres.log" -w -t 30 >/dev/null
+    wait_for_standby_catchup 30 ||
+        error "Standby did not replay disconnected-standby reclaim"
+    reader_expect_recovery_conflict
+    log "PASS: stock WAL replay canceled the disconnected old-graph reader"
 }
 
 main() {
@@ -405,6 +523,7 @@ SELECT coalesce(backend_xmin::text, '') FROM pg_stat_replication LIMIT 1;")"
 
     log "PASS: VACUUM reclaimed ${parked_before_vacuum} pages only after \
 the standby cursor ended"
+    test_disconnected_standby_conflict
     log "All standby reclaim overlap checks passed"
 }
 

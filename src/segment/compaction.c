@@ -1212,14 +1212,26 @@ tp_publish_compaction_output(
 		TpIndexMetaPage	  meta;
 
 		/*
+		 * The prepared segment and tombstone chains are unreachable and
+		 * immutable.  Validate them completely before reader exclusion so
+		 * publication only rechecks the live source graph under LW_EXCLUSIVE.
+		 */
+		if (!tp_validate_compaction_output(index, plan, output))
+			ereport(ERROR,
+					(errcode(ERRCODE_DATA_CORRUPTED),
+					 errmsg("invalid prepared compaction output for index "
+							"\"%s\"",
+							RelationGetRelationName(index))));
+
+		/*
 		 * Assign an XID before emitting the restamp WAL.  The in-progress
 		 * transaction pins primary and standby horizons through graph
 		 * publication, including snapshots that start after restamping.
 		 *
 		 * Restamp while the detached batch is still unreachable and before
-		 * requesting the runtime publication lock.  Publication validation
+		 * requesting the runtime publication lock.  Live-graph validation
 		 * below remains the authority on whether the prepared output can be
-		 * attached.
+		 * attached to the current graph.
 		 */
 		merged_fxid = GetCurrentFullTransactionId();
 		tp_tombstone_restamp_detached(index, output->tombstones, merged_fxid);
@@ -1253,10 +1265,8 @@ tp_publish_compaction_output(
 		LockBuffer(metabuf, BUFFER_LOCK_EXCLUSIVE);
 		current_page = BufferGetPage(metabuf);
 		current_meta = (TpIndexMetaPage)PageGetContents(current_page);
-
 		if (!tp_validate_selected_runs(
-					index, snapshot, current_meta, plan, &l0_predecessor) ||
-			!tp_validate_compaction_output(index, plan, output))
+					index, snapshot, current_meta, plan, &l0_predecessor))
 			ereport(ERROR,
 					(errcode(ERRCODE_INTERNAL_ERROR),
 					 errmsg("compaction graph changed before publication "

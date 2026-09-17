@@ -35,12 +35,11 @@ consider a dedicated `pg_textsearch` schema for cleaner namespace management.
 
 - **Physical replication**: In-place and publication mutations are WAL-logged
   via `GenericXLog`; newly written segment pages use `log_newpage_buffer()`
-  when WAL is required. There is no custom resource manager; pg_textsearch
-  does not register an rmgr. Stock PostgreSQL replay reconstructs every page
-  on a streaming standby or during crash recovery — including the on-disk
-  memtable chain pages, segment pages, and the metapage. This is what lets
-  PostgreSQL's single-page WAL-redo helper (and any other no-extension-load
-  replay context) work without loading `pg_textsearch.so`.
+  when WAL is required. Reclaim emits the stock btree page-reuse
+  conflict-only record before displaced segment pages enter the FSM. There is
+  no custom resource manager; pg_textsearch does not register an rmgr. Stock
+  PostgreSQL replay reconstructs every page and resolves old standby
+  snapshots without loading `pg_textsearch.so`.
   **Read [ARCHITECTURE.md](ARCHITECTURE.md#storage-and-wal) before
   changing the write/read/spill flow.** Closes #345, #349, #350,
   #374.
@@ -48,16 +47,17 @@ consider a dedicated `pg_textsearch` schema for cleaner namespace management.
 - **Standby-safe segment reclaim (#380)**: A segment merge does not
   free the displaced source pages to the FSM immediately. Doing so is
   safe on the primary but unsafe for in-flight hot-standby queries,
-  because there is no custom rmgr to resolve recovery conflicts during
-  replay. Instead, displaced pages are *parked* in a WAL-logged
+  so displaced pages are *parked* in a WAL-logged
   (`GenericXLog`) tombstone chain off the metapage (`pending_free_head`),
   stamped with the merge's `FullTransactionId`. They return to the FSM
   only once a later VACUUM (or the next merge) observes that the stamp
   precedes `GetOldestNonRemovableTransactionId` — the standby-safe
   reclaim horizon. **`hot_standby_feedback = on` is required** on hot
   standbys serving queries, so their oldest snapshot holds the
-  primary's horizon back until they finish reading the pages. Observe
-  the parked count with `bm25_pending_free_pages(index_name)`.
+  primary's horizon back until they finish reading the pages. At reclaim,
+  a stock PostgreSQL page-reuse conflict record also cancels old snapshots
+  that survived a standby disconnect before later WAL can reuse the pages.
+  Observe the parked count with `bm25_pending_free_pages(index_name)`.
 
 ## Core Architecture
 
