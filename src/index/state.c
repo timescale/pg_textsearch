@@ -88,7 +88,8 @@ tp_shutdown_spill_one(LocalStateCacheEntry *entry)
 	PG_CATCH();
 	{
 		/* Don't leak the per-index LWLock to racing shutdown hooks */
-		tp_release_index_lock(entry->local_state);
+		if (entry->local_state->lock_held)
+			tp_release_index_lock(entry->local_state);
 		FlushErrorState();
 		if (index_rel != NULL)
 			index_close(index_rel, RowExclusiveLock);
