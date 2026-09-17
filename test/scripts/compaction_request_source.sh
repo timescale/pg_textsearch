@@ -849,4 +849,14 @@ if [[ -z "${spill_line}" || -z "${close_line}" ||
     exit 1
 fi
 
+shutdown_spill_body="$(
+    sed -n '/^tp_shutdown_spill_one(LocalStateCacheEntry \*entry)/,/^}/p' \
+        "${STATE_SOURCE}"
+)"
+if ! grep -Fq "if (entry->local_state->lock_held)" \
+    <<<"${shutdown_spill_body}"; then
+    echo "shutdown spill cleanup releases an index lock that is not held" >&2
+    exit 1
+fi
+
 echo "Compaction request source guards passed"
