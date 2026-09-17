@@ -91,8 +91,8 @@ extern void tp_tombstone_build_detached(
 
 /*
  * Replace the provisional reclaim stamp on every unreachable page in a
- * detached batch.  Call immediately before publication so standby snapshots
- * that start during a long output build still hold reclaim back.
+ * detached batch.  Call immediately before publication with the compactor's
+ * assigned XID so the in-progress transaction holds reclaim back.
  */
 extern void tp_tombstone_restamp_detached(
 		Relation				 index,

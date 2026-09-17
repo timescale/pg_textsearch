@@ -310,11 +310,11 @@ maintenance protocol. It fails closed without changing the published graph.
 
 ### Phase 4: publish
 
-After validation, compaction restamps every detached tombstone container with
-a full transaction horizon captured after the long unlocked build. This
-WAL-logged restamping occurs while the batch is still unreachable. Capturing
-the horizon at publication rather than build start protects a standby ranked
-cursor that begins on the old graph while output construction is in progress.
+After validation, compaction assigns its full transaction ID and restamps every
+detached tombstone container with it. This WAL-logged restamping occurs while
+the batch is still unreachable. The assigned transaction remains in progress
+through graph publication, pinning primary and standby horizons even when a
+standby ranked cursor begins on the old graph after restamping.
 
 One final `GenericXLog` publication:
 

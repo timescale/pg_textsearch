@@ -156,6 +156,7 @@ bool tp_debug_panic_after_compaction_publish  = false;
 /* Debug: deterministic runtime compaction pauses for concurrency tests. */
 int tp_debug_compaction_pause_after_select_ms	= 0;
 int tp_debug_compaction_pause_before_publish_ms = 0;
+int tp_debug_compaction_pause_after_restamp_ms	= 0;
 
 /* Per-level segment capacity; the debug GUC may lower it in tests. */
 int tp_max_segments_per_level = PG_UINT16_MAX;
@@ -772,6 +773,21 @@ _PG_init(void)
 			"Testing-only interruptible pause after output construction and "
 			"before requesting the exclusive per-index lock.",
 			&tp_debug_compaction_pause_before_publish_ms,
+			0,
+			0,
+			60000,
+			PGC_SUSET,
+			0,
+			NULL,
+			NULL,
+			NULL);
+
+	DefineCustomIntVariable(
+			"pg_textsearch.debug_compaction_pause_after_restamp_ms",
+			"Pause runtime compaction after reclaim restamping.",
+			"Testing-only interruptible pause after assigning the reclaim "
+			"horizon and before publishing the replacement graph.",
+			&tp_debug_compaction_pause_after_restamp_ms,
 			0,
 			0,
 			60000,

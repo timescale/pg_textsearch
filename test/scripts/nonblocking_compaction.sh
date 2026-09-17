@@ -117,12 +117,14 @@ verify_guc_contract() {
         SELECT current_setting(
                    'pg_textsearch.debug_compaction_pause_after_select_ms'),
                current_setting(
-                   'pg_textsearch.debug_compaction_pause_before_publish_ms');" \
+                   'pg_textsearch.debug_compaction_pause_before_publish_ms'),
+               current_setting(
+                   'pg_textsearch.debug_compaction_pause_after_restamp_ms');" \
         2>&1); then
         fail "compaction pause GUCs are unavailable: ${defaults}"
     fi
-    [ "${defaults}" = "0|0" ] ||
-        fail "compaction pause GUC defaults are not 0|0: ${defaults}"
+    [ "${defaults}" = "0|0|0" ] ||
+        fail "compaction pause GUC defaults are not 0|0|0: ${defaults}"
 
     if output=$(sql -c "
         SET pg_textsearch.debug_compaction_pause_after_select_ms = 60001;" \
@@ -131,6 +133,14 @@ verify_guc_contract() {
     fi
     [[ "${output}" == *"outside the valid range"* ]] ||
         fail "after-select range rejection was unexpected: ${output}"
+
+    if output=$(sql -c "
+        SET pg_textsearch.debug_compaction_pause_after_restamp_ms = 60001;" \
+        2>&1); then
+        fail "after-restamp pause accepted a value above 60000"
+    fi
+    [[ "${output}" == *"outside the valid range"* ]] ||
+        fail "after-restamp range rejection was unexpected: ${output}"
 
     sql -c "CREATE ROLE pgts_pause_user;" >/dev/null
     if output=$(sql -c "

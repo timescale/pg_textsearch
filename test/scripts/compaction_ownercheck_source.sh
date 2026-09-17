@@ -163,6 +163,7 @@ if [[ -z "${publish_acquire_line}" || -z "${publish_restamp_line}" ||
       -z "${publish_attach_line}" ||
       "${publish_acquire_line}" -ge "${publish_restamp_line}" ||
       "${publish_restamp_line}" -ge "${publish_attach_line}" ]] ||
+   ! grep -Fq 'GetCurrentFullTransactionId()' <<<"${publish_body}" ||
    ! grep -Fq 'GenericXLogStart(index)' <<<"${publish_body}" ||
    ! grep -Fq 'predecessor->next_segment = output->output_heads[0]' \
        <<<"${publish_body}" ||

@@ -90,7 +90,7 @@ cleanup() {
 trap cleanup EXIT INT TERM
 
 wait_for_compaction_pause() {
-    local marker="pg_textsearch compaction pause at before-publish"
+    local marker="pg_textsearch compaction pause at after-restamp"
     local logfile="${PRIMARY_DIR}/log/postgres.log"
 
     for _ in $(seq 1 300); do
@@ -274,7 +274,7 @@ EOF
     assert_ranked_plan "${STANDBY_PORT}"
 
     primary_sql "
-        SET pg_textsearch.debug_compaction_pause_before_publish_ms = 15000;
+        SET pg_textsearch.debug_compaction_pause_after_restamp_ms = 15000;
         SELECT bm25_force_merge('rec_idx');" \
         >"${PRIMARY_DIR}/compactor.out" 2>&1 &
     COMPACTOR_PID=$!
@@ -311,6 +311,10 @@ EOF
     first_id=$(reader_query "FETCH FORWARD 1 FROM held_ranked;")
     [ -n "${first_id}" ] ||
         error "Held ranked cursor returned no first document"
+    graph=$(standby_sql_quiet \
+        "SELECT bm25_level_counts('rec_idx'::regclass)::text;")
+    [ "${graph}" = "{2,0,0,0,0,0,0,0}" ] ||
+        error "Late ranked cursor did not start on the old graph: ${graph}"
     wait_for_feedback_xmin
     log "Late ranked cursor PID ${READER_BACKEND_PID} is open on the old graph"
 

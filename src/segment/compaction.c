@@ -6,6 +6,7 @@
 
 #include <access/generic_xlog.h>
 #include <access/transam.h>
+#include <access/xact.h>
 #include <access/xlog.h>
 #include <common/int.h>
 #include <miscadmin.h>
@@ -30,6 +31,7 @@
 
 extern int tp_debug_compaction_pause_after_select_ms;
 extern int tp_debug_compaction_pause_before_publish_ms;
+extern int tp_debug_compaction_pause_after_restamp_ms;
 
 typedef struct TpSegmentEstimate
 {
@@ -1279,8 +1281,17 @@ tp_publish_compaction_output(
 					 errmsg("compaction shrinkage exceeds current index "
 							"statistics")));
 
-		merged_fxid = ReadNextFullTransactionId();
+		/*
+		 * Assign an XID before emitting the restamp WAL.  The in-progress
+		 * transaction pins primary and standby horizons through graph
+		 * publication, including snapshots that start after restamping.
+		 */
+		merged_fxid = GetCurrentFullTransactionId();
 		tp_tombstone_restamp_detached(index, output->tombstones, merged_fxid);
+		tp_debug_compaction_pause(
+				tp_debug_compaction_pause_after_restamp_ms,
+				"after-restamp",
+				RelationGetRelid(index));
 
 		l0_changes = plan->selected_counts[0] > 0 ||
 					 output->output_counts[0] > 0;
