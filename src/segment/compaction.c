@@ -636,17 +636,18 @@ tp_plan_is_noop(
 	return matches && tp_plan_chains_match(index, plan);
 }
 
-static void
+static bool
 tp_publish_plan(
-		Relation			  index,
-		const TpIndexMetaPage snapshot,
-		const BlockNumber	  output_heads[TP_MAX_LEVELS],
-		const uint16		  output_counts[TP_MAX_LEVELS],
-		BlockNumber			  pending_free_head,
-		uint64				  output_docs,
-		uint64				  output_tokens)
+		Relation				 index,
+		const TpIndexMetaPage	 snapshot,
+		const BlockNumber		 output_heads[TP_MAX_LEVELS],
+		const uint16			 output_counts[TP_MAX_LEVELS],
+		TpDetachedTombstoneBatch tombstones,
+		uint64					 output_docs,
+		uint64					 output_tokens)
 {
 	Buffer			  metabuf;
+	Buffer			  tailbuf = InvalidBuffer;
 	Page			  current_page;
 	GenericXLogState *xlog_state;
 	Page			  meta_copy;
@@ -659,15 +660,13 @@ tp_publish_plan(
 	if (!tp_metapage_matches_snapshot(current_page, snapshot))
 	{
 		UnlockReleaseBuffer(metabuf);
-		ereport(ERROR,
-				(errcode(ERRCODE_INTERNAL_ERROR),
-				 errmsg("metapage changed during compaction of "
-						"index \"%s\"",
-						RelationGetRelationName(index))));
+		return false;
 	}
 
 	xlog_state = GenericXLogStart(index);
 	meta_copy  = GenericXLogRegisterBuffer(xlog_state, metabuf, 0);
+	tailbuf	   = tp_tombstone_attach_detached(
+			   xlog_state, index, tombstones, snapshot->pending_free_head);
 	tp_metapage_upgrade_to_current(index, meta_copy);
 	meta = (TpIndexMetaPage)PageGetContents(meta_copy);
 
@@ -676,30 +675,36 @@ tp_publish_plan(
 		meta->level_heads[level]  = output_heads[level];
 		meta->level_counts[level] = output_counts[level];
 	}
-	meta->pending_free_head = pending_free_head;
-	meta->total_docs		= output_docs;
-	meta->total_len			= output_tokens;
+	if (tombstones.container_pages > 0)
+		meta->pending_free_head = tombstones.head;
+	meta->total_docs = output_docs;
+	meta->total_len	 = output_tokens;
 
 	GenericXLogFinish(xlog_state);
+	if (BufferIsValid(tailbuf))
+		UnlockReleaseBuffer(tailbuf);
 	UnlockReleaseBuffer(metabuf);
+	return true;
 }
 
 static void
 tp_execute_plan(
 		Relation index, const TpIndexMetaPage snapshot, TpCompactionPlan *plan)
 {
-	BlockNumber		  output_heads[TP_MAX_LEVELS];
-	uint16			  output_counts[TP_MAX_LEVELS];
-	uint64			  selected_docs	  = 0;
-	uint64			  selected_tokens = 0;
-	uint64			  output_docs	  = 0;
-	uint64			  output_tokens	  = 0;
-	uint64			  removed_docs;
-	uint64			  removed_tokens;
-	uint64			  final_docs;
-	uint64			  final_tokens;
-	BlockNumber		  pending_free_head = snapshot->pending_free_head;
-	FullTransactionId merged_fxid		= ReadNextFullTransactionId();
+	BlockNumber				 output_heads[TP_MAX_LEVELS];
+	uint16					 output_counts[TP_MAX_LEVELS];
+	uint64					 selected_docs	 = 0;
+	uint64					 selected_tokens = 0;
+	uint64					 output_docs	 = 0;
+	uint64					 output_tokens	 = 0;
+	uint64					 removed_docs;
+	uint64					 removed_tokens;
+	uint64					 final_docs;
+	uint64					 final_tokens;
+	BlockNumber				*displaced_pages = NULL;
+	uint32					 displaced_count = 0;
+	TpDetachedTombstoneBatch tombstones;
+	FullTransactionId		 merged_fxid = ReadNextFullTransactionId();
 
 	memcpy(output_heads, plan->retained_heads, sizeof(output_heads));
 	memcpy(output_counts, plan->retained_counts, sizeof(output_counts));
@@ -793,24 +798,52 @@ tp_execute_plan(
 	{
 		BlockNumber *pages;
 		uint32		 num_pages;
+		uint32		 new_count;
 
 		num_pages =
 				tp_segment_collect_pages(index, plan->sources[i].root, &pages);
-		pending_free_head = tp_tombstone_enqueue(
-				index, pages, num_pages, merged_fxid, pending_free_head);
+		if (num_pages > UINT32_MAX - displaced_count)
+			ereport(ERROR,
+					(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
+					 errmsg("compaction displaced-page count overflow")));
+		new_count = displaced_count + num_pages;
+		if (num_pages > 0)
+		{
+			if (displaced_pages == NULL)
+				displaced_pages = palloc(sizeof(BlockNumber) * new_count);
+			else
+				displaced_pages = repalloc(
+						displaced_pages, sizeof(BlockNumber) * new_count);
+			memcpy(displaced_pages + displaced_count,
+				   pages,
+				   sizeof(BlockNumber) * num_pages);
+		}
+		displaced_count = new_count;
 		if (pages != NULL)
 			pfree(pages);
 	}
+	tombstones = tp_tombstone_build_detached(
+			index, displaced_pages, displaced_count, merged_fxid);
+	if (displaced_pages != NULL)
+		pfree(displaced_pages);
 
 	FlushRelationBuffers(index);
-	tp_publish_plan(
-			index,
-			snapshot,
-			output_heads,
-			output_counts,
-			pending_free_head,
-			final_docs,
-			final_tokens);
+	if (!tp_publish_plan(
+				index,
+				snapshot,
+				output_heads,
+				output_counts,
+				tombstones,
+				final_docs,
+				final_tokens))
+	{
+		tp_tombstone_discard_detached(index, tombstones);
+		ereport(ERROR,
+				(errcode(ERRCODE_INTERNAL_ERROR),
+				 errmsg("metapage changed during compaction of "
+						"index \"%s\"",
+						RelationGetRelationName(index))));
+	}
 }
 
 static uint32

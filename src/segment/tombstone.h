@@ -17,8 +17,10 @@
 
 #include <postgres.h>
 
+#include <access/generic_xlog.h>
 #include <access/transam.h>
 #include <storage/block.h>
+#include <storage/bufmgr.h>
 #include <storage/bufpage.h>
 #include <utils/rel.h>
 
@@ -42,6 +44,13 @@ typedef struct TpTombstonePageData
 
 typedef TpTombstonePageData *TpTombstonePage;
 
+typedef struct TpDetachedTombstoneBatch
+{
+	BlockNumber head;
+	BlockNumber tail;
+	uint32		container_pages;
+} TpDetachedTombstoneBatch;
+
 static inline TpTombstonePage
 tp_tombstone_page(Page page)
 {
@@ -63,6 +72,35 @@ extern bool tp_tombstone_page_is_valid(Page page);
  * InvalidBlockNumber for v6/v7 metapages (the field predates v8).
  */
 extern BlockNumber tp_tombstone_read_head(Relation index);
+
+/*
+ * Build an unreachable batch of tombstone pages.  The tail initially
+ * links to InvalidBlockNumber; neither the metapage nor an existing
+ * tombstone page is changed.
+ */
+extern TpDetachedTombstoneBatch tp_tombstone_build_detached(
+		Relation		   index,
+		const BlockNumber *blocks,
+		uint32			   num_blocks,
+		FullTransactionId  merged_fxid);
+
+/*
+ * Register the detached tail in the caller's GenericXLog publication
+ * record and link it to old_head.  Returns the still-locked tail buffer,
+ * which the caller must release after GenericXLogFinish.
+ */
+extern Buffer tp_tombstone_attach_detached(
+		GenericXLogState		*state,
+		Relation				 index,
+		TpDetachedTombstoneBatch batch,
+		BlockNumber				 old_head);
+
+/*
+ * Return only an unreachable batch's container pages to the FSM.
+ * The displaced source blocks listed in those pages remain untouched.
+ */
+extern void
+tp_tombstone_discard_detached(Relation index, TpDetachedTombstoneBatch batch);
 
 /*
  * Park `num_blocks` displaced blocks into one or more freshly

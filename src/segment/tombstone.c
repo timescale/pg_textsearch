@@ -9,6 +9,7 @@
 #include <access/generic_xlog.h>
 #include <miscadmin.h>
 #include <storage/bufmgr.h>
+#include <storage/indexfsm.h>
 
 #include "constants.h"
 #include "index/freepage.h"
@@ -74,26 +75,30 @@ tombstone_alloc_page(Relation index, bool use_fsm)
 	return block;
 }
 
-static BlockNumber
-tombstone_enqueue_internal(
-		Relation		  index,
-		BlockNumber		 *blocks,
-		uint32			  num_blocks,
-		FullTransactionId merged_fxid,
-		BlockNumber		  old_head,
-		bool			  use_fsm)
+static TpDetachedTombstoneBatch
+tombstone_build_internal(
+		Relation		   index,
+		const BlockNumber *blocks,
+		uint32			   num_blocks,
+		FullTransactionId  merged_fxid,
+		BlockNumber		   next_page,
+		bool			   use_fsm)
 {
-	BlockNumber batch_head = old_head;
-	uint32		remaining  = num_blocks;
+	TpDetachedTombstoneBatch batch = {
+			.head			 = InvalidBlockNumber,
+			.tail			 = InvalidBlockNumber,
+			.container_pages = 0,
+	};
+	uint32 remaining = num_blocks;
 
 	if (num_blocks == 0)
-		return old_head;
+		return batch;
 
 	/*
 	 * Build the batch tail-first so each page's next_page points at
-	 * an already-decided successor: the first page we write links to
-	 * old_head, and each subsequent page links to the previous one.
-	 * batch_head ends up at the last page written.
+	 * an already-decided successor.  Detached construction passes
+	 * InvalidBlockNumber for the first page, while the compatibility
+	 * enqueue APIs pass their existing chain head.
 	 *
 	 * Per-page chunking honors TP_TOMBSTONE_CAPACITY.  We assign the
 	 * LAST chunk of `blocks` to the first page, walking backwards.
@@ -115,7 +120,7 @@ tombstone_enqueue_internal(
 		state = GenericXLogStart(index);
 		page  = GenericXLogRegisterBuffer(state, buf, GENERIC_XLOG_FULL_IMAGE);
 
-		tp_tombstone_page_init(page, merged_fxid, batch_head);
+		tp_tombstone_page_init(page, merged_fxid, next_page);
 		t			  = tp_tombstone_page(page);
 		t->num_blocks = chunk;
 		for (k = 0; k < chunk; k++)
@@ -124,11 +129,140 @@ tombstone_enqueue_internal(
 		GenericXLogFinish(state);
 		UnlockReleaseBuffer(buf);
 
-		batch_head = blk;
-		remaining  = start;
+		if (batch.tail == InvalidBlockNumber)
+			batch.tail = blk;
+		batch.head = blk;
+		batch.container_pages++;
+		next_page = blk;
+		remaining = start;
 	}
 
-	return batch_head;
+	return batch;
+}
+
+TpDetachedTombstoneBatch
+tp_tombstone_build_detached(
+		Relation		   index,
+		const BlockNumber *blocks,
+		uint32			   num_blocks,
+		FullTransactionId  merged_fxid)
+{
+	return tombstone_build_internal(
+			index, blocks, num_blocks, merged_fxid, InvalidBlockNumber, true);
+}
+
+Buffer
+tp_tombstone_attach_detached(
+		GenericXLogState		*state,
+		Relation				 index,
+		TpDetachedTombstoneBatch batch,
+		BlockNumber				 old_head)
+{
+	Buffer			buf;
+	Page			page;
+	TpTombstonePage t;
+
+	Assert(state != NULL);
+
+	if (batch.container_pages == 0)
+	{
+		Assert(batch.head == InvalidBlockNumber);
+		Assert(batch.tail == InvalidBlockNumber);
+		return InvalidBuffer;
+	}
+
+	Assert(batch.head != InvalidBlockNumber);
+	Assert(batch.tail != InvalidBlockNumber);
+
+	buf = ReadBuffer(index, batch.tail);
+	LockBuffer(buf, BUFFER_LOCK_EXCLUSIVE);
+	page = GenericXLogRegisterBuffer(state, buf, 0);
+
+	if (!tp_tombstone_page_is_valid(page))
+		ereport(ERROR,
+				(errcode(ERRCODE_DATA_CORRUPTED),
+				 errmsg("pg_textsearch: corrupt detached tombstone tail "
+						"page %u in index \"%s\"",
+						batch.tail,
+						RelationGetRelationName(index))));
+
+	t = tp_tombstone_page(page);
+	if (t->next_page != InvalidBlockNumber)
+		ereport(ERROR,
+				(errcode(ERRCODE_DATA_CORRUPTED),
+				 errmsg("pg_textsearch: detached tombstone tail page %u "
+						"is already attached",
+						batch.tail)));
+
+	t->next_page = old_head;
+	return buf;
+}
+
+void
+tp_tombstone_discard_detached(Relation index, TpDetachedTombstoneBatch batch)
+{
+	BlockNumber cur = batch.head;
+	uint32		freed;
+
+	if (batch.container_pages == 0)
+	{
+		Assert(batch.head == InvalidBlockNumber);
+		Assert(batch.tail == InvalidBlockNumber);
+		return;
+	}
+
+	for (freed = 0; freed < batch.container_pages; freed++)
+	{
+		Buffer			buf;
+		Page			page;
+		TpTombstonePage t;
+		BlockNumber		next;
+
+		if (cur == InvalidBlockNumber)
+			ereport(ERROR,
+					(errcode(ERRCODE_DATA_CORRUPTED),
+					 errmsg("pg_textsearch: detached tombstone batch ended "
+							"before its recorded tail")));
+
+		buf = ReadBuffer(index, cur);
+		LockBuffer(buf, BUFFER_LOCK_SHARE);
+		page = BufferGetPage(buf);
+		if (!tp_tombstone_page_is_valid(page))
+		{
+			UnlockReleaseBuffer(buf);
+			ereport(ERROR,
+					(errcode(ERRCODE_DATA_CORRUPTED),
+					 errmsg("pg_textsearch: corrupt detached tombstone "
+							"page %u in index \"%s\"",
+							cur,
+							RelationGetRelationName(index))));
+		}
+
+		t	 = tp_tombstone_page(page);
+		next = t->next_page;
+		UnlockReleaseBuffer(buf);
+
+		if (cur == batch.tail)
+		{
+			if (freed + 1 != batch.container_pages ||
+				next != InvalidBlockNumber)
+				ereport(ERROR,
+						(errcode(ERRCODE_DATA_CORRUPTED),
+						 errmsg("pg_textsearch: detached tombstone batch "
+								"tail does not terminate its chain")));
+		}
+		else if (next == InvalidBlockNumber)
+			ereport(ERROR,
+					(errcode(ERRCODE_DATA_CORRUPTED),
+					 errmsg("pg_textsearch: detached tombstone batch "
+							"does not reach its recorded tail")));
+
+		tp_record_free_index_page(index, cur);
+		cur = next;
+	}
+
+	Assert(cur == InvalidBlockNumber);
+	IndexFreeSpaceMapVacuum(index);
 }
 
 BlockNumber
@@ -139,8 +273,14 @@ tp_tombstone_enqueue(
 		FullTransactionId merged_fxid,
 		BlockNumber		  old_head)
 {
-	return tombstone_enqueue_internal(
+	TpDetachedTombstoneBatch batch;
+
+	if (num_blocks == 0)
+		return old_head;
+
+	batch = tombstone_build_internal(
 			index, blocks, num_blocks, merged_fxid, old_head, true);
+	return batch.head;
 }
 
 BlockNumber
@@ -151,8 +291,14 @@ tp_tombstone_enqueue_extend(
 		FullTransactionId merged_fxid,
 		BlockNumber		  old_head)
 {
-	return tombstone_enqueue_internal(
+	TpDetachedTombstoneBatch batch;
+
+	if (num_blocks == 0)
+		return old_head;
+
+	batch = tombstone_build_internal(
 			index, blocks, num_blocks, merged_fxid, old_head, false);
+	return batch.head;
 }
 
 /*

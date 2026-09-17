@@ -29,6 +29,19 @@ SELECT bm25_force_merge('reclaim_idx');
 -- After a merge, displaced pages are parked (> 0), NOT freed.
 SELECT bm25_pending_free_pages('reclaim_idx') > 0 AS parked_after_merge;
 
+-- Attach another detached batch while the first one is still parked.
+-- Publication must link the new tail to the old head rather than
+-- replacing the existing pending-free chain.
+SELECT bm25_pending_free_pages('reclaim_idx')
+    AS parked_before_second_merge \gset
+INSERT INTO reclaim_docs
+SELECT g, 'alpha beta second merge term' || (g % 50)
+FROM generate_series(4001, 5000) g;
+SELECT bm25_spill_index('reclaim_idx') > 0 AS second_spilled;
+SELECT bm25_force_merge('reclaim_idx');
+SELECT bm25_pending_free_pages('reclaim_idx')
+    > :parked_before_second_merge AS preserved_old_tombstones;
+
 -- Advance the global xid horizon past the merge stamp so the parked
 -- pages become reclaimable, then VACUUM to drain them.
 SELECT txid_current() IS NOT NULL AS t1;
@@ -58,7 +71,7 @@ SELECT pg_relation_size('reclaim_idx') / current_setting('block_size')::int
     AS blocks_before_reuse \gset
 INSERT INTO reclaim_docs
 SELECT g, 'alpha beta term' || (g % 50)
-FROM generate_series(4001, 5000) g;
+FROM generate_series(5001, 6000) g;
 SELECT bm25_spill_index('reclaim_idx') > 0 AS reuse_spilled;
 SELECT pg_relation_size('reclaim_idx') / current_setting('block_size')::int
     <= :blocks_before_reuse AS reused_freed_pages_no_extension;
