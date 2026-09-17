@@ -43,6 +43,7 @@ ERR_DIR="${DATA_DIR}/client_logs"
 KEEP_DIR="${SCRIPT_DIR}/../tmp_vacuum_concurrent_merge_logs"
 TEST_SIZE_MULTIPLIER=${TEST_SIZE_MULTIPLIER:-1.0}
 PAUSE_MS=5000
+STRESS_TIMEOUT_SECONDS=120
 
 # Scale a loop count by TEST_SIZE_MULTIPLIER (minimum 1).
 scaled_count() {
@@ -279,13 +280,13 @@ wait_success() {
 
 assert_no_segment_errors() {
     if grep -REIl \
-        "invalid segment header|could not read blocks?.*read only [0-9]+ of" \
+        "invalid segment header|could not read blocks?.*read only [0-9]+ of|not a valid memtable page|invalid magic|magic mismatch" \
         "${ERR_DIR}" "${LOGFILE}" >/dev/null 2>&1; then
-        warn "Found a segment error:"
+        warn "Found an index storage error:"
         grep -REIn \
-            "invalid segment header|could not read blocks?.*read only [0-9]+ of" \
+            "invalid segment header|could not read blocks?.*read only [0-9]+ of|not a valid memtable page|invalid magic|magic mismatch" \
             "${ERR_DIR}" "${LOGFILE}" | sed -n '1,5p'
-        error "TEST FAILED: concurrent maintenance reported a segment error"
+        error "TEST FAILED: concurrent maintenance reported an index storage error"
     fi
 }
 
@@ -300,7 +301,11 @@ test_vacuum_waits_for_force_merge() {
     local lock_proof=f
     local deadline
     local plan
-    local result
+    local ranked_ids
+    local replacement_ids
+    local resurrected_ids
+    local reused_count
+    local expected_ids="9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,32"
 
     log "Case: VACUUM waits for a force merge with selected sources..."
     oid=$(sql -c "SELECT 'coord_bm25'::regclass::oid;")
@@ -308,6 +313,15 @@ test_vacuum_waits_for_force_merge() {
     # Leave one committed, removable dead set so VACUUM must call
     # ambulkdelete even though the force merge's snapshot will keep the
     # post-selection deletes below from becoming removable immediately.
+    sql -c "
+        CREATE TABLE coord_deleted_slots (
+            old_id bigint PRIMARY KEY,
+            old_ctid tid NOT NULL
+        );
+        INSERT INTO coord_deleted_slots
+        SELECT id, ctid
+          FROM coord_docs
+         WHERE id BETWEEN 1 AND 4;" >/dev/null
     sql -c "DELETE FROM coord_docs WHERE id BETWEEN 1 AND 4;" >/dev/null
 
     PGAPPNAME=pgts-vacuum-compactor \
@@ -365,6 +379,27 @@ test_vacuum_waits_for_force_merge() {
     wait_success "${compactor_pid}" 15 "force merge" "${compactor_output}"
     wait_success "${vacuum_pid}" 15 "VACUUM" "${vacuum_output}"
 
+    sql -c "
+        INSERT INTO coord_docs(body)
+        SELECT 'replacement unrelated row ' || gs
+          FROM generate_series(1, 64) gs;" >/dev/null
+    reused_count=$(sql -c "
+        SELECT count(*)
+          FROM coord_deleted_slots slots
+          JOIN coord_docs replacements
+            ON replacements.ctid = slots.old_ctid
+         WHERE replacements.body LIKE 'replacement unrelated row %';")
+    [ "${reused_count}" = "4" ] ||
+        error "replacement rows reused ${reused_count}/4 deleted CTID slots"
+    replacement_ids=$(sql -c "
+        SELECT string_agg(replacements.id::text, ',' ORDER BY replacements.id)
+          FROM coord_deleted_slots slots
+          JOIN coord_docs replacements
+            ON replacements.ctid = slots.old_ctid
+         WHERE replacements.body LIKE 'replacement unrelated row %';")
+    [ -n "${replacement_ids}" ] ||
+        error "could not identify replacement IDs in reused CTID slots"
+
     plan=$(sql -c "
         SET enable_seqscan = off;
         EXPLAIN (COSTS off)
@@ -375,7 +410,18 @@ test_vacuum_waits_for_force_merge() {
     grep -Fq "Index Scan using coord_bm25 on coord_docs" <<<"${plan}" ||
         error "post-VACUUM assertion did not use coord_bm25"
 
-    result=$(sql -F '|' -c "
+    ranked_ids=$(sql -c "
+        SET enable_seqscan = off;
+        SELECT string_agg(id::text, ',' ORDER BY id)
+          FROM (
+            SELECT id
+              FROM coord_docs
+             ORDER BY body <@> to_bm25query('coordcase', 'coord_bm25')
+             LIMIT 10000
+          ) ranked;")
+    [ "${ranked_ids}" = "${expected_ids}" ] ||
+        error "forced BM25 Index Scan returned IDs ${ranked_ids}, expected ${expected_ids}"
+    resurrected_ids=$(sql -c "
         SET enable_seqscan = off;
         WITH ranked AS MATERIALIZED (
             SELECT id
@@ -383,11 +429,14 @@ test_vacuum_waits_for_force_merge() {
              ORDER BY body <@> to_bm25query('coordcase', 'coord_bm25')
              LIMIT 10000
         )
-        SELECT count(*),
-               count(*) FILTER (WHERE id BETWEEN 1 AND 8)
-          FROM ranked;")
-    [ "${result}" = "24|0" ] ||
-        error "forced BM25 Index Scan returned ${result}, expected 24|0"
+        SELECT coalesce(string_agg(ranked.id::text, ',' ORDER BY ranked.id), '')
+          FROM ranked
+          JOIN coord_docs replacements USING (id)
+          JOIN coord_deleted_slots slots
+            ON slots.old_ctid = replacements.ctid
+         WHERE replacements.body LIKE 'replacement unrelated row %';")
+    [ -z "${resurrected_ids}" ] ||
+        error "old-term scan resurrected replacement IDs ${resurrected_ids} from deleted CTIDs ${replacement_ids}"
     assert_no_segment_errors
 
     log "VACUUM waited for force merge and removed all known deleted documents"
@@ -414,7 +463,8 @@ merger() {
 
     for i in $(seq 1 $(scaled_count 250)); do
         if ! output=$($PSQL -c \
-            "SELECT bm25_spill_index('docs_bm25');
+            "SET statement_timeout='60s'; SET lock_timeout='30s';
+             SELECT bm25_spill_index('docs_bm25');
              SELECT bm25_force_merge('docs_bm25')" 2>&1); then
             printf '%s\n' "$output" >>"${ERR_DIR}/merger.log"
             return 30
@@ -427,7 +477,8 @@ merger() {
 # create dead tuples for VACUUM bulk-delete to reclaim.
 deleter() {
     for i in $(seq 1 $(scaled_count 250)); do
-        $PSQL -c "DELETE FROM docs
+        $PSQL -c "SET statement_timeout='60s'; SET lock_timeout='30s';
+                  DELETE FROM docs
                   WHERE id IN (SELECT id FROM docs ORDER BY id ASC LIMIT 120)" \
           >>"${ERR_DIR}/deleter.log" 2>&1 || return 40
         sleep 0.1
@@ -438,7 +489,9 @@ deleter() {
 # cleanup paths concurrently with the merger.
 vacuumer() {
     for i in $(seq 1 $(scaled_count 200)); do
-        $PSQL -c "VACUUM docs" >>"${ERR_DIR}/vacuumer.log" 2>&1 || return 50
+        PGOPTIONS="-c statement_timeout=60000 -c lock_timeout=30000" \
+          $PSQL -c "VACUUM docs" \
+          >>"${ERR_DIR}/vacuumer.log" 2>&1 || return 50
         sleep 0.05
     done
 }
@@ -451,11 +504,14 @@ run_test() {
     deleter & d_pid=$!
     vacuumer & v_pid=$!
 
-    local failed=0
-    wait $w_pid || { warn "writer failed"; failed=1; }
-    wait $m_pid || { warn "merger failed"; failed=1; }
-    wait $d_pid || { warn "deleter failed"; failed=1; }
-    wait $v_pid || { warn "vacuumer failed"; failed=1; }
+    wait_success "${w_pid}" "${STRESS_TIMEOUT_SECONDS}" \
+        "stress writer" "${ERR_DIR}/writer.log"
+    wait_success "${m_pid}" "${STRESS_TIMEOUT_SECONDS}" \
+        "stress merger" "${ERR_DIR}/merger.log"
+    wait_success "${d_pid}" "${STRESS_TIMEOUT_SECONDS}" \
+        "stress deleter" "${ERR_DIR}/deleter.log"
+    wait_success "${v_pid}" "${STRESS_TIMEOUT_SECONDS}" \
+        "stress vacuumer" "${ERR_DIR}/vacuumer.log"
 
     # The bug surfaces both server-side (autovacuum) and client-side
     # (explicit VACUUM).  Check both the server log and client logs.
@@ -468,12 +524,6 @@ run_test() {
         grep -hE "TRAP: failed Assert|was terminated by signal|alive_bitset" \
             "${LOGFILE}" 2>/dev/null | sed -n '1,5p'
         error "TEST FAILED: issue #411 reproduced (backend crash)"
-    fi
-
-    if [ "$failed" -ne 0 ]; then
-        warn "Client logs:"
-        tail -n 20 "${ERR_DIR}"/*.log 2>/dev/null || true
-        error "TEST FAILED: a concurrent client exited with an error"
     fi
 
     log "TEST PASSED: VACUUM survived concurrent spill/merge"

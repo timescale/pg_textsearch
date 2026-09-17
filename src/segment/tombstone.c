@@ -55,8 +55,9 @@ tp_tombstone_page_is_valid(Page page)
 /*
  * Allocate one index page for a tombstone page.  With use_fsm, reuse
  * a recyclable free page from the FSM (skipping any live-structure
- * block the non-crash-safe FSM offers); otherwise extend the
- * relation.  The page is fully overwritten by the GenericXLog image
+ * block the non-crash-safe FSM offers); otherwise reserve a new block
+ * through the same bulk-extension API used by memtable and segment
+ * allocation.  The page is fully overwritten by the GenericXLog image
  * below, so its prior contents are irrelevant.
  */
 static BlockNumber
@@ -68,8 +69,8 @@ tombstone_alloc_page(Relation index, bool use_fsm)
 	if (use_fsm)
 		return tp_fsm_claim_or_extend_block(index);
 
-	buffer = ReadBufferExtended(
-			index, MAIN_FORKNUM, P_NEW, RBM_ZERO_AND_LOCK, NULL);
+	buffer = ExtendBufferedRel(
+			BMR_REL(index), MAIN_FORKNUM, NULL, EB_LOCK_FIRST);
 	block = BufferGetBlockNumber(buffer);
 	UnlockReleaseBuffer(buffer);
 	return block;

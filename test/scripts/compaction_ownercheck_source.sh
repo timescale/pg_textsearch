@@ -207,6 +207,18 @@ if ! grep -Fq 'owned_pages' "${TOMBSTONE_HEADER}" ||
     review_failures=$((review_failures + 1))
 fi
 
+tombstone_alloc_body="$(
+    sed -n '/^tombstone_alloc_page(Relation index, bool use_fsm)$/,/^}$/p' \
+        "${TOMBSTONE_SOURCE}"
+)"
+if ! grep -Fq 'ExtendBufferedRel(' <<<"${tombstone_alloc_body}" ||
+   ! grep -Fq 'BMR_REL(index)' <<<"${tombstone_alloc_body}" ||
+   ! grep -Fq 'EB_LOCK_FIRST' <<<"${tombstone_alloc_body}" ||
+   grep -Fq 'P_NEW' "${TOMBSTONE_SOURCE}"; then
+    echo "extend-only tombstones must use the bulk extension reservation" >&2
+    review_failures=$((review_failures + 1))
+fi
+
 validate_body="$(
     sed -n '/^tp_validate_selected_runs($/,/^}$/p' "${COMPACTION_SOURCE}"
 )"
