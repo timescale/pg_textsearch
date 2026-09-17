@@ -8,11 +8,18 @@
 CREATE EXTENSION IF NOT EXISTS pg_textsearch;
 CREATE TABLE reclaim_docs (id int, body text)
     WITH (autovacuum_enabled = false);
+CREATE TABLE reclaim_control (id int, body text)
+    WITH (autovacuum_enabled = false);
 INSERT INTO reclaim_docs
+SELECT g, 'alpha beta gamma delta term' || (g % 50)
+FROM generate_series(1, 2000) g;
+INSERT INTO reclaim_control
 SELECT g, 'alpha beta gamma delta term' || (g % 50)
 FROM generate_series(1, 2000) g;
 
 CREATE INDEX reclaim_idx ON reclaim_docs
+    USING bm25 (body) WITH (text_config = 'english');
+CREATE INDEX reclaim_control_idx ON reclaim_control
     USING bm25 (body) WITH (text_config = 'english');
 
 -- Build wrote a segment directly, so the memtable is empty here; the
@@ -20,27 +27,53 @@ CREATE INDEX reclaim_idx ON reclaim_docs
 INSERT INTO reclaim_docs
 SELECT g, 'alpha beta term' || (g % 50)
 FROM generate_series(2001, 4000) g;
+INSERT INTO reclaim_control
+SELECT g, 'alpha beta term' || (g % 50)
+FROM generate_series(2001, 4000) g;
 SELECT bm25_spill_index('reclaim_idx') > 0 AS spilled;
+SELECT bm25_spill_index('reclaim_control_idx') > 0 AS control_spilled;
 
 -- Merge the L0 segments into one L1 segment; this displaces the source
 -- segments' pages, which must be parked (not freed).
 SELECT bm25_force_merge('reclaim_idx');
+SELECT bm25_force_merge('reclaim_control_idx');
 
 -- After a merge, displaced pages are parked (> 0), NOT freed.
 SELECT bm25_pending_free_pages('reclaim_idx') > 0 AS parked_after_merge;
 
--- Attach another detached batch while the first one is still parked.
--- Publication must link the new tail to the old head rather than
--- replacing the existing pending-free chain.
+-- The control index used identical construction, so its first detached
+-- batch must have the same size. Drain only that batch before performing
+-- identical second merges on both indexes; its later parked count then
+-- measures the second batch alone.
 SELECT bm25_pending_free_pages('reclaim_idx')
-    AS parked_before_second_merge \gset
+    AS first_batch_count \gset
+SELECT bm25_pending_free_pages('reclaim_control_idx')
+    = :first_batch_count AS control_first_batch_matches;
+SELECT txid_current() IS NOT NULL AS control_t1;
+SELECT txid_current() IS NOT NULL AS control_t2;
+VACUUM reclaim_control;
+SELECT bm25_pending_free_pages('reclaim_control_idx')
+    AS control_after_first_drain;
+
+-- Attach another detached batch while the first one is still parked in
+-- reclaim_idx. If publication replaced the old head, its count would equal
+-- the control's second batch alone instead of first_batch + control_batch.
 INSERT INTO reclaim_docs
 SELECT g, 'alpha beta second merge term' || (g % 50)
 FROM generate_series(4001, 5000) g;
+INSERT INTO reclaim_control
+SELECT g, 'alpha beta second merge term' || (g % 50)
+FROM generate_series(4001, 5000) g;
 SELECT bm25_spill_index('reclaim_idx') > 0 AS second_spilled;
+SELECT bm25_spill_index('reclaim_control_idx') > 0
+    AS control_second_spilled;
 SELECT bm25_force_merge('reclaim_idx');
+SELECT bm25_force_merge('reclaim_control_idx');
 SELECT bm25_pending_free_pages('reclaim_idx')
-    > :parked_before_second_merge AS preserved_old_tombstones;
+    = :first_batch_count
+      + bm25_pending_free_pages('reclaim_control_idx')
+    AS preserved_old_tombstones;
+DROP TABLE reclaim_control;
 
 -- Advance the global xid horizon past the merge stamp so the parked
 -- pages become reclaimable, then VACUUM to drain them.
