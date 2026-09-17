@@ -74,11 +74,13 @@ combines adjacent immutable segments within `pg_textsearch.max_segment_size`.
 
 The `compaction` index option controls spill-time behavior:
 
-- `inline` compacts threshold debt during the spill;
-- `background` dispatches a pre-commit request when possible; temporary
-  indexes, `CREATE INDEX`, autovacuum, callback re-entry, and other
-  no-dispatch contexts compact inline;
-- `off` leaves debt for explicit maintenance.
+- `inline` compacts threshold debt during spills and index builds;
+- `background` dispatches a pre-commit request when possible. Runtime
+  no-dispatch contexts such as autovacuum and callback re-entry compact
+  inline. Index builds leave compaction to the managed workflow after
+  activation, and temporary indexes do not support this mode;
+- `manual` leaves debt for explicit maintenance. The legacy `off` value is
+  accepted as an alias for `manual`.
 
 Prepared transactions do not flush queued background requests. Unconfigured,
 unresolvable, or failed callbacks do not fall back inline; the compaction debt

@@ -792,6 +792,30 @@ current_generation_job_count() {
         AND instance.status IN ('pending', 'running');"
 }
 
+current_generation_schedule_job_count() {
+    local index_oid=$1 schedule=$2
+
+    sql_super -c "SELECT count(*)
+      FROM df.instances AS instance
+      JOIN pg_catalog.pg_class AS relation
+        ON relation.oid = ${index_oid}
+      JOIN pg_catalog.pg_database AS database
+        ON database.datname = pg_catalog.current_database()
+      WHERE instance.label LIKE pg_catalog.format(
+                'pg_textsearch:bg:v1:%s:%s:%s:%s:%s:%%',
+                database.oid,
+                relation.oid,
+                coalesce(nullif(relation.reltablespace, 0),
+                         database.dattablespace),
+                pg_catalog.pg_relation_filenode(relation.oid),
+                relation.relowner)
+        AND instance.label OPERATOR(pg_catalog.~~)
+            ('%:' || pg_catalog.encode(pg_catalog.convert_to(
+                '${schedule}', 'UTF8'), 'hex'))
+        AND instance.submitted_by::pg_catalog.oid = relation.relowner
+        AND instance.status IN ('pending', 'running');"
+}
+
 background_target_is_current() {
     local index_oid=$1 relfilenumber=$2 owner=$3
 
@@ -1149,6 +1173,9 @@ CREATE TABLE lifecycle_reindex_late.documents
 INSERT INTO lifecycle_reindex_late.documents
 VALUES (1, 'one'), (2, 'two');
 ALTER TABLE lifecycle_reindex_late.documents OWNER TO durable_owner;
+CREATE INDEX documents_seed_bm25_idx
+    ON lifecycle_reindex_late.documents USING bm25(body)
+    WITH (text_config = 'english', compaction = 'inline');
 
 CREATE TABLE public.lifecycle_reindex_late_capture
     (index_oid oid, filenumber oid);
@@ -1165,6 +1192,10 @@ BEGIN
            OPERATOR(pg_catalog.=) 'armed' THEN
         PERFORM pg_catalog.set_config(
             'lifecycle.reindex_late', 'created', false);
+        EXECUTE $command$
+            REINDEX INDEX
+              lifecycle_reindex_late.documents_seed_bm25_idx
+        $command$;
         EXECUTE $command$
             CREATE INDEX documents_bm25_idx
               ON lifecycle_reindex_late.documents USING bm25(body)
@@ -1241,6 +1272,243 @@ SQL
         DROP FUNCTION public.lifecycle_reindex_late_create();
         DROP TABLE public.lifecycle_reindex_late_capture;
         DROP SCHEMA lifecycle_reindex_late CASCADE;" >/dev/null
+}
+
+test_bulk_reindex_concurrent_mode_change() {
+    local blocker_pid file_after file_before index_oid job_after
+    local reindex_output reindex_pid reindex_status=0
+
+    sql_super -c "CREATE SCHEMA lifecycle_reindex_mode
+                   AUTHORIZATION durable_owner;" >/dev/null
+    sql_as durable_owner <<'SQL' >/dev/null
+CREATE TABLE lifecycle_reindex_mode.blocker_docs
+    (id integer PRIMARY KEY);
+CREATE TABLE lifecycle_reindex_mode.late_docs
+    (id integer, body text);
+INSERT INTO lifecycle_reindex_mode.late_docs VALUES (1, 'one');
+CREATE INDEX late_docs_idx
+    ON lifecycle_reindex_mode.late_docs USING bm25(body)
+    WITH (text_config = 'english', compaction = 'inline');
+SQL
+
+    PGAPPNAME=lifecycle-reindex-mode-blocker \
+        sql_as durable_owner -c "
+        BEGIN;
+        LOCK TABLE lifecycle_reindex_mode.blocker_docs
+          IN ACCESS EXCLUSIVE MODE;
+        SELECT pg_catalog.pg_sleep(120);" \
+        >"${DATA_DIR}/reindex-mode-blocker.out" 2>&1 &
+    blocker_pid=$!
+    for _ in $(seq 1 100); do
+        if [ "$(sql_super -c "SELECT count(*)
+              FROM pg_catalog.pg_stat_activity AS activity
+              JOIN pg_catalog.pg_locks AS relation_lock
+                ON relation_lock.pid = activity.pid
+              WHERE activity.application_name =
+                    'lifecycle-reindex-mode-blocker'
+                AND relation_lock.relation =
+                    'lifecycle_reindex_mode.blocker_docs'::regclass
+                AND relation_lock.mode = 'AccessExclusiveLock'
+                AND relation_lock.granted;")" = "1" ]; then
+            break
+        fi
+        sleep 0.1
+    done
+
+    index_oid="$(sql_super -c "SELECT
+        'lifecycle_reindex_mode.late_docs_idx'::regclass::oid;")"
+    file_before="$(sql_super -c "SELECT
+        pg_catalog.pg_relation_filenode(${index_oid});")"
+    reindex_output="${DATA_DIR}/reindex-mode.out"
+    PGAPPNAME=lifecycle-reindex-mode \
+        PGOPTIONS="-c statement_timeout=30s" \
+        sql_as durable_owner -c \
+        "REINDEX SCHEMA lifecycle_reindex_mode;" \
+        >"${reindex_output}" 2>&1 &
+    reindex_pid=$!
+    for _ in $(seq 1 100); do
+        if [ "$(sql_super -c "SELECT count(*)
+              FROM pg_catalog.pg_stat_activity AS activity
+              JOIN pg_catalog.pg_locks AS relation_lock
+                ON relation_lock.pid = activity.pid
+              WHERE activity.application_name = 'lifecycle-reindex-mode'
+                AND relation_lock.relation =
+                    'lifecycle_reindex_mode.blocker_docs'::regclass
+                AND NOT relation_lock.granted;")" = "1" ]; then
+            break
+        fi
+        sleep 0.1
+    done
+    assert_eq "broad REINDEX reached its post-initial-commit relation wait" \
+        "1" "$(sql_super -c "SELECT count(*)
+          FROM pg_catalog.pg_stat_activity AS activity
+          JOIN pg_catalog.pg_locks AS relation_lock
+            ON relation_lock.pid = activity.pid
+          WHERE activity.application_name = 'lifecycle-reindex-mode'
+            AND relation_lock.relation =
+                'lifecycle_reindex_mode.blocker_docs'::regclass
+            AND NOT relation_lock.granted;")"
+
+    sql_as durable_owner -c "
+        ALTER INDEX lifecycle_reindex_mode.late_docs_idx
+          SET (compaction = 'background',
+               compaction_schedule = '1 2 3 4 *');" >/dev/null
+    sql_super -c "SELECT pg_catalog.pg_terminate_backend(pid)
+      FROM pg_catalog.pg_stat_activity
+      WHERE application_name =
+            'lifecycle-reindex-mode-blocker';" >/dev/null
+    wait "${blocker_pid}" || true
+    wait "${reindex_pid}" || reindex_status=$?
+    if [ "${reindex_status}" -ne 0 ]; then
+        error "broad REINDEX with a concurrent mode change failed:
+$(cat "${reindex_output}")"
+    fi
+
+    file_after="$(sql_super -c "SELECT
+        pg_catalog.pg_relation_filenode(${index_oid});")"
+    assert_ne "broad REINDEX rebuilt the newly managed index" \
+        "${file_before}" "${file_after}"
+    job_after="$(current_generation_job_id "${index_oid}")"
+    if [ -z "${job_after}" ]; then
+        error "broad REINDEX lost a concurrent background mode change"
+    fi
+    log "PASS: broad REINDEX tracks a concurrent background mode change"
+
+    sql_super -c "DROP SCHEMA lifecycle_reindex_mode CASCADE;" >/dev/null
+}
+
+test_bulk_reindex_concurrent_schedule_change() {
+    local blocker_pid blocker_table file_before index_name index_oid
+    local reindex_output reindex_pid reindex_status=0 schedule_matches
+    local target_table
+
+    sql_super -c "CREATE SCHEMA lifecycle_reindex_schedule_change
+                   AUTHORIZATION durable_owner;" >/dev/null
+    sql_as durable_owner <<'SQL' >/dev/null 2>&1
+CREATE TABLE lifecycle_reindex_schedule_change.a_docs
+    (id integer, body text);
+INSERT INTO lifecycle_reindex_schedule_change.a_docs
+VALUES (1, 'a');
+CREATE INDEX a_docs_idx
+    ON lifecycle_reindex_schedule_change.a_docs USING bm25(body)
+    WITH (text_config = 'english',
+          compaction = 'background',
+          compaction_schedule = '1 0 1 1 *');
+CREATE TABLE lifecycle_reindex_schedule_change.b_docs
+    (id integer, body text);
+INSERT INTO lifecycle_reindex_schedule_change.b_docs
+VALUES (1, 'b');
+CREATE INDEX b_docs_idx
+    ON lifecycle_reindex_schedule_change.b_docs USING bm25(body)
+    WITH (text_config = 'english',
+          compaction = 'background',
+          compaction_schedule = '1 0 1 1 *');
+SQL
+    target_table="$(sql_super -c "SELECT relation.relname
+      FROM pg_catalog.pg_class AS relation
+      JOIN pg_catalog.pg_namespace AS namespace
+        ON namespace.oid = relation.relnamespace
+      WHERE namespace.nspname = 'lifecycle_reindex_schedule_change'
+        AND relation.relname IN ('a_docs', 'b_docs')
+      ORDER BY relation.ctid
+      LIMIT 1;")"
+    blocker_table="$(sql_super -c "SELECT relation.relname
+      FROM pg_catalog.pg_class AS relation
+      JOIN pg_catalog.pg_namespace AS namespace
+        ON namespace.oid = relation.relnamespace
+      WHERE namespace.nspname = 'lifecycle_reindex_schedule_change'
+        AND relation.relname IN ('a_docs', 'b_docs')
+      ORDER BY relation.ctid DESC
+      LIMIT 1;")"
+    index_name="${target_table}_idx"
+    index_oid="$(sql_super -c "SELECT
+        'lifecycle_reindex_schedule_change.${index_name}'
+          ::regclass::oid;")"
+    file_before="$(sql_super -c "SELECT
+        pg_catalog.pg_relation_filenode(${index_oid});")"
+
+    PGAPPNAME=lifecycle-reindex-schedule-blocker \
+        sql_as durable_owner -c "
+        BEGIN;
+        LOCK TABLE lifecycle_reindex_schedule_change.${blocker_table}
+          IN ACCESS EXCLUSIVE MODE;
+        SELECT pg_catalog.pg_sleep(120);" \
+        >"${DATA_DIR}/reindex-schedule-blocker.out" 2>&1 &
+    blocker_pid=$!
+    for _ in $(seq 1 100); do
+        if [ "$(sql_super -c "SELECT count(*)
+              FROM pg_catalog.pg_stat_activity AS activity
+              JOIN pg_catalog.pg_locks AS relation_lock
+                ON relation_lock.pid = activity.pid
+              WHERE activity.application_name =
+                    'lifecycle-reindex-schedule-blocker'
+                AND relation_lock.relation =
+                    'lifecycle_reindex_schedule_change.${blocker_table}'
+                      ::regclass
+                AND relation_lock.mode = 'AccessExclusiveLock'
+                AND relation_lock.granted;")" = "1" ]; then
+            break
+        fi
+        sleep 0.1
+    done
+
+    reindex_output="${DATA_DIR}/reindex-schedule-change.out"
+    PGAPPNAME=lifecycle-reindex-schedule-change \
+        PGOPTIONS="-c statement_timeout=30s" \
+        sql_as durable_owner -c \
+        "REINDEX SCHEMA lifecycle_reindex_schedule_change;" \
+        >"${reindex_output}" 2>&1 &
+    reindex_pid=$!
+    schedule_matches=0
+    for _ in $(seq 1 200); do
+        if [ "$(sql_super -c "SELECT
+              pg_catalog.pg_relation_filenode(${index_oid});")" != \
+             "${file_before}" ] &&
+            [ "$(sql_super -c "SELECT count(*)
+              FROM pg_catalog.pg_stat_activity AS activity
+              JOIN pg_catalog.pg_locks AS relation_lock
+                ON relation_lock.pid = activity.pid
+              WHERE activity.application_name =
+                    'lifecycle-reindex-schedule-change'
+                AND relation_lock.relation =
+                    'lifecycle_reindex_schedule_change.${blocker_table}'
+                      ::regclass
+                AND NOT relation_lock.granted;")" = "1" ]; then
+            schedule_matches="$(
+                current_generation_schedule_job_count \
+                    "${index_oid}" "1 0 1 1 *"
+            )"
+            if [ "${schedule_matches}" = "1" ]; then
+                break
+            fi
+        fi
+        sleep 0.1
+    done
+    assert_eq "broad REINDEX reconciled before its later relation wait" \
+        "1" "${schedule_matches}"
+
+    sql_as durable_owner -c "
+        ALTER INDEX lifecycle_reindex_schedule_change.${index_name}
+          SET (compaction_schedule = '2 0 1 1 *');" >/dev/null
+    sql_super -c "SELECT pg_catalog.pg_terminate_backend(pid)
+      FROM pg_catalog.pg_stat_activity
+      WHERE application_name =
+            'lifecycle-reindex-schedule-blocker';" >/dev/null
+    wait "${blocker_pid}" || true
+    wait "${reindex_pid}" || reindex_status=$?
+    if [ "${reindex_status}" -ne 0 ]; then
+        error "broad REINDEX with a concurrent schedule change failed:
+$(cat "${reindex_output}")"
+    fi
+
+    schedule_matches="$(
+        current_generation_schedule_job_count "${index_oid}" "2 0 1 1 *"
+    )"
+    assert_eq "broad REINDEX preserves a later committed schedule" \
+        "1" "${schedule_matches}"
+
+    sql_super -c "
+        DROP SCHEMA lifecycle_reindex_schedule_change CASCADE;" >/dev/null
 }
 
 test_failed_bulk_reindex_reconciliation() {
@@ -3408,6 +3676,124 @@ SQL
         >/dev/null
 }
 
+test_global_cluster_concurrent_mode_change() {
+    local blocker_pid cluster_output cluster_pid cluster_status=0
+    local file_after file_before index_oid job_after
+
+    sql_as durable_owner <<'SQL' >/dev/null 2>&1
+CREATE TABLE public.lifecycle_global_cluster_mode_blocker
+    (id integer, body text);
+INSERT INTO public.lifecycle_global_cluster_mode_blocker
+VALUES (1, 'blocker');
+CREATE INDEX lifecycle_global_cluster_mode_blocker_order_idx
+    ON public.lifecycle_global_cluster_mode_blocker(id);
+CREATE INDEX lifecycle_global_cluster_mode_blocker_idx
+    ON public.lifecycle_global_cluster_mode_blocker USING bm25(body)
+    WITH (text_config = 'english', compaction = 'inline');
+CLUSTER public.lifecycle_global_cluster_mode_blocker
+    USING lifecycle_global_cluster_mode_blocker_order_idx;
+
+CREATE TABLE public.lifecycle_global_cluster_mode_target
+    (id integer, body text);
+INSERT INTO public.lifecycle_global_cluster_mode_target
+VALUES (1, 'target');
+CREATE INDEX lifecycle_global_cluster_mode_target_order_idx
+    ON public.lifecycle_global_cluster_mode_target(id);
+CREATE INDEX lifecycle_global_cluster_mode_target_idx
+    ON public.lifecycle_global_cluster_mode_target USING bm25(body)
+    WITH (text_config = 'english', compaction = 'inline');
+CLUSTER public.lifecycle_global_cluster_mode_target
+    USING lifecycle_global_cluster_mode_target_order_idx;
+SQL
+    index_oid="$(sql_super -c "SELECT
+        'public.lifecycle_global_cluster_mode_target_idx'::regclass::oid;")"
+    file_before="$(sql_super -c "SELECT
+        pg_catalog.pg_relation_filenode(${index_oid});")"
+
+    PGAPPNAME=lifecycle-global-cluster-mode-blocker \
+        sql_as durable_owner -c "
+        BEGIN;
+        ALTER INDEX public.lifecycle_global_cluster_mode_blocker_idx
+          SET (compaction = 'inline');
+        SELECT pg_catalog.pg_sleep(120);" \
+        >"${DATA_DIR}/global-cluster-mode-blocker.out" 2>&1 &
+    blocker_pid=$!
+    for _ in $(seq 1 100); do
+        if [ "$(sql_super -c "SELECT count(*)
+              FROM pg_catalog.pg_locks
+              WHERE relation =
+                    'public.lifecycle_global_cluster_mode_blocker_idx'
+                      ::regclass
+                AND mode = 'AccessExclusiveLock'
+                AND granted;")" = "1" ]; then
+            break
+        fi
+        sleep 0.1
+    done
+
+    cluster_output="${DATA_DIR}/global-cluster-mode.out"
+    PGAPPNAME=lifecycle-global-cluster-mode \
+        PGOPTIONS="-c statement_timeout=30s" \
+        sql_as durable_owner -c "CLUSTER;" \
+        >"${cluster_output}" 2>&1 &
+    cluster_pid=$!
+    for _ in $(seq 1 100); do
+        if [ "$(sql_super -c "SELECT count(*)
+              FROM pg_catalog.pg_stat_activity AS activity
+              JOIN pg_catalog.pg_locks AS relation_lock
+                ON relation_lock.pid = activity.pid
+              WHERE activity.application_name =
+                    'lifecycle-global-cluster-mode'
+                AND relation_lock.relation =
+                    'public.lifecycle_global_cluster_mode_blocker_idx'
+                      ::regclass
+                AND NOT relation_lock.granted;")" = "1" ]; then
+            break
+        fi
+        sleep 0.1
+    done
+    assert_eq "global CLUSTER reached its candidate-discovery wait" "1" \
+        "$(sql_super -c "SELECT count(*)
+          FROM pg_catalog.pg_stat_activity AS activity
+          JOIN pg_catalog.pg_locks AS relation_lock
+            ON relation_lock.pid = activity.pid
+          WHERE activity.application_name =
+                'lifecycle-global-cluster-mode'
+            AND relation_lock.relation =
+                'public.lifecycle_global_cluster_mode_blocker_idx'
+                  ::regclass
+            AND NOT relation_lock.granted;")"
+
+    sql_as durable_owner -c "
+        ALTER INDEX public.lifecycle_global_cluster_mode_target_idx
+          SET (compaction = 'background',
+               compaction_schedule = '1 2 3 4 *');" >/dev/null
+    sql_super -c "SELECT pg_catalog.pg_terminate_backend(pid)
+      FROM pg_catalog.pg_stat_activity
+      WHERE application_name =
+            'lifecycle-global-cluster-mode-blocker';" >/dev/null
+    wait "${blocker_pid}" || true
+    wait "${cluster_pid}" || cluster_status=$?
+    if [ "${cluster_status}" -ne 0 ]; then
+        error "global CLUSTER with a concurrent mode change failed:
+$(cat "${cluster_output}")"
+    fi
+
+    file_after="$(sql_super -c "SELECT
+        pg_catalog.pg_relation_filenode(${index_oid});")"
+    assert_ne "global CLUSTER rebuilt the newly managed index" \
+        "${file_before}" "${file_after}"
+    job_after="$(current_generation_job_id "${index_oid}")"
+    if [ -z "${job_after}" ]; then
+        error "global CLUSTER lost a concurrent background mode change"
+    fi
+    log "PASS: global CLUSTER tracks a concurrent background mode change"
+
+    sql_super -c "
+        DROP TABLE public.lifecycle_global_cluster_mode_target,
+                   public.lifecycle_global_cluster_mode_blocker;" >/dev/null
+}
+
 test_inheritance_vacuum_full_scope() {
     local child_file_after child_file_before child_index_oid
     local child_job_after child_job_before parent_file_after
@@ -4364,6 +4750,8 @@ test_concurrent_reindex_reconciliation() {
     local a_before a_after a_oid_before a_oid_after
     local b_before b_after b_oid_before b_oid_after
 
+    sql_super -c "ALTER ROLE durable_owner IN DATABASE ${TEST_DB}
+      SET pg_textsearch.background_compaction_schedule = '1 2 3 4 *';"
     sql_as durable_owner -c "
         CREATE TABLE public.lifecycle_concurrent_docs
           (body_a text, body_b text);
@@ -4374,8 +4762,7 @@ test_concurrent_reindex_reconciliation() {
         CREATE INDEX lifecycle_concurrent_a_idx
           ON public.lifecycle_concurrent_docs USING bm25(body_a)
           WITH (text_config = 'english',
-                compaction = 'background',
-                compaction_schedule = '0 0 1 1 *');" >/dev/null 2>&1
+                compaction = 'background');" >/dev/null 2>&1
     sql_as durable_owner -c "
         CREATE INDEX lifecycle_concurrent_b_idx
           ON public.lifecycle_concurrent_docs USING bm25(body_b)
@@ -4386,6 +4773,8 @@ test_concurrent_reindex_reconciliation() {
     a_oid_before="$(sql_super -c \
         "SELECT 'public.lifecycle_concurrent_a_idx'::regclass::oid;")"
     a_before="$(current_generation_job_id "${a_oid_before}")"
+    sql_super -c "ALTER ROLE durable_owner IN DATABASE ${TEST_DB}
+      SET pg_textsearch.background_compaction_schedule = '5 6 7 8 *';"
     sql_as durable_owner -c \
         "REINDEX INDEX CONCURRENTLY
            public.lifecycle_concurrent_a_idx;" >/dev/null 2>&1
@@ -4400,6 +4789,11 @@ test_concurrent_reindex_reconciliation() {
     fi
     assert_eq "concurrent index replacement has one current workflow" "1" \
         "$(current_generation_job_count "${a_oid_after}")"
+    assert_eq "concurrent index replacement preserves captured schedule" "t" \
+        "$(sql_super -c "SELECT label OPERATOR(pg_catalog.~~)
+            ('%:' || pg_catalog.encode(pg_catalog.convert_to(
+                '1 2 3 4 *', 'UTF8'), 'hex'))
+          FROM df.instances WHERE id = '${a_after}';")"
 
     a_oid_before="${a_oid_after}"
     b_oid_before="$(sql_super -c \
@@ -4436,6 +4830,8 @@ test_concurrent_reindex_reconciliation() {
         >/dev/null
     sql_as durable_owner -c \
         "DROP TABLE public.lifecycle_concurrent_docs;"
+    sql_super -c "ALTER ROLE durable_owner IN DATABASE ${TEST_DB}
+      RESET pg_textsearch.background_compaction_schedule;"
 }
 
 test_partitioned_reindex_reconciliation() {
@@ -7388,7 +7784,6 @@ blocker: $(cat "${blocker_output}")"
           ARRAY['compaction_schedule=1 0 1 1 *']
           FROM pg_catalog.pg_class WHERE oid =
             'public.lifecycle_post_publication_nested_idx'::regclass;")"
-
     restore_signal_probe
     renamed_output="${DATA_DIR}/post-publication-renamed-object.out"
     sql_super -c "ALTER FUNCTION df.explain(text)
@@ -7421,6 +7816,152 @@ $(cat "${renamed_output}")"
                    public.lifecycle_post_publication_nested_docs;" >/dev/null
 }
 
+test_post_publication_schedule_override() {
+    local index_oid job_after job_label reindex_output schedule_matches
+
+    sql_as durable_owner <<'SQL' >/dev/null 2>&1
+CREATE TABLE public.lifecycle_post_publication_schedule_docs (body text);
+INSERT INTO public.lifecycle_post_publication_schedule_docs
+VALUES ('before');
+CREATE INDEX lifecycle_post_publication_schedule_idx
+    ON public.lifecycle_post_publication_schedule_docs USING bm25(body)
+    WITH (text_config = 'english',
+          compaction = 'background',
+          compaction_schedule = '0 0 1 1 *');
+CREATE FUNCTION public.lifecycle_post_publication_schedule_change()
+RETURNS event_trigger
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = pg_catalog, pg_temp
+AS $body$
+BEGIN
+    IF pg_catalog.current_setting('application_name')
+           OPERATOR(pg_catalog.=) 'lifecycle-post-publication-schedule' THEN
+        ALTER INDEX public.lifecycle_post_publication_schedule_idx
+          SET (compaction_schedule = '2 0 1 1 *');
+    END IF;
+END
+$body$;
+SQL
+    sql_super -c "
+        CREATE EVENT TRIGGER lifecycle_post_publication_schedule_change
+          ON ddl_command_end
+          WHEN TAG IN ('REINDEX')
+          EXECUTE FUNCTION
+            public.lifecycle_post_publication_schedule_change();" >/dev/null
+    index_oid="$(sql_super -c "SELECT
+        'public.lifecycle_post_publication_schedule_idx'::regclass::oid;")"
+
+    reindex_output="$(PGAPPNAME=lifecycle-post-publication-schedule \
+        sql_as durable_owner -c "
+          REINDEX INDEX CONCURRENTLY
+            public.lifecycle_post_publication_schedule_idx;" 2>&1)"
+
+    index_oid="$(sql_super -c "SELECT
+        'public.lifecycle_post_publication_schedule_idx'::regclass::oid;")"
+    assert_eq "post-publication schedule option change commits" "t" \
+        "$(sql_super -c "SELECT reloptions @>
+          ARRAY['compaction_schedule=2 0 1 1 *']
+          FROM pg_catalog.pg_class
+          WHERE oid = ${index_oid};")"
+    schedule_matches=0
+    for _ in $(seq 1 100); do
+        schedule_matches="$(
+            current_generation_schedule_job_count \
+                "${index_oid}" "2 0 1 1 *"
+        )"
+        if [ "${schedule_matches}" = "1" ]; then
+            break
+        fi
+        sleep 0.1
+    done
+    if [ "${schedule_matches}" != "1" ]; then
+        job_after="$(current_generation_job_id "${index_oid}")"
+        job_label="$(sql_super -c "SELECT label
+          FROM df.instances WHERE id = '${job_after}';")"
+        error "post-publication schedule change was not authoritative:
+workflow ${job_after} has label ${job_label}
+REINDEX output: ${reindex_output}"
+    fi
+    log "PASS: post-publication schedule change remains authoritative"
+
+    sql_super -c "
+        DROP EVENT TRIGGER lifecycle_post_publication_schedule_change;
+        DROP FUNCTION public.lifecycle_post_publication_schedule_change();
+        DROP TABLE public.lifecycle_post_publication_schedule_docs;" \
+        >/dev/null
+}
+
+test_post_publication_background_activation() {
+    local index_oid schedule_matches
+
+    sql_as durable_owner <<'SQL' >/dev/null 2>&1
+CREATE TABLE public.lifecycle_post_publication_activation_docs (body text);
+INSERT INTO public.lifecycle_post_publication_activation_docs
+VALUES ('before');
+CREATE INDEX lifecycle_post_publication_activation_idx
+    ON public.lifecycle_post_publication_activation_docs USING bm25(body)
+    WITH (text_config = 'english', compaction = 'inline');
+CREATE FUNCTION public.lifecycle_post_publication_enable_background()
+RETURNS event_trigger
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = pg_catalog, pg_temp
+AS $body$
+BEGIN
+    IF pg_catalog.current_setting('application_name')
+           OPERATOR(pg_catalog.=) 'lifecycle-post-publication-activation' THEN
+        ALTER INDEX public.lifecycle_post_publication_activation_idx
+          SET (compaction = 'background',
+               compaction_schedule = '3 0 1 1 *');
+    END IF;
+END
+$body$;
+SQL
+    sql_super -c "
+        CREATE EVENT TRIGGER lifecycle_post_publication_enable_background
+          ON ddl_command_end
+          WHEN TAG IN ('REINDEX')
+          EXECUTE FUNCTION
+            public.lifecycle_post_publication_enable_background();" \
+        >/dev/null
+
+    PGAPPNAME=lifecycle-post-publication-activation \
+        sql_as durable_owner -c "
+          REINDEX INDEX CONCURRENTLY
+            public.lifecycle_post_publication_activation_idx;" >/dev/null 2>&1
+    index_oid="$(sql_super -c "SELECT
+        'public.lifecycle_post_publication_activation_idx'::regclass::oid;")"
+    assert_eq "post-publication background activation commits" "t" \
+        "$(sql_super -c "SELECT reloptions @>
+          ARRAY['compaction=background',
+                'compaction_schedule=3 0 1 1 *']
+          FROM pg_catalog.pg_class
+          WHERE oid = ${index_oid};")"
+
+    schedule_matches=0
+    for _ in $(seq 1 100); do
+        schedule_matches="$(
+            current_generation_schedule_job_count \
+                "${index_oid}" "3 0 1 1 *"
+        )"
+        if [ "${schedule_matches}" = "1" ]; then
+            break
+        fi
+        sleep 0.1
+    done
+    assert_eq "post-publication activation creates the current workflow" \
+        "1" "${schedule_matches}"
+
+    sql_super -c "
+        DROP EVENT TRIGGER
+          lifecycle_post_publication_enable_background;
+        DROP FUNCTION
+          public.lifecycle_post_publication_enable_background();
+        DROP TABLE public.lifecycle_post_publication_activation_docs;" \
+        >/dev/null
+}
+
 test_post_publication_activation_error_defers() {
     local index_oid output relfilenumber_before
 
@@ -7442,6 +7983,8 @@ AS $body$
 BEGIN
     IF pg_catalog.current_setting('application_name')
            OPERATOR(pg_catalog.=) 'lifecycle-post-publication-error' THEN
+        ALTER INDEX public.lifecycle_post_publication_error_idx
+          RENAME TO lifecycle_post_publication_error_renamed_idx;
         REVOKE USAGE ON SCHEMA df FROM durable_owner;
     END IF;
 END
@@ -7474,18 +8017,20 @@ ${output}"
 ${output}"
     fi
     if [ "$(sql_super -c "SELECT pg_catalog.pg_relation_filenode(
-          'public.lifecycle_post_publication_error_idx'::regclass);")" = \
+          'public.lifecycle_post_publication_error_renamed_idx'
+            ::regclass);")" = \
          "${relfilenumber_before}" ]; then
         error "activation-error test did not publish replacement storage"
     fi
 
     sql_super -c "SELECT df.grant_usage('durable_owner');" >/dev/null
     sql_as durable_owner -c "
-        ALTER INDEX public.lifecycle_post_publication_error_idx
+        ALTER INDEX public.lifecycle_post_publication_error_renamed_idx
           SET (compaction_schedule = '0 0 1 1 *');" >/dev/null
     assert_eq "activation-error deferral remains explicitly retryable" "1" \
         "$(current_generation_job_count "$(sql_super -c "SELECT
-          'public.lifecycle_post_publication_error_idx'::regclass::oid;")")"
+          'public.lifecycle_post_publication_error_renamed_idx'
+            ::regclass::oid;")")"
 
     sql_super -c "
         DROP EVENT TRIGGER lifecycle_post_publication_revoke;
@@ -11033,6 +11578,8 @@ run_test test_alter_preflight_rejections
 run_test test_defaulted_start_arity
 run_test test_reindex_nonrelation_passthrough
 run_test test_late_bulk_reindex_target
+run_test test_bulk_reindex_concurrent_mode_change
+run_test test_bulk_reindex_concurrent_schedule_change
 run_test test_failed_bulk_reindex_reconciliation
 run_test test_partitioned_create_activation
 run_test test_direct_index_partition_attach
@@ -11054,6 +11601,7 @@ run_test test_database_owner_vacuum_full
 run_test test_vacuum_full_skip_locked
 run_test test_partition_vacuum_child_authorization
 run_test test_global_cluster_scope
+run_test test_global_cluster_concurrent_mode_change
 run_test test_inheritance_vacuum_full_scope
 run_test test_inheritance_alter_rewrite_scope
 run_test test_additional_rewrite_reconciliation
@@ -11083,6 +11631,8 @@ run_test test_textsearch_extension_dependency_order
 run_test test_precommit_request_admission_nowait
 run_test test_terminal_grant_reentry_is_rejected
 run_test test_post_publication_reindex_defers
+run_test test_post_publication_schedule_override
+run_test test_post_publication_background_activation
 run_test test_post_publication_activation_error_defers
 run_test test_cross_statement_managed_lock_order
 run_test test_managed_intent_savepoint_recovery

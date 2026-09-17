@@ -254,12 +254,43 @@ if grep -Fq "if (indexoids == NIL)" <<<"${reindex_tracking_begin_body}"; then
     exit 1
 fi
 if ! grep -Eq \
-    "state->scope_refresh_once[[:space:]]*=[[:space:]]*state->targets[[:space:]]*==[[:space:]]*NIL" \
+    "state->scope_refresh_once[[:space:]]*=[[:space:]]*OidIsValid" \
     "${MODULE_SOURCE}" ||
     ! grep -Fq "if (state->scope_refresh_once)" "${MODULE_SOURCE}" ||
     ! grep -Eq "state->scope_oid[[:space:]]*=[[:space:]]*InvalidOid" \
         "${MODULE_SOURCE}"; then
-    echo "empty REINDEX scopes are repeatedly rescanned" >&2
+    echo "broad REINDEX scopes are repeatedly rescanned" >&2
+    exit 1
+fi
+reindex_candidates_body="$(
+    sed -n '/^tp_reindex_collect_candidates(/,/^}/p' "${MODULE_SOURCE}"
+)"
+reindex_refresh_body="$(
+    sed -n '/^tp_reindex_target_refresh_identity(/,/^}/p' "${MODULE_SOURCE}"
+)"
+reindex_finish_body="$(
+    sed -n '/^tp_finish_reindex_pending(/,/^}/p' "${MODULE_SOURCE}"
+)"
+if ! grep -Fq "target->identity.tablespace_oid" \
+        <<<"${reindex_candidates_body}" ||
+    ! grep -Fq "target->identity.relfilenumber" \
+        <<<"${reindex_candidates_body}" ||
+    ! grep -Fq "target->pending" <<<"${reindex_candidates_body}" ||
+    ! grep -Fq "target->completed" <<<"${reindex_candidates_body}" ||
+    ! grep -Fq "pending_index_oid" <<<"${reindex_candidates_body}" ||
+    ! grep -Fq "intermediate_targets" <<<"${reindex_candidates_body}" ||
+    ! grep -Fq "final_pass ? state->targets" \
+        <<<"${reindex_candidates_body}" ||
+    ! grep -Fq "!final_pass" <<<"${reindex_candidates_body}" ||
+    ! grep -Fq "target->current_index_oid" <<<"${reindex_refresh_body}" ||
+    grep -Fq "identity->index_oid" <<<"${reindex_refresh_body}" ||
+    ! grep -Fq "tp_reconciled_indexoids" <<<"${reindex_finish_body}" ||
+    ! grep -Fq "target->pending_index_oid" <<<"${reindex_finish_body}" ||
+    ! grep -Fq "tp_finish_reindex_pending" "${MODULE_SOURCE}" ||
+    grep -Fq "pending_targets" "${MODULE_SOURCE}" ||
+    grep -Fq "completed_targets" "${MODULE_SOURCE}"; then
+    echo "broad REINDEX does not defer completed targets until its final pass" \
+        >&2
     exit 1
 fi
 
@@ -433,11 +464,17 @@ fi
 reindex_candidate_body="$(
     sed -n '/^tp_reindex_try_relation_open(/,/^}/p;
              /^tp_reindex_relation_close(/,/^}/p;
+             /^tp_reindex_target_capture(/,/^}/p;
              /^tp_reindex_target_live_original(/,/^}/p;
              /^tp_reindex_collect_candidates(/,/^}/p' "${MODULE_SOURCE}"
 )"
 reindex_intent_body="$(
     sed -n '/^tp_collect_reindex_state_intents(/,/^}/p' "${MODULE_SOURCE}"
+)"
+tracked_rewrite_body="$(
+    sed -n '/^tp_report_nowait_relation_lock_error(/,/^}/p;
+             /^tp_physical_bm25_indexes_for_rewrite(/,/^}/p;
+             /^tp_process_tracked_rewrite(/,/^}/p' "${MODULE_SOURCE}"
 )"
 if grep -Fq "try_relation_open(target->index_oid, AccessShareLock)" \
         <<<"${reindex_candidate_body}" ||
@@ -445,11 +482,20 @@ if grep -Fq "try_relation_open(target->index_oid, AccessShareLock)" \
         <<<"${reindex_candidate_body}" ||
     ! grep -Fq "ConditionalLockRelationOid" \
         <<<"${reindex_candidate_body}" ||
+    ! grep -Fq "state->nowait" <<<"${reindex_candidate_body}" ||
     ! grep -Fq "UnlockRelationOid" <<<"${reindex_candidate_body}" ||
     ! grep -Fq "tp_collect_prevalidated_managed_intent" \
         <<<"${reindex_intent_body}"; then
     echo "post-publication target discovery can block before the terminal batch" \
         >&2
+    exit 1
+fi
+if grep -Fq "(void)nowait" <<<"${tracked_rewrite_body}" ||
+    ! grep -Fq "ConditionalLockRelationOid" <<<"${tracked_rewrite_body}" ||
+    ! grep -Fq "ERRCODE_OBJECT_IN_USE" <<<"${tracked_rewrite_body}" ||
+    ! grep -Fq "tp_physical_bm25_indexes_for_rewrite(indexoids, nowait)" \
+        <<<"${tracked_rewrite_body}"; then
+    echo "tracked rewrite discovery does not preserve NOWAIT semantics" >&2
     exit 1
 fi
 
@@ -460,6 +506,9 @@ precommit_reconcile_body="$(
     sed -n '/^tp_reconcile_managed_intents_at_precommit(/,/^}/p' \
         "${MODULE_SOURCE}"
 )"
+managed_reconcile_body="$(
+    sed -n '/^tp_reconcile_managed_intents(void)/,/^}/p' "${MODULE_SOURCE}"
+)"
 reindex_state_intent_body="$(
     sed -n '/^tp_collect_reindex_state_intents(/,/^}/p' "${MODULE_SOURCE}"
 )"
@@ -467,12 +516,18 @@ if ! grep -Fq "tp_managed_reconciling" <<<"${utility_wrapper_body}" ||
     ! grep -Fq "GrantStmt" <<<"${utility_wrapper_body}" ||
     ! grep -Fq "tp_post_publication_reconciliation" \
         <<<"${reindex_state_intent_body}" ||
+    ! grep -Fq "only_state != NULL && state != only_state" \
+        <<<"${reindex_state_intent_body}" ||
     ! grep -Fq "tp_post_publication_reconciliation" \
         <<<"${precommit_reconcile_body}" ||
     ! grep -Fq "BeginInternalSubTransaction" \
         <<<"${precommit_reconcile_body}" ||
     ! grep -Fq "ERRCODE_QUERY_CANCELED" \
-        <<<"${precommit_reconcile_body}"; then
+        <<<"${precommit_reconcile_body}" ||
+    ! grep -Eq \
+        "reconciled[[:space:]]*=[[:space:]]*tp_reconcile_managed_intents\\(\\)" \
+        <<<"${precommit_reconcile_body}" ||
+    ! grep -Fq "return !deferred;" <<<"${managed_reconcile_body}"; then
     echo "terminal reconciliation does not safely reject utility reentry" \
         >&2
     exit 1

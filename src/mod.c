@@ -30,8 +30,8 @@
 #include <catalog/pg_namespace_d.h>
 #include <catalog/pg_tablespace_d.h>
 #include <commands/dbcommands.h>
-#include <commands/extension.h>
 #include <commands/defrem.h>
+#include <commands/extension.h>
 #include <commands/tablecmds.h>
 #include <commands/tablespace.h>
 #include <fmgr.h>
@@ -51,8 +51,8 @@
 #include <utils/guc.h>
 #include <utils/inval.h>
 #include <utils/lsyscache.h>
-#include <utils/snapmgr.h>
 #include <utils/relcache.h>
+#include <utils/snapmgr.h>
 #include <utils/syscache.h>
 
 #include "access/am.h"
@@ -315,18 +315,29 @@ release_rls_ddl_lock(
 	(void)LockRelease(&stable_tag, lockmode, true);
 }
 
-typedef TpCompactionJobIdentity TpReindexTarget;
+typedef struct TpReindexTarget
+{
+	TpCompactionJobIdentity identity;
+	Oid						current_index_oid;
+	Oid						current_namespace_oid;
+	char				   *current_index_name;
+	Oid						pending_index_oid;
+	bool					pending;
+	bool					completed;
+} TpReindexTarget;
 
 typedef struct TpReindexState
 {
 	MemoryContext		   context;
 	List				  *targets;
+	List				  *intermediate_targets;
 	ReindexObjectType	   scope_kind;
 	Oid					   scope_oid;
 	bool				   scope_refresh_once;
 	bool				   reconciling;
 	bool				   defer_reconciliation;
 	bool				   post_publication;
+	bool				   nowait;
 	struct TpReindexState *previous;
 } TpReindexState;
 
@@ -371,6 +382,7 @@ static int				   tp_process_utility_depth = 0;
  */
 static MemoryContext tp_managed_intent_context			= NULL;
 static List			*tp_managed_intents					= NIL;
+static List			*tp_reconciled_indexoids			= NIL;
 static bool			 tp_managed_reconciling				= false;
 static bool			 tp_post_publication_reconciliation = false;
 
@@ -417,9 +429,11 @@ static void tp_process_utility_impl(
 		QueryEnvironment	 *queryEnv,
 		DestReceiver		 *dest,
 		QueryCompletion		 *qc);
-static void tp_collect_reindex_state_intents(bool include_deferred);
+static void tp_collect_reindex_state_intents(
+		TpReindexState *only_state, bool include_deferred, bool final_pass);
 static bool tp_reconcile_managed_intents(void);
-static void tp_reconcile_managed_intents_at_precommit(void);
+static bool tp_reconcile_managed_intents_at_precommit(void);
+static void tp_finish_reindex_pending(bool reconciled);
 
 static void
 tp_validate_compaction_lineage(const char *lineage)
@@ -924,18 +938,29 @@ tp_update_managed_intent(
 						   TP_MANAGED_INTENT_PRESERVE_SCHEDULE |
 						   TP_MANAGED_INTENT_DISABLE |
 						   TP_MANAGED_INTENT_POST_PUBLICATION;
-	bool current_options_authoritative =
+	const int action_flags = mode_flags & ~TP_MANAGED_INTENT_POST_PUBLICATION;
+	bool	  current_options_authoritative =
 			(intent->flags & (TP_MANAGED_INTENT_REFRESH_DEFAULT |
 							  TP_MANAGED_INTENT_RECONCILE_OPTIONS)) != 0;
+	bool pending_default_refresh = (intent->flags &
+									TP_MANAGED_INTENT_REFRESH_DEFAULT) != 0;
 	bool pending_option_reconciliation =
 			(intent->flags & TP_MANAGED_INTENT_RECONCILE_OPTIONS) != 0;
 	int persistent_flags = (intent->flags | flags) &
 						   TP_MANAGED_INTENT_LINEAGE_SUPPLIED;
 	int new_mode_flags = flags & mode_flags;
 
+	if ((new_mode_flags & action_flags) == 0)
+		new_mode_flags |= intent->flags & action_flags;
 	if ((flags & TP_MANAGED_INTENT_PRESERVE_SCHEDULE) != 0 &&
 		pending_option_reconciliation)
 		new_mode_flags |= TP_MANAGED_INTENT_RECONCILE_OPTIONS;
+	if ((flags & TP_MANAGED_INTENT_PRESERVE_SCHEDULE) != 0 &&
+		pending_default_refresh)
+	{
+		new_mode_flags &= ~TP_MANAGED_INTENT_PRESERVE_SCHEDULE;
+		new_mode_flags |= TP_MANAGED_INTENT_REFRESH_DEFAULT;
+	}
 	intent->flags = persistent_flags | new_mode_flags;
 	if ((flags & (TP_MANAGED_INTENT_RECONCILE_OPTIONS |
 				  TP_MANAGED_INTENT_RECONCILE_LINEAGE)) != 0)
@@ -948,7 +973,8 @@ tp_update_managed_intent(
 			intent->lineage == NULL && lineage != NULL)
 		intent->lineage = pstrdup(lineage);
 
-	if ((flags & TP_MANAGED_INTENT_PRESERVE_SCHEDULE) != 0)
+	if ((flags & TP_MANAGED_INTENT_PRESERVE_SCHEDULE) != 0 &&
+		!pending_default_refresh)
 	{
 		tp_reset_compaction_identity(&intent->source);
 		if (source != NULL)
@@ -1061,8 +1087,10 @@ tp_reset_managed_intents(void)
 {
 	if (tp_managed_intent_context != NULL)
 		MemoryContextDelete(tp_managed_intent_context);
-	tp_managed_intent_context		   = NULL;
-	tp_managed_intents				   = NIL;
+	tp_managed_intent_context = NULL;
+	tp_managed_intents		  = NIL;
+	list_free(tp_reconciled_indexoids);
+	tp_reconciled_indexoids			   = NIL;
 	tp_managed_reconciling			   = false;
 	tp_post_publication_reconciliation = false;
 }
@@ -1190,8 +1218,8 @@ tp_object_access(
 		{
 			MemoryContext old_context;
 
-			old_context =
-					MemoryContextSwitchTo(tp_create_index_states->context);
+			old_context = MemoryContextSwitchTo(
+					tp_create_index_states->context);
 			tp_create_index_states->created_indexes = list_append_unique_oid(
 					tp_create_index_states->created_indexes, objectId);
 			MemoryContextSwitchTo(old_context);
@@ -1282,11 +1310,13 @@ tp_shmem_startup(void)
 static void
 tp_xact_callback(XactEvent event, void *arg pg_attribute_unused())
 {
+	bool reconciled;
+
 	switch (event)
 	{
 	case XACT_EVENT_PRE_COMMIT:
 		if (tp_reindex_states != NULL)
-			tp_collect_reindex_state_intents(true);
+			tp_collect_reindex_state_intents(NULL, true, false);
 
 		/*
 		 * Check for bulk load auto-spill before commit.
@@ -1294,7 +1324,9 @@ tp_xact_callback(XactEvent event, void *arg pg_attribute_unused())
 		 * spill to disk to prevent unbounded memory growth.
 		 */
 		tp_bulk_load_spill_check();
-		tp_reconcile_managed_intents_at_precommit();
+		reconciled = tp_reconcile_managed_intents_at_precommit();
+		if (tp_reindex_states != NULL)
+			tp_finish_reindex_pending(reconciled);
 		tp_compaction_flush_requests();
 		break;
 
@@ -1653,6 +1685,54 @@ tp_physical_bm25_indexes(List *indexoids, bool background_only)
 				  (!background_only || tp_index_compaction_mode(index_rel) ==
 											   TP_COMPACTION_BACKGROUND);
 		relation_close(index_rel, AccessShareLock);
+		if (matches)
+			result = list_append_unique_oid(result, indexoid);
+	}
+	return result;
+}
+
+static void
+tp_report_nowait_relation_lock_error(Oid relation_oid)
+{
+	char *relation_name = get_rel_name(relation_oid);
+
+	if (relation_name != NULL)
+		ereport(ERROR,
+				(errcode(ERRCODE_OBJECT_IN_USE),
+				 errmsg("could not obtain lock on relation \"%s\"",
+						relation_name)));
+	ereport(ERROR,
+			(errcode(ERRCODE_OBJECT_IN_USE),
+			 errmsg("could not obtain lock on relation with OID %u",
+					relation_oid)));
+}
+
+static List *
+tp_physical_bm25_indexes_for_rewrite(List *indexoids, bool nowait)
+{
+	List	 *result = NIL;
+	ListCell *lc;
+
+	if (!nowait)
+		return tp_physical_bm25_indexes(indexoids, false);
+
+	foreach (lc, indexoids)
+	{
+		Oid		 indexoid = lfirst_oid(lc);
+		Relation index_rel;
+		bool	 matches;
+
+		if (!ConditionalLockRelationOid(indexoid, AccessShareLock))
+			tp_report_nowait_relation_lock_error(indexoid);
+		index_rel = try_relation_open(indexoid, NoLock);
+		if (index_rel == NULL)
+		{
+			UnlockRelationOid(indexoid, AccessShareLock);
+			continue;
+		}
+		matches = tp_is_physical_bm25_index_relation(index_rel);
+		relation_close(index_rel, NoLock);
+		UnlockRelationOid(indexoid, AccessShareLock);
 		if (matches)
 			result = list_append_unique_oid(result, indexoid);
 	}
@@ -2388,7 +2468,11 @@ tp_reconcile_managed_intents(void)
 							intent->lineage);
 			}
 			if (!tp_is_background_physical_index(intent->index_oid))
+			{
+				tp_reconciled_indexoids = list_append_unique_oid(
+						tp_reconciled_indexoids, intent->index_oid);
 				continue;
+			}
 			if ((intent->flags & TP_MANAGED_INTENT_PRESERVE_SCHEDULE) != 0)
 			{
 				tp_compaction_job_resolve_schedule(
@@ -2405,6 +2489,8 @@ tp_reconcile_managed_intents(void)
 						intent->index_oid,
 						(intent->flags & TP_MANAGED_INTENT_REFRESH_DEFAULT) !=
 								0);
+			tp_reconciled_indexoids = list_append_unique_oid(
+					tp_reconciled_indexoids, intent->index_oid);
 		}
 		list_free(locked);
 		if (tp_managed_intents != NIL)
@@ -2437,16 +2523,17 @@ tp_reconcile_managed_intents(void)
 	}
 	PG_END_TRY();
 
-	return true;
+	return !deferred;
 }
 
-static void
+static bool
 tp_reconcile_managed_intents_at_precommit(void)
 {
 	MemoryContext old_context = CurrentMemoryContext;
 	ResourceOwner old_owner	  = CurrentResourceOwner;
 	ListCell	 *lc;
 	bool		  post_publication = tp_post_publication_reconciliation;
+	bool		  reconciled	   = true;
 
 	foreach (lc, tp_managed_intents)
 	{
@@ -2459,16 +2546,13 @@ tp_reconcile_managed_intents_at_precommit(void)
 		}
 	}
 	if (!post_publication)
-	{
-		tp_reconcile_managed_intents();
-		return;
-	}
+		return tp_reconcile_managed_intents();
 
 	BeginInternalSubTransaction(NULL);
 	PG_TRY();
 	{
 		MemoryContextSwitchTo(old_context);
-		tp_reconcile_managed_intents();
+		reconciled						   = tp_reconcile_managed_intents();
 		tp_post_publication_reconciliation = false;
 		ReleaseCurrentSubTransaction();
 		MemoryContextSwitchTo(old_context);
@@ -2501,8 +2585,10 @@ tp_reconcile_managed_intents_at_precommit(void)
 				 errhint("Repeat the managed DDL after correcting the "
 						 "reported condition.")));
 		FreeErrorData(edata);
+		reconciled = false;
 	}
 	PG_END_TRY();
+	return reconciled;
 }
 
 static void
@@ -2849,7 +2935,8 @@ tp_reindex_tracking_begin(
 		ReindexObjectType scope_kind,
 		Oid				  scope_oid,
 		bool			  defer_reconciliation,
-		bool			  post_publication)
+		bool			  post_publication,
+		bool			  nowait)
 {
 	MemoryContext	caller_context = CurrentMemoryContext;
 	MemoryContext	context;
@@ -2866,10 +2953,10 @@ tp_reindex_tracking_begin(
 		state->scope_oid  = scope_oid;
 		state->defer_reconciliation = defer_reconciliation;
 		state->post_publication		= post_publication;
+		state->nowait				= nowait;
 
 		tp_reindex_add_targets(state, indexoids);
-		state->scope_refresh_once = state->targets == NIL &&
-									OidIsValid(state->scope_oid);
+		state->scope_refresh_once = OidIsValid(state->scope_oid);
 	}
 	PG_CATCH();
 	{
@@ -2893,11 +2980,71 @@ static bool
 tp_reindex_target_equals(
 		const TpReindexTarget *left, const TpReindexTarget *right)
 {
-	if (left->index_oid == right->index_oid)
+	if (left->identity.index_oid == right->identity.index_oid)
 		return true;
-	return left->heap_oid == right->heap_oid && left->lineage != NULL &&
-		   right->lineage != NULL &&
-		   strcmp(left->lineage, right->lineage) == 0;
+	return left->identity.heap_oid == right->identity.heap_oid &&
+		   left->identity.lineage != NULL && right->identity.lineage != NULL &&
+		   strcmp(left->identity.lineage, right->identity.lineage) == 0;
+}
+
+static bool
+tp_reindex_target_capture(
+		TpReindexState *state, Oid indexoid, TpReindexTarget *target)
+{
+	TpCompactionJobIdentity *identity = &target->identity;
+	Relation				 index_rel;
+	const char				*lineage;
+	const char				*schedule;
+	LOCKMODE lockmode = state->nowait ? NoLock : AccessShareLock;
+
+	if (state->nowait &&
+		!ConditionalLockRelationOid(indexoid, AccessShareLock))
+		tp_report_nowait_relation_lock_error(indexoid);
+	index_rel = try_relation_open(indexoid, lockmode);
+	if (index_rel == NULL)
+	{
+		if (state->nowait)
+			UnlockRelationOid(indexoid, AccessShareLock);
+		return false;
+	}
+	if (!tp_is_physical_bm25_index_relation(index_rel))
+	{
+		relation_close(index_rel, lockmode);
+		if (state->nowait)
+			UnlockRelationOid(indexoid, AccessShareLock);
+		return false;
+	}
+
+	memset(target, 0, sizeof(*target));
+	identity->heap_oid		  = index_rel->rd_index->indrelid;
+	identity->namespace_oid	  = RelationGetNamespace(index_rel);
+	identity->index_name	  = pstrdup(RelationGetRelationName(index_rel));
+	identity->index_oid		  = indexoid;
+	identity->tablespace_oid  = index_rel->rd_locator.spcOid;
+	identity->relfilenumber	  = index_rel->rd_locator.relNumber;
+	identity->owner_oid		  = index_rel->rd_rel->relowner;
+	target->current_index_oid = identity->index_oid;
+	target->current_namespace_oid = identity->namespace_oid;
+	target->current_index_name	  = pstrdup(identity->index_name);
+	if (tp_index_compaction_mode(index_rel) == TP_COMPACTION_BACKGROUND)
+	{
+		lineage = tp_index_compaction_lineage(index_rel);
+		if (lineage == NULL)
+		{
+			identity->lineage			 = tp_new_compaction_lineage();
+			identity->lineage_backfilled = true;
+		}
+		else
+			identity->lineage = pstrdup(lineage);
+		schedule = tp_index_compaction_schedule(index_rel);
+		if (schedule == NULL)
+			schedule = tp_background_compaction_schedule;
+		identity->schedule = pstrdup(schedule);
+	}
+	relation_close(index_rel, lockmode);
+	if (state->nowait)
+		UnlockRelationOid(indexoid, AccessShareLock);
+	return true;
 }
 
 static void
@@ -2917,7 +3064,7 @@ tp_reindex_add_targets(TpReindexState *state, List *indexoids)
 		{
 			TpReindexTarget *existing = lfirst(target_cell);
 
-			if (existing->index_oid == indexoid)
+			if (existing->current_index_oid == indexoid)
 			{
 				duplicate = true;
 				break;
@@ -2928,7 +3075,12 @@ tp_reindex_add_targets(TpReindexState *state, List *indexoids)
 
 		old_context = MemoryContextSwitchTo(state->context);
 		target		= palloc0(sizeof(*target));
-		tp_compaction_job_capture(indexoid, target);
+		if (!tp_reindex_target_capture(state, indexoid, target))
+		{
+			pfree(target);
+			MemoryContextSwitchTo(old_context);
+			continue;
+		}
 		foreach (target_cell, state->targets)
 		{
 			if (tp_reindex_target_equals(lfirst(target_cell), target))
@@ -2939,11 +3091,17 @@ tp_reindex_add_targets(TpReindexState *state, List *indexoids)
 		}
 		if (duplicate)
 		{
-			tp_reset_compaction_identity(target);
+			pfree(target->current_index_name);
+			tp_reset_compaction_identity(&target->identity);
 			pfree(target);
 		}
 		else
+		{
 			state->targets = lappend(state->targets, target);
+			if (target->identity.lineage != NULL)
+				state->intermediate_targets =
+						lappend(state->intermediate_targets, target);
+		}
 		MemoryContextSwitchTo(old_context);
 	}
 }
@@ -2964,7 +3122,7 @@ tp_reindex_refresh_scope_targets(TpReindexState *state)
 		Assert(state->scope_kind == REINDEX_OBJECT_DATABASE);
 		indexoids = tp_all_bm25_indexes(InvalidOid, false, NIL, false);
 	}
-	candidates = tp_physical_bm25_indexes(indexoids, true);
+	candidates = tp_physical_bm25_indexes(indexoids, false);
 	tp_reindex_add_targets(state, candidates);
 	if (state->scope_refresh_once)
 	{
@@ -3007,21 +3165,23 @@ tp_reindex_target_refresh_identity(
 	MemoryContext old_context;
 
 	old_context = MemoryContextSwitchTo(state->context);
-	pfree(target->index_name);
-	target->namespace_oid = RelationGetNamespace(index_rel);
-	target->index_name	  = pstrdup(RelationGetRelationName(index_rel));
+	pfree(target->current_index_name);
+	target->current_index_oid	  = RelationGetRelid(index_rel);
+	target->current_namespace_oid = RelationGetNamespace(index_rel);
+	target->current_index_name = pstrdup(RelationGetRelationName(index_rel));
 	MemoryContextSwitchTo(old_context);
 }
 
 static bool
 tp_reindex_target_matches(const TpReindexTarget *target, Relation index_rel)
 {
+	const TpCompactionJobIdentity *identity = &target->identity;
 	const char *lineage = tp_index_compaction_lineage(index_rel);
 
 	return index_rel->rd_index != NULL &&
-		   index_rel->rd_index->indrelid == target->heap_oid &&
-		   (target->lineage_backfilled ||
-			(lineage != NULL && strcmp(lineage, target->lineage) == 0));
+		   index_rel->rd_index->indrelid == identity->heap_oid &&
+		   (identity->lineage == NULL || identity->lineage_backfilled ||
+			(lineage != NULL && strcmp(lineage, identity->lineage) == 0));
 }
 
 static bool
@@ -3036,7 +3196,8 @@ tp_reindex_target_live_original(
 	Relation index_rel;
 
 	*indexoid = InvalidOid;
-	index_rel = tp_reindex_try_relation_open(target->index_oid, contended);
+	index_rel =
+			tp_reindex_try_relation_open(target->current_index_oid, contended);
 	if (index_rel == NULL)
 		return false;
 
@@ -3059,10 +3220,10 @@ tp_reindex_target_live_original(
 		return false;
 	}
 
-	if (tp_is_background_physical_index_relation(index_rel))
+	if (tp_is_physical_bm25_index_relation(index_rel))
 	{
 		tp_reindex_target_refresh_identity(state, target, index_rel);
-		*indexoid		= target->index_oid;
+		*indexoid		= target->current_index_oid;
 		*tablespace_oid = index_rel->rd_locator.spcOid;
 		*relfilenumber	= index_rel->rd_locator.relNumber;
 	}
@@ -3072,20 +3233,27 @@ tp_reindex_target_live_original(
 
 static bool
 tp_reindex_collect_candidates(
-		TpReindexState *state, List **candidates, List **indexoids)
+		TpReindexState *state,
+		List		  **candidates,
+		List		  **indexoids,
+		bool			final_pass)
 {
+	List	 *scan_targets = final_pass ? state->targets
+										: state->intermediate_targets;
 	ListCell *lc;
 	bool	  contended = false;
 
-	foreach (lc, state->targets)
+	foreach (lc, scan_targets)
 	{
 		TpReindexTarget	   *target = lfirst(lc);
 		TpReindexCandidate *candidate;
 		Relation			index_rel;
 		Oid					indexoid;
-		Oid					tablespace_oid;
-		RelFileNumber		relfilenumber;
+		Oid					tablespace_oid = InvalidOid;
+		RelFileNumber		relfilenumber  = InvalidRelFileNumber;
 
+		if (target->pending || (!final_pass && target->completed))
+			continue;
 		if (!tp_reindex_target_live_original(
 					state,
 					target,
@@ -3095,14 +3263,14 @@ tp_reindex_collect_candidates(
 					&contended))
 		{
 			indexoid = get_relname_relid(
-					target->index_name, target->namespace_oid);
+					target->current_index_name, target->current_namespace_oid);
 			if (!OidIsValid(indexoid))
 				continue;
 
 			index_rel = tp_reindex_try_relation_open(indexoid, &contended);
 			if (index_rel == NULL)
 				continue;
-			if (!tp_is_background_physical_index_relation(index_rel) ||
+			if (!tp_is_physical_bm25_index_relation(index_rel) ||
 				!tp_reindex_target_matches(target, index_rel))
 			{
 				tp_reindex_relation_close(index_rel);
@@ -3110,23 +3278,32 @@ tp_reindex_collect_candidates(
 			}
 
 			tp_reindex_target_refresh_identity(state, target, index_rel);
+			tablespace_oid = index_rel->rd_locator.spcOid;
+			relfilenumber  = index_rel->rd_locator.relNumber;
 			tp_reindex_relation_close(index_rel);
 		}
 
 		if (!OidIsValid(indexoid))
 			continue;
-		candidate			 = palloc(sizeof(*candidate));
-		candidate->state	 = state;
-		candidate->target	 = target;
-		candidate->index_oid = indexoid;
-		*candidates			 = lappend(*candidates, candidate);
-		*indexoids			 = lappend_oid(*indexoids, indexoid);
+		if (indexoid == target->identity.index_oid &&
+			tablespace_oid == target->identity.tablespace_oid &&
+			relfilenumber == target->identity.relfilenumber)
+			continue;
+		candidate				  = palloc(sizeof(*candidate));
+		candidate->state		  = state;
+		candidate->target		  = target;
+		candidate->index_oid	  = indexoid;
+		*candidates				  = lappend(*candidates, candidate);
+		*indexoids				  = lappend_oid(*indexoids, indexoid);
+		target->pending			  = true;
+		target->pending_index_oid = indexoid;
 	}
 	return contended;
 }
 
 static void
-tp_collect_reindex_state_intents(bool include_deferred)
+tp_collect_reindex_state_intents(
+		TpReindexState *only_state, bool include_deferred, bool final_pass)
 {
 	List		   *candidates = NIL;
 	List		   *indexoids  = NIL;
@@ -3136,13 +3313,16 @@ tp_collect_reindex_state_intents(bool include_deferred)
 
 	for (state = tp_reindex_states; state != NULL; state = state->previous)
 	{
+		if (only_state != NULL && state != only_state)
+			continue;
 		if (state->reconciling ||
 			(state->defer_reconciliation && !include_deferred))
 			continue;
 		tp_reindex_refresh_scope_targets(state);
 		if (state->post_publication)
 			tp_post_publication_reconciliation = true;
-		if (tp_reindex_collect_candidates(state, &candidates, &indexoids))
+		if (tp_reindex_collect_candidates(
+					state, &candidates, &indexoids, final_pass))
 		{
 			if (!state->post_publication)
 				ereport(ERROR,
@@ -3158,14 +3338,16 @@ tp_collect_reindex_state_intents(bool include_deferred)
 	foreach (lc, candidates)
 	{
 		TpReindexCandidate *candidate = lfirst(lc);
+		int					flags	  = TP_MANAGED_INTENT_POST_PUBLICATION;
 
+		if (candidate->target->identity.lineage != NULL)
+			flags |= TP_MANAGED_INTENT_PRESERVE_SCHEDULE;
 		tp_collect_prevalidated_managed_intent(
 				candidate->index_oid,
-				candidate->target,
+				&candidate->target->identity,
 				NULL,
 				NULL,
-				TP_MANAGED_INTENT_PRESERVE_SCHEDULE |
-						TP_MANAGED_INTENT_POST_PUBLICATION);
+				flags);
 	}
 	list_free(indexoids);
 	list_free_deep(candidates);
@@ -3178,6 +3360,33 @@ tp_collect_reindex_state_intents(bool include_deferred)
 						 "without waiting."),
 				 errhint("Repeat the managed DDL after the conflicting "
 						 "transaction completes.")));
+}
+
+static void
+tp_finish_reindex_pending(bool reconciled)
+{
+	TpReindexState *state;
+
+	for (state = tp_reindex_states; state != NULL; state = state->previous)
+	{
+		ListCell *lc;
+
+		foreach (lc, state->targets)
+		{
+			TpReindexTarget *target = lfirst(lc);
+
+			if (!target->pending)
+				continue;
+			if (reconciled ||
+				list_member_oid(
+						tp_reconciled_indexoids, target->pending_index_oid))
+				target->completed = true;
+			target->pending			  = false;
+			target->pending_index_oid = InvalidOid;
+		}
+	}
+	list_free(tp_reconciled_indexoids);
+	tp_reconciled_indexoids = NIL;
 }
 
 static void
@@ -3770,10 +3979,14 @@ tp_process_tracked_rewrite(
 	TpReindexState *rewrite_state = NULL;
 	List		   *candidates;
 
-	(void)nowait;
-	candidates	  = tp_physical_bm25_indexes(indexoids, true);
+	candidates	  = tp_physical_bm25_indexes_for_rewrite(indexoids, nowait);
 	rewrite_state = tp_reindex_tracking_begin(
-			candidates, REINDEX_OBJECT_INDEX, InvalidOid, false, false);
+			candidates,
+			REINDEX_OBJECT_INDEX,
+			InvalidOid,
+			false,
+			false,
+			nowait);
 	list_free(candidates);
 	list_free(indexoids);
 
@@ -3800,7 +4013,8 @@ tp_process_tracked_rewrite(
 					dest,
 					qc);
 
-		tp_collect_reindex_state_intents(true);
+		if (rewrite_state != NULL)
+			tp_collect_reindex_state_intents(rewrite_state, true, true);
 	}
 	PG_FINALLY();
 	{
@@ -4025,11 +4239,6 @@ call_next_process_utility(
 		DestReceiver		 *dest,
 		QueryCompletion		 *qc)
 {
-	if (tp_managed_reconciling && !IsA(pstmt->utilityStmt, GrantStmt))
-		ereport(ERROR,
-				(errmsg("cannot execute DDL during background compaction "
-						"reconciliation")));
-
 	tp_process_utility_depth++;
 	PG_TRY();
 	{
@@ -4553,14 +4762,15 @@ tp_process_utility_impl(
 
 		PG_TRY();
 		{
-			List *candidates = tp_physical_bm25_indexes(indexoids, true);
+			List *candidates = tp_physical_bm25_indexes(indexoids, false);
 
 			reindex_state = tp_reindex_tracking_begin(
 					candidates,
 					stmt->kind,
 					scope_oid,
 					OidIsValid(scope_oid),
-					tracks_commits);
+					tracks_commits,
+					false);
 			list_free(candidates);
 			list_free(indexoids);
 
@@ -4586,7 +4796,7 @@ tp_process_utility_impl(
 						qc);
 
 			if (reindex_state != NULL)
-				tp_collect_reindex_state_intents(true);
+				tp_collect_reindex_state_intents(reindex_state, true, true);
 			else if (
 					!tracks_commits && (stmt->kind == REINDEX_OBJECT_INDEX ||
 										stmt->kind == REINDEX_OBJECT_TABLE))
@@ -4724,7 +4934,6 @@ tp_process_utility_impl(
 			PG_TRY();
 			{
 				create_state = tp_create_index_tracking_begin(heapoid);
-				tp_build_progress_begin();
 
 				if (prev_process_utility_hook)
 					prev_process_utility_hook(
@@ -4747,8 +4956,6 @@ tp_process_utility_impl(
 							dest,
 							qc);
 
-				tp_build_progress_end();
-
 				if (compaction != NULL &&
 					pg_strcasecmp(compaction, "background") == 0)
 					tp_collect_created_background_indexes(
@@ -4769,7 +4976,6 @@ tp_process_utility_impl(
 			return;
 		}
 	}
-	/* Not a bm25 CREATE INDEX - pass through */
 	/* Not a bm25 CREATE INDEX - pass through */
 	if (prev_process_utility_hook)
 		prev_process_utility_hook(
@@ -4810,6 +5016,11 @@ tp_process_utility(
 		QueryCompletion		 *qc)
 {
 	TpProcessUtilityContext *utility_context;
+
+	if (tp_managed_reconciling && !IsA(pstmt->utilityStmt, GrantStmt))
+		ereport(ERROR,
+				(errmsg("cannot execute DDL during background compaction "
+						"reconciliation")));
 
 	utility_context =
 			MemoryContextAllocZero(TopMemoryContext, sizeof(*utility_context));
