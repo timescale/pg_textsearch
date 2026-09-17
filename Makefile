@@ -101,7 +101,7 @@ include $(PGXS)
 # SQL regression tests
 test: test-compaction-ownercheck test-compaction-request-source \
 	test-segment-io-limits test-boolean-lock test-boolean-memory \
-	test-boolean-rescan
+	test-boolean-rescan test-mixed-update-query-benchmark
 	@echo "Running SQL regression tests..."
 	@$(pg_regress_installcheck) $(REGRESS_OPTS) $(REGRESS)
 
@@ -131,6 +131,9 @@ test-segment-io-limits:
 		-o "$$tmp_dir/segment_io_limits_test"; \
 	"$$tmp_dir/segment_io_limits_test"
 
+test-mixed-update-query-benchmark:
+	@./test/scripts/mixed_update_query_benchmark_test.sh
+
 test-durable:
 	@echo "Running managed pg_durable compaction tests..."
 	@cd test/scripts && ./durable_compaction.sh
@@ -138,10 +141,10 @@ test-durable:
 # Run source-level guards with every regression entry point.
 installcheck: test-compaction-ownercheck test-compaction-request-source \
 	test-segment-io-limits test-boolean-lock test-boolean-memory \
-	test-boolean-rescan
+	test-boolean-rescan test-mixed-update-query-benchmark
 test-local: test-compaction-ownercheck test-compaction-request-source \
 	test-segment-io-limits test-boolean-lock test-boolean-memory \
-	test-boolean-rescan
+	test-boolean-rescan test-mixed-update-query-benchmark
 
 # Custom local test target with dedicated PostgreSQL instance
 test-local: install
@@ -443,10 +446,10 @@ help:
 .PHONY: \
 	test test-compaction-ownercheck test-compaction-request-source \
 	test-segment-io-limits test-boolean-lock test-boolean-memory \
-	test-boolean-rescan test-durable clean-test-dirs installcheck \
-	test-rls-locking test-nonblocking-compaction test-concurrency \
-	test-recovery test-segment \
-	test-stress test-cic test-chinese \
+	test-boolean-rescan test-mixed-update-query-benchmark test-durable \
+	clean-test-dirs installcheck test-rls-locking \
+	test-nonblocking-compaction test-concurrency test-recovery \
+	test-segment test-stress test-cic test-chinese \
 	test-replication test-replication-extended \
 	test-logical-replication test-multi-index test-reindex \
 	test-shell test-all expected lint-format format format-check \
