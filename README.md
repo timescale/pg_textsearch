@@ -360,7 +360,12 @@ REINDEX INDEX docs_idx;
 ### Compaction
 
 With the default `inline` policy, compaction of levels that reach the configured
-threshold occurs as part of the write transaction that triggers the spill.
+threshold occurs synchronously in the write transaction that triggers the
+spill. Readers and other memtable writers can continue while merged output is
+built, because the long build holds no per-index LWLock. This is reader
+non-blocking, not foreground-writer non-blocking: the invoking writer still
+spends the time required to build and publish the merge.
+
 These functions provide manual and scheduled control:
 
 ```sql

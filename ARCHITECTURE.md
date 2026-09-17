@@ -72,6 +72,31 @@ A spill builds an immutable L0 segment from the memtable, publishes it through
 the metapage, and marks the old chain dead for deferred reclaim. Compaction
 combines adjacent immutable segments within `pg_textsearch.max_segment_size`.
 
+### Admission and lock order
+
+The per-index LWLock uses writer-preference admission. An exclusive acquirer
+increments `exclusive_waiters` before waiting for the LWLock. New shared
+acquirers sleep while that count is nonzero. The exclusive acquirer decrements
+the count immediately after acquisition and wakes shared waiters when the last
+exclusive waiter has acquired. A shared acquirer can pass the gate just before
+the count changes, but only that bounded set can barge; a continuing stream of
+new readers cannot starve the exclusive waiter.
+
+Compaction, force merge, and VACUUM segment mutation serialize with
+`ShareUpdateExclusiveLock` on the physical index relation. This maintenance
+lock is compatible with ordinary query and DML relation locks, so it does not
+exclude scans or memtable appends. Operations that need multiple lock classes
+must acquire them in this order:
+
+1. relation maintenance lock;
+2. per-index LWLock;
+3. metapage buffer lock;
+4. segment or tombstone buffer lock.
+
+No path may request maintenance while holding the per-index lock. A spill
+therefore completes L0 publication and releases `LW_EXCLUSIVE` before applying
+the configured compaction policy.
+
 The `compaction` index option controls spill-time behavior:
 
 - `inline` compacts threshold debt during spills and index builds;
@@ -92,8 +117,47 @@ the return value of `bm25_compact_step()`, not
 `bm25_needs_compaction()`, because over-budget segments can leave a level
 permanently above its advisory threshold.
 
-A compaction pass publishes its replacement layout in one metapage update.
+### Compaction phases
+
+Each runtime pass uses the same phase engine:
+
+1. **Maintenance admission.** Acquire the relation maintenance lock. A caller
+   that waited rechecks compaction debt after admission.
+2. **Select.** Briefly take the per-index lock in `LW_SHARED`, snapshot the
+   metapage, and record exact contiguous source runs and retained remainders.
+   Release the per-index lock before reading complete sources.
+3. **Build.** Hold only the maintenance lock while reading immutable sources,
+   constructing complete WAL-logged but unreachable output segments,
+   collecting displaced source pages, and building a detached tombstone batch.
+   Segment data pages, page-index pages, completed output roots, and tombstone
+   container pages have explicit ownership records for handled-error cleanup.
+4. **Validate.** Acquire fair `LW_EXCLUSIVE` and validate the selected runs,
+   prepared outputs, and detached tombstones against the current graph. L0 may
+   have only a newly prepended spill prefix; non-L0 chains must be unchanged.
+5. **Publish.** In one `GenericXLog` action, splice around any accepted L0
+   prefix, replace the selected runs, rebase counts and corpus shrinkage from
+   current metapage values, and attach the detached tombstone batch to the
+   current pending-free head.
+
 Published physical changes are not undone by transaction rollback.
+
+Runtime segment and tombstone allocation must use the same
+`ExtendBufferedRel(..., EB_LOCK_FIRST)` fallback as memtable growth when the
+FSM has no reusable page. Mixing it with `ReadBufferExtended(P_NEW)` would let
+unlocked compaction and concurrent memtable extension reserve the same block
+on PostgreSQL 17.
+
+Publication remains exclusive even though it is bounded. Scans capture level
+heads but follow segment links lazily. Publishing under a shared lock could
+let a scan combine an old metapage head with a rewritten L0 predecessor link
+and omit documents. Under `LW_EXCLUSIVE`, scans that started before
+publication finish on the old graph and later scans see the new graph.
+
+The existing `LW_SHARED` lifetime of ranked index scans was not shortened.
+Readers and inserts continue during the long build phase, but fair admission
+can briefly gate new shared acquirers while publication waits. Inline
+compaction is still foreground work: the write transaction that triggers it
+waits for selection, build, validation, and publication to complete.
 
 ## Managed Background Compaction
 
@@ -138,3 +202,29 @@ horizon and returned to the free-space map only after
 Query-serving hot standbys require `hot_standby_feedback = on` so their oldest
 snapshots hold the primary's reclaim horizon back. Use
 `bm25_pending_free_pages()` to observe displaced segment pages awaiting reuse.
+
+Compaction constructs its tombstone containers as a detached chain whose tail
+initially points to `InvalidBlockNumber`. Publication links that tail to the
+then-current `pending_free_head` in the same WAL record that replaces the
+segment graph. Selected source pages are never returned directly to the FSM.
+
+A handled error before publication returns every explicitly tracked output and
+tombstone allocation to the FSM without freeing selected source pages. A
+backend crash can leave unreachable pre-publication output pages; they cannot
+affect queries or be mistaken for live pages and are reclaimed by `REINDEX`.
+Once `GenericXLog` publication starts, cleanup does not recycle pages whose
+ownership may have transferred. Recovery exposes either the old graph with no
+attached batch or the complete new graph with displaced pages reachable from
+the deferred-free chain.
+
+## VACUUM Coordination
+
+VACUUM acquires the relation maintenance lock before identifying segment
+document IDs and retains it through alive-bit mutation, legacy segment
+replacement, corpus-statistic adjustment, and any segment unlink. It then
+takes per-index and buffer locks in the normal order.
+
+If VACUUM is admitted first, compaction waits and later builds from the updated
+alive bits. If compaction is admitted first, VACUUM waits and then discovers
+the published output before applying deaths. This prevents both resurrection
+of deleted documents and mutation through stale source document IDs.

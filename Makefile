@@ -237,6 +237,7 @@ test-replication-extended:
 	    replication_spill_paths.sh \
 	    replication_memtable_dead_reclaim.sh \
 	    replication_segment_reclaim.sh \
+	    standby_reclaim.sh \
 	    wal_audit.sh"; \
 	failed=""; \
 	for s in $$scripts; do \

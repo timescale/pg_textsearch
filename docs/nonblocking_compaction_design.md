@@ -217,7 +217,11 @@ inserts.
 
 The public functions `bm25_compact()`, `bm25_compact_step()`, and the
 generation-checked step used by #478 all enter the same engine. A step remains
-one transaction and at most one publication.
+one transaction and at most one publication. The #478 helper must first check
+its captured physical generation before waiting, then acquire maintenance and
+recheck the database, tablespace, relfilenumber, owner, and background mode
+before selection. It must not wrap the step in a coarse per-index LWLock;
+`tp_compact_step()` owns the phase-specific shared and exclusive acquisitions.
 
 ### Phase 1: select
 
@@ -243,7 +247,7 @@ Compaction holds only the heavyweight maintenance lock while it:
 1. reads source dictionaries, postings, document maps, and alive bitmaps;
 2. writes complete, WAL-logged output segments that are not reachable from
    the metapage;
-3. records output roots, counts, statistics, and page lists;
+3. records output roots, counts, statistics, and exact allocation ownership;
 4. collects all displaced source pages;
 5. builds a detached tombstone batch whose tail initially points to
    `InvalidBlockNumber`;
@@ -255,6 +259,30 @@ append to the memtable. A concurrent spill may prepend new L0 segments.
 
 The build phase contains regular interrupt checks and holds no LWLock across
 CPU or I/O work.
+
+### Allocation and output ownership
+
+Unlocked build can extend the index concurrently with memtable growth. Every
+runtime allocator that falls back from the FSM must therefore use
+`ExtendBufferedRel(..., EB_LOCK_FIRST)`: memtable, segment, and tombstone
+allocation may not mix this with `ReadBufferExtended(P_NEW)`. PostgreSQL 17
+does not coordinate those two extension APIs strongly enough to prevent both
+paths from reserving the same block.
+
+Handled-error cleanup is based on explicit ownership rather than discovering
+pages from partially initialized links:
+
+- the segment writer records each data page immediately on allocation;
+- page-index construction records each page-index page immediately;
+- a completed output segment transfers ownership to the compaction output as
+  an exact root before later validation or accounting can fail;
+- detached tombstone construction records each container page before page
+  initialization or WAL work.
+
+Low-level catches return partially allocated data, page-index, and tombstone
+container pages to the FSM. The outer compaction catch discards each completed
+owned output root and detached container page. None of these paths frees a
+selected source page or follows an untrusted output link to infer ownership.
 
 ### Phase 3: validate
 
@@ -359,7 +387,10 @@ that contract:
 
 - target identity, owner checks, lifecycle locks, signaling, and scheduling
   remain in #478;
-- the step function enters the common maintenance-locked compaction engine;
+- the helper performs its cheap captured-generation check before waiting;
+- after acquiring relation maintenance, it rechecks the captured physical
+  identity and background mode before entering the common phase engine;
+- the helper does not acquire the per-index LWLock around the whole step;
 - one step performs at most one select/build/publish pass;
 - the long build holds neither the per-index LWLock nor #478-specific
   lifecycle locks beyond those already required by its target validation;
@@ -368,9 +399,13 @@ that contract:
 - a worker rechecks compaction debt after maintenance admission.
 
 This change adds no pg_durable dependency and does not alter compaction
-reloptions or callback configuration. Rebasing #478 should require only
-mechanical adaptation of its additional step entry point to the common engine
-API.
+reloptions or callback configuration. The integration adaptation is localized
+but not purely textual: #478's current step entry point takes
+`LW_EXCLUSIVE` around `tp_compact_step()` and checks the physical generation
+only before that wait. It must instead take maintenance, repeat the generation
+check, call the common engine, and release maintenance. Its build-path changes
+must also preserve the post-spill policy boundary so maintenance is never
+requested while the spill's per-index exclusive lock is held.
 
 ## Failure, cancellation, and crash behavior
 
@@ -379,14 +414,16 @@ API.
 The old graph remains authoritative. Partial or complete outputs and detached
 tombstones are unreachable.
 
-On a handled validation failure or ordinary error path, the implementation
-returns all known output and detached tombstone container pages to the FSM.
-It never frees the selected source pages listed inside the detached
+On a handled validation failure or ordinary pre-publication error path, exact
+allocation tracking returns partially built segment data pages, page-index
+pages, completed output segments, and detached tombstone container pages to
+the FSM. It never frees the selected source pages listed inside the detached
 tombstones.
 
-A backend crash can leave unreachable output pages. This is an accepted leak
-until `REINDEX`; it cannot produce wrong query results or unsafe page reuse.
-A durable scratch-allocation manifest is a separate future enhancement.
+A backend crash bypasses those catches and can leave unreachable output pages.
+This is an accepted leak until `REINDEX`; it cannot produce wrong query
+results or unsafe page reuse. A durable scratch-allocation manifest is a
+separate future enhancement.
 
 ### During publication
 
