@@ -5885,7 +5885,7 @@ SQL
               FROM pg_catalog.pg_stat_activity AS activity
               WHERE activity.application_name =
                     'lifecycle-legacy-lock-reindex'
-                AND activity.wait_event = 'transactionid'
+                AND activity.wait_event_type = 'Lock'
                 AND EXISTS (
                   SELECT 1
                   FROM pg_catalog.pg_locks AS relation_lock
@@ -5903,7 +5903,7 @@ SQL
           FROM pg_catalog.pg_stat_activity AS activity
           WHERE activity.application_name =
                 'lifecycle-legacy-lock-reindex'
-            AND activity.wait_event = 'transactionid'
+            AND activity.wait_event_type = 'Lock'
             AND EXISTS (
               SELECT 1
               FROM pg_catalog.pg_locks AS relation_lock
