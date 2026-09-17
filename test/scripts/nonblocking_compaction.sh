@@ -166,6 +166,7 @@ seed_index() {
     done
 
     assert_graph "${index_name}" "{4,0,0,0,0,0,0,0}"
+    assert_index_scan_plan "${table_name}" "${index_name}" "${token}"
 }
 
 seed_all_indexes() {
@@ -197,12 +198,34 @@ assert_graph() {
         fail "${index_name} graph is ${actual}, expected ${expected}"
 }
 
+assert_index_scan_plan() {
+    local table_name=$1
+    local index_name=$2
+    local token=$3
+    local plan
+    local expected="Index Scan using ${index_name} on ${table_name}"
+
+    plan=$(sql -c "
+        SET enable_seqscan = off;
+        EXPLAIN (COSTS off)
+        SELECT id
+          FROM ${table_name}
+         ORDER BY body <@> to_bm25query('${token}', '${index_name}')
+         LIMIT 1000;")
+    if ! grep -Fq "${expected}" <<<"${plan}"; then
+        warn "Unexpected ranked-query plan for ${index_name}:"
+        echo "${plan}"
+        fail "ranked assertions would not use ${index_name}"
+    fi
+}
+
 ranked_count() {
     local table_name=$1
     local index_name=$2
     local token=$3
 
     sql -c "
+        SET enable_seqscan = off;
         SELECT count(*)
           FROM (
                 SELECT id
@@ -226,6 +249,7 @@ assert_all_documents() {
     [ "${index_count}" = "${heap_count}" ] ||
         fail "${index_name} returned ${index_count}/${heap_count} documents"
     mismatch_count=$(sql -c "
+        SET enable_seqscan = off;
         WITH ranked AS MATERIALIZED (
             SELECT id
               FROM ${table_name}
@@ -388,6 +412,7 @@ test_scan_progress() {
     wait_for_marker after-select "${oid}" "${backend}"
 
     start_sql pgts-scan-reader "
+        SET enable_seqscan = off;
         SELECT count(*) FROM (
             SELECT id FROM scan_docs
              ORDER BY body <@> to_bm25query('scancase', 'scan_idx')
@@ -476,7 +501,7 @@ test_same_index_serialization() {
     local first_backend
     local second_backend
     local oid
-    local wait_state
+    local lock_proof
     local deadline
 
     log "Case: same-index maintenance serializes..."
@@ -494,20 +519,30 @@ test_same_index_serialization() {
     second_pid=${STARTED_PID}
     second_backend=$(backend_pid pgts-serial-second)
     deadline=$((SECONDS + 3))
-    wait_state=
+    lock_proof=f
     while ((SECONDS < deadline)); do
-        wait_state=$(sql -F '|' -c "
-            SELECT state, coalesce(wait_event_type, ''),
-                   coalesce(wait_event, '')
-              FROM pg_stat_activity
-             WHERE pid = ${second_backend};" 2>/dev/null || true)
-        if [[ "${wait_state}" == "active|Lock|"* ]]; then
+        lock_proof=$(sql -c "
+            SELECT EXISTS (
+                SELECT 1
+                  FROM pg_stat_activity activity
+                  JOIN pg_locks pending
+                    ON pending.pid = activity.pid
+                 WHERE activity.pid = ${second_backend}
+                   AND activity.state = 'active'
+                   AND ${first_backend} =
+                       ANY (pg_blocking_pids(activity.pid))
+                   AND pending.locktype = 'relation'
+                   AND pending.relation = ${oid}
+                   AND pending.mode = 'ShareUpdateExclusiveLock'
+                   AND NOT pending.granted
+            );" 2>/dev/null || true)
+        if [ "${lock_proof}" = "t" ]; then
             break
         fi
         sleep 0.05
     done
-    [[ "${wait_state}" == "active|Lock|"* ]] ||
-        fail "second same-index compactor did not wait on a lock: ${wait_state}"
+    [ "${lock_proof}" = "t" ] ||
+        fail "second compactor was not blocked by backend ${first_backend} on serial_idx ShareUpdateExclusiveLock"
     kill -0 "${first_pid}" 2>/dev/null ||
         fail "first compactor left its pause before serialization proof"
     assert_still_paused \
