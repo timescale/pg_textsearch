@@ -14,6 +14,7 @@
 #include <storage/bufmgr.h>
 #include <storage/indexfsm.h>
 #include <storage/lmgr.h>
+#include <storage/lock.h>
 #include <storage/lwlock.h>
 #include <utils/hsearch.h>
 #include <utils/timestamp.h>
