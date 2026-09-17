@@ -233,14 +233,22 @@ advance the reclaim horizon past it. Restamping scales with the number of
 tombstone containers but does not extend runtime reader exclusion. Selected
 source pages are never returned directly to the FSM.
 
+VACUUM segment replacement likewise assigns its current full transaction ID
+before building replacement tombstones. That transaction remains in progress
+through the replacement `GenericXLog` publication, preventing a later standby
+snapshot from observing the old graph with a reclaim stamp that is already in
+its past.
+
 A handled error before publication returns every explicitly tracked output and
 tombstone allocation to the FSM without freeing selected source pages. A
 backend crash can leave unreachable pre-publication output pages; they cannot
 affect queries or be mistaken for live pages and are reclaimed by `REINDEX`.
-Once `GenericXLog` publication starts, cleanup does not recycle pages whose
-ownership may have transferred. Recovery exposes either the old graph with no
-attached batch or the complete new graph with displaced pages reachable from
-the deferred-free chain.
+An unfinished publication `GenericXLog` state is aborted on handled errors,
+and the still-unreachable prepared pages are discarded. Once
+`GenericXLogFinish()` succeeds, cleanup does not recycle pages whose ownership
+has transferred. Recovery exposes either the old graph with no attached batch
+or the complete new graph with displaced pages reachable from the deferred-free
+chain.
 
 ## VACUUM Coordination
 

@@ -1189,12 +1189,13 @@ tp_publish_compaction_output(
 		TpCompactionPlan	 *plan,
 		TpCompactionOutput	 *output)
 {
-	volatile Buffer metabuf			= InvalidBuffer;
-	volatile Buffer predecessor_buf = InvalidBuffer;
-	volatile Buffer tailbuf			= InvalidBuffer;
-	volatile bool	acquired_here	= false;
-	BlockNumber		l0_predecessor	= InvalidBlockNumber;
-	bool			l0_changes;
+	volatile Buffer metabuf						 = InvalidBuffer;
+	volatile Buffer predecessor_buf				 = InvalidBuffer;
+	volatile Buffer tailbuf						 = InvalidBuffer;
+	GenericXLogState *volatile publication_state = NULL;
+	volatile bool acquired_here					 = false;
+	BlockNumber	  l0_predecessor				 = InvalidBlockNumber;
+	bool		  l0_changes;
 
 	output->publication_started = false;
 	PG_TRY();
@@ -1206,7 +1207,6 @@ tp_publish_compaction_output(
 		uint64			  current_tokens;
 		BlockNumber		  current_pending;
 		FullTransactionId merged_fxid;
-		GenericXLogState *xlog_state;
 		XLogRecPtr		  publication_lsn;
 		Page			  meta_copy;
 		TpIndexMetaPage	  meta;
@@ -1333,24 +1333,27 @@ tp_publish_compaction_output(
 			elog(PANIC,
 				 "pg_textsearch: debug crash before compaction publication");
 
-		xlog_state					= GenericXLogStart(index);
-		output->publication_started = true;
-		meta_copy = GenericXLogRegisterBuffer(xlog_state, metabuf, 0);
+		publication_state = GenericXLogStart(index);
+		meta_copy		  = GenericXLogRegisterBuffer(
+				(GenericXLogState *)publication_state, metabuf, 0);
 
 		if (BufferIsValid(predecessor_buf))
 		{
 			Page			 predecessor_copy;
 			TpSegmentHeader *predecessor;
 
-			predecessor_copy =
-					GenericXLogRegisterBuffer(xlog_state, predecessor_buf, 0);
+			predecessor_copy = GenericXLogRegisterBuffer(
+					(GenericXLogState *)publication_state, predecessor_buf, 0);
 			((PageHeader)predecessor_copy)->pd_lower = BLCKSZ;
 			predecessor = (TpSegmentHeader *)PageGetContents(predecessor_copy);
 			predecessor->next_segment = output->output_heads[0];
 		}
 
 		tailbuf = tp_tombstone_attach_detached(
-				xlog_state, index, output->tombstones, current_pending);
+				(GenericXLogState *)publication_state,
+				index,
+				output->tombstones,
+				current_pending);
 		tp_metapage_upgrade_to_current(index, meta_copy);
 		meta = (TpIndexMetaPage)PageGetContents(meta_copy);
 
@@ -1373,7 +1376,10 @@ tp_publish_compaction_output(
 		meta->total_docs = current_docs - output->removed_docs;
 		meta->total_len	 = current_tokens - output->removed_tokens;
 
-		publication_lsn = GenericXLogFinish(xlog_state);
+		publication_lsn = GenericXLogFinish(
+				(GenericXLogState *)publication_state);
+		publication_state			= NULL;
+		output->publication_started = true;
 		if (tp_debug_panic_after_compaction_publish)
 		{
 			if (RelationNeedsWAL(index))
@@ -1422,6 +1428,14 @@ tp_publish_compaction_output(
 	{
 		if (!output->publication_started)
 		{
+			if (publication_state != NULL)
+				GenericXLogAbort((GenericXLogState *)publication_state);
+			if (BufferIsValid(tailbuf))
+			{
+				if (InterruptHoldoffCount == 0)
+					HOLD_INTERRUPTS();
+				UnlockReleaseBuffer(tailbuf);
+			}
 			if (BufferIsValid(predecessor_buf))
 			{
 				if (InterruptHoldoffCount == 0)

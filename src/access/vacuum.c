@@ -657,7 +657,7 @@ tp_vacuum_replace_segment(
 
 	/* Collect old segment pages for deferred reclaim. */
 	old_page_count = tp_segment_collect_pages(index, old_root, &old_pages);
-	vacuum_fxid	   = ReadNextFullTransactionId();
+	vacuum_fxid	   = GetCurrentFullTransactionId();
 	if (old_pages && old_page_count > 0)
 	{
 		/*

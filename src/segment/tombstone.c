@@ -294,9 +294,7 @@ tp_tombstone_attach_detached(
 		TpDetachedTombstoneBatch batch,
 		BlockNumber				 old_head)
 {
-	Buffer			buf;
-	Page			page;
-	TpTombstonePage t;
+	volatile Buffer buf = InvalidBuffer;
 
 	Assert(state != NULL);
 
@@ -310,33 +308,51 @@ tp_tombstone_attach_detached(
 	Assert(batch.head != InvalidBlockNumber);
 	Assert(batch.tail != InvalidBlockNumber);
 
-	buf = ReadBuffer(index, batch.tail);
-	LockBuffer(buf, BUFFER_LOCK_EXCLUSIVE);
-	page = GenericXLogRegisterBuffer(state, buf, 0);
+	PG_TRY();
+	{
+		Page			page;
+		TpTombstonePage t;
 
-	if (!tp_tombstone_page_is_valid(page))
-		ereport(ERROR,
-				(errcode(ERRCODE_DATA_CORRUPTED),
-				 errmsg("pg_textsearch: corrupt detached tombstone tail "
-						"page %u in index \"%s\"",
-						batch.tail,
-						RelationGetRelationName(index))));
+		buf = ReadBuffer(index, batch.tail);
+		LockBuffer(buf, BUFFER_LOCK_EXCLUSIVE);
+		page = GenericXLogRegisterBuffer(state, buf, 0);
 
-	t = tp_tombstone_page(page);
-	if (t->next_page != InvalidBlockNumber)
-		ereport(ERROR,
-				(errcode(ERRCODE_DATA_CORRUPTED),
-				 errmsg("pg_textsearch: detached tombstone tail page %u "
-						"is already attached",
-						batch.tail)));
-	if (!FullTransactionIdIsValid(t->merged_fxid))
-		ereport(ERROR,
-				(errcode(ERRCODE_INTERNAL_ERROR),
-				 errmsg("detached tombstone batch has no publication "
-						"reclaim stamp")));
+		if (!tp_tombstone_page_is_valid(page))
+			ereport(ERROR,
+					(errcode(ERRCODE_DATA_CORRUPTED),
+					 errmsg("pg_textsearch: corrupt detached tombstone tail "
+							"page %u in index \"%s\"",
+							batch.tail,
+							RelationGetRelationName(index))));
 
-	t->next_page = old_head;
-	return buf;
+		t = tp_tombstone_page(page);
+		if (t->next_page != InvalidBlockNumber)
+			ereport(ERROR,
+					(errcode(ERRCODE_DATA_CORRUPTED),
+					 errmsg("pg_textsearch: detached tombstone tail page %u "
+							"is already attached",
+							batch.tail)));
+		if (!FullTransactionIdIsValid(t->merged_fxid))
+			ereport(ERROR,
+					(errcode(ERRCODE_INTERNAL_ERROR),
+					 errmsg("detached tombstone batch has no publication "
+							"reclaim stamp")));
+
+		t->next_page = old_head;
+	}
+	PG_CATCH();
+	{
+		if (BufferIsValid(buf))
+		{
+			if (InterruptHoldoffCount == 0)
+				HOLD_INTERRUPTS();
+			UnlockReleaseBuffer(buf);
+		}
+		PG_RE_THROW();
+	}
+	PG_END_TRY();
+
+	return (Buffer)buf;
 }
 
 void

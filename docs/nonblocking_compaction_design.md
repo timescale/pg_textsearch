@@ -388,6 +388,10 @@ The possible orderings are:
 
 This prevents deleted documents from being resurrected and prevents VACUUM
 from applying stale source document IDs to a renumbered output segment.
+Legacy segment replacement assigns VACUUM's current full transaction ID before
+building its tombstone batch and retains that in-progress XID through the
+atomic replacement publication. A standby snapshot that can still see the old
+segment graph therefore cannot be newer than its reclaim stamp.
 
 Pure counting that does not retain source document IDs may remain outside the
 maintenance lock. Spill invoked by VACUUM follows the normal lock order.
@@ -445,6 +449,11 @@ allocation tracking returns partially built segment data pages, page-index
 pages, completed output segments, and detached tombstone container pages to
 the FSM. It never frees the selected source pages listed inside the detached
 tombstones.
+
+If an error occurs after `GenericXLogStart()` but before
+`GenericXLogFinish()`, publication aborts the unfinished GenericXLog state,
+releases its buffers, and discards the still-unreachable prepared output.
+Ownership transfers only after `GenericXLogFinish()` succeeds.
 
 A backend crash bypasses those catches and can leave unreachable output pages.
 This is an accepted leak until `REINDEX`; it cannot produce wrong query

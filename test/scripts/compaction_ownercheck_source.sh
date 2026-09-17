@@ -151,6 +151,14 @@ publish_attach_line="$(
     grep -n 'tp_tombstone_attach_detached' <<<"${publish_body}" |
         head -1 | cut -d: -f1 || true
 )"
+publish_finish_line="$(
+    grep -n 'publication_lsn = GenericXLogFinish' <<<"${publish_body}" |
+        head -1 | cut -d: -f1 || true
+)"
+publish_started_line="$(
+    grep -n 'output->publication_started = true' <<<"${publish_body}" |
+        head -1 | cut -d: -f1 || true
+)"
 
 if ! grep -Fq 'tp_acquire_index_lock(index_state, LW_SHARED)' \
     <<<"${select_body}" ||
@@ -171,11 +179,14 @@ publish_xid_line="$(
 if [[ -z "${publish_output_validation_line}" ||
       -z "${publish_xid_line}" || -z "${publish_restamp_line}" ||
       -z "${publish_acquire_line}" || -z "${publish_attach_line}" ||
+      -z "${publish_finish_line}" || -z "${publish_started_line}" ||
       "${publish_output_validation_line}" -ge "${publish_xid_line}" ||
       "${publish_xid_line}" -ge "${publish_restamp_line}" ||
       "${publish_restamp_line}" -ge "${publish_acquire_line}" ||
-      "${publish_acquire_line}" -ge "${publish_attach_line}" ]] ||
+      "${publish_acquire_line}" -ge "${publish_attach_line}" ||
+      "${publish_finish_line}" -ge "${publish_started_line}" ]] ||
    ! grep -Fq 'output->tombstones, merged_fxid' <<<"${publish_body}" ||
+   ! grep -Fq 'GenericXLogAbort' <<<"${publish_body}" ||
    ! grep -Fq 'GenericXLogStart(index)' <<<"${publish_body}" ||
    ! grep -Fq 'predecessor->next_segment = output->output_heads[0]' \
        <<<"${publish_body}" ||
@@ -234,6 +245,24 @@ if [[ -z "${vacuum_maintenance_line}" || -z "${vacuum_index_line}" ||
     review_failures=$((review_failures + 1))
 fi
 
+vacuum_replace_body="$(
+    sed -n '/^tp_vacuum_replace_segment($/,/^}$/p' "${VACUUM_SOURCE}"
+)"
+vacuum_replace_xid_line="$(
+    grep -n 'vacuum_fxid.*GetCurrentFullTransactionId()' \
+        <<<"${vacuum_replace_body}" | head -1 | cut -d: -f1 || true
+)"
+vacuum_replace_tombstone_line="$(
+    grep -n 'batch_head = tp_tombstone_enqueue_extend' \
+        <<<"${vacuum_replace_body}" | head -1 | cut -d: -f1 || true
+)"
+if [[ -z "${vacuum_replace_xid_line}" ||
+      -z "${vacuum_replace_tombstone_line}" ||
+      "${vacuum_replace_xid_line}" -ge "${vacuum_replace_tombstone_line}" ]]; then
+    echo "VACUUM replacement must assign its reclaim XID before tombstone build" >&2
+    review_failures=$((review_failures + 1))
+fi
+
 discard_body="$(
     sed -n '/^tp_discard_compaction_output(Relation index, /,/^}$/p' \
         "${COMPACTION_SOURCE}"
@@ -282,6 +311,15 @@ if [[ -z "${drain_conflict_line}" || -z "${drain_unlink_line}" ||
       "${drain_conflict_line}" -ge "${drain_unlink_line}" ||
       "${drain_unlink_line}" -ge "${drain_free_line}" ]]; then
     echo "tombstone drain must WAL-log standby conflict before unlink and FSM reuse" >&2
+    review_failures=$((review_failures + 1))
+fi
+
+attach_body="$(
+    sed -n '/^tp_tombstone_attach_detached($/,/^}$/p' "${TOMBSTONE_SOURCE}"
+)"
+if ! grep -Fq 'PG_CATCH();' <<<"${attach_body}" ||
+   ! grep -Fq 'UnlockReleaseBuffer(buf)' <<<"${attach_body}"; then
+    echo "detached tombstone attachment must release its tail buffer on error" >&2
     review_failures=$((review_failures + 1))
 fi
 
