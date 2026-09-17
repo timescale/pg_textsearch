@@ -170,12 +170,15 @@ tp_fsm_claim_or_extend_block(Relation index)
 		return block;
 
 	/*
-	 * FSM has no reusable page: extend the relation.  RBM_ZERO_AND_LOCK
-	 * gives a zero-filled page; the first content writer overwrites the
-	 * header and body before logging it.
+	 * FSM has no reusable page: extend through the same bulk-extension
+	 * API used by the memtable allocator.  Mixing ReadBufferExtended(P_NEW)
+	 * with ExtendBufferedRel lets concurrent unlocked compaction and
+	 * memtable growth reserve the same block on PostgreSQL 17.
+	 * EB_LOCK_FIRST returns the zero-filled page pinned and exclusively
+	 * locked; the first content writer overwrites it before logging it.
 	 */
-	buffer = ReadBufferExtended(
-			index, MAIN_FORKNUM, P_NEW, RBM_ZERO_AND_LOCK, NULL);
+	buffer = ExtendBufferedRel(
+			BMR_REL(index), MAIN_FORKNUM, NULL, EB_LOCK_FIRST);
 	block = BufferGetBlockNumber(buffer);
 	UnlockReleaseBuffer(buffer);
 	return block;
