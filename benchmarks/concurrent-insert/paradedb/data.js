@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789543836932,
+  "lastUpdate": 1789630289381,
   "repoUrl": "https://github.com/timescale/pg_textsearch",
   "entries": {
     "Concurrent INSERT (ParadeDB)": [
@@ -10234,6 +10234,68 @@ window.BENCHMARK_DATA = {
           {
             "name": "ParadeDB INSERT latency (c=8)",
             "value": 0.619,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tjgreen@gmail.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "3007056c4cb68c2f91a1830f3d3c14ac4a857591",
+          "message": "Restrict BM25 indexes on RLS tables (#492)\n\n## Summary\n\nBM25 corpus statistics include all indexed rows. On tables using\nrow-level\nsecurity, a user who already knows a term may therefore infer frequency\ninformation influenced by inaccessible rows. The README now documents\nthis\nbehavior and links to Elastic's description of the analogous limitation.\n\nThis change also adds the default-on, superuser-controlled\n`pg_textsearch.allow_rls` setting. When disabled, it prevents:\n\n- creating or rebuilding BM25 indexes over RLS-protected tables\n- enabling RLS or changing table hierarchies in ways that would create a\n  prohibited RLS/BM25 combination\n\nExisting combinations remain usable. This preserves the current default\nbehavior while allowing providers and administrators to prohibit new\ncombinations as part of deployment policy.\n\n---------\n\nCo-authored-by: Todd J. Green <1738591+tjgreen42@users.noreply.github.com>",
+          "timestamp": "2026-09-17T01:26:19Z",
+          "url": "https://github.com/timescale/pg_textsearch/commit/3007056c4cb68c2f91a1830f3d3c14ac4a857591"
+        },
+        "date": 1789630256099,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "ParadeDB INSERT TPS (c=1)",
+            "value": 2673.847862,
+            "unit": "tps"
+          },
+          {
+            "name": "ParadeDB INSERT latency (c=1)",
+            "value": 0.374,
+            "unit": "ms"
+          },
+          {
+            "name": "ParadeDB INSERT TPS (c=2)",
+            "value": 4960.447325,
+            "unit": "tps"
+          },
+          {
+            "name": "ParadeDB INSERT latency (c=2)",
+            "value": 0.403,
+            "unit": "ms"
+          },
+          {
+            "name": "ParadeDB INSERT TPS (c=4)",
+            "value": 7815.483461,
+            "unit": "tps"
+          },
+          {
+            "name": "ParadeDB INSERT latency (c=4)",
+            "value": 0.512,
+            "unit": "ms"
+          },
+          {
+            "name": "ParadeDB INSERT TPS (c=8)",
+            "value": 13503.904762,
+            "unit": "tps"
+          },
+          {
+            "name": "ParadeDB INSERT latency (c=8)",
+            "value": 0.592,
             "unit": "ms"
           }
         ]
