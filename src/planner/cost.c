@@ -24,6 +24,8 @@
 #include "constants.h"
 #include "index/limit.h"
 #include "index/metapage.h"
+#include "index/state.h"
+#include "memtable/chain_walker.h"
 #include "planner/cost.h"
 
 static bool
@@ -162,6 +164,48 @@ tp_disable_index_path(
 	*indexPages		  = 0.0;
 }
 
+static double
+tp_combined_document_count(Relation index_rel)
+{
+	TpLocalIndexState  *index_state;
+	TpLocalIndexState  *lock_state_to_release;
+	TpIndexMetaPage		metap;
+	TpChainWalker	   *walker;
+	TpChainWalkerRecord record;
+	uint64				total_docs;
+
+	index_state = tp_get_local_index_state(RelationGetRelid(index_rel));
+	if (index_state == NULL)
+		return TP_MAX_QUERY_LIMIT;
+
+	/*
+	 * The metapage excludes live memtable rows. Count them under the same
+	 * lock, stopping once the combined path must be rejected.
+	 */
+	lock_state_to_release = index_state->lock_held ? NULL : index_state;
+	tp_acquire_index_lock(index_state, LW_SHARED);
+
+	metap	   = tp_get_metapage(index_rel);
+	total_docs = metap->total_docs;
+	walker	   = tp_chain_walker_open(
+			index_rel, metap->memtable_head_blkno, 0, CurrentMemoryContext);
+	pfree(metap);
+
+	while (total_docs < TP_MAX_QUERY_LIMIT &&
+		   tp_chain_walker_next(walker, &record))
+	{
+		total_docs++;
+		if (record.owns_vector)
+			pfree((void *)record.vector_bytes);
+	}
+
+	tp_chain_walker_close(walker);
+	if (lock_state_to_release != NULL)
+		tp_release_index_lock(lock_state_to_release);
+
+	return (double)total_docs;
+}
+
 /*
  * Estimate cost of BM25 index scan
  */
@@ -249,6 +293,9 @@ tp_costestimate(
 
 			if (metap)
 				pfree(metap);
+
+			if (has_boolean && has_orderby)
+				num_tuples = tp_combined_document_count(index_rel);
 
 			index_close(index_rel, AccessShareLock);
 		}

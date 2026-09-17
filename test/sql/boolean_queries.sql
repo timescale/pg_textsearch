@@ -198,7 +198,18 @@ CREATE TABLE boolean_rank_cap_docs (
 
 INSERT INTO boolean_rank_cap_docs
 SELECT id, 'rank'
-FROM generate_series(1, 100000) AS id;
+FROM generate_series(1, 99999) AS id;
+
+SET pg_textsearch.memtable_pages_threshold = 0;
+SET pg_textsearch.bulk_load_threshold = 0;
+SET client_min_messages = WARNING;
+CREATE INDEX boolean_rank_cap_docs_body_idx
+    ON boolean_rank_cap_docs USING bm25(body)
+    WITH (text_config = 'simple');
+RESET client_min_messages;
+
+INSERT INTO boolean_rank_cap_docs VALUES
+    (100000, 'rank');
 
 INSERT INTO boolean_rank_cap_docs
 SELECT id, 'filter'
@@ -207,11 +218,8 @@ FROM generate_series(100001, 103000) AS id;
 INSERT INTO boolean_rank_cap_docs VALUES
     (103001, 'rank filter filler filler filler filler filler filler');
 
-SET client_min_messages = WARNING;
-CREATE INDEX boolean_rank_cap_docs_body_idx
-    ON boolean_rank_cap_docs USING bm25(body)
-    WITH (text_config = 'simple');
-RESET client_min_messages;
+SELECT COALESCE(SUM(n_records), 0) = 3002 AS rank_cap_rows_are_unflushed
+FROM bm25_memtable_chain('boolean_rank_cap_docs_body_idx');
 
 SELECT pg_temp.first_plan_child($query$
     SELECT id
@@ -227,8 +235,21 @@ WHERE body @@ to_tsquery('simple', 'filter')
 ORDER BY body <@> to_bm25query('rank', 'boolean_rank_cap_docs_body_idx')
 LIMIT 1;
 
+SELECT bm25_spill_index('boolean_rank_cap_docs_body_idx') > 0
+    AS rank_cap_spilled;
+
+SELECT pg_temp.first_plan_child($query$
+    SELECT id
+    FROM boolean_rank_cap_docs
+    WHERE body @@ to_tsquery('simple', 'filter')
+    ORDER BY body <@> to_bm25query('rank', 'boolean_rank_cap_docs_body_idx')
+    LIMIT 1
+$query$) = 'Sort' AS persisted_rank_cap_falls_back;
+
 RESET pg_textsearch.filtered_seed;
 RESET work_mem;
+RESET pg_textsearch.bulk_load_threshold;
+RESET pg_textsearch.memtable_pages_threshold;
 SET default_text_search_config = 'pg_catalog.english';
 DROP TABLE boolean_rank_cap_docs;
 
