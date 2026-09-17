@@ -11,6 +11,7 @@
 #include <common/int.h>
 #include <miscadmin.h>
 #include <storage/bufmgr.h>
+#include <storage/indexfsm.h>
 #include <utils/memutils.h>
 #include <utils/timestamp.h>
 
@@ -50,6 +51,39 @@ merge_sink_init_pages(TpMergeSink *sink, Relation index)
 	sink->index = index;
 	tp_segment_writer_init(&sink->writer, index);
 	sink->current_offset = sink->writer.current_offset;
+}
+
+BlockNumber
+tp_discard_unpublished_segment(Relation index, BlockNumber root)
+{
+	TpSegmentReader *reader;
+	BlockNumber		 next;
+	BlockNumber		*pages;
+	uint32			 num_pages;
+
+	if (!BlockNumberIsValid(root))
+		return InvalidBlockNumber;
+
+	reader = tp_segment_open(index, root);
+	if (reader == NULL)
+		ereport(ERROR,
+				(errcode(ERRCODE_DATA_CORRUPTED),
+				 errmsg("could not open unpublished segment at block %u",
+						root)));
+	next = reader->header->next_segment;
+	tp_segment_close(reader);
+
+	num_pages = tp_segment_collect_pages(index, root, &pages);
+	if (num_pages == 0)
+		ereport(ERROR,
+				(errcode(ERRCODE_DATA_CORRUPTED),
+				 errmsg("unpublished segment at block %u has no pages",
+						root)));
+
+	tp_segment_free_pages(index, pages, num_pages);
+	pfree(pages);
+	IndexFreeSpaceMapVacuum(index);
+	return next;
 }
 
 /*
@@ -1603,51 +1637,65 @@ tp_merge_segment_batch(
 	tp_validate_merged_terms(merged_terms, num_merged_terms);
 
 	{
-		TpMergeSink		 sink;
-		BlockNumber		 new_segment;
-		Buffer			 header_buf;
-		Page			 header_page;
-		TpSegmentHeader *header;
+		volatile BlockNumber completed_root = InvalidBlockNumber;
 
-		merge_sink_init_pages(&sink, index);
-		if (sink.writer.pages_allocated == 0)
-			elog(ERROR, "merge: failed to allocate segment pages");
-		new_segment = sink.writer.pages[0];
-
-		write_merged_segment_to_sink(
-				&sink,
-				merged_terms,
-				num_merged_terms,
-				sources,
-				(int)num_sources,
-				output_level,
-				total_tokens,
-				false,
-				next_segment);
-
-		header_buf = ReadBuffer(index, new_segment);
-		LockBuffer(header_buf, BUFFER_LOCK_SHARE);
-		header_page = BufferGetPage(header_buf);
-		header		= (TpSegmentHeader *)PageGetContents(header_page);
-
-		if (header->magic != TP_SEGMENT_MAGIC ||
-			header->version != TP_SEGMENT_FORMAT_VERSION ||
-			header->level != output_level ||
-			header->next_segment != next_segment)
+		PG_TRY();
 		{
-			UnlockReleaseBuffer(header_buf);
-			ereport(ERROR,
-					(errcode(ERRCODE_INTERNAL_ERROR),
-					 errmsg("merged segment header was not finalized before "
-							"publication")));
-		}
+			TpMergeSink		 sink;
+			BlockNumber		 new_segment;
+			Buffer			 header_buf;
+			Page			 header_page;
+			TpSegmentHeader *header;
 
-		result->root		 = new_segment;
-		result->num_pages	 = header->num_pages;
-		result->num_docs	 = header->num_docs;
-		result->total_tokens = header->total_tokens;
-		result->data_size	 = header->data_size;
-		UnlockReleaseBuffer(header_buf);
+			merge_sink_init_pages(&sink, index);
+			if (sink.writer.pages_allocated == 0)
+				elog(ERROR, "merge: failed to allocate segment pages");
+			new_segment = sink.writer.pages[0];
+
+			write_merged_segment_to_sink(
+					&sink,
+					merged_terms,
+					num_merged_terms,
+					sources,
+					(int)num_sources,
+					output_level,
+					total_tokens,
+					false,
+					next_segment);
+			completed_root = new_segment;
+
+			header_buf = ReadBuffer(index, new_segment);
+			LockBuffer(header_buf, BUFFER_LOCK_SHARE);
+			header_page = BufferGetPage(header_buf);
+			header		= (TpSegmentHeader *)PageGetContents(header_page);
+
+			if (header->magic != TP_SEGMENT_MAGIC ||
+				header->version != TP_SEGMENT_FORMAT_VERSION ||
+				header->level != output_level ||
+				header->next_segment != next_segment)
+			{
+				UnlockReleaseBuffer(header_buf);
+				ereport(ERROR,
+						(errcode(ERRCODE_INTERNAL_ERROR),
+						 errmsg("merged segment header was not finalized "
+								"before publication")));
+			}
+
+			result->root		 = new_segment;
+			result->num_pages	 = header->num_pages;
+			result->num_docs	 = header->num_docs;
+			result->total_tokens = header->total_tokens;
+			result->data_size	 = header->data_size;
+			UnlockReleaseBuffer(header_buf);
+			completed_root = InvalidBlockNumber;
+		}
+		PG_CATCH();
+		{
+			if (BlockNumberIsValid(completed_root))
+				(void)tp_discard_unpublished_segment(index, completed_root);
+			PG_RE_THROW();
+		}
+		PG_END_TRY();
 	}
 
 	for (i = 0; i < num_sources; i++)

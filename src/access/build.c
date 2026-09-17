@@ -314,7 +314,6 @@ tp_compact_inline(TpLocalIndexState *index_state, Relation index_rel)
 	tp_compaction_lock(index_rel);
 	PG_TRY();
 	{
-		tp_acquire_index_lock(index_state, LW_EXCLUSIVE);
 		tp_maybe_compact_level(index_state, index_rel, 0);
 	}
 	PG_FINALLY();
@@ -771,12 +770,7 @@ tp_force_merge(PG_FUNCTION_ARGS)
 
 	index_rel = index_open(index_oid, RowExclusiveLock);
 
-	/*
-	 * Serialize same-index maintenance before taking LW_EXCLUSIVE.
-	 * Force-merge is an administrative operation with no expectation
-	 * of concurrent read throughput, so it retains the coarse per-index
-	 * lock for the complete operation.
-	 */
+	/* Serialize same-index maintenance before phase-specific LWLocks. */
 	{
 		TpLocalIndexState *index_state = tp_get_local_index_state(index_oid);
 		TpPreparedSpill	   spill;
@@ -797,7 +791,11 @@ tp_force_merge(PG_FUNCTION_ARGS)
 			if (has_memtable)
 				tp_finish_spill(
 						index_state, index_rel, &spill, NULL, PG_UINT16_MAX);
+			tp_release_index_lock(index_state);
+
 			tp_force_compact(index_state, index_rel);
+
+			tp_acquire_index_lock(index_state, LW_EXCLUSIVE);
 			tp_truncate_dead_pages(index_rel);
 		}
 		PG_FINALLY();

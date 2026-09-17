@@ -26,9 +26,8 @@ extern void tp_maybe_compact_level(
 
 /*
  * Run at most one bounded compaction pass and report whether one ran.
- * Splitting a cascade into passes lets each pass run in its own
- * transaction, so the per-index exclusive lock is released between
- * passes rather than held for the whole cascade.
+ * Runtime callers hold the relation maintenance lock.  CREATE INDEX may
+ * instead call while holding its private per-index exclusive lock.
  */
 extern bool
 tp_compact_step(struct TpLocalIndexState *index_state, Relation index);

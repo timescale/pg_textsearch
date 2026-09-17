@@ -66,3 +66,11 @@ extern bool tp_merge_segment_batch(
 		uint32				   output_level,
 		BlockNumber			   next_segment,
 		TpMergedSegmentResult *result);
+
+/*
+ * Return one complete, unpublished merge output to the FSM and return the
+ * root recorded in its next_segment link.  Published segments must instead
+ * go through standby-safe deferred reclaim.
+ */
+extern BlockNumber
+tp_discard_unpublished_segment(Relation index, BlockNumber root);

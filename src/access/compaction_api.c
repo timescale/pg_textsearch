@@ -227,7 +227,6 @@ tp_compact_index(PG_FUNCTION_ARGS)
 	tp_compaction_lock(index_rel);
 	PG_TRY();
 	{
-		tp_acquire_index_lock(index_state, LW_EXCLUSIVE);
 		tp_maybe_compact_level(index_state, index_rel, 0);
 	}
 	PG_FINALLY();
@@ -276,7 +275,6 @@ tp_compact_index_step(PG_FUNCTION_ARGS)
 	tp_compaction_lock(index_rel);
 	PG_TRY();
 	{
-		tp_acquire_index_lock(index_state, LW_EXCLUSIVE);
 		pass_ran = tp_compact_step(index_state, index_rel);
 	}
 	PG_FINALLY();

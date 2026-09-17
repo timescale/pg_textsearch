@@ -10,6 +10,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 SOURCE_FILE="${REPO_ROOT}/src/access/compaction_api.c"
 BUILD_SOURCE="${REPO_ROOT}/src/access/build.c"
+COMPACTION_SOURCE="${REPO_ROOT}/src/segment/compaction.c"
 
 open_body="$(
     sed -n '/^tp_open_bm25_index(Oid indexoid, LOCKMODE lockmode, bool need_owner)$/,/^}$/p' \
@@ -57,7 +58,6 @@ check_compaction_lock_order() {
     local function_name="$1"
     local function_body
     local maintenance_line
-    local index_lock_line
 
     function_body="$(
         sed -n "/^${function_name}(PG_FUNCTION_ARGS)$/,/^}$/p" \
@@ -67,19 +67,92 @@ check_compaction_lock_order() {
         grep -n 'tp_compaction_lock(index_rel)' \
             <<<"${function_body}" | head -1 | cut -d: -f1 || true
     )"
-    index_lock_line="$(
-        grep -n 'tp_acquire_index_lock(index_state' \
-            <<<"${function_body}" | head -1 | cut -d: -f1
-    )"
 
-    if [[ -z "${maintenance_line}" || -z "${index_lock_line}" ||
-          "${maintenance_line}" -ge "${index_lock_line}" ]]; then
-        echo "${function_name} must acquire maintenance before the index lock" >&2
+    if [[ -z "${maintenance_line}" ]]; then
+        echo "${function_name} must acquire the maintenance lock" >&2
+        exit 1
+    fi
+    if grep -Fq 'tp_acquire_index_lock(index_state' <<<"${function_body}"; then
+        echo "${function_name} must leave phase-specific index locking to compaction" >&2
         exit 1
     fi
 }
 
 check_compaction_lock_order tp_compact_index
 check_compaction_lock_order tp_compact_index_step
+
+inline_body="$(
+    sed -n '/^tp_compact_inline(TpLocalIndexState \*index_state, Relation index_rel)$/,/^}$/p' \
+        "${BUILD_SOURCE}"
+)"
+if grep -Fq 'tp_acquire_index_lock(index_state' <<<"${inline_body}"; then
+    echo "inline compaction must leave phase-specific index locking to compaction" >&2
+    exit 1
+fi
+
+select_body="$(
+    sed -n '/^tp_select_compaction_plan($/,/^}$/p' "${COMPACTION_SOURCE}"
+)"
+build_body="$(
+    sed -n '/^tp_build_compaction_output($/,/^}$/p' "${COMPACTION_SOURCE}"
+)"
+publish_body="$(
+    sed -n '/^tp_publish_compaction_output($/,/^}$/p' "${COMPACTION_SOURCE}"
+)"
+validate_body="$(
+    sed -n '/^tp_validate_selected_runs($/,/^}$/p' "${COMPACTION_SOURCE}"
+)"
+
+if ! grep -Fq 'tp_acquire_index_lock(index_state, LW_SHARED)' \
+    <<<"${select_body}" ||
+   ! grep -Fq 'tp_release_index_lock(index_state)' <<<"${select_body}"; then
+    echo "compaction selection must acquire and release LW_SHARED" >&2
+    exit 1
+fi
+if grep -Fq 'tp_acquire_index_lock' <<<"${build_body}" ||
+   grep -Fq 'tp_release_index_lock' <<<"${build_body}"; then
+    echo "compaction output build must not manage the per-index lock" >&2
+    exit 1
+fi
+if ! grep -Fq 'tp_acquire_index_lock(index_state, LW_EXCLUSIVE)' \
+    <<<"${publish_body}" ||
+   ! grep -Fq 'GenericXLogStart(index)' <<<"${publish_body}" ||
+   ! grep -Fq 'tp_tombstone_attach_detached' <<<"${publish_body}" ||
+   ! grep -Fq 'predecessor->next_segment = output->output_heads[0]' \
+       <<<"${publish_body}" ||
+   ! grep -Fq 'current_pending' <<<"${publish_body}" ||
+   ! grep -Fq 'current_docs - output->removed_docs' <<<"${publish_body}"; then
+    echo "compaction publication must own one exclusive WAL publication" >&2
+    exit 1
+fi
+if ! grep -Fq 'current_meta->level_counts[level] -' <<<"${validate_body}" ||
+   ! grep -Fq 'snapshot->level_counts[level]' <<<"${validate_body}" ||
+   ! grep -Fq '*l0_predecessor = current' <<<"${validate_body}"; then
+    echo "compaction validation must preserve a spill-prepended L0 prefix" >&2
+    exit 1
+fi
+
+force_body="$(
+    sed -n '/^tp_force_merge(PG_FUNCTION_ARGS)$/,/^}$/p' "${BUILD_SOURCE}"
+)"
+force_release_line="$(
+    grep -n 'tp_release_index_lock(index_state)' <<<"${force_body}" |
+        head -1 | cut -d: -f1
+)"
+force_compact_line="$(
+    grep -n 'tp_force_compact(index_state, index_rel)' <<<"${force_body}" |
+        cut -d: -f1
+)"
+truncate_lock_line="$(
+    grep -n 'tp_acquire_index_lock(index_state, LW_EXCLUSIVE)' \
+        <<<"${force_body}" | tail -1 | cut -d: -f1
+)"
+if [[ -z "${force_release_line}" || -z "${force_compact_line}" ||
+      -z "${truncate_lock_line}" ||
+      "${force_release_line}" -ge "${force_compact_line}" ||
+      "${force_compact_line}" -ge "${truncate_lock_line}" ]]; then
+    echo "force merge must build unlocked and reacquire only for truncation" >&2
+    exit 1
+fi
 
 echo "Compaction ownership and lock ordering passed"
