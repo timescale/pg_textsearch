@@ -1260,12 +1260,19 @@ tp_acquire_index_lock(TpLocalIndexState *local_state, LWLockMode mode)
 		pg_atomic_fetch_add_u32(&local_state->shared->exclusive_waiters, 1);
 	}
 
-	LWLockAcquire(&local_state->shared->lock, mode);
-
-	if (mode == LW_EXCLUSIVE &&
-		pg_atomic_sub_fetch_u32(&local_state->shared->exclusive_waiters, 1) ==
-				0)
-		ConditionVariableBroadcast(&local_state->shared->exclusive_waiters_cv);
+	PG_TRY();
+	{
+		LWLockAcquire(&local_state->shared->lock, mode);
+	}
+	PG_FINALLY();
+	{
+		if (mode == LW_EXCLUSIVE &&
+			pg_atomic_sub_fetch_u32(
+					&local_state->shared->exclusive_waiters, 1) == 0)
+			ConditionVariableBroadcast(
+					&local_state->shared->exclusive_waiters_cv);
+	}
+	PG_END_TRY();
 
 	local_state->lock_held = true;
 	local_state->lock_mode = mode;
