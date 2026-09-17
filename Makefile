@@ -173,8 +173,12 @@ test-rls-locking:
 	@echo "Running RLS DDL locking tests..."
 	@cd test/scripts && ./rls_ddl_locking.sh
 
+test-nonblocking-compaction:
+	@cd test/scripts && ./nonblocking_compaction.sh
+
 test-concurrency: test-rls-locking
 	@echo "Running concurrency tests..."
+	@cd test/scripts && ./nonblocking_compaction.sh
 	@cd test/scripts && ./index_lock_fairness.sh
 	@cd test/scripts && ./concurrency.sh
 	@cd test/scripts && ./boolean_concurrent_merge.sh
@@ -401,6 +405,7 @@ help:
 	@echo "  make test-local   - Run tests with dedicated PostgreSQL instance"
 	@echo "  make test-all     - Run all tests (SQL regression + shell scripts)"
 	@echo "  make test-shell   - Run shell-based tests (all shell scripts)"
+	@echo "  make test-nonblocking-compaction - Run deterministic compaction overlap tests"
 	@echo "  make test-concurrency - Run concurrency tests"
 	@echo "  make test-recovery    - Run crash recovery tests"
 	@echo "  make test-segment     - Run multi-backend segment tests"
@@ -436,7 +441,8 @@ help:
 	test test-compaction-ownercheck test-compaction-request-source \
 	test-segment-io-limits test-boolean-lock test-boolean-memory \
 	test-boolean-rescan test-durable clean-test-dirs installcheck \
-	test-rls-locking test-concurrency test-recovery test-segment \
+	test-rls-locking test-nonblocking-compaction test-concurrency \
+	test-recovery test-segment \
 	test-stress test-cic test-chinese \
 	test-replication test-replication-extended \
 	test-logical-replication test-multi-index test-reindex \

@@ -149,6 +149,10 @@ bool tp_log_cache_state = false;
 /* Debug: trigger PANIC after spill finalize for crash-safety testing */
 bool tp_debug_panic_after_spill_finalize = false;
 
+/* Debug: deterministic runtime compaction pauses for concurrency tests. */
+int tp_debug_compaction_pause_after_select_ms	= 0;
+int tp_debug_compaction_pause_before_publish_ms = 0;
+
 /* Per-level segment capacity; the debug GUC may lower it in tests. */
 int tp_max_segments_per_level = PG_UINT16_MAX;
 
@@ -712,6 +716,36 @@ _PG_init(void)
 			false,
 			PGC_SUSET, /* superuser-only: forces a server-wide PANIC,
 						* so unprivileged roles must not reach it */
+			0,
+			NULL,
+			NULL,
+			NULL);
+
+	DefineCustomIntVariable(
+			"pg_textsearch.debug_compaction_pause_after_select_ms",
+			"Pause runtime compaction after source selection.",
+			"Testing-only interruptible pause after releasing the shared "
+			"per-index lock and before building compaction output.",
+			&tp_debug_compaction_pause_after_select_ms,
+			0,
+			0,
+			60000,
+			PGC_SUSET,
+			0,
+			NULL,
+			NULL,
+			NULL);
+
+	DefineCustomIntVariable(
+			"pg_textsearch.debug_compaction_pause_before_publish_ms",
+			"Pause runtime compaction before publication.",
+			"Testing-only interruptible pause after output construction and "
+			"before requesting the exclusive per-index lock.",
+			&tp_debug_compaction_pause_before_publish_ms,
+			0,
+			0,
+			60000,
+			PGC_SUSET,
 			0,
 			NULL,
 			NULL,

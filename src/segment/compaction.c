@@ -13,6 +13,7 @@
 #include <storage/lmgr.h>
 #include <storage/lwlock.h>
 #include <utils/hsearch.h>
+#include <utils/timestamp.h>
 
 #include "access/am.h"
 #include "constants.h"
@@ -25,6 +26,9 @@
 #include "segment/merge.h"
 #include "segment/pagemapper.h"
 #include "segment/tombstone.h"
+
+extern int tp_debug_compaction_pause_after_select_ms;
+extern int tp_debug_compaction_pause_before_publish_ms;
 
 typedef struct TpSegmentEstimate
 {
@@ -80,6 +84,36 @@ typedef struct TpCompactionOutput
 	TpDetachedTombstoneBatch tombstones;
 	bool					 publication_started;
 } TpCompactionOutput;
+
+static void
+tp_debug_compaction_pause(int pause_ms, const char *phase, Oid index_oid)
+{
+	TimestampTz deadline;
+
+	if (pause_ms <= 0)
+		return;
+
+	ereport(LOG,
+			(errmsg("pg_textsearch compaction pause at %s for index %u "
+					"backend %d",
+					phase,
+					index_oid,
+					MyProcPid)));
+	deadline = TimestampTzPlusMilliseconds(GetCurrentTimestamp(), pause_ms);
+	for (;;)
+	{
+		CHECK_FOR_INTERRUPTS();
+		if (GetCurrentTimestamp() >= deadline)
+			break;
+		pg_usleep(10000L);
+	}
+	ereport(LOG,
+			(errmsg("pg_textsearch compaction resume after %s for index %u "
+					"backend %d",
+					phase,
+					index_oid,
+					MyProcPid)));
+}
 
 void
 tp_compaction_lock(Relation index)
@@ -1174,6 +1208,12 @@ tp_publish_compaction_output(
 		TpIndexMetaPage	  meta;
 
 		if (!index_state->lock_held)
+			tp_debug_compaction_pause(
+					tp_debug_compaction_pause_before_publish_ms,
+					"before-publish",
+					RelationGetRelid(index));
+
+		if (!index_state->lock_held)
 		{
 			tp_acquire_index_lock(index_state, LW_EXCLUSIVE);
 			acquired_here = true;
@@ -1785,6 +1825,12 @@ tp_compact_once(
 				index_state, index, first_level, &snapshot, &plan))
 		return false;
 
+	if (!private_compaction)
+		tp_debug_compaction_pause(
+				tp_debug_compaction_pause_after_select_ms,
+				"after-select",
+				RelationGetRelid(index));
+
 	drained = tp_tombstone_drain(
 			index,
 			private_compaction ? NULL : index_state,
@@ -1820,10 +1866,17 @@ tp_force_compact(TpLocalIndexState *index_state, Relation index)
 	TpIndexMetaPage	   snapshot;
 	TpCompactionPlan   plan;
 	TpCompactionOutput output;
+	bool			   private_compaction;
 
-	(void)tp_compaction_is_private(index_state, index);
+	private_compaction = tp_compaction_is_private(index_state, index);
 	if (!tp_select_force_compaction_plan(index_state, index, &snapshot, &plan))
 		return;
+
+	if (!private_compaction)
+		tp_debug_compaction_pause(
+				tp_debug_compaction_pause_after_select_ms,
+				"after-select",
+				RelationGetRelid(index));
 
 	tp_build_compaction_output(index, snapshot, &plan, &output);
 	tp_publish_compaction_output(index_state, index, snapshot, &plan, &output);
