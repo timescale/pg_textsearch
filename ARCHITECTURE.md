@@ -111,9 +111,11 @@ Prepared transactions do not flush queued background requests. Unconfigured,
 unresolvable, or failed callbacks do not fall back inline; the compaction debt
 remains for a later spill or explicit maintenance.
 
-`bm25_compact()` drives reducible debt to completion under one per-index lock.
-`bm25_compact_step()` runs at most one pass. Drive repeated maintenance from
-the return value of `bm25_compact_step()`, not
+`bm25_compact()` holds one relation maintenance lock while it drives reducible
+debt to completion. Each pass uses brief per-index `LW_SHARED` selection, no
+per-index lock during output build, and fair `LW_EXCLUSIVE` validation and
+publication. `bm25_compact_step()` runs at most one pass. Drive repeated
+maintenance from the return value of `bm25_compact_step()`, not
 `bm25_needs_compaction()`, because over-budget segments can leave a level
 permanently above its advisory threshold.
 

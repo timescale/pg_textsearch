@@ -1,36 +1,37 @@
 # Fair spill admission and non-blocking compaction
 
-Status: implementation design for #495
+Status: implemented design for #495
 
 ## Summary
 
-Continuous ranked scans can indefinitely starve a spill because PostgreSQL
-LWLocks allow new shared holders to acquire ahead of an already-waiting
-exclusive holder. Once a spill does acquire the lock, the current inline
-compaction path holds it through the entire segment merge, producing a second
-pathology: all scans and inserts stop for the duration of a large merge.
+Before this change, continuous ranked scans could indefinitely starve a spill
+because PostgreSQL LWLocks allow new shared holders to acquire ahead of an
+already-waiting exclusive holder. Once a spill did acquire the lock, the
+inline compaction path held it through the entire segment merge, producing a
+second pathology: all scans and inserts stopped for the duration of a large
+merge.
 
-The final design addresses the two problems independently:
+The implemented design addresses the two problems independently:
 
-1. Add writer-preference admission in front of the per-index LWLock. Once an
+1. Added writer-preference admission in front of the per-index LWLock. Once an
    exclusive acquisition is pending, new shared acquisitions wait until the
    exclusive waiter acquires the lock.
-2. Separate spill publication from compaction policy so no path acquires a
+2. Separated spill publication from compaction policy so no path acquires a
    maintenance lock while holding the per-index lock.
-3. Serialize compaction and VACUUM segment mutation with PostgreSQL's
+3. Serialized compaction and VACUUM segment mutation with PostgreSQL's
    interruptible `ShareUpdateExclusiveLock` on the index relation.
 4. Split compaction into short selection, long unlocked build, and short
    exclusive publication phases.
-5. Preserve L0 segments published by concurrent spills and attach displaced
+5. Preserved L0 segments published by concurrent spills and attached displaced
    source pages to the existing standby-safe deferred-free chain in the same
    WAL-logged publication.
 
 The pending managed background compaction work in #478 remains responsible
-for deciding *when* background compaction runs. This design changes *how*
-every invocation of `bm25_compact_step()` coordinates with foreground work.
-The two changes are complementary: inline compaction stops blocking readers,
-while managed background compaction also avoids making the foreground writer
-perform the merge.
+for deciding *when* background compaction runs. This implementation changed
+*how* every invocation of `bm25_compact_step()` coordinates with foreground
+work. The two changes are complementary: inline compaction stops blocking
+readers, while managed background compaction also avoids making the foreground
+writer perform the merge.
 
 ## Evidence
 
@@ -51,9 +52,9 @@ outage. Building the same inline compaction outside the per-index lock retains
 94% of read-only query throughput and eliminates query latencies above one
 second.
 
-Shortening the current reader lock lifetime did not improve throughput. It
+Shortening the pre-change reader lock lifetime did not improve throughput. It
 also moves primary page-reuse safety from a simple lock invariant to
-transaction-horizon reasoning. This design therefore keeps the existing
+transaction-horizon reasoning. The implementation therefore keeps the existing
 reader lock lifetime and relies on fair admission to bound exclusive waits.
 
 ## Goals
@@ -82,25 +83,25 @@ reader lock lifetime and relies on fair admission to bound exclusive waits.
 - Removing the `hot_standby_feedback = on` requirement for query-serving hot
   standbys.
 
-## Current problems
+## Historical motivation (pre-change)
 
 ### Shared LWLock barging
 
-Ranked scans and ordinary inserts acquire the per-index lock in `LW_SHARED`.
-Spill, tombstone drain, force merge, and compaction acquire it in
+Ranked scans and ordinary inserts acquired the per-index lock in `LW_SHARED`.
+Spill, tombstone drain, force merge, and compaction acquired it in
 `LW_EXCLUSIVE`.
 
 PostgreSQL's shared LWLock acquisition checks whether an exclusive holder
 currently owns the lock; it does not reject a new reader merely because an
 exclusive waiter is queued. A saturated stream of scans can therefore keep at
-least one shared holder active indefinitely.
+least one shared holder active indefinitely without the admission gate.
 
 ### Merge-duration exclusion
 
-`tp_do_spill()` currently applies compaction policy before its caller releases
-`LW_EXCLUSIVE`. `tp_compact_once()` then selects sources, merges postings,
-writes output, builds tombstones, flushes buffers, and publishes while the
-same lock remains held.
+Before the change, `tp_do_spill()` applied compaction policy before its caller
+released `LW_EXCLUSIVE`. `tp_compact_once()` then selected sources, merged
+postings, wrote output, built tombstones, flushed buffers, and published while
+the same lock remained held.
 
 The merge is copy-on-write. Its output is unreachable until publication, so
 the long exclusive lifetime is not required for reader safety.
