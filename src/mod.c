@@ -109,6 +109,7 @@ static const relopt_enum_elt_def compaction_mode_options[] =
 		{{"inline", TP_COMPACTION_INLINE},
 		 {"background", TP_COMPACTION_BACKGROUND},
 		 {"manual", TP_COMPACTION_MANUAL},
+		 {"off", TP_COMPACTION_MANUAL},
 		 {(const char *)NULL, 0}};
 
 /* Global variable for segment compression (on by default - benchmarks show
@@ -322,6 +323,7 @@ typedef struct TpReindexState
 	List				  *targets;
 	ReindexObjectType	   scope_kind;
 	Oid					   scope_oid;
+	bool				   scope_refresh_once;
 	bool				   reconciling;
 	bool				   defer_reconciliation;
 	bool				   post_publication;
@@ -2866,6 +2868,8 @@ tp_reindex_tracking_begin(
 		state->post_publication		= post_publication;
 
 		tp_reindex_add_targets(state, indexoids);
+		state->scope_refresh_once = state->targets == NIL &&
+									OidIsValid(state->scope_oid);
 	}
 	PG_CATCH();
 	{
@@ -2962,6 +2966,11 @@ tp_reindex_refresh_scope_targets(TpReindexState *state)
 	}
 	candidates = tp_physical_bm25_indexes(indexoids, true);
 	tp_reindex_add_targets(state, candidates);
+	if (state->scope_refresh_once)
+	{
+		state->scope_oid		  = InvalidOid;
+		state->scope_refresh_once = false;
+	}
 	list_free(candidates);
 	list_free(indexoids);
 }

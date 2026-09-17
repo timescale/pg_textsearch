@@ -15,6 +15,11 @@ JOB_SOURCE="${TP_JOB_SOURCE_OVERRIDE:-${REPO_ROOT}/src/index/compaction_job.c}"
 FRESH_SQL="${REPO_ROOT}/sql/pg_textsearch--1.5.0-dev.sql"
 UPGRADE_SQL="${REPO_ROOT}/sql/pg_textsearch--1.4.0--1.5.0-dev.sql"
 
+if ! grep -Fq '{"off", TP_COMPACTION_MANUAL}' "${MODULE_SOURCE}"; then
+    echo "legacy compaction=off does not map to manual mode" >&2
+    exit 1
+fi
+
 strip_c_comments() {
     awk '
     BEGIN {
@@ -239,6 +244,22 @@ tracking_alloc_line="$(
 if [[ -z "${tracking_try_line}" || -z "${tracking_alloc_line}" ||
       "${tracking_try_line}" -ge "${tracking_alloc_line}" ]]; then
     echo "REINDEX tracking allocates outside its cleanup boundary" >&2
+    exit 1
+fi
+reindex_tracking_begin_body="$(
+    sed -n '/^tp_reindex_tracking_begin(/,/^}/p' "${MODULE_SOURCE}"
+)"
+if grep -Fq "if (indexoids == NIL)" <<<"${reindex_tracking_begin_body}"; then
+    echo "REINDEX cannot discover a managed index created by an event trigger" >&2
+    exit 1
+fi
+if ! grep -Eq \
+    "state->scope_refresh_once[[:space:]]*=[[:space:]]*state->targets[[:space:]]*==[[:space:]]*NIL" \
+    "${MODULE_SOURCE}" ||
+    ! grep -Fq "if (state->scope_refresh_once)" "${MODULE_SOURCE}" ||
+    ! grep -Eq "state->scope_oid[[:space:]]*=[[:space:]]*InvalidOid" \
+        "${MODULE_SOURCE}"; then
+    echo "empty REINDEX scopes are repeatedly rescanned" >&2
     exit 1
 fi
 

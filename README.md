@@ -477,11 +477,10 @@ LIMIT 10;
 ### Background Compaction
 
 The default `inline` policy compacts synchronously during memtable spills.
-Managed `background` mode uses
-[pg_durable](https://github.com/microsoft/pg_durable) 0.2.8 or newer rather
-than a built-in worker. pg_durable must be preloaded, initialized in the
-current database, and granted to the index owner. The owner must have `LOGIN`;
-a superuser owner also requires
+Managed `background` mode uses [pg_durable](https://github.com/microsoft/pg_durable)
+0.2.8 or newer rather than a built-in worker. pg_durable must be preloaded,
+initialized in the current database, and granted to the index owner. The owner
+must have `LOGIN`; a superuser owner also requires
 `pg_durable.enable_superuser_instances = on`.
 
 Each physical index has one managed workflow scoped to its captured owner. The
@@ -497,13 +496,13 @@ the orchestration infrastructure.
 CREATE INDEX documents_bm25 ON documents USING bm25(content)
 WITH (
     text_config = 'english',
-    compaction = 'background',
-    compaction_schedule = '*/5 * * * *'
+    compaction = 'background'
 );
 ```
 
 Change modes with `ALTER INDEX`. Resetting `compaction_schedule` uses the
-current `pg_textsearch.background_compaction_schedule` default.
+current `pg_textsearch.background_compaction_schedule` default. Set the
+per-index option only when the default schedule is unsuitable.
 
 ```sql
 ALTER INDEX documents_bm25 SET (compaction = 'background');
@@ -513,7 +512,8 @@ ALTER INDEX documents_bm25 SET (compaction = 'manual');
 
 Use `manual` with an external scheduler when pg_durable is unavailable or not
 desired and foreground compaction causes unacceptable write transaction
-stalls. Temporary indexes do not support background mode.
+stalls. The legacy `off` value remains accepted as an alias for `manual`.
+Temporary indexes do not support background mode.
 
 See [ARCHITECTURE.md](ARCHITECTURE.md#managed-background-compaction) for
 workflow lifecycle and safety details.

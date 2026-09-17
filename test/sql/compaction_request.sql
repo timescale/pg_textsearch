@@ -6,11 +6,24 @@ SET pg_textsearch.segments_per_level = 2;
 
 SHOW pg_textsearch.background_compaction_schedule;
 
--- The compaction policy and schedule are per-index options.
-CREATE TABLE relopt_docs (id serial PRIMARY KEY, body text);
-CREATE INDEX relopt_bad_idx ON relopt_docs
+-- Legacy "off" remains accepted as an alias for manual mode.
+CREATE TABLE legacy_off_docs (id serial PRIMARY KEY, body text);
+CREATE INDEX legacy_off_docs_idx ON legacy_off_docs
     USING bm25(body)
     WITH (text_config = 'english', compaction = 'off');
+SELECT reloptions @> ARRAY['compaction=off']
+FROM pg_class WHERE oid = 'legacy_off_docs_idx'::regclass;
+INSERT INTO legacy_off_docs (body)
+SELECT 'legacy off one ' || i FROM generate_series(1, 20) i;
+SELECT bm25_spill_index('legacy_off_docs_idx') IS NOT NULL;
+INSERT INTO legacy_off_docs (body)
+SELECT 'legacy off two ' || i FROM generate_series(1, 20) i;
+SELECT bm25_spill_index('legacy_off_docs_idx') IS NOT NULL;
+SELECT bm25_needs_compaction('legacy_off_docs_idx'::regclass)
+       AS legacy_off_debt_remains;
+
+-- The compaction policy and schedule are per-index options.
+CREATE TABLE relopt_docs (id serial PRIMARY KEY, body text);
 CREATE INDEX relopt_docs_idx ON relopt_docs
     USING bm25(body) WITH (text_config = 'english');
 ALTER INDEX relopt_docs_idx SET (compaction = 'manual');
@@ -108,4 +121,5 @@ DROP TABLE manual_build_docs CASCADE;
 DROP TABLE final_build_docs CASCADE;
 DROP TABLE manual_docs CASCADE;
 DROP TABLE relopt_docs CASCADE;
+DROP TABLE legacy_off_docs CASCADE;
 DROP EXTENSION pg_textsearch CASCADE;
