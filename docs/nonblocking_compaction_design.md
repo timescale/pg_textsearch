@@ -1,745 +1,502 @@
-# Non-blocking segment compaction
+# Fair spill admission and non-blocking compaction
 
-Status: draft design for work stream 2
-
-This document is intentionally separate from the pg_durable background
-compaction proof of concept in PR #471. PR #471 changes when compaction runs.
-This work changes how a merge coordinates with concurrent readers, writers,
-spills, VACUUM, and page reclaim. The concurrency design must be correct and
-useful without pg_durable.
-
-Implementation starts after PR #471 lands and this branch is rebased onto the
-updated `main`.
+Status: implementation design for #495
 
 ## Summary
 
-Today a segment merge holds the per-index LWLock in `LW_EXCLUSIVE` mode from
-source selection through output construction and publication. A large merge
-therefore blocks scans, inserts, and spills for the full merge duration.
-Background execution moves that wait to another backend but does not remove
-it.
+Continuous ranked scans can indefinitely starve a spill because PostgreSQL
+LWLocks allow new shared holders to acquire ahead of an already-waiting
+exclusive holder. Once a spill does acquire the lock, the current inline
+compaction path holds it through the entire segment merge, producing a second
+pathology: all scans and inserts stop for the duration of a large merge.
 
-The proposed design treats segment replacement as an RCU-style operation:
+The final design addresses the two problems independently:
 
-1. Select an exact run of source segments while briefly holding the existing
-   per-index lock in `LW_SHARED` mode.
-2. Build an unreachable output segment without holding the per-index lock.
-3. Publish the output with one WAL-logged pointer swap while again briefly
-   holding `LW_SHARED`.
-4. Keep the displaced source pages in the existing `pending_free_head`
-   tombstone chain until the standby-safe reclaim horizon passes.
+1. Add writer-preference admission in front of the per-index LWLock. Once an
+   exclusive acquisition is pending, new shared acquisitions wait until the
+   exclusive waiter acquires the lock.
+2. Separate spill publication from compaction policy so no path acquires a
+   maintenance lock while holding the per-index lock.
+3. Serialize compaction and VACUUM segment mutation with PostgreSQL's
+   interruptible `ShareUpdateExclusiveLock` on the index relation.
+4. Split compaction into short selection, long unlocked build, and short
+   exclusive publication phases.
+5. Preserve L0 segments published by concurrent spills and attach displaced
+   source pages to the existing standby-safe deferred-free chain in the same
+   WAL-logged publication.
 
-Normal scans and inserts also use `LW_SHARED`, so they continue during source
-selection and publication as well as during the long build phase. Spill and
-physical reclaim use `LW_EXCLUSIVE`; they wait only for the two short shared
-sections.
+The pending managed background compaction work in #478 remains responsible
+for deciding *when* background compaction runs. This design changes *how*
+every invocation of `bm25_compact_step()` coordinates with foreground work.
+The two changes are complementary: inline compaction stops blocking readers,
+while managed background compaction also avoids making the foreground writer
+perform the merge.
 
-PostgreSQL's heavyweight `ShareUpdateExclusiveLock` on the index relation acts
-as the maintenance gate. Merge and VACUUM both take it, so a source segment's
-alive bitset cannot change during a merge. The lock is compatible with the
-relation locks used by ordinary reads and writes, is interruptible, and is
-automatically cleaned up after an error or backend exit.
+## Evidence
+
+The mixed MS MARCO workload in #494 uses 32 ranked-query clients and one
+writer targeting 1,000 indexed updates per second.
+
+| Development build, 60-second workload | Mixed query QPS | Updates | Maximum query latency |
+|---|---:|---:|---:|
+| Current locking | 2,270 | 1,888 | 283 ms |
+| Writer-preference gate | 636 | 13,237 | 111.4 s |
+| Gate plus shorter reader lifetime | 609 | 13,213 | 114.9 s |
+| Gate, compaction disabled | 2,151 | 17,858 | 279 ms |
+| Gate, merge built outside the lock | 2,181 | 13,245 | 285 ms |
+
+The baseline keeps queries fast only because the writer is starved. Fair
+admission lets the writer reach compaction, revealing a minute-scale reader
+outage. Building the same inline compaction outside the per-index lock retains
+94% of read-only query throughput and eliminates query latencies above one
+second.
+
+Shortening the current reader lock lifetime did not improve throughput. It
+also moves primary page-reuse safety from a simple lock invariant to
+transaction-horizon reasoning. This design therefore keeps the existing
+reader lock lifetime and relies on fair admission to bound exclusive waits.
 
 ## Goals
 
-- Remove merge-duration stalls from normal index scans and inserts.
-- Permit memtable writes, and therefore most writer work, throughout a merge.
-- Permit a spill to publish a new L0 segment while a merge builds.
-- Prevent VACUUM from changing source alive bitsets during a merge.
+- Prevent indefinite spill, publication, drain, and truncation starvation
+  under continuous ranked scans.
+- Hold no per-index LWLock while constructing merged segment output.
+- Allow scans and inserts to continue throughout the merge build phase.
+- Allow a spill to prepend new L0 segments while compaction builds.
+- Keep compaction cancellable during its long build phase.
+- Preserve alive-bit correctness across VACUUM and compaction.
 - Preserve stock PostgreSQL physical replication through `GenericXLog`.
-- Preserve the standby-safe deferred reclaim protocol from issue #380.
-- Make merge cancellation effective during the build phase.
-- Establish deterministic tests for the known merge, spill, VACUUM, scan, and
-  reclaim races before optimizing them.
+- Preserve standby-safe deferred reclaim from #380.
+- Keep the compaction engine compatible with inline, manual, callback-driven,
+  and #478 managed-background invocation.
 
 ## Non-goals
 
-- Moving compaction into the background. PR #471 owns that work.
-- Making spill itself non-blocking. Spill remains a short `LW_EXCLUSIVE`
-  operation in this work stream.
-- Running more than one merge concurrently for the same index. Different
-  indexes may merge concurrently.
-- Replacing the existing segment or metapage format.
-- Eliminating the existing crash-orphan behavior for pages written before
-  publication. A durable scratch-page manifest is a later hardening option.
-- Removing the `hot_standby_feedback = on` requirement for hot standbys that
-  serve queries.
+- Implementing the pg_durable workflow lifecycle from #478.
+- Changing the default compaction mode.
+- Making memtable spill itself generation-swapped or lock-free. Measurements
+  show ordinary spill is not the long exclusion window.
+- Running multiple merges concurrently for one physical index.
+- Eliminating every possible pre-publication orphan after backend crash. Such
+  pages remain unreachable and can be reclaimed by `REINDEX`.
+- Removing the `hot_standby_feedback = on` requirement for query-serving hot
+  standbys.
 
-## Current concurrency model
+## Current problems
 
-The index has one per-index LWLock in `TpSharedIndexState`.
+### Shared LWLock barging
 
-| Operation | Mode | Relevant lifetime |
-|---|---|---|
-| normal insert | `LW_SHARED` | append to the on-disk memtable |
-| index scan | `LW_SHARED` | metapage snapshot and scoring |
-| spill | `LW_EXCLUSIVE` | read/reset memtable and link an L0 segment |
-| merge | `LW_EXCLUSIVE` | select, build, publish, and park sources |
-| tombstone drain | `LW_EXCLUSIVE` | unlink and recycle one tombstone batch |
-| VACUUM bulk delete | `LW_SHARED` | identify and mutate/replace segments |
-| force merge/truncate | `LW_EXCLUSIVE` | whole administrative operation |
+Ranked scans and ordinary inserts acquire the per-index lock in `LW_SHARED`.
+Spill, tombstone drain, force merge, and compaction acquire it in
+`LW_EXCLUSIVE`.
 
-The segment payload is immutable after publication, but a segment is not
-literally immutable:
+PostgreSQL's shared LWLock acquisition checks whether an exclusive holder
+currently owns the lock; it does not reject a new reader merely because an
+exclusive waiter is queued. A saturated stream of scans can therefore keep at
+least one shared holder active indefinitely.
 
-- VACUUM clears bits in the per-segment alive bitset and updates
-  `alive_count`.
-- Chain publication can update a root segment's `next_segment`.
-- VACUUM can replace or unlink a segment.
+### Merge-duration exclusion
 
-The design must therefore exclude those mutations while an output is derived
-from source segments. It cannot rely on "segments are immutable" without
-stating the exceptions.
+`tp_do_spill()` currently applies compaction policy before its caller releases
+`LW_EXCLUSIVE`. `tp_compact_once()` then selects sources, merges postings,
+writes output, builds tombstones, flushes buffers, and publishes while the
+same lock remains held.
 
-VACUUM already demonstrates the safe publication pattern this design extends.
-It can replace a segment while scans hold the same shared index lock because
-the old pages are parked rather than immediately returned to the FSM. New
-scans read the new metapage linkage; scans that already captured the old
-linkage keep valid pages until they release the shared lock. On a standby,
-the transaction horizon stored in the tombstone and hot-standby feedback
-provide the corresponding protection.
+The merge is copy-on-write. Its output is unreachable until publication, so
+the long exclusive lifetime is not required for reader safety.
 
-## Correctness invariants
+## Concurrency primitives
 
-The implementation must preserve all of these invariants:
+### Fair per-index LWLock admission
 
-1. Every published segment is reachable from exactly one
-   `metapage.level_heads[]` chain.
-2. A segment under construction is unreachable from the metapage.
-3. A selected source run remains linked until the output and deferred-free
-   chain are published atomically.
-4. Source payload, alive bits, `alive_count`, and chain links do not change
-   while the output is built. A concurrent spill may only prepend new L0
-   segments ahead of the selected run.
-5. Publication never overwrites or drops an L0 prefix created by concurrent
-   spills.
-6. A displaced page is linked into `pending_free_head` in the same
-   `GenericXLog` record that removes its source segment from the level chain.
-7. A page is returned to the FSM only after it is unreachable and its
-   reclaim horizon precedes `GetOldestNonRemovableTransactionId`.
-8. `metapage.total_docs` remains the sum of published segment `num_docs`;
-   `total_len` receives the corresponding dead-document shrinkage.
-9. No per-index LWLock is held during output construction.
-10. All relation-page mutations remain WAL-logged with `GenericXLog`; replay
-    never requires loading `pg_textsearch.so`.
+`TpSharedIndexState` gains:
 
-## Maintenance coordination
+- an atomic count of pending exclusive acquisitions;
+- a condition variable used to wake gated shared acquirers.
 
-### Alternatives considered
+An exclusive acquirer increments the count before calling `LWLockAcquire()`.
+New shared acquirers sleep while the count is nonzero. The exclusive acquirer
+decrements the count immediately after acquisition and broadcasts when the
+last pending exclusive acquirer has acquired.
 
-**A second per-index LWLock** would separate maintenance from the existing
-index lock, but holding any LWLock across output construction keeps
-`InterruptHoldoffCount` nonzero. The merge would remain uncancellable, and
-every error path would need explicit stale-owner recovery. This repeats the
-problem the redesign is meant to remove.
+A reader can pass the admission check immediately before an exclusive waiter
+increments the count. This bounded race is acceptable: only readers already
+past the gate can barge, so a continuous stream of later readers cannot cause
+starvation.
 
-**Bitset snapshot and delta replay** could let VACUUM run during a merge.
-However, merge removes dead documents and renumbers surviving `doc_id`
-values. Publication would need a complete old-to-new mapping for every
-source, a versioned bitset snapshot, and an atomic replay of deaths that
-arrived during the build. This adds substantial memory and correctness
-surface before measurements show that merge-versus-VACUUM serialization is
-important.
+The count covers acquisition only, not the exclusive critical section. This
+avoids leaking the gate through errors in spill or publication. PostgreSQL
+LWLock acquisition holds interrupts until it returns, so the increment and
+matching decrement cannot be separated by ordinary query cancellation.
 
-**Optimistic concurrent same-index merges** could let workers build without a
-maintenance gate and allow only one matching source snapshot to publish.
-Workers that selected the same sources would duplicate the full CPU and I/O
-cost, while durable source reservations would require their own crash-recovery
-protocol. Storage bandwidth is likely the limiting resource during merge, so
-speculative duplication is a poor default.
+### Relation maintenance lock
 
-The chosen heavyweight relation lock removes reader/writer contention while
-keeping source stability and failure cleanup in PostgreSQL's existing lock
-manager.
+Compaction, VACUUM segment mutation, and force merge acquire
+`ShareUpdateExclusiveLock` on the physical index relation.
 
-### Lock choice
+This lock:
 
-Merge and VACUUM acquire `ShareUpdateExclusiveLock` on the index relation for
-the portion of the operation that can mutate or derive segment state.
+- is compatible with the `AccessShareLock` and `RowExclusiveLock` modes used
+  by ordinary queries and DML;
+- conflicts with itself, serializing segment-derived maintenance for one
+  physical index;
+- is interruptible and automatically released on error or backend exit;
+- requires no shared-memory owner recovery protocol;
+- permits compaction of different indexes concurrently.
 
-This is preferable to a second LWLock:
+The maintenance lock protects source segment payload, alive bitmaps,
+`alive_count`, and chain relationships while a replacement is derived. It
+does not serialize ordinary memtable appends or L0 spill publication.
 
-- `ShareUpdateExclusiveLock` is compatible with the `AccessShareLock` and
-  `RowExclusiveLock` modes used by normal queries and DML.
-- It conflicts with itself, serializing merge against merge and merge against
-  VACUUM for one index.
-- Waiting for and holding a heavyweight lock does not suppress interrupts for
-  the duration of the merge.
-- PostgreSQL releases the lock on error, subtransaction abort, or backend
-  exit.
-- No shared-memory layout change or stale-owner recovery protocol is needed.
+### Lock order
 
-The lock is acquired explicitly and released when the maintenance operation
-finishes rather than retained until transaction end. Overlapping durable tasks
-therefore serialize only their merge steps. After a waiter acquires the lock,
-it rechecks the compaction predicate before selecting sources.
+Any path needing more than one lock class follows this order:
 
-### Global lock order
-
-Code that needs more than one class of lock follows this order:
-
-1. relation maintenance lock (`ShareUpdateExclusiveLock`);
-2. per-index LWLock (`LW_SHARED` or `LW_EXCLUSIVE`);
+1. relation maintenance lock;
+2. per-index LWLock;
 3. metapage buffer lock;
-4. segment or tombstone buffer locks.
+4. segment or tombstone buffer lock.
 
 No path may acquire the maintenance lock while holding the per-index LWLock.
-This rule is especially important for inline compaction after spill.
+Spill must therefore release `LW_EXCLUSIVE` before applying inline or
+background compaction policy.
 
-Tombstone drain does not need the maintenance lock. It continues to take the
-per-index lock in `LW_EXCLUSIVE` mode while unlinking and recycling pages.
+## Operation matrix
 
-## Separate spill from compaction policy
+| Operation | Maintenance lock | Per-index lock |
+|---|---|---|
+| ranked scan | none | `LW_SHARED`, existing lifetime |
+| normal insert | none | `LW_SHARED` during append |
+| spill | none | `LW_EXCLUSIVE` through L0 publication |
+| compaction selection | `ShareUpdateExclusiveLock` | `LW_SHARED` |
+| compaction build | `ShareUpdateExclusiveLock` | none |
+| compaction publication | `ShareUpdateExclusiveLock` | `LW_EXCLUSIVE` |
+| VACUUM segment mutation | `ShareUpdateExclusiveLock` | existing shared/exclusive sections |
+| tombstone drain | none | `LW_EXCLUSIVE` |
+| force merge | `ShareUpdateExclusiveLock` | phase-specific; exclusive for truncate |
 
-`tp_do_spill()` currently performs the spill and then, while its caller still
-holds `LW_EXCLUSIVE`, applies the configured compaction policy. That structure
-would deadlock:
+Publication remains exclusive even though it is short. A concurrent L0 spill
+can prepend segments while compaction builds. Preserving that prefix requires
+changing the `next_segment` pointer of its last segment. Current scans capture
+level heads but traverse segment links lazily; allowing publication under a
+shared lock could make one scan observe an old metapage head and a new
+predecessor link, omitting documents. Brief exclusive publication avoids this
+mixed graph.
 
-1. a merge holds the maintenance lock and waits briefly for the index lock to
-   publish;
-2. a spill holds the index lock and tries to acquire the maintenance lock for
-   inline compaction.
+## Spill and compaction policy
 
-The spill primitive will only publish the L0 segment and return whether it
-wrote work that may require compaction. Its caller will:
+The durable spill primitive only:
 
-1. release `LW_EXCLUSIVE`;
-2. apply the configured policy:
-   - inline: invoke compaction, which acquires the maintenance lock first;
-   - background: record the durable request in the same top-level
-     transaction;
-   - off: do nothing.
+1. materializes the current memtable;
+2. writes and publishes the new L0 segment;
+3. disconnects and parks the old memtable chain;
+4. resets cache and spill accounting;
+5. reports whether compaction may now be needed.
 
-Recording a background request after releasing the LWLock does not weaken the
-atomicity established by PR #471. The request is still dispatched from the
-same top-level transaction at PRE_COMMIT.
+Its caller releases the per-index lock before applying policy:
 
-Serial and parallel `CREATE INDEX` are different: the new index is not visible
-to concurrent sessions. Their private build-time compaction may retain the
-existing direct path.
+- `inline`: invoke the compaction engine synchronously;
+- `background`: record the existing transaction-local compaction request;
+- `manual` or `off`, depending on the branch version: do nothing.
 
-## Merge lifecycle
+Build-private compaction during `CREATE INDEX` may retain its current direct
+path because the index is not visible to concurrent sessions.
 
-### Phase 0: select
+This boundary is required to avoid a lock inversion where compaction holds
+the maintenance lock and waits to publish while another spill holds the
+per-index lock and waits to start inline compaction.
 
-The merge:
+## Compaction lifecycle
 
-1. acquires the relation maintenance lock;
-2. rechecks that a level is above the compaction threshold;
-3. acquires the per-index lock in `LW_SHARED`;
-4. selects an exact contiguous source run and records:
-   - source level and target level;
-   - source root block numbers in chain order;
-   - the first block after the run;
-   - source header counts needed to calculate shrinkage;
-5. releases the per-index lock.
+### Phase 0: maintenance admission
 
-Selection walks only the small number of source roots in one merge batch.
-Page collection and all term/posting work happen after releasing the index
-lock.
-
-`LW_SHARED` is sufficient: it excludes spill, truncate, and tombstone drain
-while taking the snapshot, while remaining compatible with scans and ordinary
+The caller acquires `ShareUpdateExclusiveLock` on the physical index and
+rechecks whether a reducible level remains above threshold. Competing
+same-index compactions and VACUUM wait here without blocking normal scans or
 inserts.
 
-### Phase 1: build
+The public functions `bm25_compact()`, `bm25_compact_step()`, and the
+generation-checked step used by #478 all enter the same engine. A step remains
+one transaction and at most one publication.
 
-The merge keeps only the heavyweight maintenance lock.
+### Phase 1: select
 
-It opens the selected roots directly, collects their page lists, reads their
-payload and alive bitsets, and writes a complete output segment into pages
-that are not referenced by the metapage.
+With the maintenance lock held, compaction briefly acquires the per-index lock
+in `LW_SHARED` and builds an immutable plan containing:
 
-This is safe because:
+- every selected source root, level, and chain position;
+- each selected contiguous run's first root and remainder root;
+- retained heads and counts;
+- output batches and destination levels;
+- source statistics needed to calculate dead-document shrinkage.
 
-- the maintenance lock excludes VACUUM and other merges, so source alive bits
-  and chain links cannot change;
-- a concurrent spill can prepend an L0 segment but does not modify a selected
-  source;
-- DDL retains its existing heavyweight-lock exclusion;
-- the FSM claim protocol rejects live or double-offered pages;
-- relation extension is already safe across backends.
+Selection releases the per-index lock before collecting complete page lists
+or reading postings.
 
-No per-index LWLock is held, so scans, inserts, and spills can proceed. The
-existing `CHECK_FOR_INTERRUPTS()` calls become effective except during brief
-buffer-locked writes.
-
-After the output is complete, the merge constructs the displaced-page
-tombstones as a detached batch:
-
-- the batch head is not yet reachable from `pending_free_head`;
-- the batch tail initially points to `InvalidBlockNumber`;
-- the API returns both head and tail so publication can attach the current
-  deferred-free chain atomically.
-
-The tombstone horizon is sampled immediately before publication, not at
-source selection.
-
-### Phase 2: validate and publish
-
-The merge reacquires the per-index lock in `LW_SHARED`. This blocks spill,
-tombstone drain, and truncation for the short publication section but remains
+`LW_SHARED` excludes spill publication while the snapshot is taken but remains
 compatible with scans and ordinary inserts.
 
-Under that lock it walks the current source-level chain and finds the selected
-run. A long-running L0 merge may now have a new prefix from concurrent spills.
-The merge records the selected run's current predecessor rather than assuming
-that the selected first block is still the level head.
+### Phase 2: build
 
-It validates:
+Compaction holds only the heavyweight maintenance lock while it:
 
-- every selected root is still present, contiguous, and in the expected
-  order;
-- the selected last root still points to the recorded remainder;
-- the source and target levels remain valid;
-- the completed output header is internally consistent.
+1. reads source dictionaries, postings, document maps, and alive bitmaps;
+2. writes complete, WAL-logged output segments that are not reachable from
+   the metapage;
+3. records output roots, counts, statistics, and page lists;
+4. collects all displaced source pages;
+5. builds a detached tombstone batch whose tail initially points to
+   `InvalidBlockNumber`;
+6. flushes output WAL and dirty relation buffers needed before publication.
 
-With the maintenance lock held, validation should fail only for corruption or
-an implementation bug. It must fail closed and leave the published graph
-unchanged.
+The maintenance lock prevents VACUUM or another compaction from changing the
+selected sources. Concurrent scans read the old graph. Concurrent inserts
+append to the memtable. A concurrent spill may prepend new L0 segments.
 
-Publication uses one `GenericXLog` record over at most four buffers:
+The build phase contains regular interrupt checks and holds no LWLock across
+CPU or I/O work.
 
-1. metapage;
-2. source-run predecessor, when a concurrent L0 prefix exists;
-3. output root;
-4. detached tombstone tail.
+### Phase 3: validate
 
-The record:
+Compaction requests the fair per-index lock in `LW_EXCLUSIVE`. Once acquired,
+no primary reader, insert, spill, drain, or truncation operation can observe a
+partially modified graph.
 
-- points the predecessor, or the source level head, at the recorded
-  remainder;
-- points the output root at the current target-level head;
-- makes the output the target-level head;
-- subtracts the selected count from the current source count and increments
-  the target count;
-- applies dead-document shrinkage to current metapage totals;
-- points the detached tombstone tail at the current `pending_free_head`;
-- makes the detached batch the new `pending_free_head`.
+Validation reads the current metapage and level chains. It requires:
 
-Using the current metapage counts is essential when L0 spills occurred during
-the build. Assigning values derived from the phase-0 snapshot would lose those
-concurrent updates.
+- every selected source root still exists, is contiguous, and appears in the
+  expected order;
+- non-L0 selected runs retain their expected predecessor and remainder;
+- an L0 selected run may have only a newly prepended prefix before it;
+- destination chains remain compatible with the prepared output;
+- output headers and detached tombstones are internally valid.
 
-After the record finishes, the merge releases the shared index lock and the
-maintenance lock.
+Concurrent memtable head/tail changes and a changed deferred-free head are
+expected and do not invalidate the plan. Current metapage values, not the
+phase-1 snapshot, are the base for publication.
 
-### Reader view
+With the maintenance lock held, validation failure indicates corruption, an
+implementation error, or an operation not yet participating in the
+maintenance protocol. It fails closed without changing the published graph.
 
-A scan that snapshots the level chain before publication may continue through
-the displaced sources. It holds `LW_SHARED`, so tombstone drain cannot recycle
-those pages until the scan finishes.
+### Phase 4: publish
 
-A scan that snapshots the chain after publication sees the output segment.
+One `GenericXLog` publication:
 
-The publisher does not wait for either class of scan. Its metapage buffer lock
-is the only unavoidable short reader contention point.
+1. splices a concurrent L0 prefix around the selected run when necessary;
+2. removes every selected run from its source level;
+3. links prepared outputs into their destination levels;
+4. updates level heads and counts from the current metapage values;
+5. subtracts dead-document shrinkage from current corpus totals;
+6. links the detached tombstone tail to the current `pending_free_head`;
+7. makes the detached tombstone batch the new pending-free head.
 
-## VACUUM and alive-bitset correctness
+The record includes the metapage, the optional L0 predecessor page, and the
+detached tombstone tail. Output root links are finalized and WAL-logged while
+the output is still unreachable.
 
-VACUUM acquires the relation maintenance lock before spilling and before
-identifying affected segments. It retains the lock through bitset mutation,
-legacy-segment rebuild, chain replacement, and metapage shrinkage.
+The per-index lock is released immediately after publication. The maintenance
+lock is then released or retained for the caller's next explicitly bounded
+step.
 
-The possible orderings are therefore:
+## Reader and reclaim behavior
 
-- VACUUM first: merge waits, then copies the updated alive bits.
-- Merge first: VACUUM waits, then discovers the published output and marks
-  dead heap tuples in that segment.
+A primary scan that starts before publication holds `LW_SHARED`, so exclusive
+publication waits for it to finish traversing the old graph. A scan that
+starts afterward sees the new graph. No primary scan observes both layouts.
 
-There is no ordering in which VACUUM produces source `doc_id` values, merge
-renumbers the documents, and VACUUM then applies the stale IDs to the output.
-This prevents both dead-document resurrection and out-of-bounds bitset
-writes.
+Displaced source pages are still parked rather than immediately returned to
+the FSM. This remains necessary for:
 
-`tp_vacuumcleanup()` operations that only count live documents or drain
-already-parked pages do not need the maintenance lock. They retain their
-existing per-index locking.
+- hot-standby readers that can still be traversing the old graph;
+- crash and replay ordering;
+- other no-extension-load replay contexts.
+
+Tombstone drain keeps its existing exclusive lock and horizon check.
+`hot_standby_feedback = on` remains required on query-serving standbys.
+
+## VACUUM
+
+Segments are immutable except for their alive bitmaps and chain metadata.
+VACUUM must acquire the relation maintenance lock before identifying segment
+document IDs and retain it through:
+
+- alive-bit mutation;
+- legacy segment replacement;
+- metapage corpus-statistic adjustment;
+- any segment unlink or replacement.
+
+The possible orderings are:
+
+- VACUUM first: compaction waits, then reads the updated alive bits.
+- Compaction first: VACUUM waits, then discovers the published output and
+  applies deaths using that segment's document IDs.
+
+This prevents deleted documents from being resurrected and prevents VACUUM
+from applying stale source document IDs to a renumbered output segment.
+
+Pure counting that does not retain source document IDs may remain outside the
+maintenance lock. Spill invoked by VACUUM follows the normal lock order.
 
 ## Force merge and truncation
 
-`bm25_force_merge()` must participate in the maintenance protocol because
-relation truncation cannot run while an unreachable output is being built.
-It acquires the maintenance lock before spilling, merging, or calculating the
-truncation high-water mark.
+`bm25_force_merge()` acquires the maintenance lock before selecting sources
+and retains it through its bounded merge work. Each output build drops the
+per-index lock exactly like ordinary compaction.
 
-Normal compaction never truncates the relation. It parks displaced pages for
-later FSM reuse.
+Relation truncation remains an exclusive phase. It acquires the per-index
+lock in `LW_EXCLUSIVE`, computes the high-water mark, and truncates before
+releasing it. The maintenance lock ensures no unreachable compaction output
+is being constructed concurrently.
 
-The force-merge implementation may keep one maintenance lock across its
-multi-level operation, but each individual merge still drops the per-index
-lock during output construction. Its final truncate retains
-`LW_EXCLUSIVE`, as it must exclude relation extension while determining and
-applying the high-water mark.
+Normal compaction never truncates the relation.
 
-## Overlapping compaction requests
+## Background compaction compatibility
 
-Only one merge runs per index because the maintenance relation lock is
-self-conflicting. Different indexes remain independent and can merge in
-parallel.
+#478's managed workflow invokes a generation-checked
+`bm25_compact_step_if_current()` once per transaction. This design preserves
+that contract:
 
-When overlapping requests target one index:
+- target identity, owner checks, lifecycle locks, signaling, and scheduling
+  remain in #478;
+- the step function enters the common maintenance-locked compaction engine;
+- one step performs at most one select/build/publish pass;
+- the long build holds neither the per-index LWLock nor #478-specific
+  lifecycle locks beyond those already required by its target validation;
+- spills on a `background` index can continue and signal additional work
+  while a worker builds;
+- a worker rechecks compaction debt after maintenance admission.
 
-1. one acquires the maintenance lock and performs a merge step;
-2. waiters remain interruptible in PostgreSQL's heavyweight lock manager;
-3. each waiter rechecks the level threshold after acquiring the lock;
-4. a waiter exits without building if the earlier merge removed the need.
+This change adds no pg_durable dependency and does not alter compaction
+reloptions or callback configuration. Rebasing #478 should require only
+mechanical adaptation of its additional step entry point to the common engine
+API.
 
-This deliberately avoids source reservations and duplicate speculative
-output. Same-index parallel merges can be reconsidered only after measurement
-shows that merge serialization, rather than reader/writer blocking or storage
-bandwidth, is the limiting factor.
-
-## Error, cancellation, and crash behavior
+## Failure, cancellation, and crash behavior
 
 ### Before publication
 
-The existing level chains remain authoritative. Any complete or partial
-output and detached tombstone pages are unreachable, so they cannot affect
-query results or replay.
+The old graph remains authoritative. Partial or complete outputs and detached
+tombstones are unreachable.
 
-If validation fails in normal control flow, the implementation reclaims:
+On a handled validation failure or ordinary error path, the implementation
+returns all known output and detached tombstone container pages to the FSM.
+It never frees the selected source pages listed inside the detached
+tombstones.
 
-- output segment and page-index pages;
-- detached tombstone container pages.
+A backend crash can leave unreachable output pages. This is an accepted leak
+until `REINDEX`; it cannot produce wrong query results or unsafe page reuse.
+A durable scratch-allocation manifest is a separate future enhancement.
 
-It must not reclaim the source pages listed inside those tombstones.
+### During publication
 
-If the backend errors, is cancelled, or crashes during the build, unreachable
-pages can leak until REINDEX. This matches existing accepted crash windows in
-segment writing and fragmented memtable append. Removing the long-held
-LWLock makes query cancellation effective, so it can make this leak easier to
-trigger deliberately; the implementation must document and log the condition
-when the backend survives.
+`GenericXLog` makes graph replacement and deferred-free attachment one atomic
+WAL action. Recovery sees either:
 
-A future hardening change may add a WAL-logged scratch allocation manifest.
-That is intentionally separate because it changes the metapage format and
-adds WAL work to every allocation. It is not required for index correctness
-or for proving the concurrency design.
+- the old graph with no reachable output, or
+- the new graph with all displaced pages reachable from the pending-free
+  chain.
 
-### Publication
-
-`GenericXLog` makes the graph swap and deferred-free linkage one WAL record:
-
-- recovery before the record sees the old graph;
-- recovery after the record sees the new graph and its pending-free batch;
-- recovery never sees sources unlinked without their pages parked.
-
-Interrupts are held off only during the brief LWLock/buffer-locked publication
-section. A timeout arriving in that window can be reported after publication;
-as with other physical index maintenance, the merge may be applied even if
-the calling statement reports cancellation. The long build phase is
-cancellable.
+Interrupts are held only for the brief publication section. Cancellation
+during that section may be reported after the physical publication completes,
+matching existing index-maintenance semantics.
 
 ### After publication
 
-The output is authoritative. Source pages remain parked until the existing
-reclaim horizon permits FSM reuse.
-
-## WAL and standby behavior
-
-Every output page is WAL-logged before publication. Replay may reconstruct
-unreachable output pages before replaying the publication record; no scan can
-discover them.
-
-The publication record updates the level graph and deferred-free graph
-atomically. It uses the same `FullTransactionId` horizon discipline as the
-current issue #380 implementation. A standby query that began against the old
-graph keeps the primary reclaim horizon back through
-`hot_standby_feedback = on`.
-
-No custom resource manager or standby-side extension code is introduced.
+The output is authoritative. Source pages remain parked until the reclaim
+horizon permits reuse.
 
 ## Observability
 
-Debug-level timing should distinguish:
+Debug timing distinguishes:
 
+- writer-admission wait;
 - maintenance-lock wait;
 - source selection;
 - output build;
-- publication;
-- total merge duration.
+- exclusive publication;
+- total step duration.
 
-Tests need a way to pause a merge deterministically after selection and before
-publication. The pause mechanism is test-only and superuser-only, following
-the existing debug GUC pattern. It must not be enabled in normal operation.
+The benchmark continues to sample `pg_stat_activity` and report per-operation
+latency distributions. No permanent feature flag selects the old locking
+model.
 
-The production-facing pending-free page count remains
-`bm25_pending_free_pages()`. No new production GUC is required to enable the
-locking protocol; replacing a long exclusive section with the new protocol
-should not create two permanent correctness modes.
-
-## Stage 0: baseline concurrency benchmark
-
-Benchmarking precedes race-harness and locking changes. Its purpose is not
-merely to demonstrate that the proposed design is faster; it is a decision
-gate that can change the implementation order or invalidate parts of this
-design.
-
-The benchmark must run against an unmodified baseline commit and produce a
-checked-in report before Stage 1 begins. The same harness and corpus are run
-again after each implementation stage.
-
-### Harness
-
-Add a standalone benchmark under `benchmarks/` that creates and owns a
-dedicated PostgreSQL cluster. It must pin every PostgreSQL binary to
-`pg_config --bindir`, record the extension and PostgreSQL commit/version, and
-fail if setup does not produce the requested segment layout.
-
-Use a deterministic synthetic corpus rather than requiring an external
-download. Documents should have enough vocabulary and postings to make merge
-CPU and I/O material. Environment variables may scale:
-
-- documents per source segment;
-- number of source segments;
-- client count;
-- measurement duration;
-- repetition count.
-
-Provide two presets:
-
-- smoke: small enough to validate the harness quickly;
-- measurement: at least eight source segments with enough documents to
-  produce a multi-second merge on a development machine.
-
-Build the fixture with automatic compaction disabled, spill explicitly after
-each batch, empty the memtable before measurement, and verify the exact level
-counts. After PR #471 lands, use `bm25_compact_step()` to trigger exactly one
-normal merge batch; do not use `bm25_force_merge()` as the primary merge
-measurement because its all-level merge and relation truncation would
-confound the result.
-
-Each measured run rebuilds the fixture in the same scratch database. Do not
-clone a template database: until issue #464 is fixed, shared index state keyed
-only by index OID can collide across template-cloned databases.
-
-### Controlled scenarios
-
-Measure each foreground workload first without maintenance and then while one
-known maintenance operation overlaps it:
-
-| Foreground workload | Overlapping operation |
-|---|---|
-| top-k scans | none, one merge, one spill, VACUUM |
-| inserts with auto-spill disabled | none, one merge, one spill, VACUUM |
-| mixed top-k scans and inserts | none, one merge, one spill, VACUUM |
-| explicit spill | none, one merge |
-
-Run foreground workloads at 1, 4, and 16 clients by default. Keep insert
-transactions small and disable their automatic spill so the operation under
-test is the only maintenance event in its measurement window.
-
-The merge scenario is the primary gate. Spill and VACUUM scenarios establish
-whether removing merge-duration exclusion merely exposes another dominant
-critical section.
-
-### Measurements
-
-Do not rely on pgbench's average latency. Enable per-transaction logging and
-report, separately for scans and inserts:
-
-- transaction count and throughput;
-- p50, p95, p99, and maximum latency;
-- count and percentage above 100 ms and 1 second;
-- maintenance-operation wall time;
-- the exact interval in which maintenance overlapped foreground work.
-
-Tag each connection with `application_name`. During the run, sample
-`pg_stat_activity` frequently enough to capture multi-second stalls and
-record:
-
-- timestamp, pid, application name, and backend state;
-- `wait_event_type` and `wait_event`;
-- query start and transaction start.
-
-`pg_locks` does not expose LWLocks, and `log_lock_waits` covers heavyweight
-locks only. The benchmark therefore correlates foreground latency spikes and
-`wait_event_type = 'LWLock'` samples with the explicitly recorded merge or
-spill interval. If the fixed extension tranche does not expose a useful wait
-event name, naming that existing tranche is an observability-only prerequisite
-and must be recorded as such; it must not alter lock acquisition or lifetime.
-
-Run each scenario at least five times. Report the median run and retain every
-raw result so variability and outliers remain visible. The report records
-hardware, filesystem, relevant PostgreSQL settings, cache-warmup procedure,
-corpus shape, segment layout, and all harness parameters.
-
-### CPU, off-CPU, and database profiles
-
-Latency and wait-event correlation identify when foreground work stalls, but
-they do not show where the merge spends its resources. The measurement preset
-therefore includes a profiling run with symbols available for PostgreSQL and
-the extension.
-
-Capture three complementary views:
-
-1. **On-CPU flame graph for the merge backend.** This should distinguish term
-   enumeration, posting merge, compression, page construction, GenericXLog,
-   buffer management, and relation extension. A conventional `perf` CPU
-   profile is appropriate for this view.
-2. **Off-CPU flame graph for foreground scan and insert backends.** A normal
-   CPU flame graph omits sleeping lock waiters and cannot confirm the current
-   contention analysis by itself. Use an off-CPU profiler, such as BCC or
-   bpftrace `offcputime`, or a `perf sched` trace, and correlate stacks with
-   the backend PIDs tagged by `application_name`. The expected baseline stack
-   should terminate in PostgreSQL's LWLock wait path during the merge window.
-3. **System and PostgreSQL counters.** Record `perf stat` counters, relevant
-   `pg_stat_io`, `pg_stat_wal`, and `pg_stat_database` deltas, buffer hit/read
-   counts, WAL bytes, context switches, and page faults. These distinguish
-   lock exclusion from CPU saturation, storage contention, WAL pressure, and
-   relation extension.
-
-Profile the no-maintenance control and overlapping-merge scenario with the
-same corpus and foreground load. Repeat the same profiles after the locking
-change. The expected result is not merely a smaller flame-graph frame:
-
-- baseline foreground backends spend merge-overlap wall time in the per-index
-  LWLock wait path;
-- the merge backend's on-CPU work explains its remaining duration;
-- after the redesign, the foreground LWLock off-CPU stack disappears or is
-  confined to the brief spill/publication windows;
-- any remaining latency correlates with measured CPU, I/O, or WAL pressure
-  rather than an unexplained gap.
-
-Profiling is a controlled Linux measurement, not a CI gate. The report checks
-in generated SVG or folded-stack summaries plus exact commands, kernel
-settings, symbol/build flags, backend PIDs, and profiler versions. Large raw
-`perf.data` files remain external artifacts.
-
-### Decision gate
-
-Before Stage 1, review the baseline and answer:
-
-1. Which operation dominates scan and insert tail latency?
-2. What fraction of the observed stall is LWLock wait versus CPU, buffer I/O,
-   WAL, or relation extension?
-3. At what segment/document scale does merge contention become material?
-4. Does spill or VACUUM become the next dominant exclusion window?
-5. Is serial same-index merge throughput a measured limitation?
-
-Proceed with the select/build/publish redesign only if merge-duration lock
-wait is material. If measurements identify a different primary bottleneck,
-revise the implementation stages and this document before changing locks.
-
-## Test design
-
-Timing-only stress tests remain useful but are not sufficient. The primary
-tests use deterministic phase barriers.
+## Test strategy
 
 ### Deterministic concurrency tests
 
-1. **Scan during build:** pause a large merge in phase 1. Start a top-k scan
-   and require it to finish before releasing the merge. Verify results before
-   and after publication.
-2. **Insert during build:** with the merge paused, insert documents and
-   require the statement to finish. Verify all documents remain searchable.
-3. **Spill during L0 build:** publish a new L0 segment while the merge is
-   paused. After publication, verify the new prefix remains linked, level
-   counts are correct, and both old and new documents are searchable.
-4. **VACUUM ordering:** pause the merge, start VACUUM, and prove VACUUM waits
-   on the maintenance lock. After releasing the merge, verify VACUUM marks
-   dead documents in the output and no deleted tuple is resurrected.
-5. **Same-index serialization:** pause one merge, start a second, and prove
-   the second waits without consuming source pages or writing output. After
-   release it rechecks the threshold.
-6. **Different-index overlap:** pause merges for two indexes in phase 1 and
-   prove both reach the barrier concurrently.
-7. **Tombstone drain ordering:** begin a scan against the old graph, publish
-   while it runs, and prove drain cannot recycle the source pages until the
-   scan releases `LW_SHARED`.
-8. **Force-merge/truncate ordering:** pause normal compaction output and prove
-   force merge cannot compute or apply a truncation high-water mark until the
-   maintenance lock is available.
+Test-only, superuser-only pause points allow a merge to stop after selection
+and before publication.
+
+Required cases:
+
+1. A scan completes while a merge is paused in the build phase.
+2. An insert completes while a merge is paused in the build phase.
+3. A spill prepends L0 while a merge is paused; publication preserves the
+   prefix and all documents.
+4. Continuous scans cannot starve an exclusive spill request.
+5. A second same-index compaction waits on the maintenance lock and rechecks
+   debt after admission.
+6. Compactions of different indexes can reach the build pause concurrently.
+7. VACUUM waits behind a paused merge and applies deletions to the published
+   output.
+8. Force merge and truncation wait for an active ordinary compaction.
 
 ### Failure and recovery tests
 
-1. Cancel during term enumeration and during output writing. Verify the old
-   graph remains queryable and no partial output is published.
-2. Inject a validation failure after a complete build. Verify output and
-   tombstone container pages are reclaimed without freeing source pages.
-3. Crash before publication, during publication WAL, and immediately after
-   publication. Verify recovery returns either the complete old graph or the
-   complete new graph.
-4. Repeat publication and reclaim with a hot-standby query held open. Verify
-   feedback prevents source-page reuse until the standby query ends.
+1. Cancel during source reading and output writing; the old graph remains
+   queryable.
+2. Inject publication validation failure; output pages are reclaimed and
+   source pages remain live.
+3. Crash before, during, and after publication; recovery yields a complete
+   old or new graph.
+4. Hold a hot-standby query on the old graph through publication and verify
+   its pages are not reused before feedback releases the horizon.
 
-### Stress and performance tests
+### Performance tests
 
-- Extend the existing writer + force-merge + deleter + VACUUM stress test to
-  include normal stepped compaction and phase-aware diagnostics.
-- Run sanitizer jobs for the complete suite.
-- Re-run the Stage 0 benchmark after each implementation stage.
-- Record publication duration separately from build duration once the merge
-  lifecycle has been split.
+Use the mixed MS MARCO driver from #494 and a deterministic compaction-overlap
+harness. Report:
 
-The deterministic acceptance criterion is stronger than a machine-dependent
-latency threshold: while a merge is paused indefinitely in phase 1, an
-independent scan and insert must complete within the test timeout. Performance
-numbers are reported for regression tracking rather than used as flaky CI
-gates.
+- query and update throughput;
+- p50, p95, p99, p99.9, and maximum latency;
+- operations above 100 ms and one second;
+- maintenance build and publication durations;
+- per-application wait events.
 
-## Staged delivery
+The performance acceptance target is no zero-QPS interval during compaction,
+no merge-duration `tapir_index_lock` waits, and mixed query throughput within
+10% of its no-maintenance control on the same machine.
 
-### Stage 0: measure the baseline
+## Delivery boundaries
 
-- Implement the dedicated concurrency benchmark without changing lock
-  behavior.
-- Run the full measurement preset against the baseline commit.
-- Capture on-CPU and off-CPU profiles for the control and merge-overlap runs.
-- Check in the environment, raw-result summary, and conclusions.
-- Revisit the proposed stages before implementing them.
+The implementation PR includes:
 
-### Stage 1: audit and race harness
+1. fair per-index lock admission;
+2. spill/compaction policy separation;
+3. relation maintenance locking;
+4. select/build/validate/publish compaction;
+5. detached tombstone publication and failure cleanup;
+6. VACUUM and force-merge integration;
+7. deterministic concurrency, recovery, and benchmark coverage;
+8. architecture and operator documentation.
 
-- Document and assert the lock order.
-- Add deterministic select/build/publish pause points.
-- Extend concurrent merge/VACUUM/spill/scan/recovery coverage.
-- Add diagnostics that identify which merge phase was active on failure.
-
-### Stage 2: spill/maintenance boundary
-
-- Remove compaction policy execution from the spill critical section.
-- Add the relation maintenance lock to merge, VACUUM mutation, and force
-  merge.
-- Recheck predicates after maintenance-lock acquisition.
-
-### Stage 3: non-blocking merge
-
-- Introduce explicit merge-plan, merge-output, and detached-tombstone
-  structures.
-- Split selection, build, validation, and publication.
-- Preserve concurrent L0 prefixes during publication.
-- Publish the level swap and deferred-free linkage atomically.
-
-### Stage 4: administrative and failure hardening
-
-- Adapt force merge and truncation to the new protocol.
-- Reclaim completed unpublished output on validation failure.
-- Document cancellation's pre-publication orphan behavior.
-- Verify crash recovery and standby reclaim.
-
-### Stage 5: measure and decide
-
-- Re-run every Stage 0 scenario and compare reader/writer latency, throughput,
-  and wait samples with the baseline.
-- Audit any remaining long `LW_EXCLUSIVE` sections.
-- Consider non-blocking spill only if spill is now material.
-- Consider same-index parallel merges only if serialized merge throughput is
-  the measured bottleneck.
+Managed scheduling from #478 remains a separate PR. Once both land,
+`compaction = 'background'` gains both desired properties: foreground writers
+do not perform merges, and background merges do not stall foreground readers
+or memtable inserts.
 
 ## Acceptance criteria
 
-- No per-index LWLock is held while constructing merged output.
-- A scan and insert complete while a merge is deterministically paused in its
-  build phase.
-- A concurrent L0 spill remains reachable after merge publication.
-- VACUUM cannot mutate source alive bits during a merge and does not
-  resurrect deleted documents.
-- Same-index maintenance serializes without deadlock; different indexes can
-  merge concurrently.
+- Continuous ranked scans cannot indefinitely starve a spill.
+- No per-index LWLock is held while merged output is constructed or flushed.
+- A scan and insert finish while a merge is paused indefinitely in build.
+- A concurrent L0 spill remains reachable after compaction publication.
+- Publication blocks readers only for its bounded exclusive section.
+- VACUUM cannot mutate selected source alive bits during a merge.
+- Same-index maintenance serializes; different indexes can overlap.
 - Publication and deferred reclaim remain crash-safe and standby-safe.
-- Existing SQL, concurrency, crash-recovery, replication, sanitizer, and
-  formatting tests pass.
-- The implementation introduces no custom WAL resource manager and no
-  persistent feature flag.
+- Inline, manual, callback-driven, and #478 managed compaction use the same
+  engine and retain their existing external contracts.
+- Existing regression, concurrency, recovery, replication, sanitizer, and
+  formatting checks pass.
