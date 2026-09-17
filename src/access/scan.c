@@ -83,6 +83,13 @@ tp_ctid_seen_or_mark(TpScanOpaque so, ItemPointer tid)
 	return found;
 }
 
+static bool
+tp_ctid_seen(TpScanOpaque so, ItemPointer tid)
+{
+	return so->returned_ctids != NULL &&
+		   hash_search(so->returned_ctids, tid, HASH_FIND, NULL) != NULL;
+}
+
 /* Reset emitted-CTID tracking for a restarted scan. */
 static void
 tp_returned_ctids_reset(TpScanOpaque so)
@@ -610,6 +617,16 @@ tp_begin_combined_boolean_tail(IndexScanDesc scan)
 	BufFile			  *matches = so->boolean_matches;
 	TpLocalIndexState *index_state;
 
+	if (so->result_count >= so->max_results_used &&
+		so->max_results_used >= TP_MAX_QUERY_LIMIT)
+		ereport(ERROR,
+				(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
+				 errmsg("combined Boolean ranking exceeded the maximum "
+						"candidate count of %d",
+						TP_MAX_QUERY_LIMIT),
+				 errhint("Replan the query so PostgreSQL can use a full "
+						 "scan and sort.")));
+
 	so->boolean_matches = NULL;
 	tp_rescan_cleanup_results(so);
 
@@ -716,7 +733,7 @@ tp_gettuple(IndexScanDesc scan, ScanDirection dir)
 				so->eof_reached = true;
 				return false;
 			}
-		} while (combined_scan && tp_ctid_seen_or_mark(so, &scan->xs_heaptid));
+		} while (combined_scan && tp_ctid_seen(so, &scan->xs_heaptid));
 
 		scan->xs_recheck		= so->boolean_recheck;
 		scan->xs_recheckorderby = false;
@@ -724,7 +741,7 @@ tp_gettuple(IndexScanDesc scan, ScanDirection dir)
 		if (combined_scan)
 		{
 			Assert(scan->numberOfOrderBys == 1);
-			scan->xs_orderbyvals[0]	 = Float4GetDatum(0.0);
+			scan->xs_orderbyvals[0]	 = Float8GetDatum(0.0);
 			scan->xs_orderbynulls[0] = false;
 			tp_cached_score			 = 0.0;
 		}
@@ -848,7 +865,7 @@ tp_gettuple(IndexScanDesc scan, ScanDirection dir)
 		/* Convert BM25 score to Datum (ensure negative for ASC sort) */
 		raw_score				 = so->result_scores[so->current_pos];
 		bm25_score				 = (raw_score > 0) ? -raw_score : raw_score;
-		scan->xs_orderbyvals[0]	 = Float4GetDatum(bm25_score);
+		scan->xs_orderbyvals[0]	 = Float8GetDatum((float8)bm25_score);
 		scan->xs_orderbynulls[0] = false;
 
 		/* Log BM25 score if enabled */

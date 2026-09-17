@@ -198,7 +198,7 @@ tp_costestimate(
 		return;
 	}
 
-	if (has_boolean && !has_orderby)
+	if (has_boolean)
 	{
 		if (!tp_boolean_get_constant_query(path, &boolean_query))
 			boolean_full_scan = true;
@@ -218,34 +218,6 @@ tp_costestimate(
 		else
 			boolean_full_scan = tp_boolean_query_requires_full_scan(
 					boolean_query);
-	}
-
-	/* Check for LIMIT clause and verify it can be safely pushed down */
-	if (has_orderby && root && root->limit_tuples > 0 &&
-		root->limit_tuples < INT_MAX)
-	{
-		int limit = (int)root->limit_tuples;
-
-		if (tp_can_pushdown_limit(root, path, limit))
-		{
-			/*
-			 * Seed the internal top-K from the estimated selectivity of
-			 * any Filter above this scan, so filtered top-k queries
-			 * avoid the executor's backoff re-drives (no-op when there
-			 * is no filter).
-			 *
-			 * NOTE: tp_store_query_limit uses a single per-backend slot
-			 * keyed only by index_oid, so multiple BM25 scans of the
-			 * SAME index in one statement (e.g. a faceted UNION ALL)
-			 * share it and may not each receive their own seed.  This
-			 * is a pre-existing limitation of the limit stash;
-			 * correctness is unaffected (executor Filter + backoff).
-			 * Tracked in #435.
-			 */
-			int seeded = tp_seed_limit_for_filter(root, path, limit);
-
-			tp_store_query_limit(path->indexinfo->indexoid, seeded);
-		}
 	}
 
 	/* Try to get actual statistics from the index */
@@ -282,6 +254,52 @@ tp_costestimate(
 		}
 	}
 
+	/*
+	 * Combined scans cannot prove ranking exhaustion after the bounded
+	 * top-K reaches its ceiling.  Let PostgreSQL score and externally sort
+	 * larger relations rather than assigning zero to omitted positive-score
+	 * matches.
+	 */
+	if (has_boolean && has_orderby && num_tuples >= TP_MAX_QUERY_LIMIT)
+	{
+		tp_disable_index_path(
+				path,
+				indexStartupCost,
+				indexTotalCost,
+				indexSelectivity,
+				indexCorrelation,
+				indexPages);
+		return;
+	}
+
+	/* Check for LIMIT clause and verify it can be safely pushed down */
+	if (has_orderby && root && root->limit_tuples > 0 &&
+		root->limit_tuples < INT_MAX)
+	{
+		int limit = (int)root->limit_tuples;
+
+		if (tp_can_pushdown_limit(root, path, limit))
+		{
+			/*
+			 * Seed the internal top-K from the estimated selectivity of
+			 * any Filter above this scan, so filtered top-k queries
+			 * avoid the executor's backoff re-drives (no-op when there
+			 * is no filter).
+			 *
+			 * NOTE: tp_store_query_limit uses a single per-backend slot
+			 * keyed only by index_oid, so multiple BM25 scans of the
+			 * SAME index in one statement (e.g. a faceted UNION ALL)
+			 * share it and may not each receive their own seed.  This
+			 * is a pre-existing limitation of the limit stash;
+			 * correctness is unaffected (executor Filter + backoff).
+			 * Tracked in #435.
+			 */
+			int seeded = tp_seed_limit_for_filter(root, path, limit);
+
+			tp_store_query_limit(path->indexinfo->indexoid, seeded);
+		}
+	}
+
 	/* Initialize generic costs */
 	MemSet (&costs, 0, sizeof(costs))
 		;
@@ -292,7 +310,7 @@ tp_costestimate(
 							  ? costs.indexTotalCost +
 										cpu_operator_cost * num_tuples
 							  : costs.indexTotalCost * TP_INDEX_SCAN_COST_FACTOR;
-	*indexStartupCost = has_boolean && !has_orderby
+	*indexStartupCost = (has_boolean && !has_orderby) || boolean_full_scan
 							  ? *indexTotalCost
 							  : costs.indexStartupCost + 0.01;
 

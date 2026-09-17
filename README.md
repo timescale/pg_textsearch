@@ -139,9 +139,15 @@ LIMIT 5;
 ```
 
 The index produces candidates in BM25 order. If many candidates fail the
-Boolean predicate, it switches to filtering them in the index before
-PostgreSQL reads their table rows. Phrase and prefix conditions are still
-rechecked against each surviving row.
+Boolean predicate, it materializes the Boolean matches once. When their CTID
+lookup fits within `work_mem`, later ranked candidates are filtered in the
+index before PostgreSQL reads their table rows; otherwise filtering continues
+through PostgreSQL's heap recheck. Phrase, prefix, and weight conditions may
+still require heap rechecks for exact `tsquery` semantics.
+
+For indexes with 100,000 or more documents, PostgreSQL uses a full scan and sort
+for combined Boolean ranking so matches beyond the bounded ranking window
+cannot be assigned an incorrect zero score.
 
 ### Verifying Index Usage
 
