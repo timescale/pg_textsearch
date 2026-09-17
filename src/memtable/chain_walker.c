@@ -77,6 +77,12 @@ struct TpChainWalker
 	 */
 	uint16 pending_off;
 
+	bool		bounded;
+	bool		endpoint_reached;
+	BlockNumber endpoint_blkno;
+	uint16		endpoint_off;
+	bool		copy_records;
+
 	uint32 pages_visited;
 };
 
@@ -165,6 +171,24 @@ open_page(TpChainWalker *w, BlockNumber blkno, uint16 start_off)
 	w->cur_free_offset = hdr->free_offset;
 	w->cur_next_block  = hdr->next_block;
 	w->cur_off		   = Max(start_off, TP_MEMTABLE_PAGE_FIRST_RECORD_OFFSET);
+	if (w->bounded && blkno == w->endpoint_blkno)
+	{
+		if (w->endpoint_off < TP_MEMTABLE_PAGE_FIRST_RECORD_OFFSET ||
+			w->endpoint_off > hdr->free_offset)
+		{
+			UnlockReleaseBuffer(w->cur_buf);
+			w->cur_buf = InvalidBuffer;
+			ereport(ERROR,
+					(errcode(ERRCODE_DATA_CORRUPTED),
+					 errmsg("pg_textsearch memtable snapshot endpoint at "
+							"block %u has invalid offset %u",
+							blkno,
+							w->endpoint_off)));
+		}
+		w->cur_free_offset	= w->endpoint_off;
+		w->cur_next_block	= InvalidBlockNumber;
+		w->endpoint_reached = true;
+	}
 	w->pages_visited++;
 }
 
@@ -320,6 +344,80 @@ tp_chain_walker_open(
 	return w;
 }
 
+bool
+tp_memtable_chain_snapshot_capture(
+		Relation				 rel,
+		BlockNumber				 head_blkno,
+		BlockNumber				 tail_blkno,
+		TpMemtableChainSnapshot *snapshot)
+{
+	Buffer				  buf;
+	Page				  page;
+	TpMemtablePageHeader *hdr;
+
+	Assert(rel != NULL);
+	Assert(snapshot != NULL);
+
+	if (!BlockNumberIsValid(head_blkno))
+	{
+		if (BlockNumberIsValid(tail_blkno))
+			ereport(ERROR,
+					(errcode(ERRCODE_INDEX_CORRUPTED),
+					 errmsg("BM25 memtable has a tail page but no head "
+							"page")));
+		memset(snapshot, 0, sizeof(*snapshot));
+		snapshot->head_blkno = InvalidBlockNumber;
+		snapshot->tail_blkno = InvalidBlockNumber;
+		return false;
+	}
+	if (!BlockNumberIsValid(tail_blkno))
+		ereport(ERROR,
+				(errcode(ERRCODE_INDEX_CORRUPTED),
+				 errmsg("BM25 memtable has a head page but no tail page")));
+
+	buf = ReadBuffer(rel, tail_blkno);
+	LockBuffer(buf, BUFFER_LOCK_SHARE);
+	page = BufferGetPage(buf);
+
+	if (!tp_memtable_page_is_valid(page) ||
+		tp_memtable_page_is_continuation(page))
+	{
+		UnlockReleaseBuffer(buf);
+		ereport(ERROR,
+				(errcode(ERRCODE_INDEX_CORRUPTED),
+				 errmsg("BM25 memtable tail page %u is invalid", tail_blkno)));
+	}
+	validate_page_layout(page, tail_blkno);
+	hdr = tp_memtable_page_header(page);
+
+	snapshot->head_blkno	   = head_blkno;
+	snapshot->tail_blkno	   = tail_blkno;
+	snapshot->tail_free_offset = hdr->free_offset;
+
+	UnlockReleaseBuffer(buf);
+	return true;
+}
+
+TpChainWalker *
+tp_chain_walker_open_bounded(
+		Relation					   rel,
+		const TpMemtableChainSnapshot *snapshot,
+		MemoryContext				   mcxt)
+{
+	TpChainWalker *w;
+
+	Assert(snapshot != NULL);
+	Assert(BlockNumberIsValid(snapshot->head_blkno));
+	Assert(BlockNumberIsValid(snapshot->tail_blkno));
+
+	w		   = tp_chain_walker_open(rel, snapshot->head_blkno, 0, mcxt);
+	w->bounded = true;
+	w->endpoint_blkno = snapshot->tail_blkno;
+	w->endpoint_off	  = snapshot->tail_free_offset;
+	w->copy_records	  = true;
+	return w;
+}
+
 void
 tp_chain_walker_close(TpChainWalker *w)
 {
@@ -357,7 +455,15 @@ tp_chain_walker_next(TpChainWalker *w, TpChainWalkerRecord *out)
 			uint16		off;
 
 			if (!BlockNumberIsValid(to_open))
+			{
+				if (w->bounded && !w->endpoint_reached)
+					ereport(ERROR,
+							(errcode(ERRCODE_INDEX_CORRUPTED),
+							 errmsg("BM25 memtable chain ended before "
+									"snapshot tail page %u",
+									w->endpoint_blkno)));
 				return false;
+			}
 
 			w->pending_blkno = InvalidBlockNumber;
 			off				 = w->pending_off;
@@ -416,6 +522,7 @@ tp_chain_walker_next(TpChainWalker *w, TpChainWalkerRecord *out)
 			out->vector_bytes = full;
 			out->vector_len	  = rec->vector_len;
 			out->is_fragment  = true;
+			out->owns_vector  = true;
 			out->next_blkno	  = post_cont;
 			out->next_off	  = TP_MEMTABLE_PAGE_FIRST_RECORD_OFFSET;
 
@@ -452,6 +559,7 @@ tp_chain_walker_next(TpChainWalker *w, TpChainWalkerRecord *out)
 		out->vector_bytes = rec->vector_bytes;
 		out->vector_len	  = rec->vector_len;
 		out->is_fragment  = false;
+		out->owns_vector  = false;
 
 		/* Advance our internal cur_off. */
 		w->cur_off += tp_memtable_record_size(rec->vector_len);
@@ -474,6 +582,19 @@ tp_chain_walker_next(TpChainWalker *w, TpChainWalkerRecord *out)
 		{
 			out->next_blkno = w->cur_blkno;
 			out->next_off	= w->cur_off;
+		}
+
+		if (w->copy_records)
+		{
+			char *copy;
+
+			copy = MemoryContextAlloc(w->mcxt, rec->vector_len);
+			memcpy(copy, rec->vector_bytes, rec->vector_len);
+			out->vector_bytes = copy;
+			out->owns_vector  = true;
+			w->pending_blkno  = out->next_blkno;
+			w->pending_off	  = out->next_off;
+			release_cur_page(w);
 		}
 
 		return true;

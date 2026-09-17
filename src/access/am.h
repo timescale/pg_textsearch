@@ -12,6 +12,7 @@
 #include <access/reloptions.h>
 #include <access/transam.h>
 #include <storage/block.h>
+#include <storage/buffile.h>
 #include <storage/bufpage.h>
 #include <tsearch/ts_type.h>
 
@@ -26,9 +27,14 @@ typedef struct TpScanOpaqueData
 	MemoryContext scan_context; /* Memory context for scan */
 
 	/* Query processing state */
-	char	 *query_text;	/* Search query text */
-	TpVector *query_vector; /* Original query vector from ORDER BY */
-	Oid		  index_oid;	/* Index OID */
+	char		 *query_text;	 /* Search query text */
+	TpVector	 *query_vector;	 /* Original query vector from ORDER BY */
+	TSQuery		  boolean_query; /* Query from an ordinary @@ scan key */
+	MemoryContext boolean_context;
+	bool		  is_boolean_scan;
+	bool		  boolean_recheck;
+	BufFile		 *boolean_results;
+	Oid			  index_oid; /* Index OID */
 
 	/* Scan results state */
 	ItemPointer result_ctids;  /* Array of matching CTIDs */
@@ -54,7 +60,9 @@ typedef struct TpOptions
 	int32  text_config_offset; /* offset to text config string */
 	double k1;				   /* BM25 k1 parameter */
 	double b;				   /* BM25 b parameter */
-	int	   compaction;		   /* TpCompactionMode for this index */
+	int32  compaction_schedule_offset;
+	int32  compaction_lineage_offset;
+	int	   compaction; /* TpCompactionMode for this index */
 } TpOptions;
 
 /* Tapir-specific build phases for progress reporting */
@@ -145,6 +153,7 @@ int tp_tokenize_text(
 /* Build progress tracking for partitioned tables */
 void tp_build_progress_begin(void);
 void tp_build_progress_end(void);
+void tp_build_progress_abort(void);
 
 /*
  * Scan functions (am/scan.c)

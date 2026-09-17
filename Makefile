@@ -32,6 +32,8 @@ OBJS = \
 	src/access/build_context.o \
 	src/access/build_parallel.o \
 	src/access/compaction_api.o \
+	src/access/boolean.o \
+	src/access/rls.o \
 	src/access/scan.o \
 	src/access/vacuum.o \
 	src/memtable/arena.o \
@@ -60,6 +62,7 @@ OBJS = \
 	src/types/array.o \
 	src/types/vector.o \
 	src/types/query.o \
+	src/index/compaction_job.o \
 	src/index/compaction_request.o \
 	src/index/state.o \
 	src/index/registry.o \
@@ -88,7 +91,7 @@ PG_CPPFLAGS += -Wno-unknown-warning-option -Wno-clobbered -Wno-packed-not-aligne
 # PG_CPPFLAGS += -DDEBUG_DUMP_INDEX
 
 # Test configuration
-REGRESS = abort aerodocs basic binary_io bmw bmw_skip_advance bulk_load cache_apply cache_memory_cap cache_source cache_spill catalog_stats chain_source compaction compaction_request compression concurrent_build coverage deletion vacuum vacuum_bitmap vacuum_extended vacuum_rebuild dropped empty explicit_index expression_index filtered_seed force_merge implicit index inheritance large_documents limits lock manyterms memory memtable_append memtable_page memtable_spill memtable_spill_dead memtable_reclaim merge mixed parallel_build parallel_bmw partitioned partitioned_many partial_index pgstats queries quoted_identifiers rescan schema scoring1 scoring2 scoring3 scoring4 scoring5 scoring6 security security_acl segment segment_integrity segment_reclaim tombstone_reuse tombstone_recover strings temp_table text_array text_config unsupported updates vector vector_v1_rejected unlogged_index wand
+REGRESS = abort aerodocs basic binary_io bmw bmw_skip_advance boolean_queries bulk_load cache_apply cache_memory_cap cache_source cache_spill catalog_stats chain_source compaction compaction_request compression concurrent_build coverage deletion vacuum vacuum_bitmap vacuum_extended vacuum_rebuild dropped empty explicit_index expression_index filtered_seed force_merge implicit index inheritance large_documents limits lock manyterms memory memtable_append memtable_page memtable_spill memtable_spill_dead memtable_reclaim merge mixed parallel_build parallel_bmw partitioned partitioned_many partial_index pgstats queries quoted_identifiers rescan rls schema scoring1 scoring2 scoring3 scoring4 scoring5 scoring6 security security_acl segment segment_integrity segment_reclaim tombstone_reuse tombstone_recover strings temp_table text_array text_config unsupported updates vector vector_v1_rejected unlogged_index wand
 REGRESS_OPTS = --inputdir=test --outputdir=test
 
 PG_CONFIG ?= pg_config
@@ -97,7 +100,8 @@ include $(PGXS)
 
 # SQL regression tests
 test: test-compaction-ownercheck test-compaction-request-source \
-	test-segment-io-limits test-mixed-update-query-benchmark
+	test-segment-io-limits test-boolean-lock test-boolean-memory \
+	test-boolean-rescan test-mixed-update-query-benchmark
 	@echo "Running SQL regression tests..."
 	@$(pg_regress_installcheck) $(REGRESS_OPTS) $(REGRESS)
 
@@ -106,6 +110,15 @@ test-compaction-ownercheck:
 
 test-compaction-request-source:
 	@./test/scripts/compaction_request_source.sh
+
+test-boolean-lock:
+	@./test/scripts/boolean_lock_source.sh
+
+test-boolean-memory:
+	@./test/scripts/boolean_memory_source.sh
+
+test-boolean-rescan:
+	@./test/scripts/boolean_rescan_source.sh
 
 test-segment-io-limits:
 	@set -e; tmp_dir="$$(mktemp -d)"; \
@@ -121,11 +134,17 @@ test-segment-io-limits:
 test-mixed-update-query-benchmark:
 	@./test/scripts/mixed_update_query_benchmark_test.sh
 
+test-durable:
+	@echo "Running managed pg_durable compaction tests..."
+	@cd test/scripts && ./durable_compaction.sh
+
 # Run source-level guards with every regression entry point.
 installcheck: test-compaction-ownercheck test-compaction-request-source \
-	test-segment-io-limits test-mixed-update-query-benchmark
+	test-segment-io-limits test-boolean-lock test-boolean-memory \
+	test-boolean-rescan test-mixed-update-query-benchmark
 test-local: test-compaction-ownercheck test-compaction-request-source \
-	test-segment-io-limits test-mixed-update-query-benchmark
+	test-segment-io-limits test-boolean-lock test-boolean-memory \
+	test-boolean-rescan test-mixed-update-query-benchmark
 
 # Custom local test target with dedicated PostgreSQL instance
 test-local: install
@@ -153,9 +172,14 @@ clean-test-dirs:
 	@find . -name "*.gcno" -delete 2>/dev/null || true
 
 # Shell script test targets (assume extension is already installed)
-test-concurrency:
+test-rls-locking:
+	@echo "Running RLS DDL locking tests..."
+	@cd test/scripts && ./rls_ddl_locking.sh
+
+test-concurrency: test-rls-locking
 	@echo "Running concurrency tests..."
 	@cd test/scripts && ./concurrency.sh
+	@cd test/scripts && ./boolean_concurrent_merge.sh
 	@cd test/scripts && ./partial_concurrent_read.sh
 	@cd test/scripts && ./concurrent_duplicate_read.sh
 	@cd test/scripts && ./vacuum_concurrent_merge.sh
@@ -386,6 +410,7 @@ help:
 	@echo "  make test-cic         - Run CREATE INDEX CONCURRENTLY tests"
 	@echo "  make test-chinese     - Run Chinese tokenization test (needs zhparser)"
 	@echo "  make test-reindex     - Run multi-backend reindex regression tests (issue #390)"
+	@echo "  make test-durable     - Run managed pg_durable compaction tests"
 	@echo "  make expected     - Generate expected output files from test results"
 	@echo ""
 	@echo "Code formatting targets:"
@@ -409,4 +434,14 @@ help:
 	@echo "  make test-all"
 	@echo "  make format"
 
-.PHONY: test test-compaction-ownercheck test-compaction-request-source test-segment-io-limits clean-test-dirs installcheck test-concurrency test-recovery test-segment test-stress test-cic test-chinese test-replication test-replication-extended test-logical-replication test-multi-index test-reindex test-shell test-all expected lint-format format format-check format-diff format-single coverage coverage-build coverage-clean coverage-report help
+.PHONY: \
+	test test-compaction-ownercheck test-compaction-request-source \
+	test-segment-io-limits test-boolean-lock test-boolean-memory \
+	test-boolean-rescan test-mixed-update-query-benchmark test-durable \
+	clean-test-dirs installcheck test-rls-locking test-concurrency \
+	test-recovery test-segment test-stress test-cic test-chinese \
+	test-replication test-replication-extended \
+	test-logical-replication test-multi-index test-reindex \
+	test-shell test-all expected lint-format format format-check \
+	format-diff format-single coverage coverage-build coverage-clean \
+	coverage-report help

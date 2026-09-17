@@ -108,6 +108,12 @@ typedef struct TpIndexMetaPageData
 	 * GenericXLog atomic with the corresponding chain mutation.
 	 */
 	BlockNumber pending_free_head;
+
+	/*
+	 * Index capabilities.  Introduced in version 9.  Older indexes did
+	 * not retain documents whose configured tsvector was empty.
+	 */
+	uint32 capabilities;
 } TpIndexMetaPageData;
 
 typedef TpIndexMetaPageData *TpIndexMetaPage;
@@ -150,6 +156,14 @@ StaticAssertDecl(
 		"v7 metapage prefix layout changed - "
 		"backward-compat is broken");
 
+#define TP_INDEX_METAPAGE_DATA_SIZE_V8 \
+	offsetof(TpIndexMetaPageData, capabilities)
+
+StaticAssertDecl(
+		TP_INDEX_METAPAGE_DATA_SIZE_V8 == 120,
+		"v8 metapage prefix layout changed - "
+		"backward-compat is broken");
+
 /*
  * Metapage operations
  */
@@ -176,10 +190,10 @@ extern BlockNumber tp_metapage_read_memtable_head(Page page);
 extern BlockNumber tp_metapage_read_memtable_tail(Page page);
 
 /*
- * In-place v6 -> v7 metapage upgrade (issue #383).  Must be
+ * In-place upgrade of read-compatible metapages.  Must be
  * called on a GenericXLogRegisterBuffer-returned page copy under
- * BUFFER_LOCK_EXCLUSIVE, BEFORE setting any v7-specific field on
- * the page.  On a v7 page this is a no-op.  On a v6 page the
+ * BUFFER_LOCK_EXCLUSIVE, BEFORE setting any newer field on the
+ * page.  On the current version this is a no-op.  On older pages the
  * helper:
  *   - initializes memtable_head_blkno = memtable_tail_blkno =
  *     InvalidBlockNumber,
@@ -190,6 +204,8 @@ extern BlockNumber tp_metapage_read_memtable_tail(Page page);
  *     v8 and is re-surfaced on the scan path (at most once per
  *     session) by tp_warn_if_pending_docid() until a REINDEX
  *     clears it,
+ *   - preserves fields already present in that version,
+ *   - initializes missing fields and clears capability flags,
  *   - bumps the version field to TP_METAPAGE_VERSION,
  *   - bumps pd_lower to cover the new fields so GenericXLog
  *     records them in the page image.

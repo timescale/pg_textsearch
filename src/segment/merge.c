@@ -160,7 +160,8 @@ merge_source_advance(TpMergeSource *source)
 
 /*
  * Initialize a merge source for a segment.
- * Returns false if segment is empty or invalid.
+ * Returns false if the segment is invalid. A segment without terms remains a
+ * valid exhausted source because its document map must survive the merge.
  */
 bool
 merge_source_init(TpMergeSource *source, Relation index, BlockNumber root)
@@ -179,9 +180,7 @@ merge_source_init(TpMergeSource *source, Relation index, BlockNumber root)
 
 	if (header->num_terms == 0)
 	{
-		tp_segment_close(source->reader);
-		source->reader = NULL;
-		return false;
+		return true;
 	}
 
 	source->num_terms = header->num_terms;
@@ -241,7 +240,7 @@ merge_source_init_from_reader(TpMergeSource *source, TpSegmentReader *reader)
 	header		   = reader->header;
 
 	if (header->num_terms == 0)
-		return false;
+		return true;
 
 	source->num_terms = header->num_terms;
 
@@ -1064,8 +1063,6 @@ write_merged_segment_to_sink(
 	uint32		 skip_entries_count;
 	uint32		 skip_entries_capacity;
 
-	if (num_terms == 0)
-		return;
 	if (!tp_dictionary_offsets_fit(num_terms))
 		ereport(ERROR,
 				(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
@@ -1083,16 +1080,6 @@ write_merged_segment_to_sink(
 	 * caller's total_tokens parameter is ignored.
 	 */
 	total_tokens = docmap->total_tokens;
-
-	/*
-	 * If all docs are dead, nothing to write. Clean up and return.
-	 */
-	if (docmap->num_docs == 0)
-	{
-		free_merge_doc_mapping(&doc_mapping);
-		tp_docmap_destroy(docmap);
-		return;
-	}
 
 	/* Prepare header placeholder */
 	memset(&header, 0, sizeof(TpSegmentHeader));
@@ -1466,7 +1453,8 @@ write_merged_segment_to_sink(
 				header.entries_offset,
 				dict_entries,
 				tp_dictionary_size(num_terms));
-		pfree(dict_entries);
+		if (dict_entries)
+			pfree(dict_entries);
 	}
 
 	/* Backpatch header */
@@ -1476,8 +1464,10 @@ write_merged_segment_to_sink(
 	tp_segment_writer_finish(&sink->writer);
 
 	/* Cleanup */
-	pfree(string_offsets);
-	pfree(term_blocks);
+	if (string_offsets)
+		pfree(string_offsets);
+	if (term_blocks)
+		pfree(term_blocks);
 	free_merge_doc_mapping(&doc_mapping);
 	tp_docmap_destroy(docmap);
 }
@@ -1609,12 +1599,7 @@ tp_merge_segment_batch(
 		CHECK_FOR_INTERRUPTS();
 	}
 
-	if (num_merged_terms == 0)
-		ereport(ERROR,
-				(errcode(ERRCODE_DATA_CORRUPTED),
-				 errmsg("live merge sources in index \"%s\" contain no terms",
-						RelationGetRelationName(index))));
-
+	tp_validate_merged_terms(merged_terms, num_merged_terms);
 	tp_validate_merged_terms(merged_terms, num_merged_terms);
 
 	{

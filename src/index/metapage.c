@@ -59,6 +59,7 @@ tp_init_metapage(Page page, Oid text_config_oid)
 	metap->memtable_head_blkno = InvalidBlockNumber;
 	metap->memtable_tail_blkno = InvalidBlockNumber;
 	metap->pending_free_head   = InvalidBlockNumber;
+	metap->capabilities		   = TP_METAPAGE_ALL_DOCUMENTS_INDEXED;
 
 	/* Update page header to reflect that we've used space for metapage */
 	phdr		   = (PageHeader)page;
@@ -133,8 +134,10 @@ tp_get_metapage(Relation index)
 	/*
 	 * Check version compatibility.
 	 *
-	 * v7 (current) is the on-disk memtable redesign (issue
-	 * #374).  v6 is read-compatible (issue #383): the layout is
+	 * v9 appends capability flags.  v8 and v7 are read-compatible;
+	 * v7 is the on-disk memtable redesign (issue #374), while v8
+	 * adds pending_free_head.  v6 is read-compatible (issue #383):
+	 * the layout is
 	 * byte-identical up through level_counts[]; v7 only appends
 	 * memtable_head_blkno and memtable_tail_blkno.  We accept
 	 * v6 here and normalize the missing fields to
@@ -160,6 +163,7 @@ tp_get_metapage(Relation index)
 	 * REINDEX as before.
 	 */
 	if (metap->version != TP_METAPAGE_VERSION &&
+		metap->version != TP_METAPAGE_VERSION_V8 &&
 		metap->version != TP_METAPAGE_VERSION_V7 &&
 		metap->version != TP_METAPAGE_VERSION_V6)
 	{
@@ -202,11 +206,17 @@ tp_get_metapage(Relation index)
 	{
 		memcpy(result, metap, sizeof(TpIndexMetaPageData));
 	}
+	else if (metap->version == TP_METAPAGE_VERSION_V8)
+	{
+		memcpy(result, metap, TP_INDEX_METAPAGE_DATA_SIZE_V8);
+		result->capabilities = 0;
+	}
 	else if (metap->version == TP_METAPAGE_VERSION_V7)
 	{
 		/* v7 has memtable head/tail but no pending_free_head. */
 		memcpy(result, metap, TP_INDEX_METAPAGE_DATA_SIZE_V7);
 		result->pending_free_head = InvalidBlockNumber;
+		result->capabilities	  = 0;
 	}
 	else
 	{
@@ -215,6 +225,7 @@ tp_get_metapage(Relation index)
 		result->memtable_head_blkno = InvalidBlockNumber;
 		result->memtable_tail_blkno = InvalidBlockNumber;
 		result->pending_free_head	= InvalidBlockNumber;
+		result->capabilities		= 0;
 	}
 
 	UnlockReleaseBuffer(buf);
@@ -252,8 +263,8 @@ tp_metapage_read_memtable_tail(Page page)
 }
 
 /*
- * In-place v6 -> v7 upgrade (issue #383).  See header for
- * caller contract.  No-op when the page is already v7.
+ * In-place upgrade of read-compatible metapages.  See header for
+ * caller contract.  No-op when the page is already current.
  */
 void
 tp_metapage_upgrade_to_current(Relation index, Page page)
@@ -264,10 +275,11 @@ tp_metapage_upgrade_to_current(Relation index, Page page)
 	metap = (TpIndexMetaPage)PageGetContents(page);
 
 	if (metap->version == TP_METAPAGE_VERSION)
-		return; /* already v8 */
+		return;
 
 	if (metap->version != TP_METAPAGE_VERSION_V6 &&
-		metap->version != TP_METAPAGE_VERSION_V7)
+		metap->version != TP_METAPAGE_VERSION_V7 &&
+		metap->version != TP_METAPAGE_VERSION_V8)
 		ereport(ERROR,
 				(errcode(ERRCODE_DATA_CORRUPTED),
 				 errmsg("pg_textsearch: cannot upgrade metapage "
@@ -319,8 +331,10 @@ tp_metapage_upgrade_to_current(Relation index, Page page)
 		 */
 	}
 
-	/* Common to v6 and v7: introduce the deferred-free chain head. */
-	metap->pending_free_head = InvalidBlockNumber;
+	if (metap->version < TP_METAPAGE_VERSION_V8)
+		metap->pending_free_head = InvalidBlockNumber;
+
+	metap->capabilities = 0;
 
 	metap->version = TP_METAPAGE_VERSION;
 

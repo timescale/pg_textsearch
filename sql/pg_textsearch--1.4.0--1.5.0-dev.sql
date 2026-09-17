@@ -41,6 +41,27 @@ LANGUAGE C VOLATILE STRICT;
 COMMENT ON FUNCTION @extschema@.bm25_compact_step(regclass) IS
     'Run at most one compaction pass and report whether one ran, letting a caller spread a cascade over several transactions. A published pass is not undone by ROLLBACK.';
 
+CREATE FUNCTION @extschema@.bm25_compact_step_if_current(
+    index_oid oid, database_oid oid, tablespace_oid oid,
+    relfilenumber oid, owner_oid oid)
+RETURNS boolean
+AS 'MODULE_PATHNAME', 'tp_compact_index_step_if_current'
+LANGUAGE C VOLATILE STRICT;
+
+CREATE FUNCTION @extschema@.bm25_background_target_is_current(
+    index_oid oid, database_oid oid, tablespace_oid oid,
+    relfilenumber oid, owner_oid oid)
+RETURNS boolean
+AS 'MODULE_PATHNAME', 'tp_background_target_is_current'
+LANGUAGE C VOLATILE STRICT;
+
+REVOKE ALL ON FUNCTION
+    @extschema@.bm25_compact_step_if_current(oid, oid, oid, oid, oid)
+    FROM PUBLIC;
+REVOKE ALL ON FUNCTION
+    @extschema@.bm25_background_target_is_current(oid, oid, oid, oid, oid)
+    FROM PUBLIC;
+
 -- VOLATILE because it reads live metapage state, and PARALLEL
 -- RESTRICTED to match bm25_level_counts.  Every level counts: the top
 -- level compacts into itself, so its debt is reducible like any
@@ -61,3 +82,6 @@ $$;
 
 COMMENT ON FUNCTION @extschema@.bm25_needs_compaction(regclass) IS
     'Report whether any level holds at least segments_per_level segments. Advisory only: a level whose segments are all over budget is reported as full even though bm25_compact_step has no way to reduce it, so this must not be used on its own as a retry condition.';
+
+ALTER OPERATOR FAMILY @extschema@.text_bm25_ops USING bm25
+    ADD OPERATOR 1 pg_catalog.@@ (text, pg_catalog.tsquery);

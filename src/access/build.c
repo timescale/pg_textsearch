@@ -31,6 +31,7 @@
 #include "access/am.h"
 #include "access/build_context.h"
 #include "access/build_parallel.h"
+#include "access/rls.h"
 #include "constants.h"
 #include "index/compaction_request.h"
 #include "index/metapage.h"
@@ -58,16 +59,18 @@
  * state aggregates statistics across partitions and emits a
  * single summary.
  *
- * Activated by ProcessUtility_hook in mod.c when it detects
- * CREATE INDEX USING bm25.
+ * Activated by the object-access hook after PostgreSQL creates the actual
+ * BM25 index catalog object.
  */
-static struct
+typedef struct TpBuildProgress
 {
-	bool   active;
-	int	   partition_count;
-	uint64 total_docs;
-	uint64 total_len;
-} build_progress;
+	struct TpBuildProgress *previous;
+	int						partition_count;
+	uint64					total_docs;
+	uint64					total_len;
+} TpBuildProgress;
+
+static TpBuildProgress *build_progress = NULL;
 
 typedef struct TpPreparedSpill
 {
@@ -88,38 +91,59 @@ typedef enum TpSpillPostAction
 void
 tp_build_progress_begin(void)
 {
-	memset(&build_progress, 0, sizeof(build_progress));
-	build_progress.active = true;
+	MemoryContext	 old_context;
+	TpBuildProgress *progress;
+
+	old_context = MemoryContextSwitchTo(TopMemoryContext);
+	progress	= palloc0(sizeof(*progress));
+	MemoryContextSwitchTo(old_context);
+
+	progress->previous = build_progress;
+	build_progress	   = progress;
 }
 
 void
 tp_build_progress_end(void)
 {
-	double avg_len = 0.0;
+	TpBuildProgress *progress = build_progress;
+	double			 avg_len  = 0.0;
 
-	if (!build_progress.active)
+	if (progress == NULL)
 		return;
 
-	build_progress.active = false;
+	build_progress = progress->previous;
 
-	if (build_progress.total_docs > 0)
-		avg_len = (double)build_progress.total_len /
-				  (double)build_progress.total_docs;
+	if (progress->total_docs > 0)
+		avg_len = (double)progress->total_len / (double)progress->total_docs;
 
-	if (build_progress.partition_count > 1)
+	if (progress->partition_count > 1)
 		elog(NOTICE,
 			 "BM25 index build completed: " UINT64_FORMAT
 			 " documents across %d partitions,"
 			 " avg_length=%.2f",
-			 build_progress.total_docs,
-			 build_progress.partition_count,
+			 progress->total_docs,
+			 progress->partition_count,
 			 avg_len);
 	else
 		elog(NOTICE,
 			 "BM25 index build completed: " UINT64_FORMAT
 			 " documents, avg_length=%.2f",
-			 build_progress.total_docs,
+			 progress->total_docs,
 			 avg_len);
+
+	pfree(progress);
+}
+
+void
+tp_build_progress_abort(void)
+{
+	TpBuildProgress *progress = build_progress;
+
+	if (progress == NULL)
+		return;
+
+	build_progress = progress->previous;
+	pfree(progress);
 }
 
 /*
@@ -188,16 +212,6 @@ tp_finish_spill(
 										 ? PG_UINT16_MAX
 										 : tp_max_segments_per_level;
 
-	if (spill->num_terms == 0)
-	{
-		/*
-		 * Chain exists but yielded no terms (e.g. records with
-		 * empty vectors).  Still publish the spill: we want the
-		 * chain reset and the doc-length contribution applied.
-		 */
-		root = InvalidBlockNumber;
-	}
-	else
 	{
 		TpIndexMetaPage metap = tp_get_metapage(index_rel);
 
@@ -206,10 +220,10 @@ tp_finish_spill(
 					(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
 					 errmsg("bm25 segment count limit reached at level 0")));
 		pfree(metap);
-
-		root = tp_write_segment(
-				index_rel, spill->terms, spill->num_terms, spill->docmap);
 	}
+
+	root = tp_write_segment(
+			index_rel, spill->terms, spill->num_terms, spill->docmap);
 
 	if (out_segment_root != NULL)
 		*out_segment_root = root;
@@ -292,7 +306,7 @@ tp_finish_spill(
 		else if (tp_compaction_needed(index_rel))
 			tp_compaction_request(RelationGetRelid(index_rel));
 		break;
-	case TP_COMPACTION_OFF:
+	case TP_COMPACTION_MANUAL:
 		break;
 	}
 	pgstat_progress_update_param(
@@ -1214,7 +1228,7 @@ tp_process_document_text(
 	doc_length = tp_tokenize_text(
 			document_text, text_config_oid, &terms, &frequencies, &term_count);
 
-	if (term_count > 0 && index_rel != NULL)
+	if (index_rel != NULL)
 	{
 		char	 *index_name = get_rel_name(RelationGetRelid(index_rel));
 		TpVector *tpvec;
@@ -1333,16 +1347,8 @@ tp_build_callback(
 
 	MemoryContextSwitchTo(oldctx);
 
-	if (term_count > 0)
-	{
-		tp_build_context_add_document(
-				bs->build_ctx,
-				terms,
-				frequencies,
-				term_count,
-				doc_length,
-				ctid);
-	}
+	tp_build_context_add_document(
+			bs->build_ctx, terms, frequencies, term_count, doc_length, ctid);
 
 	/* Reset per-doc context (frees tsvector, terms) */
 	MemoryContextReset(bs->per_doc_ctx);
@@ -1358,11 +1364,7 @@ tp_build_callback(
 
 		pgstat_progress_update_param(
 				PROGRESS_CREATEIDX_SUBPHASE, TP_PHASE_COMPACTING);
-		/*
-		 * CREATE INDEX always compacts inline because another session
-		 * cannot open it until the build commits.  Off remains off.
-		 */
-		if (tp_index_compaction_mode(bs->index) != TP_COMPACTION_OFF)
+		if (tp_index_compaction_mode(bs->index) == TP_COMPACTION_INLINE)
 			tp_maybe_compact_level(bs->index_state, bs->index, 0);
 		pgstat_progress_update_param(
 				PROGRESS_CREATEIDX_SUBPHASE, TP_PHASE_LOADING);
@@ -1392,8 +1394,11 @@ tp_build(Relation heap, Relation index, IndexInfo *indexInfo)
 	TpLocalIndexState *index_state;
 	bool			   is_text_array;
 
+	tp_check_bm25_build_allowed(heap);
+	tp_rls_note_bm25_build();
+
 	/* Show "started" for first partition only (suppresses duplicates) */
-	if (!build_progress.active || build_progress.partition_count == 0)
+	if (build_progress == NULL || build_progress->partition_count == 0)
 		elog(NOTICE,
 			 "BM25 index build started for relation %s",
 			 RelationGetRelationName(index));
@@ -1427,7 +1432,7 @@ tp_build(Relation heap, Relation index, IndexInfo *indexInfo)
 			index, &text_config_name, &text_config_oid, &k1, &b);
 
 	/* Log configuration (only for first partition when active) */
-	if (!build_progress.active || build_progress.partition_count == 0)
+	if (build_progress == NULL || build_progress->partition_count == 0)
 	{
 		if (text_config_name)
 			elog(NOTICE,
@@ -1489,7 +1494,7 @@ tp_build(Relation heap, Relation index, IndexInfo *indexInfo)
 			 * Warn if table is very large but parallelism is limited.
 			 * Suppress during partitioned builds to reduce noise.
 			 */
-			if (!build_progress.active &&
+			if (build_progress == NULL &&
 				reltuples >= TP_WARN_FEW_WORKERS_TUPLES &&
 				nworkers <= TP_WARN_FEW_WORKERS_MIN)
 			{
@@ -1542,16 +1547,16 @@ tp_build(Relation heap, Relation index, IndexInfo *indexInfo)
 						RelationGetRelid(heap),
 						/* reuse_if_exists */ false);
 
-				if (build_progress.active)
+				if (build_progress != NULL)
 				{
 					metabuf = ReadBuffer(index, TP_METAPAGE_BLKNO);
 					LockBuffer(metabuf, BUFFER_LOCK_SHARE);
 					mpage = BufferGetPage(metabuf);
 					metap = (TpIndexMetaPage)PageGetContents(mpage);
 
-					build_progress.total_docs += (uint64)metap->total_docs;
-					build_progress.total_len += (uint64)metap->total_len;
-					build_progress.partition_count++;
+					build_progress->total_docs += (uint64)metap->total_docs;
+					build_progress->total_len += (uint64)metap->total_len;
+					build_progress->partition_count++;
 
 					UnlockReleaseBuffer(metabuf);
 				}
@@ -1560,7 +1565,7 @@ tp_build(Relation heap, Relation index, IndexInfo *indexInfo)
 			return par_result;
 		}
 
-		if (!build_progress.active &&
+		if (build_progress == NULL &&
 			reltuples >= TP_WARN_NO_PARALLEL_TUPLES && nworkers == 0)
 		{
 			/*
@@ -1664,7 +1669,7 @@ tp_build(Relation heap, Relation index, IndexInfo *indexInfo)
 		if (build_ctx->num_docs > 0)
 		{
 			tp_build_flush_and_link(build_ctx, index);
-			if (tp_index_compaction_mode(index) != TP_COMPACTION_OFF)
+			if (tp_index_compaction_mode(index) == TP_COMPACTION_INLINE)
 			{
 				pgstat_progress_update_param(
 						PROGRESS_CREATEIDX_SUBPHASE, TP_PHASE_COMPACTING);
@@ -1698,12 +1703,12 @@ tp_build(Relation heap, Relation index, IndexInfo *indexInfo)
 		result->heap_tuples	 = reltuples;
 		result->index_tuples = total_docs;
 
-		if (build_progress.active)
+		if (build_progress != NULL)
 		{
 			/* Accumulate stats for aggregated summary */
-			build_progress.total_docs += total_docs;
-			build_progress.total_len += total_len;
-			build_progress.partition_count++;
+			build_progress->total_docs += total_docs;
+			build_progress->total_len += total_len;
+			build_progress->partition_count++;
 		}
 		else
 		{
@@ -1908,7 +1913,7 @@ tp_insert(
 	/* --- Phase 2: Shared-memory + chain-page work (under lock) --- */
 	index_state = tp_get_local_index_state(RelationGetRelid(index));
 
-	if (index_state != NULL && term_count > 0)
+	if (index_state != NULL)
 	{
 		/*
 		 * Acquire per-index lock in SHARED mode.  Phase 4 does
@@ -1944,7 +1949,7 @@ tp_insert(
 		 */
 		tp_auto_spill_if_needed(index_state, index);
 	}
-	else if (term_count > 0 && ItemPointerIsValid(ht_ctid))
+	else if (ItemPointerIsValid(ht_ctid))
 	{
 		/*
 		 * No shared state for this index -- nothing to do.

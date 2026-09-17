@@ -98,6 +98,41 @@ ORDER BY content <@> to_bm25query('database system', 'docs_idx')
 LIMIT 5;
 ```
 
+Supported operations:
+- `text <@> 'query'` - Score text against a query (index auto-detected)
+- `text <@> bm25query` - Score text with explicit index specification
+
+### Boolean Filtering
+
+Use PostgreSQL's `@@` operator and `tsquery` syntax to filter through a BM25
+index:
+
+```sql
+SELECT * FROM documents
+WHERE content @@ to_tsquery('english', 'postgres & (search | database) & !mysql');
+```
+
+Supported `tsquery` features include `&` (AND), `|` (OR), `!` (NOT), phrase
+operators such as `<->`, prefix matching with `:*`, and weight restrictions.
+Phrase and weight checks may be rechecked against the table row after the
+index finds candidates.
+
+The `default_text_search_config` used to parse the left-hand `text` value must
+match the index configuration:
+
+```sql
+SET default_text_search_config = 'english';
+```
+
+If that setting changes after a Boolean prepared statement has switched to a
+generic plan, `DEALLOCATE` and prepare the statement again. A newly planned
+query can choose the correct sequential fallback, while the cached plan is
+rejected to avoid incorrect index results.
+
+Boolean filtering and BM25 ranking are separate scan modes. A query combining
+`WHERE content @@ ...` with `ORDER BY content <@> ...` cannot use one BM25
+index scan for both operations.
+
 ### Verifying Index Usage
 
 ```sql
@@ -156,7 +191,8 @@ Option | Default | Description
 [`text_config`](https://www.postgresql.org/docs/current/textsearch-configuration.html) | required | PostgreSQL text search configuration
 `k1` | 1.2 | Term frequency saturation (0.1-10.0)
 `b` | 0.75 | Length normalization (0.0-1.0)
-`compaction` | inline | Spill-time compaction: `inline`, `background`, or `off`; see [Background Compaction](#background-compaction)
+`compaction` | inline | Spill-time compaction: `inline`, `background`, or `manual`; see [Background Compaction](#background-compaction)
+`compaction_schedule` | `pg_textsearch.background_compaction_schedule` | Optional cron schedule captured when the index enters background mode
 
 ```sql
 CREATE INDEX ON documents USING bm25(content) WITH (text_config='english', k1=1.5, b=0.8);
@@ -361,9 +397,10 @@ Setting | Default | Description
 `pg_textsearch.compress_segments` | on | Compress posting blocks in new segments
 `pg_textsearch.segments_per_level` | 8 | Segments per level before automatic compaction (2-64)
 `pg_textsearch.max_segment_size` | 4095MB | Conservative size budget for newly merged multi-source segments (1-4095MB)
-`pg_textsearch.compaction_request_function` | (empty) | Schema-qualified name of a function taking one `regclass`, invoked for indexes set to `compaction = 'background'`
+`pg_textsearch.background_compaction_schedule` | `*/5 * * * *` | Default cron schedule captured by indexes entering managed background mode
 `pg_textsearch.bulk_load_threshold` | 100000 | Terms per transaction before auto-spill (0 = disable)
 `pg_textsearch.memtable_pages_threshold` | 64 | Chain pages before auto-spill (0 = disable)
+`pg_textsearch.allow_rls` | on | Allow BM25 indexes on RLS-protected tables; superuser-only
 `pg_textsearch.memtable_cache_enabled` | on | Cache memtable data in shared memory for faster queries
 `pg_textsearch.memory_limit` | 2GB | Approximate shared-memory budget for the memtable cache across all indexes; changes take effect after a configuration reload without a restart (0 = no limit)
 
@@ -405,6 +442,18 @@ WHERE am.amname = 'bm25';
 
 ## Limitations
 
+### Row-Level Security
+
+BM25 corpus statistics include all indexed rows, including rows hidden by RLS.
+A user who already knows a term can infer frequency information affected by
+inaccessible rows, though the index does not reveal unknown terms. This is
+analogous to [Elastic's security limitation](https://www.elastic.co/docs/deploy-manage/security/limitations).
+
+`pg_textsearch.allow_rls` defaults to `on`. Set it to `off` as a superuser to
+reject creating or rebuilding BM25 indexes on RLS-protected tables and
+enabling RLS where BM25 indexes already exist. This does not disable
+combinations that already exist when the setting is changed.
+
 ### Phrase Queries
 
 <!-- TODO: Revisit this workaround after https://github.com/timescale/pg_textsearch/pull/480 merges. -->
@@ -427,27 +476,47 @@ LIMIT 10;
 
 ### Background Compaction
 
-pg_textsearch does not include a background worker. `background` dispatches
-threshold debt at pre-commit, while `off` performs no automatic compaction:
+The default `inline` policy compacts synchronously during memtable spills.
+Managed `background` mode uses [pg_durable](https://github.com/microsoft/pg_durable)
+0.2.8 or newer rather than a built-in worker. pg_durable must be preloaded,
+initialized in the current database, and granted to the index owner. The owner
+must have `LOGIN`; a superuser owner also requires
+`pg_durable.enable_superuser_instances = on`.
 
-Guidance for scheduling background compaction with `pg_durable` will be added
-in a future update.
+Each physical index has one managed workflow scoped to its captured owner. The
+index owner, or a role PostgreSQL permits to act as that owner, may enable
+background mode. A separate insert-only writer may later trigger a spill, but
+pg_textsearch submits the workflow and calls `df.signal` under the index
+owner's identity. The compaction SQL nodes reached through either a spill
+signal or the cron backstop execute in pg_durable connections authenticated as
+the index owner, not as the DML writer; pg_durable's worker role provides only
+the orchestration infrastructure.
 
-- `background` calls `pg_textsearch.compaction_request_function` at
-  pre-commit. The callback must hand work to something that survives its
-  rolled-back internal subtransaction; a plain table insert does not.
-- `off` requires an external job to call `bm25_compact()` or
-  `bm25_compact_step()`; without one, segments accumulate and spills
-  eventually fail.
+```sql
+CREATE INDEX documents_bm25 ON documents USING bm25(content)
+WITH (
+    text_config = 'english',
+    compaction = 'background'
+);
+```
 
-Change the policy with `ALTER INDEX ... SET (compaction = ...)`.
-`background` falls back to inline compaction for temporary indexes,
-autovacuum, callback-triggered spills, and `CREATE INDEX`. Prepared
-transactions do not flush queued requests. Unconfigured, unresolvable, or
-failed callbacks do not fall back inline; the compaction debt remains for a
-later spill or explicit maintenance.
+Change modes with `ALTER INDEX`. Resetting `compaction_schedule` uses the
+current `pg_textsearch.background_compaction_schedule` default. Set the
+per-index option only when the default schedule is unsuitable.
 
-See [ARCHITECTURE.md](ARCHITECTURE.md#spill-and-compaction).
+```sql
+ALTER INDEX documents_bm25 SET (compaction = 'background');
+ALTER INDEX documents_bm25 RESET (compaction_schedule);
+ALTER INDEX documents_bm25 SET (compaction = 'manual');
+```
+
+Use `manual` with an external scheduler when pg_durable is unavailable or not
+desired and foreground compaction causes unacceptable write transaction
+stalls. The legacy `off` value remains accepted as an alias for `manual`.
+Temporary indexes do not support background mode.
+
+See [ARCHITECTURE.md](ARCHITECTURE.md#managed-background-compaction) for
+workflow lifecycle and safety details.
 
 ### Partitioned Tables
 

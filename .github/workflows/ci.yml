@@ -126,6 +126,13 @@ jobs:
           echo "✗ Concurrency tests failed"
           exit 1
         fi
+        echo "Running Boolean spill and merge concurrency tests..."
+        if (cd test/scripts && ./boolean_concurrent_merge.sh); then
+          echo "✓ Boolean spill and merge concurrency tests passed"
+        else
+          echo "✗ Boolean spill and merge concurrency tests failed"
+          exit 1
+        fi
         echo "Running VACUUM concurrency tests..."
         if (cd test/scripts && ./vacuum_concurrent_merge.sh); then
           echo "✓ VACUUM concurrency tests passed"
@@ -795,8 +802,63 @@ jobs:
           test/tmp_*
         retention-days: 7
 
+  # The coverage job exercises managed compaction on PostgreSQL 17. Run the
+  # same end-to-end lifecycle suite separately on the other required version.
+  managed-compaction-pg18:
+    runs-on: ubuntu-latest
+
+    env:
+      PG_DURABLE_VERSION: 0.2.8
+      PG_DURABLE_PACKAGE: pg-durable-postgresql-18_0.2.8-1_amd64.deb
+      PG_DURABLE_SHA256: 090028f59b003613b150e61ccd5cdbebe70e69e65361913ad29b1f0b6af9e2bb
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Install PostgreSQL 18
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y wget ca-certificates gnupg
+        wget --quiet -O - https://www.postgresql.org/media/keys/ACCC4CF8.asc | sudo gpg --dearmor -o /usr/share/keyrings/postgresql-archive-keyring.gpg
+        echo "deb [signed-by=/usr/share/keyrings/postgresql-archive-keyring.gpg] http://apt.postgresql.org/pub/repos/apt/ $(lsb_release -cs)-pgdg main" | sudo tee /etc/apt/sources.list.d/pgdg.list
+        sudo apt-get update
+        sudo apt-get install -y postgresql-18 postgresql-server-dev-18 \
+          build-essential bc
+
+    - name: Build and install extension
+      run: |
+        export PATH="/usr/lib/postgresql/18/bin:$PATH"
+        make
+        sudo env "PATH=$PATH" make install
+
+    - name: Download pg_durable release package
+      run: |
+        curl -fL --retry 3 \
+          -o "$PG_DURABLE_PACKAGE" \
+          "https://github.com/microsoft/pg_durable/releases/download/v${PG_DURABLE_VERSION}/${PG_DURABLE_PACKAGE}"
+        echo "${PG_DURABLE_SHA256}  ${PG_DURABLE_PACKAGE}" | sha256sum -c -
+        mkdir pg_durable_package
+        dpkg-deb -x "$PG_DURABLE_PACKAGE" pg_durable_package
+
+    - name: Run managed pg_durable compaction test
+      timeout-minutes: 15
+      run: |
+        export PATH="/usr/lib/postgresql/18/bin:$PATH"
+        sudo chown -R "$(id -u):$(id -g)" \
+          /usr/share/postgresql/18/extension
+        export PG_DURABLE_PACKAGE_DIR="$PWD/pg_durable_package"
+        make test-durable \
+          PG_CONFIG=/usr/lib/postgresql/18/bin/pg_config
+
   coverage:
     runs-on: ubuntu-latest
+
+    env:
+      # Managed background compaction is only exercisable against a live
+      # pg_durable; src/index/compaction_job.c is otherwise unreachable.
+      PG_DURABLE_VERSION: 0.2.8
+      PG_DURABLE_PACKAGE: pg-durable-postgresql-17_0.2.8-1_amd64.deb
+      PG_DURABLE_SHA256: 927b091e57be42c63079fc50a548af5f491b223534eaca112c5d1f18299dc29f
 
     steps:
     - uses: actions/checkout@v4
@@ -882,6 +944,27 @@ jobs:
         export PATH="/usr/lib/postgresql/17/bin:$PATH"
         pg_ctl stop -D tmp_check_shared/data -l tmp_check_shared/data/logfile || true
 
+    - name: Download pg_durable release package
+      run: |
+        curl -fL --retry 3 \
+          -o "$PG_DURABLE_PACKAGE" \
+          "https://github.com/microsoft/pg_durable/releases/download/v${PG_DURABLE_VERSION}/${PG_DURABLE_PACKAGE}"
+        echo "${PG_DURABLE_SHA256}  ${PG_DURABLE_PACKAGE}" | sha256sum -c -
+        mkdir pg_durable_package
+        dpkg-deb -x "$PG_DURABLE_PACKAGE" pg_durable_package
+
+    - name: Run managed pg_durable compaction test
+      timeout-minutes: 15
+      run: |
+        export PATH="/usr/lib/postgresql/17/bin:$PATH"
+        # durable_compaction.sh stages the pg_durable package into the
+        # PostgreSQL sharedir, which is root-owned on the runner image.
+        sudo chown -R "$(id -u):$(id -g)" \
+          /usr/share/postgresql/17/extension
+        export PG_DURABLE_PACKAGE_DIR="$PWD/pg_durable_package"
+        make test-durable \
+          PG_CONFIG=/usr/lib/postgresql/17/bin/pg_config
+
     - name: Run hypertable tests (exercises CustomScan code paths)
       timeout-minutes: 5
       run: |
@@ -964,7 +1047,7 @@ jobs:
         # fields, and lazily upgrades to the current version on the
         # first metapage write.  This step exercises the read path, the
         # ALTER EXTENSION UPDATE, an INSERT that triggers the in-place
-        # v6→v8 upgrade via memtable_bootstrap_and_append, and finally
+        # v6-to-v9 upgrade via memtable_bootstrap_and_append, and finally
         # a REINDEX (still supported as the fallback recovery path)
         # plus VACUUM and force_merge.
         psql -h $PWD/tmp_upgrade_cov -p 55435 -d upgrade_cov << 'SQL'
@@ -1007,7 +1090,7 @@ jobs:
 
         -- INSERT triggers memtable_bootstrap_and_append, which
         -- runs tp_metapage_upgrade_to_current() inside its
-        -- GenericXLog record.  Validates that the v6→v8 in-place
+        -- GenericXLog record.  Validates that the v6-to-v9 in-place
         -- upgrade landed on disk.
         INSERT INTO docs (content) VALUES
           ('compat upgrade insert one'),
@@ -1017,12 +1100,12 @@ jobs:
         DECLARE dump_text text;
         BEGIN
           dump_text := bm25_dump_index('idx');
-          IF dump_text NOT LIKE '%version: 8' || E'\n' || '%' THEN
+          IF dump_text NOT LIKE '%version: 9' || E'\n' || '%' THEN
             RAISE EXCEPTION
-              'FAIL: metapage not upgraded to v8 after INSERT; '
+              'FAIL: metapage not upgraded to v9 after INSERT; '
               'dump excerpt: %', substr(dump_text, 1, 400);
           END IF;
-          RAISE NOTICE 'PASS: in-place v6→v8 upgrade after first write';
+          RAISE NOTICE 'PASS: in-place v6-to-v9 upgrade after first write';
         END $$;
 
         -- REINDEX is still supported as the operator fallback;
@@ -1216,7 +1299,7 @@ jobs:
   # Umbrella job for branch protection rules
   all-tests-passed:
     runs-on: ubuntu-latest
-    needs: [test, build-test-multiple-configs, build-msvc, performance-test, format-check, sanitizer, coverage, pgspot]
+    needs: [test, build-test-multiple-configs, build-msvc, performance-test, format-check, sanitizer, managed-compaction-pg18, coverage, pgspot]
     if: always()
     steps:
       - name: Check all jobs succeeded

@@ -1,0 +1,589 @@
+-- BM25/RLS combinations are allowed by default, but administrators can
+-- disable creation, rebuild, or later RLS enablement.
+
+CREATE EXTENSION pg_textsearch;
+
+SHOW pg_textsearch.allow_rls;
+
+-- RLS policies filter BM25 index results when the combination is allowed.
+CREATE ROLE rls_visibility_reader;
+CREATE TABLE rls_visibility (id integer, content text);
+INSERT INTO rls_visibility VALUES
+    (1, 'target target target target target target target target'),
+    (2, 'target filler filler filler filler filler');
+ALTER TABLE rls_visibility ENABLE ROW LEVEL SECURITY;
+CREATE POLICY rls_visibility_policy ON rls_visibility
+    TO rls_visibility_reader USING (id = 2);
+CREATE INDEX rls_visibility_idx ON rls_visibility USING bm25(content)
+    WITH (text_config='english');
+GRANT SELECT ON rls_visibility TO rls_visibility_reader;
+
+CREATE FUNCTION pg_temp.first_plan_child(query text)
+RETURNS text
+LANGUAGE plpgsql
+AS $$
+DECLARE
+    plan json;
+BEGIN
+    EXECUTE 'EXPLAIN (FORMAT JSON, COSTS OFF) ' || query INTO plan;
+    RETURN plan->0->'Plan'->'Plans'->0->>'Node Type';
+END
+$$;
+
+SET enable_seqscan = off;
+\pset format unaligned
+SELECT id AS unrestricted_top
+FROM rls_visibility
+ORDER BY content <@> to_bm25query('target', 'rls_visibility_idx')
+LIMIT 1;
+SET ROLE rls_visibility_reader;
+SELECT pg_temp.first_plan_child($query$
+    SELECT id
+    FROM rls_visibility
+    ORDER BY content <@> to_bm25query('target', 'rls_visibility_idx')
+    LIMIT 1
+$query$) = 'Index Scan' AS rls_uses_bm25_index;
+SELECT id AS rls_visible_top
+FROM rls_visibility
+ORDER BY content <@> to_bm25query('target', 'rls_visibility_idx')
+LIMIT 1;
+RESET ROLE;
+\pset format aligned
+RESET enable_seqscan;
+
+DROP TABLE rls_visibility;
+DROP ROLE rls_visibility_reader;
+
+CREATE TABLE rls_existing (id integer, content text);
+INSERT INTO rls_existing VALUES (1, 'known secret term');
+ALTER TABLE rls_existing ENABLE ROW LEVEL SECURITY;
+CREATE INDEX rls_existing_idx ON rls_existing USING bm25(content)
+    WITH (text_config='english');
+
+SET pg_textsearch.allow_rls = off;
+
+ALTER TABLE IF EXISTS rls_missing ENABLE ROW LEVEL SECURITY;
+
+CREATE INDEX IF NOT EXISTS rls_existing_idx
+    ON rls_existing USING bm25(content)
+    WITH (text_config='english');
+\pset format unaligned
+SELECT indisvalid AS existing_index_valid
+FROM pg_index
+WHERE indexrelid = 'rls_existing_idx'::regclass;
+\pset format aligned
+
+-- Existing combinations remain usable when the GUC changes.
+SELECT content
+FROM rls_existing
+ORDER BY content <@> to_bm25query('known', 'rls_existing_idx')
+LIMIT 1;
+INSERT INTO rls_existing VALUES (2, 'another known term');
+
+\set VERBOSITY terse
+REINDEX INDEX rls_existing_idx;
+\set VERBOSITY default
+
+CREATE TABLE rls_before_index (id integer, content text);
+ALTER TABLE rls_before_index ENABLE ROW LEVEL SECURITY;
+\set VERBOSITY terse
+BEGIN;
+CREATE INDEX CONCURRENTLY rls_concurrent_idx
+    ON rls_before_index USING bm25(content)
+    WITH (text_config='english');
+ROLLBACK;
+CREATE INDEX CONCURRENTLY rls_concurrent_top_idx
+    ON rls_before_index USING bm25(content)
+    WITH (text_config='english');
+\pset format unaligned
+SELECT to_regclass('rls_concurrent_top_idx') IS NULL
+    AS no_index_catalog_entry;
+\pset format aligned
+CREATE INDEX CONCURRENTLY IF NOT EXISTS rls_concurrent_ifne_idx
+    ON rls_before_index USING bm25(content)
+    WITH (text_config='english');
+\pset format unaligned
+SELECT to_regclass('rls_concurrent_ifne_idx') IS NULL
+    AS no_if_not_exists_catalog_entry;
+\pset format aligned
+CREATE INDEX rls_before_index_idx ON rls_before_index USING bm25(content)
+    WITH (text_config='english');
+\set VERBOSITY default
+
+CREATE TABLE index_before_rls (id integer, content text);
+CREATE INDEX index_before_rls_idx ON index_before_rls USING bm25(content)
+    WITH (text_config='english');
+\set VERBOSITY terse
+ALTER VIEW index_before_rls ENABLE ROW LEVEL SECURITY;
+ALTER TABLE index_before_rls
+    DROP COLUMN missing, ENABLE ROW LEVEL SECURITY;
+\pset format unaligned
+SELECT relrowsecurity
+FROM pg_class
+WHERE oid = 'index_before_rls'::regclass;
+ALTER TABLE index_before_rls
+    ENABLE ROW LEVEL SECURITY, DISABLE ROW LEVEL SECURITY;
+SELECT relrowsecurity
+FROM pg_class
+WHERE oid = 'index_before_rls'::regclass;
+ALTER TABLE index_before_rls ENABLE ROW LEVEL SECURITY;
+SELECT relrowsecurity
+FROM pg_class
+WHERE oid = 'index_before_rls'::regclass;
+\pset format aligned
+\set VERBOSITY default
+
+-- A child index is protected by RLS enabled on an inheritance ancestor.
+CREATE TABLE rls_parent (id integer, content text);
+CREATE TABLE rls_child () INHERITS (rls_parent);
+ALTER TABLE rls_parent ENABLE ROW LEVEL SECURITY;
+\set VERBOSITY terse
+CREATE INDEX rls_child_idx ON rls_child USING bm25(content)
+    WITH (text_config='english');
+\set VERBOSITY default
+
+-- A direct partition-child index is protected by RLS on its parent.
+CREATE TABLE rls_direct_partitioned (id integer, content text)
+    PARTITION BY RANGE (id);
+CREATE TABLE rls_direct_partition PARTITION OF rls_direct_partitioned
+    FOR VALUES FROM (0) TO (10);
+ALTER TABLE rls_direct_partitioned ENABLE ROW LEVEL SECURITY;
+\set VERBOSITY terse
+CREATE INDEX rls_direct_partition_idx
+    ON rls_direct_partition USING bm25(content)
+    WITH (text_config='english');
+\set VERBOSITY default
+
+-- A multi-level partition descendant is protected by RLS at the top.
+CREATE TABLE rls_partition_top (id integer, content text)
+    PARTITION BY RANGE (id);
+CREATE TABLE rls_partition_mid PARTITION OF rls_partition_top
+    FOR VALUES FROM (0) TO (100) PARTITION BY RANGE (id);
+CREATE TABLE rls_partition_leaf PARTITION OF rls_partition_mid
+    FOR VALUES FROM (0) TO (10);
+ALTER TABLE rls_partition_top ENABLE ROW LEVEL SECURITY;
+\set VERBOSITY terse
+CREATE INDEX rls_partition_leaf_idx
+    ON rls_partition_leaf USING bm25(content)
+    WITH (text_config='english');
+\set VERBOSITY default
+
+-- A multiple-inheritance child is protected if either parent has RLS.
+CREATE TABLE rls_multi_parent_a (id integer, content text);
+CREATE TABLE rls_multi_parent_b (extra text);
+CREATE TABLE rls_multi_child ()
+    INHERITS (rls_multi_parent_a, rls_multi_parent_b);
+ALTER TABLE rls_multi_parent_b ENABLE ROW LEVEL SECURITY;
+\set VERBOSITY terse
+CREATE INDEX rls_multi_child_idx ON rls_multi_child USING bm25(content)
+    WITH (text_config='english');
+\set VERBOSITY default
+
+-- An existing BM25-indexed table cannot be attached below an RLS ancestor.
+CREATE TABLE rls_attach_parent (id integer, content text);
+ALTER TABLE rls_attach_parent ENABLE ROW LEVEL SECURITY;
+CREATE TABLE rls_attach_child (id integer, content text);
+CREATE INDEX rls_attach_child_idx ON rls_attach_child USING bm25(content)
+    WITH (text_config='english');
+\set VERBOSITY terse
+ALTER TABLE rls_attach_child INHERIT rls_attach_parent;
+\pset format unaligned
+SELECT NOT EXISTS (
+    SELECT 1
+    FROM pg_inherits
+    WHERE inhrelid = 'rls_attach_child'::regclass
+      AND inhparent = 'rls_attach_parent'::regclass
+) AS inherit_not_attached;
+\pset format aligned
+\set VERBOSITY default
+
+-- An existing BM25-indexed table cannot become an RLS parent's partition.
+CREATE TABLE rls_attach_partitioned (id integer, content text)
+    PARTITION BY RANGE (id);
+ALTER TABLE rls_attach_partitioned ENABLE ROW LEVEL SECURITY;
+CREATE TABLE rls_attach_partition (id integer, content text);
+CREATE INDEX rls_attach_partition_idx
+    ON rls_attach_partition USING bm25(content)
+    WITH (text_config='english');
+\set VERBOSITY terse
+ALTER TABLE rls_attach_partitioned ATTACH PARTITION rls_attach_partition
+    FOR VALUES FROM (0) TO (10);
+\pset format unaligned
+SELECT NOT EXISTS (
+    SELECT 1
+    FROM pg_inherits
+    WHERE inhrelid = 'rls_attach_partition'::regclass
+      AND inhparent = 'rls_attach_partitioned'::regclass
+) AS partition_not_attached;
+\pset format aligned
+\set VERBOSITY default
+
+-- Successful checks do not retain locks on traversed relations.
+CREATE TABLE rls_lock_root (id integer, content text);
+CREATE TABLE rls_lock_parent () INHERITS (rls_lock_root);
+CREATE TABLE rls_lock_child () INHERITS (rls_lock_parent);
+BEGIN;
+CREATE INDEX rls_lock_child_idx ON rls_lock_child USING bm25(content)
+    WITH (text_config='english');
+\pset format unaligned
+SELECT count(*) = 0 AS no_ancestor_locks_held
+FROM pg_locks
+WHERE pid = pg_backend_pid()
+  AND locktype = 'relation'
+  AND relation IN ('rls_lock_root'::regclass, 'rls_lock_parent'::regclass)
+  AND mode = 'AccessShareLock'
+  AND granted;
+\pset format aligned
+ROLLBACK;
+
+CREATE TABLE rls_lock_enable_root (id integer, content text);
+CREATE TABLE rls_lock_enable_child ()
+    INHERITS (rls_lock_enable_root);
+BEGIN;
+ALTER TABLE rls_lock_enable_root ENABLE ROW LEVEL SECURITY;
+\pset format unaligned
+SELECT count(*) = 0 AS no_descendant_locks_held
+FROM pg_locks
+WHERE pid = pg_backend_pid()
+  AND locktype = 'relation'
+  AND relation = 'rls_lock_enable_child'::regclass
+  AND mode = 'AccessShareLock'
+  AND granted;
+\pset format aligned
+ROLLBACK;
+
+-- Enabling RLS on a parent is blocked by a BM25 index on a descendant.
+CREATE TABLE index_parent (id integer, content text);
+CREATE TABLE index_child () INHERITS (index_parent);
+CREATE INDEX index_child_idx ON index_child USING bm25(content)
+    WITH (text_config='english');
+\set VERBOSITY terse
+ALTER TABLE index_parent ENABLE ROW LEVEL SECURITY;
+\set VERBOSITY default
+
+-- A partition build is protected by RLS enabled on the partitioned parent.
+CREATE TABLE rls_partitioned (id integer, content text)
+    PARTITION BY RANGE (id);
+CREATE TABLE rls_partition PARTITION OF rls_partitioned
+    FOR VALUES FROM (0) TO (10);
+ALTER TABLE rls_partitioned ENABLE ROW LEVEL SECURITY;
+\set VERBOSITY terse
+CREATE INDEX rls_partitioned_idx ON rls_partitioned USING bm25(content)
+    WITH (text_config='english');
+\set VERBOSITY default
+
+-- Enabling RLS on a partitioned parent is blocked by descendant BM25 indexes.
+CREATE TABLE index_partitioned (id integer, content text)
+    PARTITION BY RANGE (id);
+CREATE TABLE index_partition PARTITION OF index_partitioned
+    FOR VALUES FROM (0) TO (10);
+CREATE INDEX index_partition_idx ON index_partition USING bm25(content)
+    WITH (text_config='english');
+\set VERBOSITY terse
+ALTER TABLE index_partitioned ENABLE ROW LEVEL SECURITY;
+\set VERBOSITY default
+
+-- Event-trigger DDL must be attributed to the command that actually creates
+-- or alters each catalog object, not to a stale pre-trigger name lookup.
+CREATE FUNCTION rls_ddl_race_start()
+RETURNS event_trigger AS $$
+DECLARE
+    action text := current_setting('rls_test.action', true);
+BEGIN
+    IF action IS NULL OR action IN
+       ('', 'running', 'done', 'drop_enable', 'drop_inherit',
+        'drop_attach') THEN
+        RETURN;
+    END IF;
+
+    PERFORM set_config('rls_test.action', 'running', true);
+
+    IF action = 'swap_enable' THEN
+        EXECUTE 'ALTER TABLE rls_evt_enable_target '
+                'RENAME TO rls_evt_enable_swap';
+        EXECUTE 'ALTER TABLE rls_evt_enable_guarded '
+                'RENAME TO rls_evt_enable_target';
+        EXECUTE 'ALTER TABLE rls_evt_enable_swap '
+                'RENAME TO rls_evt_enable_guarded';
+        PERFORM set_config('rls_test.action', 'restore_enable', true);
+    ELSIF action = 'swap_inherit' THEN
+        EXECUTE 'ALTER TABLE rls_evt_inherit_target '
+                'RENAME TO rls_evt_inherit_swap';
+        EXECUTE 'ALTER TABLE rls_evt_inherit_guarded '
+                'RENAME TO rls_evt_inherit_target';
+        EXECUTE 'ALTER TABLE rls_evt_inherit_swap '
+                'RENAME TO rls_evt_inherit_guarded';
+        PERFORM set_config('rls_test.action', 'restore_inherit', true);
+    ELSIF action = 'swap_attach' THEN
+        EXECUTE 'ALTER TABLE rls_evt_attach_target '
+                'RENAME TO rls_evt_attach_swap';
+        EXECUTE 'ALTER TABLE rls_evt_attach_guarded '
+                'RENAME TO rls_evt_attach_target';
+        EXECUTE 'ALTER TABLE rls_evt_attach_swap '
+                'RENAME TO rls_evt_attach_guarded';
+        PERFORM set_config('rls_test.action', 'restore_attach', true);
+    ELSIF action = 'drop_ifne_collision' THEN
+        EXECUTE 'DROP INDEX rls_evt_ifne_idx';
+        PERFORM set_config('rls_test.action', 'done', true);
+    ELSIF action = 'drop_extension' THEN
+        PERFORM set_config('client_min_messages', 'warning', true);
+        EXECUTE 'DROP EXTENSION pg_textsearch CASCADE';
+        PERFORM set_config('rls_test.action', 'done', true);
+    END IF;
+END
+$$ LANGUAGE plpgsql;
+
+CREATE FUNCTION rls_ddl_race_end()
+RETURNS event_trigger AS $$
+DECLARE
+    action text := current_setting('rls_test.action', true);
+BEGIN
+    IF action IS NULL OR action NOT IN
+       ('restore_enable', 'restore_inherit', 'restore_attach',
+        'drop_enable', 'drop_inherit', 'drop_attach') THEN
+        RETURN;
+    END IF;
+
+    PERFORM set_config('rls_test.action', 'running', true);
+
+    IF action = 'restore_enable' THEN
+        EXECUTE 'ALTER TABLE rls_evt_enable_target '
+                'RENAME TO rls_evt_enable_swap';
+        EXECUTE 'ALTER TABLE rls_evt_enable_guarded '
+                'RENAME TO rls_evt_enable_target';
+        EXECUTE 'ALTER TABLE rls_evt_enable_swap '
+                'RENAME TO rls_evt_enable_guarded';
+    ELSIF action = 'restore_inherit' THEN
+        EXECUTE 'ALTER TABLE rls_evt_inherit_target '
+                'RENAME TO rls_evt_inherit_swap';
+        EXECUTE 'ALTER TABLE rls_evt_inherit_guarded '
+                'RENAME TO rls_evt_inherit_target';
+        EXECUTE 'ALTER TABLE rls_evt_inherit_swap '
+                'RENAME TO rls_evt_inherit_guarded';
+    ELSIF action = 'restore_attach' THEN
+        EXECUTE 'ALTER TABLE rls_evt_attach_target '
+                'RENAME TO rls_evt_attach_swap';
+        EXECUTE 'ALTER TABLE rls_evt_attach_guarded '
+                'RENAME TO rls_evt_attach_target';
+        EXECUTE 'ALTER TABLE rls_evt_attach_swap '
+                'RENAME TO rls_evt_attach_guarded';
+    ELSIF action = 'drop_enable' THEN
+        EXECUTE 'DROP TABLE rls_evt_drop_enable_target CASCADE';
+    ELSIF action = 'drop_inherit' THEN
+        EXECUTE 'DROP TABLE rls_evt_drop_inherit_child CASCADE';
+    ELSE
+        EXECUTE 'DROP TABLE rls_evt_drop_attach_child CASCADE';
+    END IF;
+
+    PERFORM set_config('rls_test.action', 'done', true);
+END
+$$ LANGUAGE plpgsql;
+
+CREATE EVENT TRIGGER rls_ddl_race_start_trigger
+ON ddl_command_start
+WHEN TAG IN ('ALTER TABLE', 'CREATE INDEX')
+EXECUTE FUNCTION rls_ddl_race_start();
+
+CREATE EVENT TRIGGER rls_ddl_race_end_trigger
+ON ddl_command_end
+WHEN TAG IN ('ALTER TABLE')
+EXECUTE FUNCTION rls_ddl_race_end();
+
+CREATE TABLE rls_evt_enable_target (id integer, content text);
+CREATE TABLE rls_evt_enable_guarded (id integer, content text);
+CREATE INDEX rls_evt_enable_idx
+    ON rls_evt_enable_guarded USING bm25(content)
+    WITH (text_config='english');
+SET rls_test.action = 'swap_enable';
+\set VERBOSITY terse
+ALTER TABLE rls_evt_enable_target ENABLE ROW LEVEL SECURITY;
+\set VERBOSITY default
+RESET rls_test.action;
+\pset format unaligned
+SELECT relrowsecurity AS swapped_enable_rolled_back
+FROM pg_class
+WHERE oid = 'rls_evt_enable_guarded'::regclass;
+\pset format aligned
+
+CREATE TABLE rls_evt_inherit_parent (id integer, content text);
+ALTER TABLE rls_evt_inherit_parent ENABLE ROW LEVEL SECURITY;
+CREATE TABLE rls_evt_inherit_target (id integer, content text);
+CREATE TABLE rls_evt_inherit_guarded (id integer, content text);
+CREATE INDEX rls_evt_inherit_idx
+    ON rls_evt_inherit_guarded USING bm25(content)
+    WITH (text_config='english');
+SET rls_test.action = 'swap_inherit';
+\set VERBOSITY terse
+ALTER TABLE rls_evt_inherit_target INHERIT rls_evt_inherit_parent;
+\set VERBOSITY default
+RESET rls_test.action;
+\pset format unaligned
+SELECT NOT EXISTS (
+    SELECT 1
+    FROM pg_inherits
+    WHERE inhrelid = 'rls_evt_inherit_guarded'::regclass
+      AND inhparent = 'rls_evt_inherit_parent'::regclass
+) AS swapped_inherit_rolled_back;
+\pset format aligned
+
+CREATE TABLE rls_evt_attach_parent (id integer, content text)
+    PARTITION BY RANGE (id);
+ALTER TABLE rls_evt_attach_parent ENABLE ROW LEVEL SECURITY;
+CREATE TABLE rls_evt_attach_target (id integer, content text);
+CREATE TABLE rls_evt_attach_guarded (id integer, content text);
+CREATE INDEX rls_evt_attach_idx
+    ON rls_evt_attach_guarded USING bm25(content)
+    WITH (text_config='english');
+SET rls_test.action = 'swap_attach';
+\set VERBOSITY terse
+ALTER TABLE rls_evt_attach_parent
+    ATTACH PARTITION rls_evt_attach_target FOR VALUES FROM (0) TO (10);
+\set VERBOSITY default
+RESET rls_test.action;
+\pset format unaligned
+SELECT NOT EXISTS (
+    SELECT 1
+    FROM pg_inherits
+    WHERE inhrelid = 'rls_evt_attach_guarded'::regclass
+      AND inhparent = 'rls_evt_attach_parent'::regclass
+) AS swapped_attach_rolled_back;
+\pset format aligned
+
+CREATE TABLE rls_evt_drop_enable_target (id integer, content text);
+CREATE INDEX rls_evt_drop_enable_idx
+    ON rls_evt_drop_enable_target USING bm25(content)
+    WITH (text_config='english');
+SET rls_test.action = 'drop_enable';
+ALTER TABLE rls_evt_drop_enable_target ENABLE ROW LEVEL SECURITY;
+RESET rls_test.action;
+\pset format unaligned
+SELECT to_regclass('rls_evt_drop_enable_target') IS NULL
+    AS dropped_enable_target_absent;
+\pset format aligned
+
+CREATE TABLE rls_evt_drop_inherit_parent (id integer, content text);
+ALTER TABLE rls_evt_drop_inherit_parent ENABLE ROW LEVEL SECURITY;
+CREATE TABLE rls_evt_drop_inherit_child (id integer, content text);
+CREATE INDEX rls_evt_drop_inherit_idx
+    ON rls_evt_drop_inherit_child USING bm25(content)
+    WITH (text_config='english');
+SET rls_test.action = 'drop_inherit';
+ALTER TABLE rls_evt_drop_inherit_child
+    INHERIT rls_evt_drop_inherit_parent;
+RESET rls_test.action;
+\pset format unaligned
+SELECT to_regclass('rls_evt_drop_inherit_child') IS NULL
+    AS dropped_inherit_child_absent;
+\pset format aligned
+
+CREATE TABLE rls_evt_drop_attach_parent (id integer, content text)
+    PARTITION BY RANGE (id);
+ALTER TABLE rls_evt_drop_attach_parent ENABLE ROW LEVEL SECURITY;
+CREATE TABLE rls_evt_drop_attach_child (id integer, content text);
+CREATE INDEX rls_evt_drop_attach_idx
+    ON rls_evt_drop_attach_child USING bm25(content)
+    WITH (text_config='english');
+SET rls_test.action = 'drop_attach';
+ALTER TABLE rls_evt_drop_attach_parent
+    ATTACH PARTITION rls_evt_drop_attach_child FOR VALUES FROM (0) TO (10);
+RESET rls_test.action;
+\pset format unaligned
+SELECT to_regclass('rls_evt_drop_attach_child') IS NULL
+    AS dropped_attach_child_absent;
+\pset format aligned
+
+CREATE TABLE rls_evt_ifne_heap (id integer, content text);
+ALTER TABLE rls_evt_ifne_heap ENABLE ROW LEVEL SECURITY;
+CREATE TABLE rls_evt_ifne_collision (id integer);
+CREATE INDEX rls_evt_ifne_idx ON rls_evt_ifne_collision(id);
+SET rls_test.action = 'drop_ifne_collision';
+\set VERBOSITY terse
+CREATE INDEX CONCURRENTLY IF NOT EXISTS rls_evt_ifne_idx
+    ON rls_evt_ifne_heap USING bm25(content)
+    WITH (text_config='english');
+\set VERBOSITY default
+RESET rls_test.action;
+\pset format unaligned
+SELECT EXISTS (
+    SELECT 1
+    FROM pg_index
+    WHERE indexrelid = 'rls_evt_ifne_idx'::regclass
+      AND indrelid = 'rls_evt_ifne_collision'::regclass
+      AND indisvalid
+) AS ifne_collision_restored,
+NOT EXISTS (
+    SELECT 1
+    FROM pg_index
+    WHERE indrelid = 'rls_evt_ifne_heap'::regclass
+) AS no_forbidden_ifne_index;
+\pset format aligned
+
+CREATE TABLE rls_evt_progress_heap (id integer, content text);
+CREATE INDEX rls_evt_progress_idx
+    ON rls_evt_progress_heap USING bm25(content)
+    WITH (text_config='english');
+CREATE TABLE rls_evt_missing_am_heap (id integer, content text);
+SET rls_test.action = 'drop_extension';
+\set VERBOSITY terse
+CREATE INDEX rls_evt_missing_am_idx
+    ON rls_evt_missing_am_heap USING bm25(content)
+    WITH (text_config='english');
+\set VERBOSITY default
+RESET rls_test.action;
+REINDEX INDEX rls_evt_progress_idx;
+
+DROP EVENT TRIGGER rls_ddl_race_start_trigger;
+DROP EVENT TRIGGER rls_ddl_race_end_trigger;
+DROP FUNCTION rls_ddl_race_start();
+DROP FUNCTION rls_ddl_race_end();
+
+RESET pg_textsearch.allow_rls;
+ALTER TABLE index_before_rls ENABLE ROW LEVEL SECURITY;
+
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'rls_guc_user') THEN
+        EXECUTE 'REASSIGN OWNED BY rls_guc_user TO CURRENT_USER';
+        EXECUTE 'DROP OWNED BY rls_guc_user CASCADE';
+        DROP ROLE rls_guc_user;
+    END IF;
+END $$;
+CREATE ROLE rls_guc_user;
+SET pg_textsearch.allow_rls = off;
+SET ROLE rls_guc_user;
+\set VERBOSITY terse
+CREATE INDEX rls_unauthorized_idx ON rls_before_index USING bm25(content)
+    WITH (text_config='english');
+ALTER TABLE index_before_rls ENABLE ROW LEVEL SECURITY;
+SET pg_textsearch.allow_rls = off;
+\set VERBOSITY default
+RESET ROLE;
+
+DROP OWNED BY rls_guc_user;
+DROP ROLE rls_guc_user;
+DROP TABLE rls_existing, rls_before_index, index_before_rls CASCADE;
+DROP TABLE rls_child, rls_parent, index_child, index_parent CASCADE;
+DROP TABLE rls_partitioned, index_partitioned CASCADE;
+DROP TABLE rls_direct_partitioned, rls_partition_top CASCADE;
+DROP TABLE rls_multi_child, rls_multi_parent_a, rls_multi_parent_b CASCADE;
+DROP TABLE rls_attach_child, rls_attach_parent CASCADE;
+DROP TABLE rls_attach_partitioned, rls_attach_partition CASCADE;
+DROP TABLE rls_lock_child, rls_lock_parent, rls_lock_root CASCADE;
+DROP TABLE rls_evt_enable_target, rls_evt_enable_guarded CASCADE;
+DROP TABLE rls_evt_inherit_target, rls_evt_inherit_guarded,
+    rls_evt_inherit_parent CASCADE;
+DROP TABLE rls_evt_attach_target, rls_evt_attach_guarded,
+    rls_evt_attach_parent CASCADE;
+DROP TABLE rls_evt_drop_inherit_parent, rls_evt_drop_attach_parent CASCADE;
+DROP TABLE rls_evt_ifne_heap, rls_evt_ifne_collision CASCADE;
+DROP TABLE rls_evt_progress_heap, rls_evt_missing_am_heap CASCADE;
+
+CREATE TABLE rls_without_extension (id integer);
+SET pg_textsearch.allow_rls = off;
+DROP EXTENSION pg_textsearch;
+ALTER TABLE rls_without_extension ENABLE ROW LEVEL SECURITY;
+\set VERBOSITY terse
+CREATE INDEX rls_missing_am_idx
+    ON rls_without_extension USING bm25(id);
+\set VERBOSITY default
+DROP TABLE rls_without_extension;
