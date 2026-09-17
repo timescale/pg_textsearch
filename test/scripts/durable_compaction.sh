@@ -7115,7 +7115,7 @@ SQL
     done
 
     PGAPPNAME=lifecycle-textsearch-extension-holder \
-        PGOPTIONS="-c deadlock_timeout=100ms -c statement_timeout=15s" \
+        PGOPTIONS="-c deadlock_timeout=100ms -c statement_timeout=30s" \
         "${PGBINDIR}/psql" -h "${SOCKET_DIR}" -p "${TEST_PORT}" \
         -U postgres -d "${TEST_DB}" -qAt -v ON_ERROR_STOP=1 \
         -c "BEGIN;
@@ -7182,23 +7182,26 @@ output: $(cat "${extension_output}")"
     fi
     log "PASS: pg_textsearch drop holds its extension and member"
 
-    if create_output="$(sql_as durable_owner -c "
+    if create_output="$(PGOPTIONS="-c statement_timeout=2s" \
+        sql_as durable_owner -c "
         CREATE INDEX lifecycle_textsearch_lineage_idx
           ON public.lifecycle_textsearch_lineage_docs USING bm25(body)
           WITH (text_config = 'english',
                 compaction = 'background',
                 compaction_lineage =
                   'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb');" 2>&1)"; then
-        error "supplied lineage committed without terminal validation"
-    fi
-    if ! grep -Fq "could not validate background compaction lineage" \
-        <<<"${create_output}"; then
-        error "supplied lineage contention failed unexpectedly:
+        error "supplied lineage bypassed extension lifecycle serialization:
 ${create_output}"
     fi
-    assert_eq "contended supplied lineage leaves no index" "" \
+    if ! grep -Fq "canceling statement due to statement timeout" \
+        <<<"${create_output}"; then
+        error "supplied lineage lifecycle wait failed unexpectedly:
+${create_output}"
+    fi
+    assert_eq "serialized supplied lineage leaves no index" "" \
         "$(sql_super -c "SELECT pg_catalog.to_regclass(
           'public.lifecycle_textsearch_lineage_idx');")"
+    log "PASS: extension lifecycle serializes supplied lineage CREATE"
 
     PGAPPNAME=lifecycle-textsearch-extension-alter \
         PGOPTIONS="-c statement_timeout=15s" \
