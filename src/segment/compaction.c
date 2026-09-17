@@ -6,6 +6,7 @@
 
 #include <access/generic_xlog.h>
 #include <access/transam.h>
+#include <access/xlog.h>
 #include <common/int.h>
 #include <miscadmin.h>
 #include <storage/bufmgr.h>
@@ -1204,6 +1205,7 @@ tp_publish_compaction_output(
 		uint64			  current_tokens;
 		BlockNumber		  current_pending;
 		GenericXLogState *xlog_state;
+		XLogRecPtr		  publication_lsn;
 		Page			  meta_copy;
 		TpIndexMetaPage	  meta;
 
@@ -1297,6 +1299,10 @@ tp_publish_compaction_output(
 								"compaction publication")));
 		}
 
+		if (tp_debug_panic_before_compaction_publish)
+			elog(PANIC,
+				 "pg_textsearch: debug crash before compaction publication");
+
 		xlog_state					= GenericXLogStart(index);
 		output->publication_started = true;
 		meta_copy = GenericXLogRegisterBuffer(xlog_state, metabuf, 0);
@@ -1337,7 +1343,14 @@ tp_publish_compaction_output(
 		meta->total_docs = current_docs - output->removed_docs;
 		meta->total_len	 = current_tokens - output->removed_tokens;
 
-		GenericXLogFinish(xlog_state);
+		publication_lsn = GenericXLogFinish(xlog_state);
+		if (tp_debug_panic_after_compaction_publish)
+		{
+			if (RelationNeedsWAL(index))
+				XLogFlush(publication_lsn);
+			elog(PANIC,
+				 "pg_textsearch: debug crash after compaction publication");
+		}
 		if (BufferIsValid(tailbuf))
 		{
 			UnlockReleaseBuffer(tailbuf);

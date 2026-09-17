@@ -232,3 +232,5 @@ extern relopt_kind tp_relopt_kind;
 
 /* Debug GUC: trigger PANIC after spill finalize for crash-safety testing */
 extern bool tp_debug_panic_after_spill_finalize;
+extern bool tp_debug_panic_before_compaction_publish;
+extern bool tp_debug_panic_after_compaction_publish;

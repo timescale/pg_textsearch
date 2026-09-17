@@ -149,6 +149,10 @@ bool tp_log_cache_state = false;
 /* Debug: trigger PANIC after spill finalize for crash-safety testing */
 bool tp_debug_panic_after_spill_finalize = false;
 
+/* Debug: trigger PANIC around compaction publication. */
+bool tp_debug_panic_before_compaction_publish = false;
+bool tp_debug_panic_after_compaction_publish  = false;
+
 /* Debug: deterministic runtime compaction pauses for concurrency tests. */
 int tp_debug_compaction_pause_after_select_ms	= 0;
 int tp_debug_compaction_pause_before_publish_ms = 0;
@@ -716,6 +720,32 @@ _PG_init(void)
 			false,
 			PGC_SUSET, /* superuser-only: forces a server-wide PANIC,
 						* so unprivileged roles must not reach it */
+			0,
+			NULL,
+			NULL,
+			NULL);
+
+	DefineCustomBoolVariable(
+			"pg_textsearch.debug_panic_before_compaction_publish",
+			"Trigger PANIC before compaction publication.",
+			"Testing-only crash immediately before the GenericXLog "
+			"publication record begins.",
+			&tp_debug_panic_before_compaction_publish,
+			false,
+			PGC_SUSET,
+			0,
+			NULL,
+			NULL,
+			NULL);
+
+	DefineCustomBoolVariable(
+			"pg_textsearch.debug_panic_after_compaction_publish",
+			"Trigger PANIC after compaction publication.",
+			"Testing-only crash immediately after the GenericXLog "
+			"publication record is durably flushed.",
+			&tp_debug_panic_after_compaction_publish,
+			false,
+			PGC_SUSET,
 			0,
 			NULL,
 			NULL,

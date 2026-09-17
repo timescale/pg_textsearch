@@ -190,7 +190,6 @@ test-recovery:
 	@echo "Running crash recovery tests..."
 	@cd test/scripts && ./recovery.sh
 	@cd test/scripts && ./shutdown_spill.sh
-	@cd test/scripts && ./standby_reclaim.sh
 	@cd test/scripts && ./compaction_recovery.sh
 
 test-segment:
@@ -216,7 +215,9 @@ test-chinese:
 # Replication tests (not in test-shell: each spawns two Postgres instances)
 test-replication:
 	@echo "Running physical replication tests..."
-	@cd test/scripts && ./replication.sh
+	@cd test/scripts && TMPDIR=.. REPL_HOST=127.0.0.1 \
+	    REPL_SOCKET_DIR= ./replication.sh
+	@cd test/scripts && ./standby_reclaim.sh
 
 test-logical-replication:
 	@echo "Running logical replication tests..."

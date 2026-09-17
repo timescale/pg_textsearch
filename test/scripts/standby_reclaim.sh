@@ -1,161 +1,314 @@
 #!/bin/bash
 #
-# Crash-recovery coverage for the deferred, standby-safe segment reclaim
-# (issue #380).  A merge PARKS displaced pages in the on-disk tombstone
-# chain (WAL-logged via GenericXLog) instead of freeing them.  This
-# script verifies that:
-#
-#   1. parked pages survive a crash (immediate stop) and WAL replay --
-#      the tombstone chain and metapage pending_free_head are
-#      reconstructed by stock PostgreSQL recovery (no custom rmgr);
-#   2. the index still answers top-k queries after recovery;
-#   3. bm25_pending_free_pages stays finite/consistent across the crash;
-#   4. once the global xid horizon advances past the merge stamp, a
-#      VACUUM drains every parked page back to the FSM.
-#
-# NOTE: recovery.sh's cleanup trap exit 0's, masking failures.  This
-# script deliberately does NOT do that: cleanup preserves the failing
-# exit status, and every check is an explicit assertion.
+# Hold an active ranked cursor on a hot standby's old segment graph while
+# the primary publishes a replacement graph.  hot_standby_feedback must
+# keep the displaced source pages parked until the cursor and snapshot end.
 
-set -u
+set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-TEST_PORT=55436
-TEST_DB=reclaim_recovery_test
-DATA_DIR="${SCRIPT_DIR}/../tmp_reclaim_test"
-LOGFILE="${DATA_DIR}/postgres.log"
+PRIMARY_PORT=55438
+STANDBY_PORT=55439
+TEST_DB=standby_reclaim_test
+PRIMARY_DIR="${SCRIPT_DIR}/../tmp_standby_reclaim_primary"
+STANDBY_DIR="${SCRIPT_DIR}/../tmp_standby_reclaim_standby"
 
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-NC='\033[0m'
+# Avoid Unix-socket path limits in deeply nested worktrees.
+REPL_HOST=127.0.0.1
+REPL_SOCKET_DIR=
 
-log()  { echo -e "${GREEN}[$(date '+%H:%M:%S')] $1${NC}"; }
-fail() { echo -e "${RED}[$(date '+%H:%M:%S')] FAIL: $1${NC}"; exit 1; }
+# shellcheck source=replication_lib.sh
+source "${SCRIPT_DIR}/replication_lib.sh"
+
+READER_PID=
+READER_BACKEND_PID=
+READER_OPEN=false
+HELD_FEEDBACK_XMIN=
+
+reader_close() {
+    if [ "${READER_OPEN}" != "true" ]; then
+        return
+    fi
+
+    exec 9>&- || true
+    exec 8<&- || true
+    for _ in $(seq 1 50); do
+        if ! kill -0 "${READER_PID}" 2>/dev/null; then
+            wait "${READER_PID}" 2>/dev/null || true
+            READER_OPEN=false
+            rm -rf "${STANDBY_DIR}/ranked_reader"
+            return
+        fi
+        sleep 0.1
+    done
+
+    warn "Ranked reader PID ${READER_PID} did not exit in 5s; terminating it"
+    kill "${READER_PID}" 2>/dev/null || true
+    wait "${READER_PID}" 2>/dev/null || true
+    READER_OPEN=false
+    rm -rf "${STANDBY_DIR}/ranked_reader"
+}
 
 cleanup() {
     local status=$?
-    if [ -f "${DATA_DIR}/postmaster.pid" ]; then
-        pg_ctl stop -D "${DATA_DIR}" -m immediate &>/dev/null || true
+
+    set +e
+    reader_close
+    if [ "${status}" -eq 0 ]; then
+        true
+    else
+        (exit "${status}")
     fi
-    rm -rf "${DATA_DIR}"
-    # Preserve the real exit status -- do NOT mask failures with exit 0.
-    exit $status
+    repl_cleanup
 }
 trap cleanup EXIT INT TERM
 
-psql_run() { psql -tA -h "${DATA_DIR}" -p "${TEST_PORT}" -d "${TEST_DB}" -c "$1" 2>/dev/null; }
+reader_open() {
+    local control_dir="${STANDBY_DIR}/ranked_reader"
 
-setup() {
-    log "initdb scratch cluster..."
-    rm -rf "${DATA_DIR}"
-    mkdir -p "${DATA_DIR}"
-    initdb -D "${DATA_DIR}" --auth-local=trust --auth-host=trust >/dev/null 2>&1
+    rm -rf "${control_dir}"
+    mkdir -p "${control_dir}"
+    mkfifo "${control_dir}/in" "${control_dir}/out"
 
-    cat >> "${DATA_DIR}/postgresql.conf" << EOF
-port = ${TEST_PORT}
-unix_socket_directories = '${DATA_DIR}'
-shared_buffers = 128MB
-max_connections = 20
-shared_preload_libraries = 'pg_textsearch'
-hot_standby_feedback = on
-autovacuum = off
-EOF
-
-    pg_ctl start -D "${DATA_DIR}" -l "${LOGFILE}" -w >/dev/null
-    createdb -h "${DATA_DIR}" -p "${TEST_PORT}" "${TEST_DB}"
-    psql_run "CREATE EXTENSION pg_textsearch;" >/dev/null
+    psql -X -tAq -v ON_ERROR_STOP=1 -p "${STANDBY_PORT}" \
+        -d "${TEST_DB}" \
+        < "${control_dir}/in" > "${control_dir}/out" 2>&1 &
+    READER_PID=$!
+    exec 9>"${control_dir}/in"
+    exec 8<"${control_dir}/out"
+    READER_OPEN=true
 }
 
-restart() {
-    pg_ctl start -D "${DATA_DIR}" -l "${LOGFILE}" -w >/dev/null
-    psql_run "SELECT 1;" >/dev/null || fail "server did not come back after crash"
+reader_query() {
+    local sql=$1
+    local sentinel="__standby_reclaim_$$_${RANDOM}__"
+    local result=""
+    local line
+
+    printf '%s\n' "${sql}" >&9
+    printf "SELECT '%s';\n" "${sentinel}" >&9
+
+    while true; do
+        if ! IFS= read -r -t 30 line <&8; then
+            error "Timed out 30s waiting for ranked reader PID ${READER_PID}; \
+backend=${READER_BACKEND_PID:-unknown}, partial output=${result:-none}"
+        fi
+        if [ "${line}" = "${sentinel}" ]; then
+            break
+        fi
+        if [ -n "${result}" ]; then
+            result="${result}"$'\n'"${line}"
+        else
+            result="${line}"
+        fi
+    done
+    printf '%s' "${result}"
 }
 
-crash() {
-    # -m immediate == no clean shutdown == crash; recovery replays WAL.
-    pg_ctl stop -D "${DATA_DIR}" -m immediate -w >/dev/null 2>&1 || true
+wait_for_feedback_xmin() {
+    local xmin=""
+
+    for _ in $(seq 1 60); do
+        xmin=$(primary_sql_quiet "
+            SELECT backend_xmin
+              FROM pg_stat_replication
+             WHERE state = 'streaming'
+               AND backend_xmin IS NOT NULL
+             LIMIT 1;")
+        if [ -n "${xmin}" ]; then
+            HELD_FEEDBACK_XMIN="${xmin}"
+            log "Primary sees standby feedback xmin ${xmin}"
+            return 0
+        fi
+        sleep 0.5
+    done
+
+    error "Timed out 30s waiting for hot-standby feedback; replication state: \
+$(primary_sql_quiet "
+    SELECT application_name, state, backend_xmin, replay_lsn
+      FROM pg_stat_replication;")"
+}
+
+wait_for_feedback_release() {
+    local xmin=""
+
+    for _ in $(seq 1 60); do
+        xmin=$(primary_sql_quiet "
+            SELECT coalesce(backend_xmin::text, '')
+              FROM pg_stat_replication
+             WHERE state = 'streaming'
+             LIMIT 1;")
+        if [ -z "${xmin}" ] ||
+           [ "${xmin}" -gt "${HELD_FEEDBACK_XMIN}" ]; then
+            log "Primary feedback xmin advanced from \
+${HELD_FEEDBACK_XMIN} to ${xmin:-none}"
+            return 0
+        fi
+        sleep 0.5
+    done
+
+    error "Timed out 30s waiting for standby xmin to advance beyond \
+${HELD_FEEDBACK_XMIN}; backend_xmin=${xmin}"
+}
+
+assert_ranked_plan() {
+    local port=$1
+    local plan
+
+    plan=$(node_sql_quiet "${port}" "
+        SET enable_seqscan = off;
+        EXPLAIN (COSTS off)
+        SELECT id
+          FROM rec
+         ORDER BY body <@> to_bm25query('alpha', 'rec_idx')
+         LIMIT 8000;")
+    grep -Fq "Index Scan using rec_idx on rec" <<<"${plan}" ||
+        error "Port ${port} ranked query did not use rec_idx: ${plan}"
 }
 
 main() {
-    command -v initdb >/dev/null 2>&1 || fail "initdb not found in PATH"
+    local spilled graph feedback_setting plan first_id remaining
+    local parked_before_vacuum parked_after_vacuum drained
+    local expected_ids primary_ids standby_ids
 
-    setup
+    check_required_tools
+    setup_primary
 
-    # Build a state that parks pages: CREATE INDEX writes a segment
-    # directly; a second batch fills the memtable; a spill produces a
-    # second segment; force-merge compacts the two L0 segments into one
-    # L1 segment, PARKING the displaced source pages.
-    log "Loading data and forcing a merge to park displaced pages..."
-    psql_run "CREATE TABLE rec (id int, body text) WITH (autovacuum_enabled = false);" >/dev/null
-    psql_run "INSERT INTO rec SELECT g, 'alpha beta gamma delta term' || (g % 50) FROM generate_series(1, 4000) g;" >/dev/null
-    psql_run "CREATE INDEX rec_idx ON rec USING bm25 (body) WITH (text_config = 'english');" >/dev/null
-    psql_run "INSERT INTO rec SELECT g, 'alpha beta term' || (g % 50) FROM generate_series(4001, 8000) g;" >/dev/null
+    primary_sql "
+        CREATE TABLE rec (
+            id integer PRIMARY KEY,
+            body text NOT NULL
+        ) WITH (autovacuum_enabled = false);
+        INSERT INTO rec
+        SELECT g, 'alpha beta gamma standby document ' || g
+          FROM generate_series(1, 4000) g;
+        CREATE INDEX rec_idx ON rec USING bm25(body)
+            WITH (text_config = 'english', compaction = 'off');
+        INSERT INTO rec
+        SELECT g, 'alpha beta gamma standby document ' || g
+          FROM generate_series(4001, 8000) g;
+    " >/dev/null
+    spilled=$(primary_sql_quiet "SELECT bm25_spill_index('rec_idx') > 0;")
+    [ "${spilled}" = "t" ] ||
+        error "Second L0 segment was not spilled (got '${spilled}')"
+    graph=$(primary_sql_quiet \
+        "SELECT bm25_level_counts('rec_idx'::regclass)::text;")
+    [ "${graph}" = "{2,0,0,0,0,0,0,0}" ] ||
+        error "Expected two-L0 old graph, got ${graph}"
 
-    spilled=$(psql_run "SELECT bm25_spill_index('rec_idx') > 0;")
-    [ "$spilled" = "t" ] || fail "spill did not write a segment (got '$spilled')"
+    setup_standby
+    cat >> "${STANDBY_DIR}/postgresql.conf" <<EOF
+hot_standby_feedback = on
+wal_receiver_status_interval = 1s
+EOF
+    pg_ctl restart -D "${STANDBY_DIR}" \
+        -l "${STANDBY_DIR}/postgres.log" -w -t 30 >/dev/null
+    wait_for_standby_catchup 30 ||
+        error "Standby did not catch up before ranked cursor setup"
+    feedback_setting=$(standby_sql_quiet "SHOW hot_standby_feedback;")
+    [ "${feedback_setting}" = "on" ] ||
+        error "hot_standby_feedback is ${feedback_setting}, expected on"
+    assert_ranked_plan "${STANDBY_PORT}"
 
-    psql_run "SELECT bm25_force_merge('rec_idx');" >/dev/null
+    reader_open
+    READER_BACKEND_PID=$(reader_query "SELECT pg_backend_pid();")
+    reader_query "BEGIN ISOLATION LEVEL REPEATABLE READ;" >/dev/null
+    reader_query "SET enable_seqscan = off;" >/dev/null
+    plan=$(reader_query "
+        EXPLAIN (COSTS off)
+        SELECT id
+          FROM rec
+         ORDER BY body <@> to_bm25query('alpha', 'rec_idx')
+         LIMIT 8000;")
+    grep -Fq "Index Scan using rec_idx on rec" <<<"${plan}" ||
+        error "Held standby cursor would not use rec_idx: ${plan}"
+    reader_query "
+        DECLARE held_ranked NO SCROLL CURSOR FOR
+        SELECT id
+          FROM rec
+         ORDER BY body <@> to_bm25query('alpha', 'rec_idx')
+         LIMIT 8000;" >/dev/null
+    first_id=$(reader_query "FETCH FORWARD 1 FROM held_ranked;")
+    [ -n "${first_id}" ] ||
+        error "Held ranked cursor returned no first document"
+    wait_for_feedback_xmin
+    log "Ranked cursor PID ${READER_BACKEND_PID} is open on the old graph"
 
-    parked_before=$(psql_run "SELECT bm25_pending_free_pages('rec_idx');")
-    case "$parked_before" in
-        ''|*[!0-9]*) fail "pending_free_pages not an integer before crash: '$parked_before'" ;;
+    primary_sql "SELECT bm25_force_merge('rec_idx');" >/dev/null
+    parked_before_vacuum=$(primary_sql_quiet \
+        "SELECT bm25_pending_free_pages('rec_idx');")
+    case "${parked_before_vacuum}" in
+        ''|*[!0-9]*) error "Invalid parked count '${parked_before_vacuum}'" ;;
     esac
-    [ "$parked_before" -gt 0 ] || fail "merge parked no pages (got $parked_before)"
-    log "Merge parked $parked_before displaced page(s)."
+    [ "${parked_before_vacuum}" -gt 0 ] ||
+        error "Compaction published without parking displaced pages"
 
-    # bm25_force_merge writes its changes only through GenericXLog and
-    # assigns no xid, so the implicit transaction commits WITHOUT a
-    # commit record and never forces an XLogFlush.  An immediate crash
-    # here would atomically roll the whole merge back (parking included)
-    # -- consistent, but it would not exercise replay.  Force the merge
-    # records to disk with a committing, xid-assigning transaction (NOT
-    # a checkpoint, which would flush the data pages too and leave
-    # nothing for redo) so the crash below makes recovery REDO the
-    # tombstone enqueue and the metapage swap -- the same path a hot
-    # standby takes.
-    psql_run "CREATE TABLE flush_marker (x int);" >/dev/null
+    # Assign and commit an xid so synchronous commit flushes the publication
+    # WAL, then make a reclaim attempt while feedback pins the old snapshot.
+    primary_sql "CREATE TABLE reclaim_flush_marker (id integer);" >/dev/null
+    primary_sql "VACUUM rec;" >/dev/null
+    parked_after_vacuum=$(primary_sql_quiet \
+        "SELECT bm25_pending_free_pages('rec_idx');")
+    [ "${parked_after_vacuum}" = "${parked_before_vacuum}" ] ||
+        error "VACUUM reclaimed old-graph pages while ranked cursor was open: \
+before=${parked_before_vacuum} after=${parked_after_vacuum}"
 
-    # Crash BEFORE any drain so the parked tombstone chain must be
-    # rebuilt by WAL replay alone.
-    log "Crashing server (immediate stop) with pages still parked..."
-    crash
-    log "Restarting -- recovery must REDO the tombstone chain..."
-    restart
+    wait_for_standby_catchup 30 ||
+        error "Standby did not replay compaction publication"
+    remaining=$(reader_query "FETCH ALL FROM held_ranked;")
+    [ "$(printf '%s\n' "${remaining}" | wc -l | tr -d ' ')" = "7999" ] ||
+        error "Old-layout ranked cursor did not return its remaining 7999 rows"
+    log "PASS: old-layout ranked cursor completed after publication replay"
 
-    # (1) pending_free_pages must not error and must match the count
-    #     that was durable before the crash (WAL replay reconstructed it).
-    parked_after_crash=$(psql_run "SELECT bm25_pending_free_pages('rec_idx');")
-    case "$parked_after_crash" in
-        ''|*[!0-9]*) fail "pending_free_pages not an integer after recovery: '$parked_after_crash'" ;;
-    esac
-    [ "$parked_after_crash" = "$parked_before" ] || \
-        fail "parked count changed across crash: before=$parked_before after=$parked_after_crash"
-    log "PASS: $parked_after_crash parked page(s) survived crash recovery."
+    reader_query "CLOSE held_ranked; COMMIT;" >/dev/null
+    reader_close
+    wait_for_feedback_release
 
-    # (2) the index still answers top-k queries after recovery.
-    hits=$(psql_run "SELECT count(*) FROM (SELECT 1 FROM rec ORDER BY body <@> to_bm25query('alpha', 'rec_idx') LIMIT 20) s;")
-    [ -n "$hits" ] && [ "$hits" -gt 0 ] || fail "post-recovery top-k query returned no rows (got '$hits')"
-    log "PASS: post-recovery top-k query returned $hits row(s)."
+    drained="${parked_after_vacuum}"
+    for _ in $(seq 1 20); do
+        primary_sql_quiet "SELECT txid_current();" >/dev/null
+        primary_sql_quiet "SELECT txid_current();" >/dev/null
+        primary_sql "VACUUM rec;" >/dev/null
+        drained=$(primary_sql_quiet \
+            "SELECT bm25_pending_free_pages('rec_idx');")
+        [ "${drained}" = "0" ] && break
+        sleep 0.5
+    done
+    [ "${drained}" = "0" ] ||
+        error "Timed out 10s draining parked pages after snapshot release; \
+remaining=${drained}, backend_xmin=$(primary_sql_quiet "
+SELECT coalesce(backend_xmin::text, '') FROM pg_stat_replication LIMIT 1;")"
 
-    # (3) advance the global xid horizon past the merge stamp, then a
-    #     VACUUM must drain every parked page.
-    psql_run "SELECT txid_current();" >/dev/null
-    psql_run "SELECT txid_current();" >/dev/null
-    psql_run "VACUUM rec;" >/dev/null
+    wait_for_standby_catchup 30 ||
+        error "Standby did not catch up after safe reclaim"
+    assert_ranked_plan "${PRIMARY_PORT}"
+    assert_ranked_plan "${STANDBY_PORT}"
+    expected_ids=$(primary_sql_quiet \
+        "SELECT string_agg(id::text, ',' ORDER BY id) FROM rec;")
+    primary_ids=$(primary_sql_quiet "
+        SET enable_seqscan = off;
+        SELECT string_agg(id::text, ',' ORDER BY id)
+          FROM (
+                SELECT id FROM rec
+                 ORDER BY body <@> to_bm25query('alpha', 'rec_idx')
+                 LIMIT 8000
+               ) ranked;" | tail -n 1)
+    standby_ids=$(standby_sql_quiet "
+        SET enable_seqscan = off;
+        SELECT string_agg(id::text, ',' ORDER BY id)
+          FROM (
+                SELECT id FROM rec
+                 ORDER BY body <@> to_bm25query('alpha', 'rec_idx')
+                 LIMIT 8000
+               ) ranked;" | tail -n 1)
+    [ "${primary_ids}" = "${expected_ids}" ] ||
+        error "Primary ranked IDs differ from exact heap IDs after reclaim"
+    [ "${standby_ids}" = "${expected_ids}" ] ||
+        error "Standby ranked IDs differ from exact heap IDs after reclaim"
 
-    parked_after_vacuum=$(psql_run "SELECT bm25_pending_free_pages('rec_idx');")
-    [ "$parked_after_vacuum" = "0" ] || \
-        fail "VACUUM did not drain parked pages (got '$parked_after_vacuum', expected 0)"
-    log "PASS: VACUUM drained all parked pages (now 0)."
-
-    # (4) index is still healthy after the drain.
-    hits=$(psql_run "SELECT count(*) FROM (SELECT 1 FROM rec ORDER BY body <@> to_bm25query('beta', 'rec_idx') LIMIT 20) s;")
-    [ -n "$hits" ] && [ "$hits" -gt 0 ] || fail "post-drain query returned no rows (got '$hits')"
-    log "PASS: index healthy after reclaim ($hits row(s))."
-
-    log "✅ All tombstone crash-recovery checks passed!"
+    log "PASS: VACUUM reclaimed ${parked_before_vacuum} pages only after \
+the standby cursor ended"
+    log "All standby reclaim overlap checks passed"
 }
 
-if [ "${BASH_SOURCE[0]}" == "${0}" ]; then
-    main "$@"
-fi
+main "$@"
