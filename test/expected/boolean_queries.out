@@ -265,10 +265,11 @@ SELECT pg_temp.first_plan_child($query$
     FROM boolean_docs d
     JOIN boolean_other other ON other.id = d.id
     WHERE d.body @@ to_tsquery('english', 'refund')
+      AND d.body @@ to_tsquery('english', 'fraud')
     ORDER BY d.body <@> to_bm25query('refund', 'boolean_docs_body_idx')
     LIMIT 1
-$query$) = 'Sort' AS unsupported_join_path_falls_back;
-unsupported_join_path_falls_back
+$query$) = 'Sort' AS multi_key_join_path_falls_back;
+multi_key_join_path_falls_back
 t
 (1 row)
 RESET enable_nestloop;
