@@ -251,7 +251,7 @@ Compaction holds only the heavyweight maintenance lock while it:
 3. records output roots, counts, statistics, and exact allocation ownership;
 4. collects all displaced source pages;
 5. builds a detached tombstone batch whose tail initially points to
-   `InvalidBlockNumber`;
+   `InvalidBlockNumber` and whose reclaim stamp is provisionally invalid;
 6. flushes output WAL and dirty relation buffers needed before publication.
 
 The maintenance lock prevents VACUUM or another compaction from changing the
@@ -310,7 +310,13 @@ maintenance protocol. It fails closed without changing the published graph.
 
 ### Phase 4: publish
 
-One `GenericXLog` publication:
+After validation, compaction restamps every detached tombstone container with
+a full transaction horizon captured after the long unlocked build. This
+WAL-logged restamping occurs while the batch is still unreachable. Capturing
+the horizon at publication rather than build start protects a standby ranked
+cursor that begins on the old graph while output construction is in progress.
+
+One final `GenericXLog` publication:
 
 1. splices a concurrent L0 prefix around the selected run when necessary;
 2. removes every selected run from its source level;
@@ -320,9 +326,9 @@ One `GenericXLog` publication:
 6. links the detached tombstone tail to the current `pending_free_head`;
 7. makes the detached tombstone batch the new pending-free head.
 
-The record includes the metapage, the optional L0 predecessor page, and the
-detached tombstone tail. Output root links are finalized and WAL-logged while
-the output is still unreachable.
+The final record includes the metapage, the optional L0 predecessor page, and
+the detached tombstone tail. Output root links are finalized and WAL-logged
+while the output is still unreachable.
 
 The per-index lock is released immediately after publication. The maintenance
 lock is then released or retained for the caller's next explicitly bounded
@@ -488,8 +494,9 @@ Required cases:
    source pages remain live.
 3. Crash before, during, and after publication; recovery yields a complete
    old or new graph.
-4. Hold a hot-standby query on the old graph through publication and verify
-   its pages are not reused before feedback releases the horizon.
+4. Pause after the unlocked build, advance primary XIDs, then start a
+   hot-standby query on the old graph before publication. Verify its pages are
+   not reused before feedback releases the publication-time horizon.
 
 ### Performance tests
 

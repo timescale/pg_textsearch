@@ -1,8 +1,9 @@
 #!/bin/bash
 #
-# Hold an active ranked cursor on a hot standby's old segment graph while
-# the primary publishes a replacement graph.  hot_standby_feedback must
-# keep the displaced source pages parked until the cursor and snapshot end.
+# Start a ranked cursor on a hot standby's old segment graph after compaction
+# has finished its unlocked build but before publication.
+# hot_standby_feedback must keep the displaced source pages parked until the
+# cursor and snapshot end.
 
 set -euo pipefail
 
@@ -24,6 +25,7 @@ READER_PID=
 READER_BACKEND_PID=
 READER_OPEN=false
 HELD_FEEDBACK_XMIN=
+COMPACTOR_PID=
 
 wait_for_child_exit() {
     local pid=$1
@@ -72,6 +74,11 @@ cleanup() {
     local status=$?
 
     set +e
+    if [ -n "${COMPACTOR_PID}" ] &&
+       kill -0 "${COMPACTOR_PID}" 2>/dev/null; then
+        kill -TERM "${COMPACTOR_PID}" 2>/dev/null || true
+        wait_for_child_exit "${COMPACTOR_PID}" 50 || true
+    fi
     reader_close
     if [ "${status}" -eq 0 ]; then
         true
@@ -81,6 +88,41 @@ cleanup() {
     repl_cleanup
 }
 trap cleanup EXIT INT TERM
+
+wait_for_compaction_pause() {
+    local marker="pg_textsearch compaction pause at before-publish"
+    local logfile="${PRIMARY_DIR}/log/postgres.log"
+
+    for _ in $(seq 1 300); do
+        if grep -Fq "${marker}" "${logfile}" 2>/dev/null; then
+            log "Compaction reached the pre-publication pause"
+            return 0
+        fi
+        if ! kill -0 "${COMPACTOR_PID}" 2>/dev/null; then
+            error "Compactor exited before the pre-publication pause: \
+$(cat "${PRIMARY_DIR}/compactor.out" 2>/dev/null || echo no output)"
+        fi
+        sleep 0.1
+    done
+
+    error "Timed out 30s waiting for pre-publication pause"
+}
+
+wait_for_compactor() {
+    for _ in $(seq 1 400); do
+        if ! kill -0 "${COMPACTOR_PID}" 2>/dev/null; then
+            if wait "${COMPACTOR_PID}"; then
+                COMPACTOR_PID=
+                return 0
+            fi
+            error "Compactor failed: \
+$(cat "${PRIMARY_DIR}/compactor.out" 2>/dev/null || echo no output)"
+        fi
+        sleep 0.1
+    done
+
+    error "Timed out 40s waiting for compactor PID ${COMPACTOR_PID}"
+}
 
 reader_open() {
     local control_dir="${STANDBY_DIR}/ranked_reader"
@@ -202,6 +244,7 @@ main() {
         INSERT INTO rec
         SELECT g, 'alpha beta gamma standby document ' || g
           FROM generate_series(1, 4000) g;
+        CREATE TABLE reclaim_xid_advance (id integer PRIMARY KEY);
         CREATE INDEX rec_idx ON rec USING bm25(body)
             WITH (text_config = 'english', compaction = 'off');
         INSERT INTO rec
@@ -230,6 +273,23 @@ EOF
         error "hot_standby_feedback is ${feedback_setting}, expected on"
     assert_ranked_plan "${STANDBY_PORT}"
 
+    primary_sql "
+        SET pg_textsearch.debug_compaction_pause_before_publish_ms = 15000;
+        SELECT bm25_force_merge('rec_idx');" \
+        >"${PRIMARY_DIR}/compactor.out" 2>&1 &
+    COMPACTOR_PID=$!
+    wait_for_compaction_pause
+
+    # Advance the primary and standby XID horizons while the old graph is
+    # still published.  The cursor opened below must therefore be protected
+    # by the publication-time reclaim stamp, not the earlier build start.
+    for xid_id in $(seq 1 32); do
+        primary_sql_quiet "
+            INSERT INTO reclaim_xid_advance VALUES (${xid_id});" >/dev/null
+    done
+    wait_for_standby_catchup 30 ||
+        error "Standby did not catch up before late ranked cursor setup"
+
     reader_open
     READER_BACKEND_PID=$(reader_query "SELECT pg_backend_pid();")
     reader_query "BEGIN ISOLATION LEVEL REPEATABLE READ;" >/dev/null
@@ -252,9 +312,9 @@ EOF
     [ -n "${first_id}" ] ||
         error "Held ranked cursor returned no first document"
     wait_for_feedback_xmin
-    log "Ranked cursor PID ${READER_BACKEND_PID} is open on the old graph"
+    log "Late ranked cursor PID ${READER_BACKEND_PID} is open on the old graph"
 
-    primary_sql "SELECT bm25_force_merge('rec_idx');" >/dev/null
+    wait_for_compactor
     parked_before_vacuum=$(primary_sql_quiet \
         "SELECT bm25_pending_free_pages('rec_idx');")
     case "${parked_before_vacuum}" in

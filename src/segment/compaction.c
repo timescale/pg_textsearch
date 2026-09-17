@@ -1008,13 +1008,12 @@ tp_build_compaction_output(
 		TpCompactionPlan	 *plan,
 		TpCompactionOutput	 *output)
 {
-	uint64			  selected_docs	  = 0;
-	uint64			  selected_tokens = 0;
-	uint64			  output_docs	  = 0;
-	uint64			  output_tokens	  = 0;
-	BlockNumber		 *displaced_pages = NULL;
-	uint32			  displaced_count = 0;
-	FullTransactionId merged_fxid	  = ReadNextFullTransactionId();
+	uint64		 selected_docs	 = 0;
+	uint64		 selected_tokens = 0;
+	uint64		 output_docs	 = 0;
+	uint64		 output_tokens	 = 0;
+	BlockNumber *displaced_pages = NULL;
+	uint32		 displaced_count = 0;
 
 	tp_initialize_compaction_output(plan, output);
 	PG_TRY();
@@ -1156,7 +1155,7 @@ tp_build_compaction_output(
 				index,
 				displaced_pages,
 				displaced_count,
-				merged_fxid,
+				InvalidFullTransactionId,
 				&output->tombstones);
 		if (displaced_pages != NULL)
 		{
@@ -1204,6 +1203,7 @@ tp_publish_compaction_output(
 		uint64			  current_docs;
 		uint64			  current_tokens;
 		BlockNumber		  current_pending;
+		FullTransactionId merged_fxid;
 		GenericXLogState *xlog_state;
 		XLogRecPtr		  publication_lsn;
 		Page			  meta_copy;
@@ -1278,6 +1278,9 @@ tp_publish_compaction_output(
 					(errcode(ERRCODE_DATA_CORRUPTED),
 					 errmsg("compaction shrinkage exceeds current index "
 							"statistics")));
+
+		merged_fxid = ReadNextFullTransactionId();
+		tp_tombstone_restamp_detached(index, output->tombstones, merged_fxid);
 
 		l0_changes = plan->selected_counts[0] > 0 ||
 					 output->output_counts[0] > 0;

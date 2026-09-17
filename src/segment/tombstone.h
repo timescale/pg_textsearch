@@ -90,6 +90,16 @@ extern void tp_tombstone_build_detached(
 		TpDetachedTombstoneBatch *batch);
 
 /*
+ * Replace the provisional reclaim stamp on every unreachable page in a
+ * detached batch.  Call immediately before publication so standby snapshots
+ * that start during a long output build still hold reclaim back.
+ */
+extern void tp_tombstone_restamp_detached(
+		Relation				 index,
+		TpDetachedTombstoneBatch batch,
+		FullTransactionId		 merged_fxid);
+
+/*
  * Register the detached tail in the caller's GenericXLog publication
  * record and link it to old_head.  Returns the still-locked tail buffer,
  * which the caller must release after GenericXLogFinish.

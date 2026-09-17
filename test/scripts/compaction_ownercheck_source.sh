@@ -44,19 +44,48 @@ if [[ -z "${relation_open_line}" ||
     exit 1
 fi
 
-release_line="$(
-    grep -n 'tp_release_index_lock(index_state)' \
-        "${BUILD_SOURCE}" | head -1 | cut -d: -f1
-)"
-policy_line="$(
-    grep -n 'tp_apply_compaction_policy' \
-        "${BUILD_SOURCE}" | tail -1 | cut -d: -f1 || true
-)"
-if [[ -z "${release_line}" || -z "${policy_line}" ||
-      "${release_line}" -ge "${policy_line}" ]]; then
-    echo "spill policy must run after releasing the index lock" >&2
-    exit 1
-fi
+check_spill_policy_order() {
+    local function_name="$1"
+    local function_body
+    local acquire_line
+    local spill_line
+    local release_line
+    local policy_line
+
+    function_body="$(
+        sed -n "/^${function_name}(/,/^}$/p" "${BUILD_SOURCE}"
+    )"
+    acquire_line="$(
+        grep -n 'tp_acquire_index_lock(index_state, LW_EXCLUSIVE)' \
+            <<<"${function_body}" | head -1 | cut -d: -f1 || true
+    )"
+    spill_line="$(
+        grep -n 'tp_do_spill(index_state' <<<"${function_body}" |
+            head -1 | cut -d: -f1 || true
+    )"
+    release_line="$(
+        grep -n 'tp_release_index_lock(index_state)' <<<"${function_body}" |
+            head -1 | cut -d: -f1 || true
+    )"
+    policy_line="$(
+        grep -n 'tp_apply_compaction_policy' <<<"${function_body}" |
+            head -1 | cut -d: -f1 || true
+    )"
+
+    if [[ -z "${acquire_line}" || -z "${spill_line}" ||
+          -z "${release_line}" || -z "${policy_line}" ||
+          "${acquire_line}" -ge "${spill_line}" ||
+          "${spill_line}" -ge "${release_line}" ||
+          "${release_line}" -ge "${policy_line}" ]]; then
+        echo "${function_name} must spill under LW_EXCLUSIVE, release it, \
+then apply compaction policy" >&2
+        exit 1
+    fi
+}
+
+check_spill_policy_order tp_spill_memtable_if_needed
+check_spill_policy_order tp_auto_spill_if_needed
+check_spill_policy_order tp_spill_memtable
 
 check_compaction_lock_order() {
     local function_name="$1"
@@ -106,6 +135,18 @@ publish_body="$(
 validate_body="$(
     sed -n '/^tp_validate_selected_runs($/,/^}$/p' "${COMPACTION_SOURCE}"
 )"
+publish_acquire_line="$(
+    grep -n 'tp_acquire_index_lock(index_state, LW_EXCLUSIVE)' \
+        <<<"${publish_body}" | head -1 | cut -d: -f1 || true
+)"
+publish_restamp_line="$(
+    grep -n 'tp_tombstone_restamp_detached' <<<"${publish_body}" |
+        head -1 | cut -d: -f1 || true
+)"
+publish_attach_line="$(
+    grep -n 'tp_tombstone_attach_detached' <<<"${publish_body}" |
+        head -1 | cut -d: -f1 || true
+)"
 
 if ! grep -Fq 'tp_acquire_index_lock(index_state, LW_SHARED)' \
     <<<"${select_body}" ||
@@ -118,10 +159,11 @@ if grep -Fq 'tp_acquire_index_lock' <<<"${build_body}" ||
     echo "compaction output build must not manage the per-index lock" >&2
     exit 1
 fi
-if ! grep -Fq 'tp_acquire_index_lock(index_state, LW_EXCLUSIVE)' \
-    <<<"${publish_body}" ||
+if [[ -z "${publish_acquire_line}" || -z "${publish_restamp_line}" ||
+      -z "${publish_attach_line}" ||
+      "${publish_acquire_line}" -ge "${publish_restamp_line}" ||
+      "${publish_restamp_line}" -ge "${publish_attach_line}" ]] ||
    ! grep -Fq 'GenericXLogStart(index)' <<<"${publish_body}" ||
-   ! grep -Fq 'tp_tombstone_attach_detached' <<<"${publish_body}" ||
    ! grep -Fq 'predecessor->next_segment = output->output_heads[0]' \
        <<<"${publish_body}" ||
    ! grep -Fq 'current_pending' <<<"${publish_body}" ||

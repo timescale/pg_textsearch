@@ -199,6 +199,65 @@ tp_tombstone_build_detached(
 			batch);
 }
 
+void
+tp_tombstone_restamp_detached(
+		Relation				 index,
+		TpDetachedTombstoneBatch batch,
+		FullTransactionId		 merged_fxid)
+{
+	if (batch.container_pages != batch.owned_count)
+		ereport(ERROR,
+				(errcode(ERRCODE_INTERNAL_ERROR),
+				 errmsg("detached tombstone ownership count mismatch")));
+
+	for (uint32 i = 0; i < batch.owned_count; i++)
+	{
+		volatile Buffer buf				 = InvalidBuffer;
+		GenericXLogState *volatile state = NULL;
+
+		PG_TRY();
+		{
+			Page			page;
+			TpTombstonePage tombstone;
+
+			buf = ReadBuffer(index, batch.owned_pages[i]);
+			LockBuffer(buf, BUFFER_LOCK_EXCLUSIVE);
+
+			state = GenericXLogStart(index);
+			page  = GenericXLogRegisterBuffer(
+					 (GenericXLogState *)state, buf, 0);
+			if (!tp_tombstone_page_is_valid(page))
+				ereport(ERROR,
+						(errcode(ERRCODE_DATA_CORRUPTED),
+						 errmsg("pg_textsearch: corrupt detached tombstone "
+								"page %u in index \"%s\"",
+								batch.owned_pages[i],
+								RelationGetRelationName(index))));
+
+			tombstone			   = tp_tombstone_page(page);
+			tombstone->merged_fxid = merged_fxid;
+
+			GenericXLogFinish((GenericXLogState *)state);
+			state = NULL;
+			UnlockReleaseBuffer(buf);
+			buf = InvalidBuffer;
+		}
+		PG_CATCH();
+		{
+			if (state != NULL)
+				GenericXLogAbort((GenericXLogState *)state);
+			if (BufferIsValid(buf))
+			{
+				if (InterruptHoldoffCount == 0)
+					HOLD_INTERRUPTS();
+				UnlockReleaseBuffer(buf);
+			}
+			PG_RE_THROW();
+		}
+		PG_END_TRY();
+	}
+}
+
 Buffer
 tp_tombstone_attach_detached(
 		GenericXLogState		*state,
@@ -241,6 +300,11 @@ tp_tombstone_attach_detached(
 				 errmsg("pg_textsearch: detached tombstone tail page %u "
 						"is already attached",
 						batch.tail)));
+	if (!FullTransactionIdIsValid(t->merged_fxid))
+		ereport(ERROR,
+				(errcode(ERRCODE_INTERNAL_ERROR),
+				 errmsg("detached tombstone batch has no publication "
+						"reclaim stamp")));
 
 	t->next_page = old_head;
 	return buf;

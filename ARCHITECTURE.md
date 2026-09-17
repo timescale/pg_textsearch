@@ -130,16 +130,18 @@ Each runtime pass uses the same phase engine:
    Release the per-index lock before reading complete sources.
 3. **Build.** Hold only the maintenance lock while reading immutable sources,
    constructing complete WAL-logged but unreachable output segments,
-   collecting displaced source pages, and building a detached tombstone batch.
+   collecting displaced source pages, and building a detached tombstone batch
+   with a provisional invalid reclaim stamp.
    Segment data pages, page-index pages, completed output roots, and tombstone
    container pages have explicit ownership records for handled-error cleanup.
 4. **Validate.** Acquire fair `LW_EXCLUSIVE` and validate the selected runs,
    prepared outputs, and detached tombstones against the current graph. L0 may
    have only a newly prepended spill prefix; non-L0 chains must be unchanged.
-5. **Publish.** In one `GenericXLog` action, splice around any accepted L0
-   prefix, replace the selected runs, rebase counts and corpus shrinkage from
-   current metapage values, and attach the detached tombstone batch to the
-   current pending-free head.
+5. **Publish.** Restamp every detached tombstone container with the
+   publication-time full transaction horizon, then in one `GenericXLog`
+   action splice around any accepted L0 prefix, replace the selected runs,
+   rebase counts and corpus shrinkage from current metapage values, and attach
+   the detached tombstone batch to the current pending-free head.
 
 Published physical changes are not undone by transaction rollback.
 
@@ -208,7 +210,11 @@ snapshots hold the primary's reclaim horizon back. Use
 Compaction constructs its tombstone containers as a detached chain whose tail
 initially points to `InvalidBlockNumber`. Publication links that tail to the
 then-current `pending_free_head` in the same WAL record that replaces the
-segment graph. Selected source pages are never returned directly to the FSM.
+segment graph. The detached pages are restamped only after the long unlocked
+build and validation, immediately before attachment. This publication-time
+horizon ensures a standby snapshot that starts on the old graph during output
+construction still delays reuse. Selected source pages are never returned
+directly to the FSM.
 
 A handled error before publication returns every explicitly tracked output and
 tombstone allocation to the FSM without freeing selected source pages. A
