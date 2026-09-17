@@ -23,6 +23,8 @@ grep -Fq -- "-F \$'\\t'" "$RUNNER" ||
 
 grep -q "wait_summary.tsv" "$RUNNER" ||
 	fail "runner does not persist aggregated wait-event counts"
+grep -Fq ': >"$OUTPUT_DIR/waits.tsv"' "$RUNNER" ||
+	fail "runner does not create the wait sample file before monitoring"
 
 if grep -q "env | grep '\\^PG'" "$RUNNER"; then
 	fail "runner can persist PostgreSQL credentials"

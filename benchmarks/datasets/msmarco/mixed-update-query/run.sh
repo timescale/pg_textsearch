@@ -527,6 +527,7 @@ env PGAPPNAME="$WRITER_APP" pgbench -n \
 	>"$OUTPUT_DIR/mixed_writer.out" 2>&1 &
 WRITER_PID=$!
 
+: >"$OUTPUT_DIR/waits.tsv"
 wait_for_processes "$READER_PID" "$WRITER_PID" "$OUTPUT_DIR/waits.tsv" &
 MONITOR_PID=$!
 
