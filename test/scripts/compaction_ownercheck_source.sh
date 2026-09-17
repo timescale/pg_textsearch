@@ -9,6 +9,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 SOURCE_FILE="${REPO_ROOT}/src/access/compaction_api.c"
+BUILD_SOURCE="${REPO_ROOT}/src/access/build.c"
 
 open_body="$(
     sed -n '/^tp_open_bm25_index(Oid indexoid, LOCKMODE lockmode, bool need_owner)$/,/^}$/p' \
@@ -38,4 +39,47 @@ if [[ -z "${relation_open_line}" ||
     exit 1
 fi
 
-echo "Compaction ownership check ordering passed"
+release_line="$(
+    grep -n 'tp_release_index_lock(index_state)' \
+        "${BUILD_SOURCE}" | head -1 | cut -d: -f1
+)"
+policy_line="$(
+    grep -n 'tp_apply_compaction_policy' \
+        "${BUILD_SOURCE}" | tail -1 | cut -d: -f1 || true
+)"
+if [[ -z "${release_line}" || -z "${policy_line}" ||
+      "${release_line}" -ge "${policy_line}" ]]; then
+    echo "spill policy must run after releasing the index lock" >&2
+    exit 1
+fi
+
+check_compaction_lock_order() {
+    local function_name="$1"
+    local function_body
+    local maintenance_line
+    local index_lock_line
+
+    function_body="$(
+        sed -n "/^${function_name}(PG_FUNCTION_ARGS)$/,/^}$/p" \
+            "${SOURCE_FILE}"
+    )"
+    maintenance_line="$(
+        grep -n 'tp_compaction_lock(index_rel)' \
+            <<<"${function_body}" | head -1 | cut -d: -f1 || true
+    )"
+    index_lock_line="$(
+        grep -n 'tp_acquire_index_lock(index_state' \
+            <<<"${function_body}" | head -1 | cut -d: -f1
+    )"
+
+    if [[ -z "${maintenance_line}" || -z "${index_lock_line}" ||
+          "${maintenance_line}" -ge "${index_lock_line}" ]]; then
+        echo "${function_name} must acquire maintenance before the index lock" >&2
+        exit 1
+    fi
+}
+
+check_compaction_lock_order tp_compact_index
+check_compaction_lock_order tp_compact_index_step
+
+echo "Compaction ownership and lock ordering passed"

@@ -1383,22 +1383,17 @@ tp_bulk_load_spill_check(void)
 			continue;
 
 		/*
-		 * Open the relation before taking the per-index LWLock: relation
-		 * and catalog access can block, and must stay outside the
-		 * per-index lock ordering domain.  No per-index lock is held on
-		 * entry because per-operation locking releases after each insert.
+		 * Open the relation before the spill helper takes either the
+		 * maintenance lock or the per-index LWLock.  No per-index lock is
+		 * held on entry because per-operation locking releases after each
+		 * insert.
 		 */
 		index_rel = try_index_open(
 				local_state->shared->index_oid, RowExclusiveLock);
 		if (index_rel == NULL)
 			continue;
 
-		tp_acquire_index_lock(local_state, LW_EXCLUSIVE);
-
-		/* Unified spill path. */
-		(void)tp_do_spill(local_state, index_rel, NULL);
-
-		tp_release_index_lock(local_state);
+		tp_spill_memtable_if_needed(index_rel, local_state, 0);
 		index_close(index_rel, RowExclusiveLock);
 	}
 }

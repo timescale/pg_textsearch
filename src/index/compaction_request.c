@@ -801,9 +801,9 @@ tp_compaction_request(Oid indexoid)
 	MemoryContext oldcxt;
 
 	/*
-	 * Called from tp_do_spill() while the caller holds the per-index
-	 * LWLock in LW_EXCLUSIVE mode.  Do no SPI, catalog access, relation
-	 * opens, or ereport above DEBUG here; only append to this list.
+	 * Called after spill durability completes and the per-index LWLock is
+	 * released.  Still defer SPI and callback execution until pre-commit;
+	 * only append to this list here.
 	 */
 	if (list_member_oid(tp_pending_compactions, indexoid))
 		return;
