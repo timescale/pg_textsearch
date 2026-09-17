@@ -32,6 +32,7 @@
 #include <utils/memutils.h>
 #include <utils/rel.h>
 #include <utils/snapmgr.h>
+#include <utils/wait_event.h>
 
 #include "access/am.h"
 #include "constants.h"
@@ -384,6 +385,8 @@ tp_create_shared_index_state(Oid index_oid, Oid heap_oid, bool reuse_if_exists)
 	 */
 	LWLockInitialize(
 			&shared_state->lock, tp_tranche_id(TP_TRANCHE_INDEX_LOCK));
+	pg_atomic_init_u32(&shared_state->exclusive_waiters, 0);
+	ConditionVariableInit(&shared_state->exclusive_waiters_cv);
 	pg_atomic_init_u64(&shared_state->spill_generation, 0);
 	memtable_dp = dsa_allocate(dsa, sizeof(TpMemtable));
 	if (!DsaPointerIsValid(memtable_dp))
@@ -528,6 +531,8 @@ tp_create_build_index_state(Oid index_oid, Oid heap_oid)
 	 */
 	LWLockInitialize(
 			&shared_state->lock, tp_tranche_id(TP_TRANCHE_INDEX_LOCK));
+	pg_atomic_init_u32(&shared_state->exclusive_waiters, 0);
+	ConditionVariableInit(&shared_state->exclusive_waiters_cv);
 	pg_atomic_init_u64(&shared_state->spill_generation, 0);
 
 	/* Check if index already registered (rebuild case) */
@@ -1239,8 +1244,29 @@ tp_acquire_index_lock(TpLocalIndexState *local_state, LWLockMode mode)
 		local_state->lock_held = false;
 	}
 
-	/* Acquire the lock */
+	if (mode == LW_SHARED)
+	{
+		ConditionVariablePrepareToSleep(
+				&local_state->shared->exclusive_waiters_cv);
+		while (pg_atomic_read_u32(&local_state->shared->exclusive_waiters) !=
+			   0)
+			ConditionVariableSleep(
+					&local_state->shared->exclusive_waiters_cv,
+					PG_WAIT_EXTENSION);
+		ConditionVariableCancelSleep();
+	}
+	else
+	{
+		pg_atomic_fetch_add_u32(&local_state->shared->exclusive_waiters, 1);
+	}
+
 	LWLockAcquire(&local_state->shared->lock, mode);
+
+	if (mode == LW_EXCLUSIVE &&
+		pg_atomic_sub_fetch_u32(&local_state->shared->exclusive_waiters, 1) ==
+				0)
+		ConditionVariableBroadcast(&local_state->shared->exclusive_waiters_cv);
+
 	local_state->lock_held = true;
 	local_state->lock_mode = mode;
 
