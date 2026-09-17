@@ -49,6 +49,10 @@ typedef struct TpDetachedTombstoneBatch
 	BlockNumber head;
 	BlockNumber tail;
 	uint32		container_pages;
+	/* Exact container allocations owned until publication succeeds. */
+	BlockNumber *owned_pages;
+	uint32		 owned_count;
+	uint32		 owned_capacity;
 } TpDetachedTombstoneBatch;
 
 static inline TpTombstonePage
@@ -78,11 +82,12 @@ extern BlockNumber tp_tombstone_read_head(Relation index);
  * links to InvalidBlockNumber; neither the metapage nor an existing
  * tombstone page is changed.
  */
-extern TpDetachedTombstoneBatch tp_tombstone_build_detached(
-		Relation		   index,
-		const BlockNumber *blocks,
-		uint32			   num_blocks,
-		FullTransactionId  merged_fxid);
+extern void tp_tombstone_build_detached(
+		Relation				  index,
+		const BlockNumber		 *blocks,
+		uint32					  num_blocks,
+		FullTransactionId		  merged_fxid,
+		TpDetachedTombstoneBatch *batch);
 
 /*
  * Register the detached tail in the caller's GenericXLog publication

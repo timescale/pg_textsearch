@@ -12,6 +12,7 @@
 #include <storage/indexfsm.h>
 #include <storage/lmgr.h>
 #include <storage/lwlock.h>
+#include <utils/hsearch.h>
 
 #include "access/am.h"
 #include "constants.h"
@@ -71,6 +72,9 @@ typedef struct TpCompactionOutput
 {
 	BlockNumber				 output_heads[TP_MAX_LEVELS];
 	uint16					 output_counts[TP_MAX_LEVELS];
+	BlockNumber				*owned_output_roots;
+	uint32					 owned_output_count;
+	uint32					 owned_output_capacity;
 	uint64					 removed_docs;
 	uint64					 removed_tokens;
 	TpDetachedTombstoneBatch tombstones;
@@ -656,8 +660,12 @@ tp_initialize_compaction_output(
 	memcpy(output->output_heads,
 		   plan->retained_heads,
 		   sizeof(output->output_heads));
-	output->tombstones.head = InvalidBlockNumber;
-	output->tombstones.tail = InvalidBlockNumber;
+	if (plan->num_batches > 0)
+		output->owned_output_roots = palloc(
+				sizeof(BlockNumber) * plan->num_batches);
+	output->owned_output_capacity = plan->num_batches;
+	output->tombstones.head		  = InvalidBlockNumber;
+	output->tombstones.tail		  = InvalidBlockNumber;
 }
 
 static void
@@ -668,19 +676,25 @@ tp_discard_compaction_output(Relation index, TpCompactionOutput *output)
 	output->tombstones.head			   = InvalidBlockNumber;
 	output->tombstones.tail			   = InvalidBlockNumber;
 	output->tombstones.container_pages = 0;
+	output->tombstones.owned_pages	   = NULL;
+	output->tombstones.owned_count	   = 0;
+	output->tombstones.owned_capacity  = 0;
+
+	for (uint32 i = 0; i < output->owned_output_count; i++)
+		tp_discard_unpublished_segment(index, output->owned_output_roots[i]);
+	if (output->owned_output_roots != NULL)
+		pfree(output->owned_output_roots);
+	output->owned_output_roots	  = NULL;
+	output->owned_output_count	  = 0;
+	output->owned_output_capacity = 0;
 
 	for (uint32 level = 0; level < TP_MAX_LEVELS; level++)
 	{
-		BlockNumber current = output->output_heads[level];
-		uint16		count	= output->output_counts[level];
-
 		output->output_heads[level]	 = InvalidBlockNumber;
 		output->output_counts[level] = 0;
-		for (uint16 i = 0; i < count; i++)
-			current = tp_discard_unpublished_segment(index, current);
 	}
 
-	if (tombstones.container_pages > 0)
+	if (tombstones.owned_pages != NULL)
 		tp_tombstone_discard_detached(index, tombstones);
 }
 
@@ -778,11 +792,32 @@ tp_validate_selected_runs(
 		TpCompactionPlan	 *plan,
 		BlockNumber			 *l0_predecessor)
 {
-	uint32 source_index = 0;
+	HASHCTL ctl;
+	HTAB   *visited;
+	uint32	source_index = 0;
+	bool	valid		 = false;
 
 	*l0_predecessor = InvalidBlockNumber;
 	if (!tp_metapage_identity_matches(current_meta, snapshot))
 		return false;
+
+	memset(&ctl, 0, sizeof(ctl));
+	ctl.keysize	  = sizeof(BlockNumber);
+	ctl.entrysize = sizeof(BlockNumber);
+	visited		  = hash_create(
+			  "compaction validation roots",
+			  Max((long)plan->num_sources, 16L),
+			  &ctl,
+			  HASH_ELEM | HASH_BLOBS);
+
+	for (uint32 i = 0; i < plan->num_sources; i++)
+	{
+		bool found;
+
+		(void)hash_search(visited, &plan->sources[i].root, HASH_ENTER, &found);
+		if (found)
+			goto done;
+	}
 
 	for (uint32 level = 0; level < TP_MAX_LEVELS; level++)
 	{
@@ -791,7 +826,7 @@ tp_validate_selected_runs(
 		if ((uint32)plan->selected_counts[level] +
 					(uint32)plan->retained_counts[level] !=
 			(uint32)snapshot->level_counts[level])
-			return false;
+			goto done;
 
 		if (level == 0)
 		{
@@ -799,21 +834,27 @@ tp_validate_selected_runs(
 
 			if (current_meta->level_counts[level] <
 				snapshot->level_counts[level])
-				return false;
+				goto done;
 			prefix_count = (uint32)current_meta->level_counts[level] -
 						   (uint32)snapshot->level_counts[level];
 			current = current_meta->level_heads[level];
 			for (uint32 i = 0; i < prefix_count; i++)
 			{
 				BlockNumber next;
+				bool		found;
 
-				*l0_predecessor = current;
+				if (current == snapshot->level_heads[level])
+					goto done;
+				(void)hash_search(visited, &current, HASH_ENTER, &found);
+				if (found)
+					goto done;
 				if (!tp_read_segment_link(index, current, level, &next))
-					return false;
-				current = next;
+					goto done;
+				*l0_predecessor = current;
+				current			= next;
 			}
 			if (current != snapshot->level_heads[level])
-				return false;
+				goto done;
 		}
 		else
 		{
@@ -821,18 +862,18 @@ tp_validate_selected_runs(
 						snapshot->level_counts[level] ||
 				current_meta->level_heads[level] !=
 						snapshot->level_heads[level])
-				return false;
+				goto done;
 			current = current_meta->level_heads[level];
 		}
 
 		if (plan->selected_counts[level] == 0)
 		{
 			if (plan->selected_heads[level] != InvalidBlockNumber)
-				return false;
+				goto done;
 			continue;
 		}
 		if (plan->selected_heads[level] != current)
-			return false;
+			goto done;
 
 		for (uint16 i = 0; i < plan->selected_counts[level]; i++)
 		{
@@ -842,15 +883,27 @@ tp_validate_selected_runs(
 				plan->sources[source_index].source_level != level ||
 				plan->sources[source_index].root != current ||
 				!tp_read_segment_link(index, current, level, &next))
-				return false;
+				goto done;
 			current = next;
 			source_index++;
 		}
 		if (current != plan->retained_heads[level])
-			return false;
+			goto done;
+		if (BlockNumberIsValid(current))
+		{
+			bool found;
+
+			(void)hash_search(visited, &current, HASH_FIND, &found);
+			if (found)
+				goto done;
+		}
 	}
 
-	return source_index == plan->num_sources;
+	valid = source_index == plan->num_sources;
+
+done:
+	hash_destroy(visited);
+	return valid;
 }
 
 static bool
@@ -978,15 +1031,22 @@ tp_build_compaction_output(
 						output->output_heads[output_level],
 						&result))
 			{
-				if (output->output_counts[output_level] == PG_UINT16_MAX)
+				if (output->owned_output_count >=
+					output->owned_output_capacity)
 				{
-					(void)tp_discard_unpublished_segment(index, result.root);
+					tp_discard_unpublished_segment(index, result.root);
+					ereport(ERROR,
+							(errcode(ERRCODE_INTERNAL_ERROR),
+							 errmsg("compaction output ownership overflow")));
+				}
+				output->owned_output_roots[output->owned_output_count++] =
+						result.root;
+				if (output->output_counts[output_level] == PG_UINT16_MAX)
 					ereport(ERROR,
 							(errcode(ERRCODE_INTERNAL_ERROR),
 							 errmsg("compaction output count overflow at "
 									"level %u",
 									output_level)));
-				}
 				output->output_heads[output_level] = result.root;
 				output->output_counts[output_level]++;
 				if ((uint32)plan->retained_counts[output_level] +
@@ -1057,8 +1117,12 @@ tp_build_compaction_output(
 			if (pages != NULL)
 				pfree(pages);
 		}
-		output->tombstones = tp_tombstone_build_detached(
-				index, displaced_pages, displaced_count, merged_fxid);
+		tp_tombstone_build_detached(
+				index,
+				displaced_pages,
+				displaced_count,
+				merged_fxid,
+				&output->tombstones);
 		if (displaced_pages != NULL)
 		{
 			pfree(displaced_pages);
@@ -1260,6 +1324,16 @@ tp_publish_compaction_output(
 		output->tombstones.head			   = InvalidBlockNumber;
 		output->tombstones.tail			   = InvalidBlockNumber;
 		output->tombstones.container_pages = 0;
+		if (output->tombstones.owned_pages != NULL)
+			pfree(output->tombstones.owned_pages);
+		output->tombstones.owned_pages	  = NULL;
+		output->tombstones.owned_count	  = 0;
+		output->tombstones.owned_capacity = 0;
+		if (output->owned_output_roots != NULL)
+			pfree(output->owned_output_roots);
+		output->owned_output_roots	  = NULL;
+		output->owned_output_count	  = 0;
+		output->owned_output_capacity = 0;
 	}
 	PG_CATCH();
 	{

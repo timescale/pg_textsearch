@@ -34,6 +34,9 @@ typedef struct TpMergeSink
 	uint64			current_offset;
 	TpSegmentWriter writer;
 	Relation		index;
+	/* Exact page-index allocations owned until publication succeeds. */
+	BlockNumber *page_index_pages;
+	uint32		 page_index_pages_allocated;
 } TpMergeSink;
 
 /* Sink initialization */
@@ -68,9 +71,9 @@ extern bool tp_merge_segment_batch(
 		TpMergedSegmentResult *result);
 
 /*
- * Return one complete, unpublished merge output to the FSM and return the
- * root recorded in its next_segment link.  Published segments must instead
- * go through standby-safe deferred reclaim.
+ * Return exactly one complete, unpublished merge output to the FSM.
+ * Published segments must instead go through standby-safe deferred reclaim.
  */
-extern BlockNumber
-tp_discard_unpublished_segment(Relation index, BlockNumber root);
+extern void tp_discard_unpublished_segment(Relation index, BlockNumber root);
+extern void tp_discard_unpublished_pages(
+		Relation index, BlockNumber *pages, uint32 num_pages);

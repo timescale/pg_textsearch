@@ -75,24 +75,80 @@ tombstone_alloc_page(Relation index, bool use_fsm)
 	return block;
 }
 
-static TpDetachedTombstoneBatch
-tombstone_build_internal(
+static void
+tombstone_write_page(
 		Relation		   index,
+		BlockNumber		   block,
 		const BlockNumber *blocks,
-		uint32			   num_blocks,
+		uint32			   start,
+		uint32			   count,
 		FullTransactionId  merged_fxid,
-		BlockNumber		   next_page,
-		bool			   use_fsm)
+		BlockNumber		   next_page)
 {
-	TpDetachedTombstoneBatch batch = {
-			.head			 = InvalidBlockNumber,
-			.tail			 = InvalidBlockNumber,
-			.container_pages = 0,
-	};
+	volatile Buffer buf				 = InvalidBuffer;
+	GenericXLogState *volatile state = NULL;
+
+	PG_TRY();
+	{
+		Page			page;
+		TpTombstonePage t;
+
+		buf = ReadBuffer(index, block);
+		LockBuffer(buf, BUFFER_LOCK_EXCLUSIVE);
+
+		state = GenericXLogStart(index);
+		page  = GenericXLogRegisterBuffer(
+				 (GenericXLogState *)state, buf, GENERIC_XLOG_FULL_IMAGE);
+
+		tp_tombstone_page_init(page, merged_fxid, next_page);
+		t			  = tp_tombstone_page(page);
+		t->num_blocks = count;
+		for (uint32 i = 0; i < count; i++)
+			t->blocks[i] = blocks[start + i];
+
+		GenericXLogFinish((GenericXLogState *)state);
+		state = NULL;
+		UnlockReleaseBuffer(buf);
+		buf = InvalidBuffer;
+	}
+	PG_CATCH();
+	{
+		if (state != NULL)
+			GenericXLogAbort((GenericXLogState *)state);
+		if (BufferIsValid(buf))
+		{
+			if (InterruptHoldoffCount == 0)
+				HOLD_INTERRUPTS();
+			UnlockReleaseBuffer(buf);
+		}
+		PG_RE_THROW();
+	}
+	PG_END_TRY();
+}
+
+static void
+tombstone_build_internal(
+		Relation				  index,
+		const BlockNumber		 *blocks,
+		uint32					  num_blocks,
+		FullTransactionId		  merged_fxid,
+		BlockNumber				  next_page,
+		bool					  use_fsm,
+		TpDetachedTombstoneBatch *batch)
+{
 	uint32 remaining = num_blocks;
 
+	Assert(batch != NULL);
+	memset(batch, 0, sizeof(*batch));
+	batch->head = InvalidBlockNumber;
+	batch->tail = InvalidBlockNumber;
+
 	if (num_blocks == 0)
-		return batch;
+		return;
+
+	batch->owned_capacity = num_blocks / TP_TOMBSTONE_CAPACITY +
+							(num_blocks % TP_TOMBSTONE_CAPACITY != 0);
+	batch->owned_pages = palloc(sizeof(BlockNumber) * batch->owned_capacity);
 
 	/*
 	 * Build the batch tail-first so each page's next_page points at
@@ -105,50 +161,41 @@ tombstone_build_internal(
 	 */
 	while (remaining > 0)
 	{
-		uint32			  chunk = Min(remaining, TP_TOMBSTONE_CAPACITY);
-		uint32			  start = remaining - chunk;
-		BlockNumber		  blk	= tombstone_alloc_page(index, use_fsm);
-		GenericXLogState *state;
-		Buffer			  buf;
-		Page			  page;
-		TpTombstonePage	  t;
-		uint32			  k;
+		uint32		chunk = Min(remaining, TP_TOMBSTONE_CAPACITY);
+		uint32		start = remaining - chunk;
+		BlockNumber blk	  = tombstone_alloc_page(index, use_fsm);
 
-		buf = ReadBuffer(index, blk);
-		LockBuffer(buf, BUFFER_LOCK_EXCLUSIVE);
+		Assert(batch->owned_count < batch->owned_capacity);
+		batch->owned_pages[batch->owned_count++] = blk;
 
-		state = GenericXLogStart(index);
-		page  = GenericXLogRegisterBuffer(state, buf, GENERIC_XLOG_FULL_IMAGE);
+		tombstone_write_page(
+				index, blk, blocks, start, chunk, merged_fxid, next_page);
 
-		tp_tombstone_page_init(page, merged_fxid, next_page);
-		t			  = tp_tombstone_page(page);
-		t->num_blocks = chunk;
-		for (k = 0; k < chunk; k++)
-			t->blocks[k] = blocks[start + k];
-
-		GenericXLogFinish(state);
-		UnlockReleaseBuffer(buf);
-
-		if (batch.tail == InvalidBlockNumber)
-			batch.tail = blk;
-		batch.head = blk;
-		batch.container_pages++;
+		if (batch->tail == InvalidBlockNumber)
+			batch->tail = blk;
+		batch->head = blk;
+		batch->container_pages++;
 		next_page = blk;
 		remaining = start;
 	}
-
-	return batch;
 }
 
-TpDetachedTombstoneBatch
+void
 tp_tombstone_build_detached(
-		Relation		   index,
-		const BlockNumber *blocks,
-		uint32			   num_blocks,
-		FullTransactionId  merged_fxid)
+		Relation				  index,
+		const BlockNumber		 *blocks,
+		uint32					  num_blocks,
+		FullTransactionId		  merged_fxid,
+		TpDetachedTombstoneBatch *batch)
 {
-	return tombstone_build_internal(
-			index, blocks, num_blocks, merged_fxid, InvalidBlockNumber, true);
+	tombstone_build_internal(
+			index,
+			blocks,
+			num_blocks,
+			merged_fxid,
+			InvalidBlockNumber,
+			true,
+			batch);
 }
 
 Buffer
@@ -201,68 +248,13 @@ tp_tombstone_attach_detached(
 void
 tp_tombstone_discard_detached(Relation index, TpDetachedTombstoneBatch batch)
 {
-	BlockNumber cur = batch.head;
-	uint32		freed;
+	for (uint32 i = 0; i < batch.owned_count; i++)
+		tp_record_free_index_page(index, batch.owned_pages[i]);
 
-	if (batch.container_pages == 0)
-	{
-		Assert(batch.head == InvalidBlockNumber);
-		Assert(batch.tail == InvalidBlockNumber);
-		return;
-	}
-
-	for (freed = 0; freed < batch.container_pages; freed++)
-	{
-		Buffer			buf;
-		Page			page;
-		TpTombstonePage t;
-		BlockNumber		next;
-
-		if (cur == InvalidBlockNumber)
-			ereport(ERROR,
-					(errcode(ERRCODE_DATA_CORRUPTED),
-					 errmsg("pg_textsearch: detached tombstone batch ended "
-							"before its recorded tail")));
-
-		buf = ReadBuffer(index, cur);
-		LockBuffer(buf, BUFFER_LOCK_SHARE);
-		page = BufferGetPage(buf);
-		if (!tp_tombstone_page_is_valid(page))
-		{
-			UnlockReleaseBuffer(buf);
-			ereport(ERROR,
-					(errcode(ERRCODE_DATA_CORRUPTED),
-					 errmsg("pg_textsearch: corrupt detached tombstone "
-							"page %u in index \"%s\"",
-							cur,
-							RelationGetRelationName(index))));
-		}
-
-		t	 = tp_tombstone_page(page);
-		next = t->next_page;
-		UnlockReleaseBuffer(buf);
-
-		if (cur == batch.tail)
-		{
-			if (freed + 1 != batch.container_pages ||
-				next != InvalidBlockNumber)
-				ereport(ERROR,
-						(errcode(ERRCODE_DATA_CORRUPTED),
-						 errmsg("pg_textsearch: detached tombstone batch "
-								"tail does not terminate its chain")));
-		}
-		else if (next == InvalidBlockNumber)
-			ereport(ERROR,
-					(errcode(ERRCODE_DATA_CORRUPTED),
-					 errmsg("pg_textsearch: detached tombstone batch "
-							"does not reach its recorded tail")));
-
-		tp_record_free_index_page(index, cur);
-		cur = next;
-	}
-
-	Assert(cur == InvalidBlockNumber);
-	IndexFreeSpaceMapVacuum(index);
+	if (batch.owned_count > 0)
+		IndexFreeSpaceMapVacuum(index);
+	if (batch.owned_pages != NULL)
+		pfree(batch.owned_pages);
 }
 
 BlockNumber
@@ -273,13 +265,32 @@ tp_tombstone_enqueue(
 		FullTransactionId merged_fxid,
 		BlockNumber		  old_head)
 {
-	TpDetachedTombstoneBatch batch;
+	volatile TpDetachedTombstoneBatch batch;
 
 	if (num_blocks == 0)
 		return old_head;
 
-	batch = tombstone_build_internal(
-			index, blocks, num_blocks, merged_fxid, old_head, true);
+	memset((TpDetachedTombstoneBatch *)&batch, 0, sizeof(batch));
+	PG_TRY();
+	{
+		tombstone_build_internal(
+				index,
+				blocks,
+				num_blocks,
+				merged_fxid,
+				old_head,
+				true,
+				(TpDetachedTombstoneBatch *)&batch);
+	}
+	PG_CATCH();
+	{
+		tp_tombstone_discard_detached(
+				index, *(TpDetachedTombstoneBatch *)&batch);
+		PG_RE_THROW();
+	}
+	PG_END_TRY();
+	if (batch.owned_pages != NULL)
+		pfree(batch.owned_pages);
 	return batch.head;
 }
 
@@ -291,13 +302,32 @@ tp_tombstone_enqueue_extend(
 		FullTransactionId merged_fxid,
 		BlockNumber		  old_head)
 {
-	TpDetachedTombstoneBatch batch;
+	volatile TpDetachedTombstoneBatch batch;
 
 	if (num_blocks == 0)
 		return old_head;
 
-	batch = tombstone_build_internal(
-			index, blocks, num_blocks, merged_fxid, old_head, false);
+	memset((TpDetachedTombstoneBatch *)&batch, 0, sizeof(batch));
+	PG_TRY();
+	{
+		tombstone_build_internal(
+				index,
+				blocks,
+				num_blocks,
+				merged_fxid,
+				old_head,
+				false,
+				(TpDetachedTombstoneBatch *)&batch);
+	}
+	PG_CATCH();
+	{
+		tp_tombstone_discard_detached(
+				index, *(TpDetachedTombstoneBatch *)&batch);
+		PG_RE_THROW();
+	}
+	PG_END_TRY();
+	if (batch.owned_pages != NULL)
+		pfree(batch.owned_pages);
 	return batch.head;
 }
 

@@ -19,6 +19,7 @@
 #include <stdio.h>
 #include <storage/bufmgr.h>
 #include <storage/bufpage.h>
+#include <storage/indexfsm.h>
 #include <storage/lock.h>
 #include <unistd.h>
 #include <utils/lsyscache.h>
@@ -986,7 +987,12 @@ tp_segment_writer_allocate_page(TpSegmentWriter *writer)
  * This function is also used by segment_merge.c for merged segments.
  */
 static BlockNumber
-write_page_index_internal(Relation index, BlockNumber *pages, uint32 num_pages)
+write_page_index_internal(
+		Relation	  index,
+		BlockNumber	 *pages,
+		uint32		  num_pages,
+		BlockNumber **owned_pages,
+		uint32		 *owned_count)
 {
 	BlockNumber index_root = InvalidBlockNumber;
 	BlockNumber prev_block = InvalidBlockNumber;
@@ -1004,11 +1010,21 @@ write_page_index_internal(Relation index, BlockNumber *pages, uint32 num_pages)
 							 entries_per_page;
 
 	/* Allocate index pages incrementally */
-	BlockNumber *index_pages = palloc(num_index_pages * sizeof(BlockNumber));
+	BlockNumber *index_pages;
 	uint32		 i;
 
+	Assert(owned_pages != NULL);
+	Assert(owned_count != NULL);
+	*owned_pages = NULL;
+	*owned_count = 0;
+
+	index_pages	 = palloc(num_index_pages * sizeof(BlockNumber));
+	*owned_pages = index_pages;
 	for (i = 0; i < num_index_pages; i++)
+	{
 		index_pages[i] = allocate_segment_page(index);
+		(*owned_count)++;
+	}
 
 	/*
 	 * Write index pages in reverse order (so we can chain them).
@@ -1060,14 +1076,53 @@ write_page_index_internal(Relation index, BlockNumber *pages, uint32 num_pages)
 			index_root = index_pages[i];
 	}
 
-	pfree(index_pages);
 	return index_root;
 }
 
 BlockNumber
 write_page_index(Relation index, BlockNumber *pages, uint32 num_pages)
 {
-	return write_page_index_internal(index, pages, num_pages);
+	volatile BlockNumber root		  = InvalidBlockNumber;
+	BlockNumber *volatile owned_pages = NULL;
+	volatile uint32 owned_count		  = 0;
+
+	PG_TRY();
+	{
+		root = write_page_index_internal(
+				index,
+				pages,
+				num_pages,
+				(BlockNumber **)&owned_pages,
+				(uint32 *)&owned_count);
+	}
+	PG_CATCH();
+	{
+		if (owned_count > 0)
+		{
+			tp_segment_free_pages(index, owned_pages, owned_count);
+			IndexFreeSpaceMapVacuum(index);
+		}
+		if (owned_pages != NULL)
+			pfree(owned_pages);
+		PG_RE_THROW();
+	}
+	PG_END_TRY();
+
+	if (owned_pages != NULL)
+		pfree(owned_pages);
+	return (BlockNumber)root;
+}
+
+BlockNumber
+write_page_index_tracked(
+		Relation	  index,
+		BlockNumber	 *pages,
+		uint32		  num_pages,
+		BlockNumber **owned_pages,
+		uint32		 *owned_count)
+{
+	return write_page_index_internal(
+			index, pages, num_pages, owned_pages, owned_count);
 }
 
 /*

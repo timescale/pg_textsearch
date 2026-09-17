@@ -11,6 +11,10 @@ REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 SOURCE_FILE="${REPO_ROOT}/src/access/compaction_api.c"
 BUILD_SOURCE="${REPO_ROOT}/src/access/build.c"
 COMPACTION_SOURCE="${REPO_ROOT}/src/segment/compaction.c"
+MERGE_SOURCE="${REPO_ROOT}/src/segment/merge.c"
+TOMBSTONE_HEADER="${REPO_ROOT}/src/segment/tombstone.h"
+TOMBSTONE_SOURCE="${REPO_ROOT}/src/segment/tombstone.c"
+VACUUM_SOURCE="${REPO_ROOT}/src/access/vacuum.c"
 
 open_body="$(
     sed -n '/^tp_open_bm25_index(Oid indexoid, LOCKMODE lockmode, bool need_owner)$/,/^}$/p' \
@@ -152,6 +156,68 @@ if [[ -z "${force_release_line}" || -z "${force_compact_line}" ||
       "${force_release_line}" -ge "${force_compact_line}" ||
       "${force_compact_line}" -ge "${truncate_lock_line}" ]]; then
     echo "force merge must build unlocked and reacquire only for truncation" >&2
+    exit 1
+fi
+
+review_failures=0
+
+bulkdelete_body="$(
+    sed -n '/^tp_bulkdelete($/,/^}$/p' "${VACUUM_SOURCE}"
+)"
+vacuum_maintenance_line="$(
+    grep -n 'tp_compaction_lock(info->index)' <<<"${bulkdelete_body}" |
+        head -1 | cut -d: -f1 || true
+)"
+vacuum_index_line="$(
+    grep -n 'tp_acquire_index_lock(index_state, LW_SHARED)' \
+        <<<"${bulkdelete_body}" | head -1 | cut -d: -f1 || true
+)"
+if [[ -z "${vacuum_maintenance_line}" || -z "${vacuum_index_line}" ||
+      "${vacuum_maintenance_line}" -ge "${vacuum_index_line}" ]] ||
+   ! grep -Fq 'tp_compaction_unlock(info->index)' <<<"${bulkdelete_body}"; then
+    echo "VACUUM segment mutation must hold maintenance before LW_SHARED" >&2
+    review_failures=$((review_failures + 1))
+fi
+
+discard_body="$(
+    sed -n '/^tp_discard_compaction_output(Relation index, /,/^}$/p' \
+        "${COMPACTION_SOURCE}"
+)"
+if ! grep -Fq 'owned_output_roots' <<<"${discard_body}" ||
+   grep -Fq 'current = tp_discard_unpublished_segment' <<<"${discard_body}"; then
+    echo "compaction cleanup must free only explicitly owned output roots" >&2
+    review_failures=$((review_failures + 1))
+fi
+
+merge_batch_body="$(
+    sed -n '/^tp_merge_segment_batch($/,/^}$/p' "${MERGE_SOURCE}"
+)"
+if ! grep -Fq 'sink.writer.pages' <<<"${merge_batch_body}" ||
+   ! grep -Fq 'sink.page_index_pages' <<<"${merge_batch_body}" ||
+   ! grep -Fq 'tp_discard_unpublished_pages' <<<"${merge_batch_body}"; then
+    echo "merge cancellation must reclaim every tracked allocated page" >&2
+    review_failures=$((review_failures + 1))
+fi
+
+if ! grep -Fq 'owned_pages' "${TOMBSTONE_HEADER}" ||
+   ! grep -Fq 'TpDetachedTombstoneBatch *batch' "${TOMBSTONE_HEADER}" ||
+   ! grep -Fq 'batch->owned_pages[batch->owned_count++]' \
+       "${TOMBSTONE_SOURCE}"; then
+    echo "detached tombstone build must expose incremental page ownership" >&2
+    review_failures=$((review_failures + 1))
+fi
+
+validate_body="$(
+    sed -n '/^tp_validate_selected_runs($/,/^}$/p' "${COMPACTION_SOURCE}"
+)"
+if ! grep -Fq 'HASH_ENTER' <<<"${validate_body}" ||
+   ! grep -Fq 'current == snapshot->level_heads[level]' \
+       <<<"${validate_body}"; then
+    echo "L0 prefix validation must reject cycles and source overlap" >&2
+    review_failures=$((review_failures + 1))
+fi
+
+if [[ "${review_failures}" -ne 0 ]]; then
     exit 1
 fi
 

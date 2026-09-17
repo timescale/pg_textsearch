@@ -53,16 +53,15 @@ merge_sink_init_pages(TpMergeSink *sink, Relation index)
 	sink->current_offset = sink->writer.current_offset;
 }
 
-BlockNumber
+void
 tp_discard_unpublished_segment(Relation index, BlockNumber root)
 {
 	TpSegmentReader *reader;
-	BlockNumber		 next;
 	BlockNumber		*pages;
 	uint32			 num_pages;
 
 	if (!BlockNumberIsValid(root))
-		return InvalidBlockNumber;
+		return;
 
 	reader = tp_segment_open(index, root);
 	if (reader == NULL)
@@ -70,7 +69,6 @@ tp_discard_unpublished_segment(Relation index, BlockNumber root)
 				(errcode(ERRCODE_DATA_CORRUPTED),
 				 errmsg("could not open unpublished segment at block %u",
 						root)));
-	next = reader->header->next_segment;
 	tp_segment_close(reader);
 
 	num_pages = tp_segment_collect_pages(index, root, &pages);
@@ -83,7 +81,18 @@ tp_discard_unpublished_segment(Relation index, BlockNumber root)
 	tp_segment_free_pages(index, pages, num_pages);
 	pfree(pages);
 	IndexFreeSpaceMapVacuum(index);
-	return next;
+}
+
+void
+tp_discard_unpublished_pages(
+		Relation index, BlockNumber *pages, uint32 num_pages)
+{
+	if (num_pages == 0)
+		return;
+
+	Assert(pages != NULL);
+	tp_segment_free_pages(index, pages, num_pages);
+	IndexFreeSpaceMapVacuum(index);
 }
 
 /*
@@ -1460,8 +1469,12 @@ write_merged_segment_to_sink(
 		tp_segment_writer_flush(&sink->writer);
 		sink->writer.buffer_pos = SizeOfPageHeaderData;
 
-		page_index_root = write_page_index(
-				sink->index, sink->writer.pages, sink->writer.pages_allocated);
+		page_index_root = write_page_index_tracked(
+				sink->index,
+				sink->writer.pages,
+				sink->writer.pages_allocated,
+				&sink->page_index_pages,
+				&sink->page_index_pages_allocated);
 		header.page_index = page_index_root;
 		header.num_pages  = sink->writer.pages_allocated;
 	}
@@ -1637,23 +1650,23 @@ tp_merge_segment_batch(
 	tp_validate_merged_terms(merged_terms, num_merged_terms);
 
 	{
-		volatile BlockNumber completed_root = InvalidBlockNumber;
+		volatile TpMergeSink sink;
 
+		memset((TpMergeSink *)&sink, 0, sizeof(TpMergeSink));
 		PG_TRY();
 		{
-			TpMergeSink		 sink;
 			BlockNumber		 new_segment;
 			Buffer			 header_buf;
 			Page			 header_page;
 			TpSegmentHeader *header;
 
-			merge_sink_init_pages(&sink, index);
+			merge_sink_init_pages((TpMergeSink *)&sink, index);
 			if (sink.writer.pages_allocated == 0)
 				elog(ERROR, "merge: failed to allocate segment pages");
 			new_segment = sink.writer.pages[0];
 
 			write_merged_segment_to_sink(
-					&sink,
+					(TpMergeSink *)&sink,
 					merged_terms,
 					num_merged_terms,
 					sources,
@@ -1662,7 +1675,6 @@ tp_merge_segment_batch(
 					total_tokens,
 					false,
 					next_segment);
-			completed_root = new_segment;
 
 			header_buf = ReadBuffer(index, new_segment);
 			LockBuffer(header_buf, BUFFER_LOCK_SHARE);
@@ -1687,12 +1699,15 @@ tp_merge_segment_batch(
 			result->total_tokens = header->total_tokens;
 			result->data_size	 = header->data_size;
 			UnlockReleaseBuffer(header_buf);
-			completed_root = InvalidBlockNumber;
 		}
 		PG_CATCH();
 		{
-			if (BlockNumberIsValid(completed_root))
-				(void)tp_discard_unpublished_segment(index, completed_root);
+			tp_discard_unpublished_pages(
+					index, sink.writer.pages, sink.writer.pages_allocated);
+			tp_discard_unpublished_pages(
+					index,
+					sink.page_index_pages,
+					sink.page_index_pages_allocated);
 			PG_RE_THROW();
 		}
 		PG_END_TRY();
