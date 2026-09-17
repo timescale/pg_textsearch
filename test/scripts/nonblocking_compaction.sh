@@ -578,9 +578,11 @@ test_same_index_serialization() {
                    AND activity.state = 'active'
                    AND ${first_backend} =
                        ANY (pg_blocking_pids(activity.pid))
-                   AND pending.locktype = 'relation'
-                   AND pending.relation = ${oid}
-                   AND pending.mode = 'ShareUpdateExclusiveLock'
+                   AND pending.locktype = 'object'
+                   AND pending.classid = 'pg_am'::regclass
+                   AND pending.objid = ${oid}
+                   AND pending.objsubid = 3
+                   AND pending.mode = 'ExclusiveLock'
                    AND NOT pending.granted
             );" 2>/dev/null || true)
         if [ "${lock_proof}" = "t" ]; then
@@ -589,7 +591,7 @@ test_same_index_serialization() {
         sleep 0.05
     done
     [ "${lock_proof}" = "t" ] ||
-        fail "second compactor was not blocked by backend ${first_backend} on serial_idx ShareUpdateExclusiveLock"
+        fail "second compactor was not blocked by backend ${first_backend} on the serial_idx maintenance lock"
     kill -0 "${first_pid}" 2>/dev/null ||
         fail "first compactor left its pause before serialization proof"
     assert_still_paused \

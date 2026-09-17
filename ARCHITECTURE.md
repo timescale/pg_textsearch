@@ -85,13 +85,15 @@ exclusive waiter has acquired. A shared acquirer can pass the gate just before
 the count changes, but only that bounded set can barge; a continuing stream of
 new readers cannot starve the exclusive waiter.
 
-Compaction, force merge, and VACUUM segment mutation serialize with
-`ShareUpdateExclusiveLock` on the physical index relation. This maintenance
-lock is compatible with ordinary query and DML relation locks, so it does not
-exclude scans or memtable appends. Operations that need multiple lock classes
-must acquire them in this order:
+Compaction, force merge, and VACUUM segment mutation serialize with an
+exclusive per-index heavyweight object lock in pg_textsearch's private
+`pg_am` subobject namespace. Its discriminator is distinct from managed
+background-compaction admission, so a signaled worker can compact while the
+spilling transaction is still completing pre-commit dispatch. The lock does
+not exclude scans, memtable appends, or ordinary relation locks. Operations
+that need multiple lock classes must acquire them in this order:
 
-1. relation maintenance lock;
+1. per-index maintenance object lock;
 2. per-index LWLock;
 3. metapage buffer lock;
 4. segment or tombstone buffer lock.
@@ -114,7 +116,7 @@ Prepared transactions do not flush queued background requests. Unconfigured,
 unresolvable, or failed callbacks do not fall back inline; the compaction debt
 remains for a later spill or explicit maintenance.
 
-`bm25_compact()` holds one relation maintenance lock while it drives reducible
+`bm25_compact()` holds one per-index maintenance lock while it drives reducible
 debt to completion. Each pass uses brief per-index `LW_SHARED` selection, no
 per-index lock during output build, and fair `LW_EXCLUSIVE` validation and
 publication. `bm25_compact_step()` runs at most one pass. Drive repeated
@@ -126,7 +128,7 @@ permanently above its advisory threshold.
 
 Each runtime pass uses the same phase engine:
 
-1. **Maintenance admission.** Acquire the relation maintenance lock. A caller
+1. **Maintenance admission.** Acquire the per-index maintenance lock. A caller
    that waited rechecks compaction debt after admission.
 2. **Select.** Briefly take the per-index lock in `LW_SHARED`, snapshot the
    metapage, and record exact contiguous source runs and retained remainders.
@@ -260,7 +262,7 @@ chain.
 
 ## VACUUM Coordination
 
-VACUUM acquires the relation maintenance lock before identifying segment
+VACUUM acquires the per-index maintenance lock before identifying segment
 document IDs and retains it through alive-bit mutation, legacy segment
 replacement, corpus-statistic adjustment, and any segment unlink. It then
 takes per-index and buffer locks in the normal order.

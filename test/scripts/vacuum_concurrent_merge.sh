@@ -11,7 +11,7 @@
 # Assert("doc_id < bitset->num_docs"), or a SIGSEGV in release builds).
 #
 # A deterministic first case pauses force merge after source selection and
-# proves the VACUUM backend waits on the exact index relation maintenance
+# proves the VACUUM backend waits on the exact private index maintenance
 # lock.  The stress case then has writers spill many small segments, a merger
 # force-merge them, a deleter create dead tuples, and a vacuumer run VACUUM
 # concurrently (autovacuum is also aggressive).  Before the fix this fails
@@ -75,11 +75,22 @@ diagnose() {
          ORDER BY pid;" 2>&1 || true
     warn "pg_locks for test indexes:"
     sql -F '|' -c "
-        SELECT pid, relation::regclass, mode, granted
+        SELECT pid, locktype,
+               CASE
+                   WHEN locktype = 'relation' THEN relation::regclass::text
+                   WHEN locktype = 'object' THEN
+                       classid::regclass::text || ':' || objid || ':' || objsubid
+               END,
+               mode, granted
           FROM pg_locks
-         WHERE locktype = 'relation'
-           AND relation IN ('docs_bm25'::regclass, 'coord_bm25'::regclass)
-         ORDER BY pid, relation, mode;" 2>&1 || true
+         WHERE (locktype = 'relation'
+                AND relation IN ('docs_bm25'::regclass,
+                                 'coord_bm25'::regclass))
+            OR (locktype = 'object'
+                AND classid = 'pg_am'::regclass
+                AND objid IN ('docs_bm25'::regclass,
+                              'coord_bm25'::regclass))
+         ORDER BY pid, locktype, mode;" 2>&1 || true
     warn "server log tail:"
     tail -n 80 "${LOGFILE}" 2>/dev/null || true
     warn "client log tails:"
@@ -358,9 +369,11 @@ test_vacuum_waits_for_force_merge() {
                    AND activity.state = 'active'
                    AND ${compactor_backend} =
                        ANY (pg_blocking_pids(activity.pid))
-                   AND pending.locktype = 'relation'
-                   AND pending.relation = ${oid}
-                   AND pending.mode = 'ShareUpdateExclusiveLock'
+                   AND pending.locktype = 'object'
+                   AND pending.classid = 'pg_am'::regclass
+                   AND pending.objid = ${oid}
+                   AND pending.objsubid = 3
+                   AND pending.mode = 'ExclusiveLock'
                    AND NOT pending.granted
             );" 2>/dev/null || true)
         if [ "${lock_proof}" = "t" ]; then
@@ -369,7 +382,7 @@ test_vacuum_waits_for_force_merge() {
         sleep 0.05
     done
     [ "${lock_proof}" = "t" ] ||
-        error "VACUUM was not blocked by backend ${compactor_backend} on coord_bm25 ShareUpdateExclusiveLock"
+        error "VACUUM was not blocked by backend ${compactor_backend} on the coord_bm25 maintenance lock"
     kill -0 "${vacuum_pid}" 2>/dev/null ||
         error "VACUUM exited before the selected-source compaction resumed"
     kill -0 "${compactor_pid}" 2>/dev/null ||

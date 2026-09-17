@@ -65,6 +65,7 @@
 #include "index/state.h"
 #include "planner/hooks.h"
 #include "scoring/bm25.h"
+#include "segment/compaction.h"
 
 #if PG_VERSION_NUM >= 180000
 PG_MODULE_MAGIC_EXT(.name = "pg_textsearch", .version = "1.5.0-dev");

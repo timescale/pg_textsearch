@@ -1,7 +1,6 @@
 #!/bin/bash
 #
-# Verify that public compaction mutators reject nonowners before requesting a
-# heavyweight relation lock, then recheck ownership after locking.
+# Verify compaction ownership checks and maintenance/index lock ordering.
 #
 
 set -euo pipefail
@@ -41,6 +40,23 @@ if [[ -z "${relation_open_line}" ||
       "${ownercheck_lines[0]}" -ge "${relation_open_line}" ||
       "${ownercheck_lines[1]}" -le "${relation_open_line}" ]]; then
     echo "compaction ownership checks must bracket relation_open" >&2
+    exit 1
+fi
+
+maintenance_lock_body="$(
+    sed -n '/^tp_compaction_lock(Relation index)$/,/^}$/p' \
+        "${COMPACTION_SOURCE}"
+)"
+maintenance_unlock_body="$(
+    sed -n '/^tp_compaction_unlock(Relation index)$/,/^}$/p' \
+        "${COMPACTION_SOURCE}"
+)"
+if ! grep -Fq 'TP_COMPACTION_MAINTENANCE_LOCK_SUBID' \
+        <<<"${maintenance_lock_body}" ||
+   ! grep -Fq 'LockDatabaseObject' <<<"${maintenance_lock_body}" ||
+   ! grep -Fq 'UnlockDatabaseObject' <<<"${maintenance_unlock_body}" ||
+   grep -Fq 'LockRelationOid' <<<"${maintenance_lock_body}"; then
+    echo "maintenance must use its private object lock, not managed relation admission" >&2
     exit 1
 fi
 
@@ -113,6 +129,33 @@ check_compaction_lock_order() {
 
 check_compaction_lock_order tp_compact_index
 check_compaction_lock_order tp_compact_index_step
+check_compaction_lock_order tp_compact_index_step_if_current
+
+current_step_body="$(
+    sed -n '/^tp_compact_index_step_if_current(PG_FUNCTION_ARGS)$/,/^}$/p' \
+        "${SOURCE_FILE}"
+)"
+current_step_precheck_line="$(
+    grep -n 'tp_open_current_bm25_target' <<<"${current_step_body}" |
+        head -1 | cut -d: -f1 || true
+)"
+current_step_maintenance_line="$(
+    grep -n 'tp_compaction_lock(index_rel)' <<<"${current_step_body}" |
+        head -1 | cut -d: -f1 || true
+)"
+current_step_recheck_line="$(
+    grep -n 'tp_open_current_bm25_target' <<<"${current_step_body}" |
+        tail -1 | cut -d: -f1 || true
+)"
+if [[ -z "${current_step_precheck_line}" ||
+      -z "${current_step_maintenance_line}" ||
+      -z "${current_step_recheck_line}" ||
+      "${current_step_precheck_line}" -ge "${current_step_maintenance_line}" ||
+      "${current_step_maintenance_line}" -ge "${current_step_recheck_line}" ||
+      "${current_step_precheck_line}" -eq "${current_step_recheck_line}" ]]; then
+    echo "generation-checked compaction must recheck its target after maintenance admission" >&2
+    exit 1
+fi
 
 inline_body="$(
     sed -n '/^tp_compact_inline(TpLocalIndexState \*index_state, Relation index_rel)$/,/^}$/p' \

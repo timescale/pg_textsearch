@@ -9,6 +9,10 @@
 struct TpLocalIndexState;
 typedef struct RelationData *Relation;
 
+extern int tp_debug_compaction_pause_after_select_ms;
+extern int tp_debug_compaction_pause_before_publish_ms;
+extern int tp_debug_compaction_pause_after_restamp_ms;
+
 extern uint64 tp_max_segment_size_bytes(void);
 
 extern void tp_compaction_lock(Relation index);
@@ -26,7 +30,7 @@ extern void tp_maybe_compact_level(
 
 /*
  * Run at most one bounded compaction pass and report whether one ran.
- * Runtime callers hold the relation maintenance lock.  CREATE INDEX may
+ * Runtime callers hold the per-index maintenance object lock. CREATE INDEX may
  * instead call while holding its private per-index exclusive lock.
  */
 extern bool

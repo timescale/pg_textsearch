@@ -8,6 +8,7 @@
 #include <access/transam.h>
 #include <access/xact.h>
 #include <access/xlog.h>
+#include <catalog/pg_am_d.h>
 #include <common/int.h>
 #include <miscadmin.h>
 #include <storage/bufmgr.h>
@@ -29,9 +30,7 @@
 #include "segment/pagemapper.h"
 #include "segment/tombstone.h"
 
-extern int tp_debug_compaction_pause_after_select_ms;
-extern int tp_debug_compaction_pause_before_publish_ms;
-extern int tp_debug_compaction_pause_after_restamp_ms;
+#define TP_COMPACTION_MAINTENANCE_LOCK_SUBID 3
 
 typedef struct TpSegmentEstimate
 {
@@ -121,13 +120,42 @@ tp_debug_compaction_pause(int pause_ms, const char *phase, Oid index_oid)
 void
 tp_compaction_lock(Relation index)
 {
-	LockRelationOid(RelationGetRelid(index), ShareUpdateExclusiveLock);
+	/*
+	 * Use pg_am's otherwise-unused object-subid space, matching managed
+	 * compaction's private lock namespace but with a distinct discriminator.
+	 * A relation ShareUpdateExclusiveLock cannot be used here because the
+	 * pre-commit dispatcher intentionally holds that mode while signaling a
+	 * worker that may compact before the writer commits.
+	 */
+	LockDatabaseObject(
+			AccessMethodRelationId,
+			RelationGetRelid(index),
+			TP_COMPACTION_MAINTENANCE_LOCK_SUBID,
+			ExclusiveLock);
 }
 
 void
 tp_compaction_unlock(Relation index)
 {
-	UnlockRelationOid(RelationGetRelid(index), ShareUpdateExclusiveLock);
+	UnlockDatabaseObject(
+			AccessMethodRelationId,
+			RelationGetRelid(index),
+			TP_COMPACTION_MAINTENANCE_LOCK_SUBID,
+			ExclusiveLock);
+}
+
+static bool
+tp_compaction_maintenance_lock_held(Relation index)
+{
+	LOCKTAG tag;
+
+	SET_LOCKTAG_OBJECT(
+			tag,
+			MyDatabaseId,
+			AccessMethodRelationId,
+			RelationGetRelid(index),
+			TP_COMPACTION_MAINTENANCE_LOCK_SUBID);
+	return LockHeldByMe(&tag, ExclusiveLock, true);
 }
 
 static bool
@@ -149,10 +177,10 @@ tp_compaction_is_private(TpLocalIndexState *index_state, Relation index)
 		return true;
 	}
 
-	if (!CheckRelationLockedByMe(index, ShareUpdateExclusiveLock, true))
+	if (!tp_compaction_maintenance_lock_held(index))
 		ereport(ERROR,
 				(errcode(ERRCODE_INTERNAL_ERROR),
-				 errmsg("runtime compaction requires the relation "
+				 errmsg("runtime compaction requires the per-index "
 						"maintenance lock")));
 
 	return false;
@@ -1857,7 +1885,8 @@ tp_select_force_compaction_plan(
 
 /*
  * Select, build, and publish one bounded compaction pass.  Runtime callers
- * hold the relation maintenance lock; CREATE INDEX instead holds its private
+ * hold the per-index maintenance object lock; CREATE INDEX instead holds its
+ * private
  * per-index lock for the whole build because the index is not yet visible.
  *
  * Runtime selection takes LW_SHARED briefly, output construction holds no

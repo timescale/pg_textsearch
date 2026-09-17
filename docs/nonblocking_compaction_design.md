@@ -18,20 +18,19 @@ The implemented design addresses the two problems independently:
    exclusive waiter acquires the lock.
 2. Separated spill publication from compaction policy so no path acquires a
    maintenance lock while holding the per-index lock.
-3. Serialized compaction and VACUUM segment mutation with PostgreSQL's
-   interruptible `ShareUpdateExclusiveLock` on the index relation.
+3. Serialized compaction and VACUUM segment mutation with an interruptible
+   private per-index heavyweight object lock.
 4. Split compaction into short selection, long unlocked build, and short
    exclusive publication phases.
 5. Preserved L0 segments published by concurrent spills and attached displaced
    source pages to the existing standby-safe deferred-free chain in the same
    WAL-logged publication.
 
-The pending managed background compaction work in #478 remains responsible
-for deciding *when* background compaction runs. This implementation changed
-*how* every invocation of `bm25_compact_step()` coordinates with foreground
-work. The two changes are complementary: inline compaction stops blocking
-readers, while managed background compaction also avoids making the foreground
-writer perform the merge.
+The managed background compaction implementation from #478 decides *when*
+background compaction runs. This implementation changes *how* every invocation
+of `bm25_compact_step()` coordinates with foreground work. Together, inline
+compaction stops blocking readers and background mode also avoids making the
+foreground writer perform the merge.
 
 ## Evidence
 
@@ -74,7 +73,7 @@ reader lock lifetime and relies on fair admission to bound exclusive waits.
 
 ## Non-goals
 
-- Implementing the pg_durable workflow lifecycle from #478.
+- Changing the pg_durable workflow lifecycle introduced by #478.
 - Changing the default compaction mode.
 - Making memtable spill itself generation-swapped or lock-free. Measurements
   show ordinary spill is not the long exclusion window.
@@ -131,20 +130,28 @@ avoids leaking the gate through errors in spill or publication. PostgreSQL
 LWLock acquisition holds interrupts until it returns, so the increment and
 matching decrement cannot be separated by ordinary query cancellation.
 
-### Relation maintenance lock
+### Per-index maintenance lock
 
 Compaction, VACUUM segment mutation, and force merge acquire
-`ShareUpdateExclusiveLock` on the physical index relation.
+an exclusive heavyweight object lock keyed by the physical index OID. It uses
+pg_textsearch's private `pg_am` subobject namespace with a discriminator that
+is distinct from #478's managed-admission and lineage locks.
 
 This lock:
 
-- is compatible with the `AccessShareLock` and `RowExclusiveLock` modes used
-  by ordinary queries and DML;
 - conflicts with itself, serializing segment-derived maintenance for one
   physical index;
+- does not conflict with relation locks held by ordinary queries, DML, or the
+  pre-commit managed dispatcher;
 - is interruptible and automatically released on error or backend exit;
 - requires no shared-memory owner recovery protocol;
 - permits compaction of different indexes concurrently.
+
+Compaction callers retain the normal relation lock appropriate to their SQL or
+index-AM operation. The private object lock supplies only the same-index
+maintenance serialization. Keeping it distinct from #478's admission lock is
+required because the dispatcher deliberately holds its target admission while
+signaling a worker that may compact before the spilling transaction commits.
 
 The maintenance lock protects source segment payload, alive bitmaps,
 `alive_count`, and chain relationships while a replacement is derived. It
@@ -154,7 +161,7 @@ does not serialize ordinary memtable appends or L0 spill publication.
 
 Any path needing more than one lock class follows this order:
 
-1. relation maintenance lock;
+1. per-index maintenance object lock;
 2. per-index LWLock;
 3. metapage buffer lock;
 4. segment or tombstone buffer lock.
@@ -170,12 +177,12 @@ background compaction policy.
 | ranked scan | none | `LW_SHARED`, existing lifetime |
 | normal insert | none | `LW_SHARED` during append |
 | spill | none | `LW_EXCLUSIVE` through L0 publication |
-| compaction selection | `ShareUpdateExclusiveLock` | `LW_SHARED` |
-| compaction build | `ShareUpdateExclusiveLock` | none |
-| compaction publication | `ShareUpdateExclusiveLock` | `LW_EXCLUSIVE` |
-| VACUUM segment mutation | `ShareUpdateExclusiveLock` | existing shared/exclusive sections |
+| compaction selection | per-index maintenance object lock | `LW_SHARED` |
+| compaction build | per-index maintenance object lock | none |
+| compaction publication | per-index maintenance object lock | `LW_EXCLUSIVE` |
+| VACUUM segment mutation | per-index maintenance object lock | existing shared/exclusive sections |
 | tombstone drain | none | `LW_EXCLUSIVE` |
-| force merge | `ShareUpdateExclusiveLock` | phase-specific; exclusive for truncate |
+| force merge | per-index maintenance object lock | phase-specific; exclusive for truncate |
 
 Publication remains exclusive even though it is short. A concurrent L0 spill
 can prepend segments while compaction builds. Preserving that prefix requires
@@ -212,7 +219,7 @@ per-index lock and waits to start inline compaction.
 
 ### Phase 0: maintenance admission
 
-The caller acquires `ShareUpdateExclusiveLock` on the physical index and
+The caller acquires the private per-index maintenance object lock and
 rechecks whether a reducible level remains above threshold. Competing
 same-index compactions and VACUUM wait here without blocking normal scans or
 inserts.
@@ -296,7 +303,7 @@ unreachable. The assigned transaction remains in progress through graph
 publication, pinning primary and standby horizons even when a standby ranked
 cursor begins on the old graph after restamping.
 
-Runtime restamping holds the relation maintenance lock but no per-index
+Runtime restamping holds the per-index maintenance lock but no per-index
 LWLock. Its work scales with the number of tombstone containers without
 turning that work into reader exclusion.
 
@@ -372,7 +379,7 @@ without adding a pg_textsearch resource manager.
 ## VACUUM
 
 Segments are immutable except for their alive bitmaps and chain metadata.
-VACUUM must acquire the relation maintenance lock before identifying segment
+VACUUM must acquire the per-index maintenance lock before identifying segment
 document IDs and retain it through:
 
 - alive-bit mutation;
@@ -421,13 +428,13 @@ Normal compaction never truncates the relation.
 ## Background compaction compatibility
 
 #478's managed workflow invokes a generation-checked
-`bm25_compact_step_if_current()` once per transaction. This design preserves
-that contract:
+`bm25_compact_step_if_current()` once per transaction. The integrated entry
+point preserves that contract:
 
 - target identity, owner checks, lifecycle locks, signaling, and scheduling
-  remain in #478;
+  remain unchanged;
 - the helper performs its cheap captured-generation check before waiting;
-- after acquiring relation maintenance, it rechecks the captured physical
+- after acquiring per-index maintenance, it rechecks the captured physical
   identity and background mode before entering the common phase engine;
 - the helper does not acquire the per-index LWLock around the whole step;
 - one step performs at most one select/build/publish pass;
@@ -437,14 +444,11 @@ that contract:
   while a worker builds;
 - a worker rechecks compaction debt after maintenance admission.
 
-This change adds no pg_durable dependency and does not alter compaction
-reloptions or callback configuration. The integration adaptation is localized
-but not purely textual: #478's current step entry point takes
-`LW_EXCLUSIVE` around `tp_compact_step()` and checks the physical generation
-only before that wait. It must instead take maintenance, repeat the generation
-check, call the common engine, and release maintenance. Its build-path changes
-must also preserve the post-spill policy boundary so maintenance is never
-requested while the spill's per-index exclusive lock is held.
+The helper performs a cheap physical-generation check before maintenance
+admission, repeats the full database, tablespace, relfilenumber, owner, and
+background-mode check after admission, and then calls the common phase engine
+without a coarse per-index LWLock. The post-spill policy boundary remains
+outside the spill's per-index exclusive section.
 
 ## Failure, cancellation, and crash behavior
 
@@ -559,17 +563,16 @@ The implementation PR includes:
 
 1. fair per-index lock admission;
 2. spill/compaction policy separation;
-3. relation maintenance locking;
+3. per-index maintenance locking;
 4. select/build/validate/publish compaction;
 5. detached tombstone publication and failure cleanup;
 6. VACUUM and force-merge integration;
 7. deterministic concurrency, recovery, and benchmark coverage;
 8. architecture and operator documentation.
 
-Managed scheduling from #478 remains a separate PR. Once both land,
-`compaction = 'background'` gains both desired properties: foreground writers
-do not perform merges, and background merges do not stall foreground readers
-or memtable inserts.
+With #478 now on the base branch, `compaction = 'background'` has both desired
+properties: foreground writers do not perform merges, and background merges
+do not stall foreground readers or memtable inserts.
 
 ## Acceptance criteria
 

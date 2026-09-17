@@ -455,8 +455,10 @@ EOF
         error "VACUUM reclaimed old-graph pages while ranked cursor was open: \
 before=${parked_before_vacuum} after=${parked_after_vacuum}"
 
-    wait_for_standby_catchup 30 ||
-        error "Standby did not replay compaction publication"
+    # PostgreSQL 18 can hold publication redo behind the cursor's buffer
+    # pin. Fetch the old graph to completion before requiring replay to
+    # advance; waiting for catch-up first would deadlock until
+    # max_standby_streaming_delay cancels the cursor.
     remaining=$(reader_query "FETCH ALL FROM held_ranked;")
     held_ids="${first_id}"$'\n'"${remaining}"
     if grep -Ev '^[0-9]+$' <<<"${held_ids}" >/dev/null; then
@@ -473,11 +475,13 @@ before=${parked_before_vacuum} after=${parked_after_vacuum}"
 count=${held_id_count}, duplicate sample=${duplicate_ids:-none}"
     fi
     log "PASS: old-layout ranked cursor returned exact IDs 1..8000 \
-after publication replay"
+after primary publication"
 
     reader_query "CLOSE held_ranked; COMMIT;" >/dev/null
     reader_close
     wait_for_feedback_release
+    wait_for_standby_catchup 30 ||
+        error "Standby did not replay publication after the old cursor closed"
 
     drained="${parked_after_vacuum}"
     for _ in $(seq 1 20); do

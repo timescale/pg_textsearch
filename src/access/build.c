@@ -361,7 +361,7 @@ tp_apply_compaction_policy(
 		else if (tp_compaction_needed(index_rel))
 			tp_compaction_request(RelationGetRelid(index_rel));
 		break;
-	case TP_COMPACTION_OFF:
+	case TP_COMPACTION_MANUAL:
 		break;
 	}
 	pgstat_progress_update_param(
