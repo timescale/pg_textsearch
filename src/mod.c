@@ -37,6 +37,7 @@
 #include "access/rls.h"
 #include "constants.h"
 #include "index/compaction_request.h"
+#include "index/limit.h"
 #include "index/metapage.h"
 #include "index/registry.h"
 #include "index/state.h"
