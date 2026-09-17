@@ -1211,6 +1211,24 @@ tp_publish_compaction_output(
 		Page			  meta_copy;
 		TpIndexMetaPage	  meta;
 
+		/*
+		 * Assign an XID before emitting the restamp WAL.  The in-progress
+		 * transaction pins primary and standby horizons through graph
+		 * publication, including snapshots that start after restamping.
+		 *
+		 * Restamp while the detached batch is still unreachable and before
+		 * requesting the runtime publication lock.  Publication validation
+		 * below remains the authority on whether the prepared output can be
+		 * attached.
+		 */
+		merged_fxid = GetCurrentFullTransactionId();
+		tp_tombstone_restamp_detached(index, output->tombstones, merged_fxid);
+		if (!index_state->lock_held)
+			tp_debug_compaction_pause(
+					tp_debug_compaction_pause_after_restamp_ms,
+					"after-restamp",
+					RelationGetRelid(index));
+
 		if (!index_state->lock_held)
 			tp_debug_compaction_pause(
 					tp_debug_compaction_pause_before_publish_ms,
@@ -1280,18 +1298,6 @@ tp_publish_compaction_output(
 					(errcode(ERRCODE_DATA_CORRUPTED),
 					 errmsg("compaction shrinkage exceeds current index "
 							"statistics")));
-
-		/*
-		 * Assign an XID before emitting the restamp WAL.  The in-progress
-		 * transaction pins primary and standby horizons through graph
-		 * publication, including snapshots that start after restamping.
-		 */
-		merged_fxid = GetCurrentFullTransactionId();
-		tp_tombstone_restamp_detached(index, output->tombstones, merged_fxid);
-		tp_debug_compaction_pause(
-				tp_debug_compaction_pause_after_restamp_ms,
-				"after-restamp",
-				RelationGetRelid(index));
 
 		l0_changes = plan->selected_counts[0] > 0 ||
 					 output->output_counts[0] > 0;

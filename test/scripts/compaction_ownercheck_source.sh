@@ -159,11 +159,17 @@ if grep -Fq 'tp_acquire_index_lock' <<<"${build_body}" ||
     echo "compaction output build must not manage the per-index lock" >&2
     exit 1
 fi
-if [[ -z "${publish_acquire_line}" || -z "${publish_restamp_line}" ||
-      -z "${publish_attach_line}" ||
-      "${publish_acquire_line}" -ge "${publish_restamp_line}" ||
-      "${publish_restamp_line}" -ge "${publish_attach_line}" ]] ||
-   ! grep -Fq 'GetCurrentFullTransactionId()' <<<"${publish_body}" ||
+publish_xid_line="$(
+    grep -n 'merged_fxid = GetCurrentFullTransactionId()' \
+        <<<"${publish_body}" | head -1 | cut -d: -f1 || true
+)"
+
+if [[ -z "${publish_xid_line}" || -z "${publish_restamp_line}" ||
+      -z "${publish_acquire_line}" || -z "${publish_attach_line}" ||
+      "${publish_xid_line}" -ge "${publish_restamp_line}" ||
+      "${publish_restamp_line}" -ge "${publish_acquire_line}" ||
+      "${publish_acquire_line}" -ge "${publish_attach_line}" ]] ||
+   ! grep -Fq 'output->tombstones, merged_fxid' <<<"${publish_body}" ||
    ! grep -Fq 'GenericXLogStart(index)' <<<"${publish_body}" ||
    ! grep -Fq 'predecessor->next_segment = output->output_heads[0]' \
        <<<"${publish_body}" ||

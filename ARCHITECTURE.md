@@ -134,16 +134,17 @@ Each runtime pass uses the same phase engine:
    with a provisional invalid reclaim stamp.
    Segment data pages, page-index pages, completed output roots, and tombstone
    container pages have explicit ownership records for handled-error cleanup.
-4. **Validate.** Acquire fair `LW_EXCLUSIVE` and validate the selected runs,
+4. **Stamp reclaim.** Assign the compactor's full transaction ID and restamp
+   every detached tombstone container with it while the batch remains
+   unreachable and no runtime per-index lock is held. The in-progress
+   transaction pins primary and standby horizons through publication.
+5. **Validate.** Acquire fair `LW_EXCLUSIVE` and validate the selected runs,
    prepared outputs, and detached tombstones against the current graph. L0 may
    have only a newly prepended spill prefix; non-L0 chains must be unchanged.
-5. **Publish.** Assign the compactor's full transaction ID and restamp every
-   detached tombstone container with it. The in-progress transaction pins
-   primary and standby horizons through publication. Then, in one
-   `GenericXLog` action, splice around any accepted L0 prefix, replace the
-   selected runs, rebase counts and corpus shrinkage from current metapage
-   values, and attach the detached tombstone batch to the current pending-free
-   head.
+6. **Publish.** In one `GenericXLog` action, splice around any accepted L0
+   prefix, replace the selected runs, rebase counts and corpus shrinkage from
+   current metapage values, and attach the detached tombstone batch to the
+   current pending-free head.
 
 Published physical changes are not undone by transaction rollback.
 
@@ -212,12 +213,13 @@ snapshots hold the primary's reclaim horizon back. Use
 Compaction constructs its tombstone containers as a detached chain whose tail
 initially points to `InvalidBlockNumber`. Publication links that tail to the
 then-current `pending_free_head` in the same WAL record that replaces the
-segment graph. The detached pages are restamped only after the long unlocked
-build and validation, immediately before attachment. The stamp is the
+segment graph. The detached pages are restamped after the long unlocked build
+but before requesting the runtime publication lock. The stamp is the
 compactor's assigned, still-in-progress full transaction ID, so primary and
 standby snapshots that start on the old graph before publication cannot
-advance the reclaim horizon past it. Selected source pages are never returned
-directly to the FSM.
+advance the reclaim horizon past it. Restamping scales with the number of
+tombstone containers but does not extend runtime reader exclusion. Selected
+source pages are never returned directly to the FSM.
 
 A handled error before publication returns every explicitly tracked output and
 tombstone allocation to the FSM without freeing selected source pages. A

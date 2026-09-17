@@ -285,7 +285,19 @@ container pages to the FSM. The outer compaction catch discards each completed
 owned output root and detached container page. None of these paths frees a
 selected source page or follows an untrusted output link to infer ownership.
 
-### Phase 3: validate
+### Phase 3: stamp reclaim
+
+After the unlocked build, compaction assigns its full transaction ID and
+restamps every detached tombstone container with it while the batch remains
+unreachable. The assigned transaction remains in progress through graph
+publication, pinning primary and standby horizons even when a standby ranked
+cursor begins on the old graph after restamping.
+
+Runtime restamping holds the relation maintenance lock but no per-index
+LWLock. Its work scales with the number of tombstone containers without
+turning that work into reader exclusion.
+
+### Phase 4: validate
 
 Compaction requests the fair per-index lock in `LW_EXCLUSIVE`. Once acquired,
 no primary reader, insert, spill, drain, or truncation operation can observe a
@@ -308,13 +320,7 @@ With the maintenance lock held, validation failure indicates corruption, an
 implementation error, or an operation not yet participating in the
 maintenance protocol. It fails closed without changing the published graph.
 
-### Phase 4: publish
-
-After validation, compaction assigns its full transaction ID and restamps every
-detached tombstone container with it. This WAL-logged restamping occurs while
-the batch is still unreachable. The assigned transaction remains in progress
-through graph publication, pinning primary and standby horizons even when a
-standby ranked cursor begins on the old graph after restamping.
+### Phase 5: publish
 
 One final `GenericXLog` publication:
 

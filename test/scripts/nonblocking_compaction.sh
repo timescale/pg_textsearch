@@ -182,6 +182,7 @@ seed_index() {
 seed_all_indexes() {
     log "Seeding independent indexes with deterministic compaction debt..."
     seed_index scan_docs scan_idx scancase
+    seed_index restamp_docs restamp_idx restampcase
     seed_index insert_docs insert_idx insertcase
     seed_index spill_docs spill_idx spillcase
     seed_index serial_docs serial_idx serialcase
@@ -439,6 +440,42 @@ test_scan_progress() {
     assert_all_documents scan_docs scan_idx scancase
 }
 
+test_scan_progress_after_restamp() {
+    local compactor_output="${CLIENT_DIR}/restamp_compactor.log"
+    local scan_output="${CLIENT_DIR}/restamp_reader.log"
+    local compactor_pid
+    local reader_pid
+    local backend
+    local oid
+
+    log "Case: ranked scan progresses after detached reclaim restamping..."
+    oid=$(index_oid restamp_idx)
+    start_compaction pgts-restamp-compactor restamp_idx \
+        pg_textsearch.debug_compaction_pause_after_restamp_ms \
+        "${PAUSE_MS}" "${compactor_output}"
+    compactor_pid=${STARTED_PID}
+    backend=$(backend_pid pgts-restamp-compactor)
+    wait_for_marker after-restamp "${oid}" "${backend}"
+
+    start_sql pgts-restamp-reader "
+        SET enable_seqscan = off;
+        SELECT count(*) FROM (
+            SELECT id FROM restamp_docs
+             ORDER BY body <@> to_bm25query('restampcase', 'restamp_idx')
+             LIMIT 1000
+        ) ranked;" "${scan_output}"
+    reader_pid=${STARTED_PID}
+    require_completion_during_pause \
+        "${reader_pid}" "${compactor_pid}" "post-restamp ranked scan" \
+        "${scan_output}" after-restamp "${oid}" "${backend}"
+    [ "$(tail -n 1 "${scan_output}")" = "32" ] ||
+        fail "post-restamp ranked scan did not return all 32 documents"
+
+    wait_success "${compactor_pid}" 10 \
+        "restamp compactor" "${compactor_output}"
+    assert_all_documents restamp_docs restamp_idx restampcase
+}
+
 test_insert_progress() {
     local compactor_output="${CLIENT_DIR}/insert_compactor.log"
     local insert_output="${CLIENT_DIR}/insert_writer.log"
@@ -641,6 +678,7 @@ main() {
     verify_guc_contract
     seed_all_indexes
     test_scan_progress
+    test_scan_progress_after_restamp
     test_insert_progress
     test_spill_prefix_progress
     test_same_index_serialization
