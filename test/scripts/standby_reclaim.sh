@@ -25,6 +25,22 @@ READER_BACKEND_PID=
 READER_OPEN=false
 HELD_FEEDBACK_XMIN=
 
+wait_for_child_exit() {
+    local pid=$1
+    local attempts=$2
+
+    for _ in $(seq 1 "${attempts}"); do
+        if ! kill -0 "${pid}" 2>/dev/null; then
+            # The bounded poll established that the child exited; this wait
+            # only reaps its already-available status.
+            wait "${pid}" 2>/dev/null || true
+            return 0
+        fi
+        sleep 0.1
+    done
+    return 1
+}
+
 reader_close() {
     if [ "${READER_OPEN}" != "true" ]; then
         return
@@ -32,19 +48,22 @@ reader_close() {
 
     exec 9>&- || true
     exec 8<&- || true
-    for _ in $(seq 1 50); do
-        if ! kill -0 "${READER_PID}" 2>/dev/null; then
-            wait "${READER_PID}" 2>/dev/null || true
-            READER_OPEN=false
-            rm -rf "${STANDBY_DIR}/ranked_reader"
-            return
+    if ! wait_for_child_exit "${READER_PID}" 50; then
+        warn "Ranked reader PID ${READER_PID} did not exit after EOF in 5s; \
+sending SIGTERM"
+        kill -TERM "${READER_PID}" 2>/dev/null || true
+        if ! wait_for_child_exit "${READER_PID}" 50; then
+            warn "Ranked reader PID ${READER_PID} ignored SIGTERM for 5s; \
+sending SIGKILL (state: $(ps -o pid=,stat=,cmd= -p "${READER_PID}" \
+2>/dev/null || echo unavailable))"
+            kill -9 "${READER_PID}" 2>/dev/null || true
+            if ! wait_for_child_exit "${READER_PID}" 50; then
+                warn "Ranked reader PID ${READER_PID} still exists 5s after \
+SIGKILL (state: $(ps -o pid=,stat=,cmd= -p "${READER_PID}" \
+2>/dev/null || echo unavailable)); continuing bounded cleanup"
+            fi
         fi
-        sleep 0.1
-    done
-
-    warn "Ranked reader PID ${READER_PID} did not exit in 5s; terminating it"
-    kill "${READER_PID}" 2>/dev/null || true
-    wait "${READER_PID}" 2>/dev/null || true
+    fi
     READER_OPEN=false
     rm -rf "${STANDBY_DIR}/ranked_reader"
 }
@@ -170,6 +189,7 @@ main() {
     local spilled graph feedback_setting plan first_id remaining
     local parked_before_vacuum parked_after_vacuum drained
     local expected_ids primary_ids standby_ids
+    local held_ids held_ids_sorted held_id_count duplicate_ids
 
     check_required_tools
     setup_primary
@@ -256,9 +276,22 @@ before=${parked_before_vacuum} after=${parked_after_vacuum}"
     wait_for_standby_catchup 30 ||
         error "Standby did not replay compaction publication"
     remaining=$(reader_query "FETCH ALL FROM held_ranked;")
-    [ "$(printf '%s\n' "${remaining}" | wc -l | tr -d ' ')" = "7999" ] ||
-        error "Old-layout ranked cursor did not return its remaining 7999 rows"
-    log "PASS: old-layout ranked cursor completed after publication replay"
+    held_ids="${first_id}"$'\n'"${remaining}"
+    if grep -Ev '^[0-9]+$' <<<"${held_ids}" >/dev/null; then
+        error "Old-layout ranked cursor returned a non-numeric document ID"
+    fi
+    held_id_count=$(printf '%s\n' "${held_ids}" | wc -l | tr -d ' ')
+    held_ids_sorted=$(printf '%s\n' "${held_ids}" |
+        LC_ALL=C sort -n | paste -sd, -)
+    expected_ids=$(seq 1 8000 | paste -sd, -)
+    if [ "${held_ids_sorted}" != "${expected_ids}" ]; then
+        duplicate_ids=$(printf '%s\n' "${held_ids}" |
+            LC_ALL=C sort -n | uniq -d | head -10 | paste -sd, -)
+        error "Old-layout ranked cursor returned the wrong exact ID set: \
+count=${held_id_count}, duplicate sample=${duplicate_ids:-none}"
+    fi
+    log "PASS: old-layout ranked cursor returned exact IDs 1..8000 \
+after publication replay"
 
     reader_query "CLOSE held_ranked; COMMIT;" >/dev/null
     reader_close

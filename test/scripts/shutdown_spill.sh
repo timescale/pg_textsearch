@@ -28,23 +28,60 @@ PGBINDIR="$(pg_config --bindir)"
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
 NC='\033[0m'
 
 log()   { echo -e "${GREEN}[$(date '+%H:%M:%S')] $1${NC}"; }
+warn()  { echo -e "${YELLOW}[$(date '+%H:%M:%S')] WARNING: $1${NC}"; }
 error() { echo -e "${RED}[$(date '+%H:%M:%S')] ERROR: $1${NC}"; exit 1; }
+
+wait_for_child_exit() {
+    local pid=$1
+    local attempts=$2
+
+    for _ in $(seq 1 "${attempts}"); do
+        if ! kill -0 "${pid}" 2>/dev/null; then
+            # The bounded poll established that the child exited; this wait
+            # only reaps its already-available status.
+            wait "${pid}" 2>/dev/null || true
+            return 0
+        fi
+        sleep 0.1
+    done
+    return 1
+}
+
+stop_sleeper() {
+    if [ -z "${SLEEPER_PID}" ]; then
+        return
+    fi
+
+    if ! wait_for_child_exit "${SLEEPER_PID}" 50; then
+        warn "Sleeper PID ${SLEEPER_PID} did not exit in 5s; sending SIGTERM"
+        kill -TERM "${SLEEPER_PID}" 2>/dev/null || true
+        if ! wait_for_child_exit "${SLEEPER_PID}" 50; then
+            warn "Sleeper PID ${SLEEPER_PID} ignored SIGTERM for 5s; \
+sending SIGKILL (state: $(ps -o pid=,stat=,cmd= -p "${SLEEPER_PID}" \
+2>/dev/null || echo unavailable))"
+            kill -9 "${SLEEPER_PID}" 2>/dev/null || true
+            if ! wait_for_child_exit "${SLEEPER_PID}" 50; then
+                warn "Sleeper PID ${SLEEPER_PID} still exists 5s after \
+SIGKILL (state: $(ps -o pid=,stat=,cmd= -p "${SLEEPER_PID}" \
+2>/dev/null || echo unavailable)); continuing bounded cleanup"
+            fi
+        fi
+    fi
+    SLEEPER_PID=
+}
 
 cleanup() {
     local exit_code=$?
     log "Cleaning up (exit code: $exit_code)..."
-    if [ -n "${SLEEPER_PID}" ] &&
-       kill -0 "${SLEEPER_PID}" 2>/dev/null; then
-        kill "${SLEEPER_PID}" 2>/dev/null || true
-        wait "${SLEEPER_PID}" 2>/dev/null || true
-    fi
+    stop_sleeper
     if [ -f "${DATA_DIR}/postmaster.pid" ]; then
-        "${PGBINDIR}/pg_ctl" stop -D "${DATA_DIR}" -m fast \
+        "${PGBINDIR}/pg_ctl" stop -D "${DATA_DIR}" -m fast -w -t 30 \
             >/dev/null 2>&1 || \
-            "${PGBINDIR}/pg_ctl" stop -D "${DATA_DIR}" -m immediate \
+            "${PGBINDIR}/pg_ctl" stop -D "${DATA_DIR}" -m immediate -w -t 30 \
                 >/dev/null 2>&1 || true
     fi
     rm -rf "${DATA_DIR}"
@@ -157,7 +194,7 @@ main() {
     log "Clean-shutting down postgres (hook should fire on the live backend)..."
     "${PGBINDIR}/pg_ctl" stop -D "${DATA_DIR}" -m fast -w \
         >/dev/null
-    wait "${SLEEPER_PID}" 2>/dev/null || true
+    stop_sleeper
 
     # Restart.
     "${PGBINDIR}/pg_ctl" start -D "${DATA_DIR}" -l "${LOGFILE}" \
