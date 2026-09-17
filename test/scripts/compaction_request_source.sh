@@ -832,22 +832,20 @@ bulk_spill_body="$(
 )"
 open_line="$(grep -n "index_rel = try_index_open" <<<"${bulk_spill_body}" |
     cut -d: -f1)"
-acquire_line="$(grep -n "tp_acquire_index_lock(local_state" \
+spill_line="$(grep -n "tp_spill_memtable_if_needed(index_rel, local_state, 0)" \
     <<<"${bulk_spill_body}" | cut -d: -f1)"
-release_line="$(grep -n "tp_release_index_lock(local_state" \
-    <<<"${bulk_spill_body}" | tail -1 | cut -d: -f1)"
 close_line="$(grep -n "index_close(index_rel" <<<"${bulk_spill_body}" |
     cut -d: -f1)"
 
-if [[ -z "${open_line}" || -z "${acquire_line}" ||
-      "${open_line}" -ge "${acquire_line}" ]]; then
-    echo "bulk spill does not open the relation before its index LWLock" >&2
+if [[ -z "${open_line}" || -z "${spill_line}" ||
+      "${open_line}" -ge "${spill_line}" ]]; then
+    echo "bulk spill does not open the relation before spilling" >&2
     exit 1
 fi
 
-if [[ -z "${release_line}" || -z "${close_line}" ||
-      "${release_line}" -ge "${close_line}" ]]; then
-    echo "bulk spill does not release its index LWLock before relation close" >&2
+if [[ -z "${spill_line}" || -z "${close_line}" ||
+      "${spill_line}" -ge "${close_line}" ]]; then
+    echo "bulk spill does not finish before relation close" >&2
     exit 1
 fi
 

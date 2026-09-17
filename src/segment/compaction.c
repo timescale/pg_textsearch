@@ -9,6 +9,7 @@
 #include <common/int.h>
 #include <storage/bufmgr.h>
 #include <storage/indexfsm.h>
+#include <storage/lmgr.h>
 #include <storage/lwlock.h>
 
 #include "access/am.h"
@@ -61,6 +62,18 @@ typedef struct TpCompactionPlan
 	BlockNumber			retained_heads[TP_MAX_LEVELS];
 	uint16				retained_counts[TP_MAX_LEVELS];
 } TpCompactionPlan;
+
+void
+tp_compaction_lock(Relation index)
+{
+	LockRelationOid(RelationGetRelid(index), ShareUpdateExclusiveLock);
+}
+
+void
+tp_compaction_unlock(Relation index)
+{
+	UnlockRelationOid(RelationGetRelid(index), ShareUpdateExclusiveLock);
+}
 
 static void
 tp_require_compaction_lock(TpLocalIndexState *index_state)

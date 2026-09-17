@@ -11,6 +11,9 @@ typedef struct RelationData *Relation;
 
 extern uint64 tp_max_segment_size_bytes(void);
 
+extern void tp_compaction_lock(Relation index);
+extern void tp_compaction_unlock(Relation index);
+
 /*
  * Report whether any level holds at least segments_per_level segments.
  * Advisory only; see the comment on the definition.

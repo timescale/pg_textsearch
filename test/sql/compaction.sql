@@ -25,6 +25,36 @@ SELECT array_length(
 SELECT bm25_needs_compaction('compaction_step_idx'::regclass)
        AS new_index_needs_compaction;
 
+-- Runtime spill publishes under the per-index lock, then applies inline
+-- compaction under a separately acquired maintenance lock.
+CREATE TABLE compaction_inline (id serial PRIMARY KEY, body text);
+CREATE INDEX compaction_inline_idx ON compaction_inline
+    USING bm25(body) WITH (text_config = 'english');
+SET pg_textsearch.segments_per_level = 2;
+DO $$
+DECLARE
+    n integer;
+BEGIN
+    FOR n IN 1..2 LOOP
+        INSERT INTO compaction_inline (body)
+        VALUES (format('inline spill document %s filler', n));
+        PERFORM bm25_spill_index('compaction_inline_idx');
+    END LOOP;
+END
+$$;
+SELECT bm25_level_counts('compaction_inline_idx'::regclass) =
+           ARRAY[0, 1, 0, 0, 0, 0, 0, 0]
+       AS inline_policy_compacts_after_spill;
+SELECT NOT EXISTS (
+           SELECT 1
+           FROM pg_locks
+           WHERE pid = pg_backend_pid()
+             AND relation = 'compaction_inline_idx'::regclass
+             AND mode = 'ShareUpdateExclusiveLock'
+       ) AS inline_policy_releases_maintenance_lock;
+DROP TABLE compaction_inline CASCADE;
+SET pg_textsearch.segments_per_level = 64;
+
 -- Non-bm25 relations are rejected.
 SELECT bm25_level_counts('compaction_btree_idx'::regclass);
 SELECT bm25_level_counts('compaction_step'::regclass);

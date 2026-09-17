@@ -224,14 +224,17 @@ tp_compact_index(PG_FUNCTION_ARGS)
 				 errmsg("could not get index state for \"%s\"", relname)));
 	}
 
-	tp_acquire_index_lock(index_state, LW_EXCLUSIVE);
+	tp_compaction_lock(index_rel);
 	PG_TRY();
 	{
+		tp_acquire_index_lock(index_state, LW_EXCLUSIVE);
 		tp_maybe_compact_level(index_state, index_rel, 0);
 	}
 	PG_FINALLY();
 	{
-		tp_release_index_lock(index_state);
+		if (index_state->lock_held)
+			tp_release_index_lock(index_state);
+		tp_compaction_unlock(index_rel);
 		relation_close(index_rel, RowExclusiveLock);
 	}
 	PG_END_TRY();
@@ -270,14 +273,17 @@ tp_compact_index_step(PG_FUNCTION_ARGS)
 				 errmsg("could not get index state for \"%s\"", relname)));
 	}
 
-	tp_acquire_index_lock(index_state, LW_EXCLUSIVE);
+	tp_compaction_lock(index_rel);
 	PG_TRY();
 	{
+		tp_acquire_index_lock(index_state, LW_EXCLUSIVE);
 		pass_ran = tp_compact_step(index_state, index_rel);
 	}
 	PG_FINALLY();
 	{
-		tp_release_index_lock(index_state);
+		if (index_state->lock_held)
+			tp_release_index_lock(index_state);
+		tp_compaction_unlock(index_rel);
 		relation_close(index_rel, RowExclusiveLock);
 	}
 	PG_END_TRY();
