@@ -62,16 +62,207 @@ SELECT pg_temp.first_plan_child($query$
     WHERE body @@ to_tsquery('english', 'refund')
     ORDER BY body <@> to_bm25query('refund', 'boolean_docs_body_idx')
     LIMIT 1
-$query$) = 'Sort' AS unsupported_path_falls_back;
+$query$) = 'Index Scan' AS combined_path_uses_index;
+
+SELECT id
+FROM boolean_docs
+WHERE body @@ to_tsquery('english', 'billing & refund')
+ORDER BY body <@> to_bm25query('refund', 'boolean_docs_body_idx')
+LIMIT 1;
+
+SELECT id
+FROM boolean_docs
+WHERE body @@ to_tsquery('english', 'refund & !fraud')
+ORDER BY body <@> to_bm25query('refund', 'boolean_docs_body_idx')
+LIMIT 2;
+
+SELECT id
+FROM boolean_docs
+WHERE body @@ to_tsquery('english', 'bill:*')
+ORDER BY body <@> to_bm25query('refund', 'boolean_docs_body_idx')
+LIMIT 2;
+
+SELECT id
+FROM boolean_docs
+WHERE body @@ to_tsquery('english', 'billing <-> refund')
+ORDER BY body <@> to_bm25query('refund', 'boolean_docs_body_idx')
+LIMIT 2;
+
+SELECT id
+FROM boolean_docs
+WHERE body @@ to_tsquery('english', 'billing & !fraud')
+ORDER BY body <@> to_bm25query('refund', 'boolean_docs_body_idx')
+LIMIT 2;
+
+SELECT id
+FROM boolean_docs
+WHERE body @@ to_tsquery('english', 'refund & mysql')
+ORDER BY body <@> to_bm25query('refund', 'boolean_docs_body_idx')
+LIMIT 2;
+
+SET enable_seqscan = on;
+SET enable_sort = on;
+SELECT pg_temp.first_plan_child($query$
+    SELECT id
+    FROM boolean_docs
+    WHERE body @@ to_tsquery('english', '!fraud')
+    ORDER BY body <@> to_bm25query('refund', 'boolean_docs_body_idx')
+    LIMIT 1
+$query$) = 'Sort' AS combined_negative_full_scan_falls_back;
+
+SELECT pg_temp.first_plan_child($query$
+    SELECT id
+    FROM boolean_docs
+    WHERE body @@ to_tsquery('english', 'bill:*')
+    ORDER BY body <@> to_bm25query('refund', 'boolean_docs_body_idx')
+    LIMIT 1
+$query$) = 'Sort' AS combined_prefix_full_scan_falls_back;
+
+SELECT pg_temp.first_plan_child($query$
+    SELECT id
+    FROM boolean_docs
+    WHERE body @@ to_tsquery('english', 'refund:A')
+    ORDER BY body <@> to_bm25query('refund', 'boolean_docs_body_idx')
+    LIMIT 1
+$query$) = 'Sort' AS combined_weight_full_scan_falls_back;
+
+SET plan_cache_mode = force_generic_plan;
+PREPARE combined_full_scan_cost(tsquery) AS
+SELECT id
+FROM boolean_docs
+WHERE body @@ $1
+ORDER BY body <@> to_bm25query('refund', 'boolean_docs_body_idx')
+LIMIT 1;
+SELECT pg_temp.first_plan_child(
+    'EXECUTE combined_full_scan_cost(to_tsquery(''english'', ''refund''))'
+) = 'Sort' AS combined_parameter_full_scan_falls_back;
+DEALLOCATE combined_full_scan_cost;
+RESET plan_cache_mode;
+
+SET enable_seqscan = off;
+SET enable_sort = off;
+
+SET plan_cache_mode = force_generic_plan;
+PREPARE combined_ranked_scan(tsquery) AS
+SELECT id
+FROM boolean_docs
+WHERE body @@ $1
+ORDER BY body <@> to_bm25query('refund', 'boolean_docs_body_idx')
+LIMIT 2;
+
+EXECUTE combined_ranked_scan(to_tsquery('english', 'refund & !fraud'));
+EXECUTE combined_ranked_scan(NULL);
+SET client_min_messages = WARNING;
+EXECUTE combined_ranked_scan(to_tsquery('english', ''));
+RESET client_min_messages;
+DEALLOCATE combined_ranked_scan;
+RESET plan_cache_mode;
+
+CREATE TABLE boolean_low_work_mem_docs (
+    id integer PRIMARY KEY,
+    body text NOT NULL
+);
+
+INSERT INTO boolean_low_work_mem_docs
+SELECT id, 'rank'
+FROM generate_series(1, 5000) AS id;
+
+INSERT INTO boolean_low_work_mem_docs
+SELECT id, 'filter'
+FROM generate_series(5001, 8000) AS id;
+
+INSERT INTO boolean_low_work_mem_docs VALUES
+    (8001, 'rank filter filler filler filler filler filler filler');
+
+SET default_text_search_config = 'pg_catalog.simple';
+SET work_mem = '64kB';
+SET pg_textsearch.filtered_seed = off;
+SET client_min_messages = WARNING;
+CREATE INDEX boolean_low_work_mem_docs_body_idx
+    ON boolean_low_work_mem_docs USING bm25(body)
+    WITH (text_config = 'simple');
+RESET client_min_messages;
+
+SELECT id
+FROM boolean_low_work_mem_docs
+WHERE body @@ to_tsquery('simple', 'filter')
+ORDER BY body <@> to_bm25query('rank', 'boolean_low_work_mem_docs_body_idx')
+LIMIT 1;
+
+DROP TABLE boolean_low_work_mem_docs;
+
+CREATE TABLE boolean_rank_cap_docs (
+    id integer PRIMARY KEY,
+    body text NOT NULL
+);
+
+INSERT INTO boolean_rank_cap_docs
+SELECT id, 'rank'
+FROM generate_series(1, 99999) AS id;
+
+SET pg_textsearch.memtable_pages_threshold = 0;
+SET pg_textsearch.bulk_load_threshold = 0;
+SET client_min_messages = WARNING;
+CREATE INDEX boolean_rank_cap_docs_body_idx
+    ON boolean_rank_cap_docs USING bm25(body)
+    WITH (text_config = 'simple');
+RESET client_min_messages;
+
+INSERT INTO boolean_rank_cap_docs VALUES
+    (100000, 'rank');
+
+INSERT INTO boolean_rank_cap_docs
+SELECT id, 'filter'
+FROM generate_series(100001, 103000) AS id;
+
+INSERT INTO boolean_rank_cap_docs VALUES
+    (103001, 'rank filter filler filler filler filler filler filler');
+
+SELECT COALESCE(SUM(n_records), 0) = 3002 AS rank_cap_rows_are_unflushed
+FROM bm25_memtable_chain('boolean_rank_cap_docs_body_idx');
+
+SELECT pg_temp.first_plan_child($query$
+    SELECT id
+    FROM boolean_rank_cap_docs
+    WHERE body @@ to_tsquery('simple', 'filter')
+    ORDER BY body <@> to_bm25query('rank', 'boolean_rank_cap_docs_body_idx')
+    LIMIT 1
+$query$) = 'Sort' AS combined_rank_cap_falls_back;
+
+SELECT id
+FROM boolean_rank_cap_docs
+WHERE body @@ to_tsquery('simple', 'filter')
+ORDER BY body <@> to_bm25query('rank', 'boolean_rank_cap_docs_body_idx')
+LIMIT 1;
+
+SELECT bm25_spill_index('boolean_rank_cap_docs_body_idx') > 0
+    AS rank_cap_spilled;
+
+SELECT pg_temp.first_plan_child($query$
+    SELECT id
+    FROM boolean_rank_cap_docs
+    WHERE body @@ to_tsquery('simple', 'filter')
+    ORDER BY body <@> to_bm25query('rank', 'boolean_rank_cap_docs_body_idx')
+    LIMIT 1
+$query$) = 'Sort' AS persisted_rank_cap_falls_back;
+
+RESET pg_textsearch.filtered_seed;
+RESET work_mem;
+RESET pg_textsearch.bulk_load_threshold;
+RESET pg_textsearch.memtable_pages_threshold;
+SET default_text_search_config = 'pg_catalog.english';
+DROP TABLE boolean_rank_cap_docs;
+
 SET enable_nestloop = off;
 SELECT pg_temp.first_plan_child($query$
     SELECT d.id
     FROM boolean_docs d
     JOIN boolean_other other ON other.id = d.id
     WHERE d.body @@ to_tsquery('english', 'refund')
+      AND d.body @@ to_tsquery('english', 'fraud')
     ORDER BY d.body <@> to_bm25query('refund', 'boolean_docs_body_idx')
     LIMIT 1
-$query$) = 'Sort' AS unsupported_join_path_falls_back;
+$query$) = 'Sort' AS multi_key_join_path_falls_back;
 RESET enable_nestloop;
 RESET enable_sort;
 \pset format aligned
@@ -531,6 +722,12 @@ SELECT pg_temp.first_plan_child(format(
     'SELECT count(*) FROM boolean_many_term_docs WHERE body @@ %L::tsquery',
     :'repeated_query'
 )) = 'Seq Scan' AS repeated_boolean_falls_back;
+SELECT pg_temp.first_plan_child(format(
+    'SELECT id FROM boolean_many_term_docs WHERE body @@ %L::tsquery '
+    'ORDER BY body <@> to_bm25query(''term1'', '
+    '''boolean_many_term_docs_body_idx'') LIMIT 1',
+    :'oversized_query'
+)) = 'Sort' AS oversized_combined_boolean_falls_back;
 
 SET enable_seqscan = off;
 SELECT pg_temp.first_plan_child(format(

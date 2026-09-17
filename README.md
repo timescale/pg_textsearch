@@ -129,9 +129,25 @@ generic plan, `DEALLOCATE` and prepare the statement again. A newly planned
 query can choose the correct sequential fallback, while the cached plan is
 rejected to avoid incorrect index results.
 
-Boolean filtering and BM25 ranking are separate scan modes. A query combining
-`WHERE content @@ ...` with `ORDER BY content <@> ...` cannot use one BM25
-index scan for both operations.
+Boolean filtering can be combined with BM25 ranking in one index scan:
+
+```sql
+SELECT * FROM documents
+WHERE content @@ to_tsquery('english', 'postgres & !mysql')
+ORDER BY content <@> 'database system'
+LIMIT 5;
+```
+
+The index produces candidates in BM25 order. If many candidates fail the
+Boolean predicate, it materializes the Boolean matches once. When their CTID
+lookup fits within `work_mem`, later ranked candidates are filtered in the
+index before PostgreSQL reads their table rows; otherwise filtering continues
+through PostgreSQL's heap recheck. Phrase, prefix, and weight conditions may
+still require heap rechecks for exact `tsquery` semantics.
+
+For indexes with 100,000 or more documents, PostgreSQL uses a full scan and sort
+for combined Boolean ranking so matches beyond the bounded ranking window
+cannot be assigned an incorrect zero score.
 
 ### Verifying Index Usage
 

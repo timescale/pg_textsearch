@@ -24,6 +24,8 @@
 #include "constants.h"
 #include "index/limit.h"
 #include "index/metapage.h"
+#include "index/state.h"
+#include "memtable/chain_walker.h"
 #include "planner/cost.h"
 
 static bool
@@ -162,6 +164,48 @@ tp_disable_index_path(
 	*indexPages		  = 0.0;
 }
 
+static double
+tp_combined_document_count(Relation index_rel)
+{
+	TpLocalIndexState  *index_state;
+	TpLocalIndexState  *lock_state_to_release;
+	TpIndexMetaPage		metap;
+	TpChainWalker	   *walker;
+	TpChainWalkerRecord record;
+	uint64				total_docs;
+
+	index_state = tp_get_local_index_state(RelationGetRelid(index_rel));
+	if (index_state == NULL)
+		return TP_MAX_QUERY_LIMIT;
+
+	/*
+	 * The metapage excludes live memtable rows. Count them under the same
+	 * lock, stopping once the combined path must be rejected.
+	 */
+	lock_state_to_release = index_state->lock_held ? NULL : index_state;
+	tp_acquire_index_lock(index_state, LW_SHARED);
+
+	metap	   = tp_get_metapage(index_rel);
+	total_docs = metap->total_docs;
+	walker	   = tp_chain_walker_open(
+			index_rel, metap->memtable_head_blkno, 0, CurrentMemoryContext);
+	pfree(metap);
+
+	while (total_docs < TP_MAX_QUERY_LIMIT &&
+		   tp_chain_walker_next(walker, &record))
+	{
+		total_docs++;
+		if (record.owns_vector)
+			pfree((void *)record.vector_bytes);
+	}
+
+	tp_chain_walker_close(walker);
+	if (lock_state_to_release != NULL)
+		tp_release_index_lock(lock_state_to_release);
+
+	return (double)total_docs;
+}
+
 /*
  * Estimate cost of BM25 index scan
  */
@@ -184,11 +228,8 @@ tp_costestimate(
 	bool			boolean_full_scan = false;
 	TSQuery			boolean_query	  = NULL;
 
-	/*
-	 * Boolean filtering and ranked scans are separate execution modes.
-	 * Multiple Boolean keys and combined filtering/ranking are follow-ups.
-	 */
-	if ((!has_orderby && !has_boolean) || (has_orderby && has_boolean) ||
+	/* Multiple Boolean keys remain unsupported. */
+	if ((!has_orderby && !has_boolean) ||
 		(has_boolean && list_length(path->indexclauses) != 1))
 	{
 		tp_disable_index_path(
@@ -223,34 +264,6 @@ tp_costestimate(
 					boolean_query);
 	}
 
-	/* Check for LIMIT clause and verify it can be safely pushed down */
-	if (has_orderby && root && root->limit_tuples > 0 &&
-		root->limit_tuples < INT_MAX)
-	{
-		int limit = (int)root->limit_tuples;
-
-		if (tp_can_pushdown_limit(root, path, limit))
-		{
-			/*
-			 * Seed the internal top-K from the estimated selectivity of
-			 * any Filter above this scan, so filtered top-k queries
-			 * avoid the executor's backoff re-drives (no-op when there
-			 * is no filter).
-			 *
-			 * NOTE: tp_store_query_limit uses a single per-backend slot
-			 * keyed only by index_oid, so multiple BM25 scans of the
-			 * SAME index in one statement (e.g. a faceted UNION ALL)
-			 * share it and may not each receive their own seed.  This
-			 * is a pre-existing limitation of the limit stash;
-			 * correctness is unaffected (executor Filter + backoff).
-			 * Tracked in #435.
-			 */
-			int seeded = tp_seed_limit_for_filter(root, path, limit);
-
-			tp_store_query_limit(path->indexinfo->indexoid, seeded);
-		}
-	}
-
 	/* Try to get actual statistics from the index */
 	if (path->indexinfo && path->indexinfo->indexoid != InvalidOid)
 	{
@@ -281,7 +294,56 @@ tp_costestimate(
 			if (metap)
 				pfree(metap);
 
+			if (has_boolean && has_orderby)
+				num_tuples = tp_combined_document_count(index_rel);
+
 			index_close(index_rel, AccessShareLock);
+		}
+	}
+
+	/*
+	 * Combined scans cannot prove ranking exhaustion after the bounded
+	 * top-K reaches its ceiling.  Let PostgreSQL score and externally sort
+	 * larger relations rather than assigning zero to omitted positive-score
+	 * matches.
+	 */
+	if (has_boolean && has_orderby && num_tuples >= TP_MAX_QUERY_LIMIT)
+	{
+		tp_disable_index_path(
+				path,
+				indexStartupCost,
+				indexTotalCost,
+				indexSelectivity,
+				indexCorrelation,
+				indexPages);
+		return;
+	}
+
+	/* Check for LIMIT clause and verify it can be safely pushed down */
+	if (has_orderby && root && root->limit_tuples > 0 &&
+		root->limit_tuples < INT_MAX)
+	{
+		int limit = (int)root->limit_tuples;
+
+		if (tp_can_pushdown_limit(root, path, limit))
+		{
+			/*
+			 * Seed the internal top-K from the estimated selectivity of
+			 * any Filter above this scan, so filtered top-k queries
+			 * avoid the executor's backoff re-drives (no-op when there
+			 * is no filter).
+			 *
+			 * NOTE: tp_store_query_limit uses a single per-backend slot
+			 * keyed only by index_oid, so multiple BM25 scans of the
+			 * SAME index in one statement (e.g. a faceted UNION ALL)
+			 * share it and may not each receive their own seed.  This
+			 * is a pre-existing limitation of the limit stash;
+			 * correctness is unaffected (executor Filter + backoff).
+			 * Tracked in #435.
+			 */
+			int seeded = tp_seed_limit_for_filter(root, path, limit);
+
+			tp_store_query_limit(path->indexinfo->indexoid, seeded);
 		}
 	}
 
@@ -295,8 +357,9 @@ tp_costestimate(
 							  ? costs.indexTotalCost +
 										cpu_operator_cost * num_tuples
 							  : costs.indexTotalCost * TP_INDEX_SCAN_COST_FACTOR;
-	*indexStartupCost = has_boolean ? *indexTotalCost
-									: costs.indexStartupCost + 0.01;
+	*indexStartupCost = (has_boolean && !has_orderby) || boolean_full_scan
+							  ? *indexTotalCost
+							  : costs.indexStartupCost + 0.01;
 
 	/*
 	 * Calculate selectivity based on LIMIT if available, otherwise default
