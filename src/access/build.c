@@ -332,6 +332,16 @@ tp_apply_compaction_policy(
 	if (!spilled)
 		return;
 
+	/*
+	 * Parallel VACUUM calls index AM routines while the leader and workers
+	 * are in parallel mode, where PostgreSQL forbids assigning an XID.
+	 * Publication needs an assigned XID for its standby-safe reclaim stamp,
+	 * so leave the durable spill in L0 and let later serial maintenance
+	 * compact it.
+	 */
+	if (IsInParallelMode() || IsParallelWorker())
+		return;
+
 	pgstat_progress_update_param(
 			PROGRESS_CREATEIDX_SUBPHASE, TP_PHASE_COMPACTING);
 	switch (tp_index_compaction_mode(index_rel))

@@ -393,6 +393,15 @@ building its tombstone batch and retains that in-progress XID through the
 atomic replacement publication. A standby snapshot that can still see the old
 segment graph therefore cannot be newer than its reclaim stamp.
 
+PostgreSQL may call index bulk-delete in a parallel worker or in a leader that
+is already in parallel mode. Those contexts cannot assign an XID. A V5 segment
+that becomes empty therefore keeps its zeroed alive bitmap and remains
+physically linked until later serial compaction; it is immediately logically
+empty and does not return dead TIDs. Spill remains durable, but spill-time
+compaction is likewise deferred. An affected legacy segment cannot represent
+deletions without replacement, so parallel VACUUM fails closed with a request
+to retry using `VACUUM (PARALLEL 0)`.
+
 Pure counting that does not retain source document IDs may remain outside the
 maintenance lock. Spill invoked by VACUUM follows the normal lock order.
 

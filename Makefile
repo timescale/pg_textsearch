@@ -180,6 +180,7 @@ test-concurrency: test-rls-locking
 	@echo "Running concurrency tests..."
 	@cd test/scripts && ./nonblocking_compaction.sh
 	@cd test/scripts && ./index_lock_fairness.sh
+	@cd test/scripts && ./parallel_vacuum.sh
 	@cd test/scripts && ./concurrency.sh
 	@cd test/scripts && ./boolean_concurrent_merge.sh
 	@cd test/scripts && ./partial_concurrent_read.sh

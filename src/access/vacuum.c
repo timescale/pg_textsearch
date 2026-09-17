@@ -784,7 +784,8 @@ tp_vacuum_mark_dead(
 		Relation	index,
 		BlockNumber root_block,
 		uint32	   *dead_doc_ids,
-		uint32		dead_count)
+		uint32		dead_count,
+		bool		preserve_empty)
 {
 	TpSegmentReader *reader;
 	TpAliveBitset	*bitset;
@@ -810,7 +811,7 @@ tp_vacuum_mark_dead(
 
 	alive = bitset->alive_count;
 
-	if (alive > 0)
+	if (alive > 0 || preserve_empty)
 		tp_alive_bitset_write(bitset, reader, index);
 
 	tp_alive_bitset_free(bitset);
@@ -847,6 +848,7 @@ tp_bulkdelete(
 	int64				 total_dead;
 	volatile bool		 maintenance_locked = false;
 	volatile bool		 index_lock_held	= false;
+	bool parallel_context = IsInParallelMode() || IsParallelWorker();
 
 	if (stats == NULL)
 		stats = (IndexBulkDeleteResult *)palloc0(
@@ -945,6 +947,31 @@ tp_bulkdelete(
 			 num_segments);
 
 		/*
+		 * Legacy segments have no alive bitmap, so VACUUM must replace them
+		 * to remove dead TIDs.  Safe replacement needs an assigned XID to pin
+		 * the deferred-reclaim horizon through publication, but PostgreSQL
+		 * forbids XID assignment after entering parallel mode.  Fail before
+		 * mutating any segment so heap cleanup cannot outpace this index.
+		 */
+		if (parallel_context)
+		{
+			for (int i = 0; i < num_segments; i++)
+			{
+				if (segments[i].affected && !segments[i].is_v5)
+					ereport(ERROR,
+							(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+							 errmsg("cannot vacuum legacy pg_textsearch "
+									"segments during a parallel operation"),
+							 errdetail(
+									 "Index \"%s\" requires segment "
+									 "replacement to remove dead tuples.",
+									 RelationGetRelationName(info->index)),
+							 errhint("Retry with VACUUM (PARALLEL 0), or "
+									 "REINDEX the pg_textsearch index.")));
+			}
+		}
+
+		/*
 		 * Phase 3: Mark dead docs or rebuild affected segments.  Track
 		 * segment-header shrinkage so we can restore the invariant
 		 * total_docs = Σ segment.num_docs (see metapage.h).  V5 bitset
@@ -976,22 +1003,37 @@ tp_bulkdelete(
 									info->index,
 									segments[i].root_block,
 									segments[i].dead_doc_ids,
-									segments[i].dead_count);
+									segments[i].dead_count,
+									parallel_context);
 
 							if (alive == 0)
 							{
-								/*
-								 * All docs dead -- drop segment.
-								 */
-								tp_vacuum_replace_segment(
-										info->index,
-										level,
-										segments[i].root_block,
-										InvalidBlockNumber,
-										prev);
-								docs_shrinkage += segments[i].num_docs;
-								tokens_shrinkage += segments[i].total_tokens;
-								/* prev stays the same */
+								if (parallel_context)
+								{
+									/*
+									 * The zeroed bitmap makes the segment
+									 * logically empty.  Defer its physical
+									 * unlink to serial compaction, which
+									 * can assign the reclaim XID.
+									 */
+									prev = segments[i].root_block;
+								}
+								else
+								{
+									/*
+									 * All docs dead -- drop segment.
+									 */
+									tp_vacuum_replace_segment(
+											info->index,
+											level,
+											segments[i].root_block,
+											InvalidBlockNumber,
+											prev);
+									docs_shrinkage += segments[i].num_docs;
+									tokens_shrinkage +=
+											segments[i].total_tokens;
+									/* prev stays the same */
+								}
 							}
 							else
 							{

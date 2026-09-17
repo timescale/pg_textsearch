@@ -239,6 +239,14 @@ through the replacement `GenericXLog` publication, preventing a later standby
 snapshot from observing the old graph with a reclaim stamp that is already in
 its past.
 
+PostgreSQL can invoke index bulk-delete in a parallel worker or in a leader
+that has already entered parallel mode, where assigning an XID is forbidden.
+In that context VACUUM still persists V5 alive-bit changes, including an
+all-zero bitmap, but leaves an empty segment physically linked for later
+serial compaction. A VACUUM-triggered spill remains published while its
+compaction policy is deferred. Affected legacy segments require
+`VACUUM (PARALLEL 0)` because they cannot remove dead TIDs without replacement.
+
 A handled error before publication returns every explicitly tracked output and
 tombstone allocation to the FSM without freeing selected source pages. A
 backend crash can leave unreachable pre-publication output pages; they cannot
