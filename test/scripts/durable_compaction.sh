@@ -542,6 +542,35 @@ wait_for_terminal() {
     error "instance ${instance_id} did not become terminal"
 }
 
+quiesce_durable_worker() {
+    local instance_id
+
+    while IFS= read -r instance_id; do
+        [ -n "${instance_id}" ] || continue
+        sql_super -c "SELECT df.cancel(
+            id, 'extension dependency test teardown')
+          FROM df.instances
+          WHERE id = '${instance_id}'
+            AND status IN ('pending', 'running');" >/dev/null
+        wait_for_terminal "${instance_id}" 30
+    done < <(sql_super -c "SELECT id
+      FROM df.instances
+      WHERE status IN ('pending', 'running')
+      ORDER BY id;")
+
+    assert_eq "extension dependency teardown has no active workflows" "0" \
+        "$(sql_super -c "SELECT count(*)
+          FROM df.instances
+          WHERE status IN ('pending', 'running');")"
+
+    PGHOST="${SOCKET_DIR}" "${PGBINDIR}/pg_ctl" restart -D "${DATA_DIR}" \
+        -l "${LOGFILE}" -w \
+        -o "-c shared_preload_libraries=pg_textsearch" >/dev/null
+    assert_eq "extension dependency teardown stops the durable worker" \
+        "pg_textsearch" \
+        "$(sql_super -c "SHOW shared_preload_libraries;")"
+}
+
 wait_for_signal_node() {
     local instance_id=$1 timeout=$2
     local waited=0
@@ -11549,6 +11578,8 @@ ${restore_output}"
 }
 
 test_sticky_dependency() {
+    quiesce_durable_worker
+
     if sql_super -c "DROP EXTENSION pg_durable;" >/dev/null 2>&1; then
         error "sticky dependency allowed DROP EXTENSION pg_durable"
     fi
