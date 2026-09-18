@@ -837,6 +837,7 @@ tp_metapage_identity_matches(
 		TpIndexMetaPage current, const TpIndexMetaPage snapshot)
 {
 	if (current->version != TP_METAPAGE_VERSION &&
+		current->version != TP_METAPAGE_VERSION_V8 &&
 		current->version != TP_METAPAGE_VERSION_V7 &&
 		current->version != TP_METAPAGE_VERSION_V6)
 		return false;
@@ -848,6 +849,13 @@ tp_metapage_identity_matches(
 		   current->root_blkno == snapshot->root_blkno &&
 		   current->term_stats_root == snapshot->term_stats_root &&
 		   current->_unused_docid_page == snapshot->_unused_docid_page;
+}
+
+static BlockNumber
+tp_metapage_pending_free_head(const TpIndexMetaPage metap)
+{
+	return metap->version < TP_METAPAGE_VERSION_V8 ? InvalidBlockNumber
+												   : metap->pending_free_head;
 }
 
 static bool
@@ -1307,9 +1315,7 @@ tp_publish_compaction_output(
 			   sizeof(current_counts));
 		current_docs	= current_meta->total_docs;
 		current_tokens	= current_meta->total_len;
-		current_pending = current_meta->version < TP_METAPAGE_VERSION
-								? InvalidBlockNumber
-								: current_meta->pending_free_head;
+		current_pending = tp_metapage_pending_free_head(current_meta);
 
 		for (uint32 level = 0; level < TP_MAX_LEVELS; level++)
 		{
