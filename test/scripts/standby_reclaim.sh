@@ -1135,6 +1135,13 @@ main() {
     command -v pg_waldump >/dev/null 2>&1 ||
         error "pg_waldump not found"
     setup_primary
+    cat >> "${PRIMARY_DIR}/postgresql.conf" <<EOF
+wal_keep_size = '128MB'
+EOF
+    pg_ctl restart -D "${PRIMARY_DIR}" \
+        -l "${PRIMARY_DIR}/postgres.log" -w -t 30 >/dev/null
+    [ "$(primary_sql_quiet "SHOW wal_keep_size;")" = "128MB" ] ||
+        error "Primary did not retain the disconnected standby WAL window"
 
     primary_sql "
         CREATE TABLE rec (
