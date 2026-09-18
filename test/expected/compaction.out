@@ -54,8 +54,12 @@ SELECT NOT EXISTS (
            SELECT 1
            FROM pg_locks
            WHERE pid = pg_backend_pid()
-             AND relation = 'compaction_inline_idx'::regclass
-             AND mode = 'ShareUpdateExclusiveLock'
+             AND locktype = 'object'
+             AND classid = 'pg_am'::regclass
+             AND objid = 'compaction_inline_idx'::regclass
+             AND objsubid = 3
+             AND mode = 'ExclusiveLock'
+             AND granted
        ) AS inline_policy_releases_maintenance_lock;
 inline_policy_releases_maintenance_lock
 t
