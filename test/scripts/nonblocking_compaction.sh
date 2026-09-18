@@ -270,6 +270,40 @@ relation_blocks() {
                current_setting('block_size')::bigint;"
 }
 
+segment_topology() {
+    local index_name=$1
+    local roots
+
+    roots=$(sql -c "SELECT bm25_summarize_index('${index_name}');" |
+        sed -nE \
+            's/^  L([0-7]) Segment ([0-9]+): block=([0-9]+),.*/L\1:\2=\3/p' |
+        paste -sd, -)
+    printf '%s|%s\n' "$(graph "${index_name}")" "${roots}"
+}
+
+ranked_signature() {
+    local table_name=$1
+    local index_name=$2
+    local token=$3
+
+    sql -c "
+        SET enable_seqscan = off;
+        SELECT md5(string_agg(
+                   id::text || ':' ||
+                   encode(float8send(score::double precision), 'hex'),
+                   ',' ORDER BY score, id))
+          FROM (
+                SELECT id,
+                       body <@> to_bm25query(
+                           '${token}', '${index_name}') AS score
+                  FROM ${table_name}
+                 ORDER BY body <@> to_bm25query(
+                              '${token}', '${index_name}'),
+                          id
+                 LIMIT 1000
+               ) ranked;"
+}
+
 assert_graph() {
     local index_name=$1
     local expected=$2
@@ -888,11 +922,15 @@ test_cancel_before_publish() {
     local backend
     local oid
     local before_graph
+    local before_topology
+    local before_signature
     local cancel_result
 
     log "Case: cancellation before publication preserves the old graph..."
     oid=$(index_oid cancel_idx)
     before_graph=$(graph cancel_idx)
+    before_topology=$(segment_topology cancel_idx)
+    before_signature=$(ranked_signature cancel_docs cancel_idx cancelcase)
     start_compaction pgts-cancel-compactor cancel_idx \
         pg_textsearch.debug_compaction_pause_before_publish_ms \
         60000 "${output}"
@@ -912,6 +950,11 @@ test_cancel_before_publish() {
 
     [ "$(graph cancel_idx)" = "${before_graph}" ] ||
         fail "cancellation changed the published segment graph"
+    [ "$(segment_topology cancel_idx)" = "${before_topology}" ] ||
+        fail "cancellation changed the ordered segment-root topology"
+    [ "$(ranked_signature cancel_docs cancel_idx cancelcase)" = \
+      "${before_signature}" ] ||
+        fail "cancellation changed ranked IDs or scores"
     assert_all_documents cancel_docs cancel_idx cancelcase
 }
 
@@ -929,6 +972,8 @@ test_cancel_after_allocation() {
     local oid
     local before_graph
     local before_pending
+    local before_topology
+    local before_signature
     local before_blocks
     local cancelled_blocks
     local final_blocks
@@ -940,6 +985,9 @@ test_cancel_after_allocation() {
     oid=$(index_oid "${index_name}")
     before_graph=$(graph "${index_name}")
     before_pending=$(pending_free "${index_name}")
+    before_topology=$(segment_topology "${index_name}")
+    before_signature=$(
+        ranked_signature "${table_name}" "${index_name}" "${token}")
     before_blocks=$(relation_blocks "${index_name}")
     control_before_blocks=$(relation_blocks "${control_index}")
 
@@ -965,6 +1013,12 @@ test_cancel_after_allocation() {
         fail "${phase} cancellation changed the published segment graph"
     [ "$(pending_free "${index_name}")" = "${before_pending}" ] ||
         fail "${phase} cancellation changed the pending-free count"
+    [ "$(segment_topology "${index_name}")" = "${before_topology}" ] ||
+        fail "${phase} cancellation changed the ordered segment-root topology"
+    [ "$(ranked_signature \
+            "${table_name}" "${index_name}" "${token}")" = \
+      "${before_signature}" ] ||
+        fail "${phase} cancellation changed ranked IDs or scores"
     assert_all_documents "${table_name}" "${index_name}" "${token}"
     cancelled_blocks=$(relation_blocks "${index_name}")
     [ "${cancelled_blocks}" -ge "${before_blocks}" ] ||

@@ -161,6 +161,7 @@ int tp_debug_compaction_pause_source_estimate_ms  = 0;
 int tp_debug_compaction_pause_before_publish_ms	  = 0;
 int tp_debug_compaction_pause_after_restamp_ms	  = 0;
 int tp_debug_index_lock_pause_exclusive_waiter_ms = 0;
+int tp_debug_index_lock_exclusive_waiter_gate	  = 0;
 int tp_debug_compaction_pause_after_allocation =
 		TP_COMPACTION_ALLOCATION_PAUSE_NONE;
 
@@ -840,6 +841,21 @@ _PG_init(void)
 			0,
 			0,
 			60000,
+			PGC_SUSET,
+			0,
+			NULL,
+			NULL,
+			NULL);
+
+	DefineCustomIntVariable(
+			"pg_textsearch.debug_index_lock_exclusive_waiter_gate",
+			"Gate an exclusive per-index lock waiter on an advisory lock.",
+			"Testing-only advisory lock key used after writer registration "
+			"and before LWLock acquisition.",
+			&tp_debug_index_lock_exclusive_waiter_gate,
+			0,
+			0,
+			INT_MAX,
 			PGC_SUSET,
 			0,
 			NULL,
