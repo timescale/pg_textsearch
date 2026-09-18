@@ -6,10 +6,21 @@
 
 #include <postgres.h>
 
+#include "index/metapage.h"
+
 struct TpLocalIndexState;
 typedef struct RelationData *Relation;
 
+typedef struct TpCompactionPublication
+{
+	TpIndexMetaPageData metapage;
+	BlockNumber			l0_predecessor;
+	BlockNumber			l0_head;
+	uint16				l0_count;
+} TpCompactionPublication;
+
 extern int tp_debug_compaction_pause_after_select_ms;
+extern int tp_debug_compaction_pause_source_estimate_ms;
 extern int tp_debug_compaction_pause_before_publish_ms;
 extern int tp_debug_compaction_pause_after_restamp_ms;
 

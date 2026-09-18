@@ -169,11 +169,23 @@ fi
 select_body="$(
     sed -n '/^tp_select_compaction_plan($/,/^}$/p' "${COMPACTION_SOURCE}"
 )"
+force_select_body="$(
+    sed -n '/^tp_select_force_compaction_plan($/,/^}$/p' \
+        "${COMPACTION_SOURCE}"
+)"
 build_body="$(
     sed -n '/^tp_build_compaction_output($/,/^}$/p' "${COMPACTION_SOURCE}"
 )"
 publish_body="$(
     sed -n '/^tp_publish_compaction_output($/,/^}$/p' "${COMPACTION_SOURCE}"
+)"
+prepare_body="$(
+    sed -n '/^tp_prepare_compaction_publication($/,/^}$/p' \
+        "${COMPACTION_SOURCE}"
+)"
+complete_body="$(
+    sed -n '/^tp_complete_compaction_publication($/,/^}$/p' \
+        "${COMPACTION_SOURCE}"
 )"
 validate_body="$(
     sed -n '/^tp_validate_selected_runs($/,/^}$/p' "${COMPACTION_SOURCE}"
@@ -183,11 +195,11 @@ publish_acquire_line="$(
         <<<"${publish_body}" | head -1 | cut -d: -f1 || true
 )"
 publish_restamp_line="$(
-    grep -n 'tp_tombstone_restamp_detached' <<<"${publish_body}" |
+    grep -n 'tp_tombstone_restamp_detached' <<<"${complete_body}" |
         head -1 | cut -d: -f1 || true
 )"
 publish_output_validation_line="$(
-    grep -n 'tp_validate_compaction_output' <<<"${publish_body}" |
+    grep -n 'tp_validate_compaction_output' <<<"${complete_body}" |
         head -1 | cut -d: -f1 || true
 )"
 publish_attach_line="$(
@@ -209,6 +221,22 @@ if ! grep -Fq 'tp_acquire_index_lock(index_state, LW_SHARED)' \
     echo "compaction selection must acquire and release LW_SHARED" >&2
     exit 1
 fi
+for selection_body in "${select_body}" "${force_select_body}"; do
+    selection_release_line="$(
+        grep -n 'tp_release_index_lock(index_state)' <<<"${selection_body}" |
+            head -1 | cut -d: -f1 || true
+    )"
+    selection_collect_line="$(
+        grep -nE 'tp_build_ordinary_plan|tp_collect_force_sources' \
+            <<<"${selection_body}" | head -1 | cut -d: -f1 || true
+    )"
+    if [[ -z "${selection_release_line}" ||
+          -z "${selection_collect_line}" ||
+          "${selection_release_line}" -ge "${selection_collect_line}" ]]; then
+        echo "compaction must release LW_SHARED before source collection" >&2
+        exit 1
+    fi
+done
 if grep -Fq 'tp_acquire_index_lock' <<<"${build_body}" ||
    grep -Fq 'tp_release_index_lock' <<<"${build_body}"; then
     echo "compaction output build must not manage the per-index lock" >&2
@@ -216,21 +244,35 @@ if grep -Fq 'tp_acquire_index_lock' <<<"${build_body}" ||
 fi
 publish_xid_line="$(
     grep -n 'merged_fxid = GetCurrentFullTransactionId()' \
-        <<<"${publish_body}" | head -1 | cut -d: -f1 || true
+        <<<"${complete_body}" | head -1 | cut -d: -f1 || true
+)"
+complete_prepare_line="$(
+    grep -n 'tp_prepare_compaction_publication' <<<"${complete_body}" |
+        head -1 | cut -d: -f1 || true
+)"
+complete_publish_line="$(
+    grep -n 'tp_publish_compaction_output' <<<"${complete_body}" |
+        head -1 | cut -d: -f1 || true
 )"
 
 if [[ -z "${publish_output_validation_line}" ||
       -z "${publish_xid_line}" || -z "${publish_restamp_line}" ||
+      -z "${complete_prepare_line}" || -z "${complete_publish_line}" ||
       -z "${publish_acquire_line}" || -z "${publish_attach_line}" ||
       -z "${publish_finish_line}" || -z "${publish_started_line}" ||
       "${publish_output_validation_line}" -ge "${publish_xid_line}" ||
       "${publish_xid_line}" -ge "${publish_restamp_line}" ||
-      "${publish_restamp_line}" -ge "${publish_acquire_line}" ||
+      "${publish_restamp_line}" -ge "${complete_prepare_line}" ||
+      "${complete_prepare_line}" -ge "${complete_publish_line}" ||
       "${publish_acquire_line}" -ge "${publish_attach_line}" ||
       "${publish_finish_line}" -ge "${publish_started_line}" ]] ||
-   ! grep -Fq 'output->tombstones, merged_fxid' <<<"${publish_body}" ||
+   ! grep -Fq 'output->tombstones, merged_fxid' <<<"${complete_body}" ||
+   ! grep -Fq 'tp_prepare_compaction_publication' <<<"${complete_body}" ||
+   ! grep -Fq 'tp_publish_compaction_output' <<<"${complete_body}" ||
+   ! grep -Fq 'compaction publication retry' <<<"${complete_body}" ||
    ! grep -Fq 'GenericXLogAbort' <<<"${publish_body}" ||
    ! grep -Fq 'GenericXLogStart(index)' <<<"${publish_body}" ||
+   ! grep -Fq 'tp_publication_identity_matches' <<<"${publish_body}" ||
    ! grep -Fq 'predecessor->next_segment = output->output_heads[0]' \
        <<<"${publish_body}" ||
    ! grep -Fq 'current_pending' <<<"${publish_body}" ||
@@ -238,10 +280,22 @@ if [[ -z "${publish_output_validation_line}" ||
     echo "compaction publication must own one exclusive WAL publication" >&2
     exit 1
 fi
+if ! grep -Fq 'tp_acquire_index_lock(index_state, LW_SHARED)' \
+       <<<"${prepare_body}" ||
+   ! grep -Fq 'tp_validate_selected_runs' <<<"${prepare_body}" ||
+   ! grep -Fq 'tp_release_index_lock(index_state)' <<<"${prepare_body}" ||
+   grep -Fq 'tp_validate_selected_runs' <<<"${publish_body}"; then
+    echo "compaction prefix preparation must finish before LW_EXCLUSIVE" >&2
+    exit 1
+fi
 if ! grep -Fq 'current_meta->level_counts[level] -' <<<"${validate_body}" ||
    ! grep -Fq 'snapshot->level_counts[level]' <<<"${validate_body}" ||
    ! grep -Fq '*l0_predecessor = current' <<<"${validate_body}"; then
     echo "compaction validation must preserve a spill-prepended L0 prefix" >&2
+    exit 1
+fi
+if grep -Fq 'FlushRelationBuffers' <<<"${build_body}"; then
+    echo "compaction build must not flush every relation buffer" >&2
     exit 1
 fi
 

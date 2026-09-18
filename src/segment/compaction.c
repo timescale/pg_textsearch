@@ -296,7 +296,11 @@ tp_estimate_physical_bytes(TpSegmentEstimate *estimate, bool *representable)
 }
 
 static void
-tp_collect_source_estimate(TpCompactionSource *source, TpSegmentReader *reader)
+tp_collect_source_estimate(
+		TpCompactionSource *source,
+		TpSegmentReader	   *reader,
+		bool				pause_source_estimate,
+		Oid					index_oid)
 {
 	TpSegmentHeader *header = reader->header;
 	bool			 representable;
@@ -340,6 +344,12 @@ tp_collect_source_estimate(TpCompactionSource *source, TpSegmentReader *reader)
 					 errmsg("segment skip entry count overflow at block %u",
 							source->root)));
 	}
+
+	if (pause_source_estimate)
+		tp_debug_compaction_pause(
+				tp_debug_compaction_pause_source_estimate_ms,
+				"source-estimate",
+				index_oid);
 
 	if (!tp_estimate_physical_bytes(&source->estimate, &representable))
 		ereport(ERROR,
@@ -399,7 +409,12 @@ tp_collect_source(
 						level)));
 	}
 
-	tp_collect_source_estimate(source, reader);
+	tp_collect_source_estimate(
+			source,
+			reader,
+			plan->num_sources == 1 &&
+					tp_compaction_maintenance_lock_held(index),
+			RelationGetRelid(index));
 	next = reader->header->next_segment;
 	tp_segment_close(reader);
 	return next;
@@ -834,7 +849,8 @@ tp_read_segment_link(
 
 static bool
 tp_metapage_identity_matches(
-		TpIndexMetaPage current, const TpIndexMetaPage snapshot)
+		const TpIndexMetaPageData *current,
+		const TpIndexMetaPageData *snapshot)
 {
 	if (current->version != TP_METAPAGE_VERSION &&
 		current->version != TP_METAPAGE_VERSION_V8 &&
@@ -978,6 +994,94 @@ tp_validate_selected_runs(
 done:
 	hash_destroy(visited);
 	return valid;
+}
+
+static bool
+tp_publication_identity_matches(
+		const TpIndexMetaPage		   current,
+		const TpCompactionPublication *publication)
+{
+	if (!tp_metapage_identity_matches(current, &publication->metapage))
+		return false;
+
+	if (current->level_heads[0] != publication->l0_head ||
+		current->level_counts[0] != publication->l0_count)
+		return false;
+
+	for (uint32 level = 1; level < TP_MAX_LEVELS; level++)
+	{
+		if (current->level_heads[level] !=
+					publication->metapage.level_heads[level] ||
+			current->level_counts[level] !=
+					publication->metapage.level_counts[level])
+			return false;
+	}
+
+	return true;
+}
+
+static void
+tp_prepare_compaction_publication(
+		TpLocalIndexState		*index_state,
+		Relation				 index,
+		const TpIndexMetaPage	 snapshot,
+		TpCompactionPlan		*plan,
+		TpCompactionPublication *publication)
+{
+	volatile bool	acquired_here = false;
+	TpIndexMetaPage current_meta;
+	BlockNumber		l0_predecessor;
+	bool			valid;
+
+	PG_TRY();
+	{
+		if (!index_state->lock_held)
+		{
+			tp_acquire_index_lock(index_state, LW_SHARED);
+			acquired_here = true;
+		}
+		else if (
+				index_state->lock_mode != LW_EXCLUSIVE ||
+				!LWLockHeldByMeInMode(
+						&index_state->shared->lock, LW_EXCLUSIVE))
+			ereport(ERROR,
+					(errcode(ERRCODE_INTERNAL_ERROR),
+					 errmsg("private compaction preparation requires the "
+							"per-index exclusive lock")));
+
+		current_meta = tp_get_metapage(index);
+		valid		 = tp_validate_selected_runs(
+				   index, snapshot, current_meta, plan, &l0_predecessor);
+		if (valid)
+		{
+			memcpy(&publication->metapage,
+				   current_meta,
+				   sizeof(publication->metapage));
+			publication->l0_predecessor = l0_predecessor;
+			publication->l0_head		= current_meta->level_heads[0];
+			publication->l0_count		= current_meta->level_counts[0];
+		}
+		pfree(current_meta);
+
+		if (acquired_here)
+		{
+			tp_release_index_lock(index_state);
+			acquired_here = false;
+		}
+	}
+	PG_FINALLY();
+	{
+		if (acquired_here && index_state->lock_held)
+			tp_release_index_lock(index_state);
+	}
+	PG_END_TRY();
+
+	if (!valid)
+		ereport(ERROR,
+				(errcode(ERRCODE_INTERNAL_ERROR),
+				 errmsg("compaction graph changed before publication "
+						"preparation for index \"%s\"",
+						RelationGetRelationName(index))));
 }
 
 static bool
@@ -1208,7 +1312,6 @@ tp_build_compaction_output(
 		 * leak an incomplete allocation until REINDEX; handled errors
 		 * discard every complete object recorded in output.
 		 */
-		FlushRelationBuffers(index);
 	}
 	PG_CATCH();
 	{
@@ -1218,71 +1321,35 @@ tp_build_compaction_output(
 	PG_END_TRY();
 }
 
-static void
+static bool
 tp_publish_compaction_output(
-		TpLocalIndexState	 *index_state,
-		Relation			  index,
-		const TpIndexMetaPage snapshot,
-		TpCompactionPlan	 *plan,
-		TpCompactionOutput	 *output)
+		TpLocalIndexState			  *index_state,
+		Relation					   index,
+		const TpIndexMetaPage		   snapshot,
+		TpCompactionPlan			  *plan,
+		TpCompactionOutput			  *output,
+		const TpCompactionPublication *publication)
 {
 	volatile Buffer metabuf						 = InvalidBuffer;
 	volatile Buffer predecessor_buf				 = InvalidBuffer;
 	volatile Buffer tailbuf						 = InvalidBuffer;
 	GenericXLogState *volatile publication_state = NULL;
 	volatile bool acquired_here					 = false;
-	BlockNumber	  l0_predecessor				 = InvalidBlockNumber;
+	BlockNumber	  l0_predecessor				 = publication->l0_predecessor;
 	bool		  l0_changes;
+	bool		  published = false;
 
-	output->publication_started = false;
 	PG_TRY();
 	{
-		Page			  current_page;
-		TpIndexMetaPage	  current_meta;
-		uint16			  current_counts[TP_MAX_LEVELS];
-		uint64			  current_docs;
-		uint64			  current_tokens;
-		BlockNumber		  current_pending;
-		FullTransactionId merged_fxid;
-		XLogRecPtr		  publication_lsn;
-		Page			  meta_copy;
-		TpIndexMetaPage	  meta;
-
-		/*
-		 * The prepared segment and tombstone chains are unreachable and
-		 * immutable.  Validate them completely before reader exclusion so
-		 * publication only rechecks the live source graph under LW_EXCLUSIVE.
-		 */
-		if (!tp_validate_compaction_output(index, plan, output))
-			ereport(ERROR,
-					(errcode(ERRCODE_DATA_CORRUPTED),
-					 errmsg("invalid prepared compaction output for index "
-							"\"%s\"",
-							RelationGetRelationName(index))));
-
-		/*
-		 * Assign an XID before emitting the restamp WAL.  The in-progress
-		 * transaction pins primary and standby horizons through graph
-		 * publication, including snapshots that start after restamping.
-		 *
-		 * Restamp while the detached batch is still unreachable and before
-		 * requesting the runtime publication lock.  Live-graph validation
-		 * below remains the authority on whether the prepared output can be
-		 * attached to the current graph.
-		 */
-		merged_fxid = GetCurrentFullTransactionId();
-		tp_tombstone_restamp_detached(index, output->tombstones, merged_fxid);
-		if (!index_state->lock_held)
-			tp_debug_compaction_pause(
-					tp_debug_compaction_pause_after_restamp_ms,
-					"after-restamp",
-					RelationGetRelid(index));
-
-		if (!index_state->lock_held)
-			tp_debug_compaction_pause(
-					tp_debug_compaction_pause_before_publish_ms,
-					"before-publish",
-					RelationGetRelid(index));
+		Page			current_page;
+		TpIndexMetaPage current_meta;
+		uint16			current_counts[TP_MAX_LEVELS];
+		uint64			current_docs;
+		uint64			current_tokens;
+		BlockNumber		current_pending;
+		XLogRecPtr		publication_lsn;
+		Page			meta_copy;
+		TpIndexMetaPage meta;
 
 		if (!index_state->lock_held)
 		{
@@ -1302,13 +1369,17 @@ tp_publish_compaction_output(
 		LockBuffer(metabuf, BUFFER_LOCK_EXCLUSIVE);
 		current_page = BufferGetPage(metabuf);
 		current_meta = (TpIndexMetaPage)PageGetContents(current_page);
-		if (!tp_validate_selected_runs(
-					index, snapshot, current_meta, plan, &l0_predecessor))
-			ereport(ERROR,
-					(errcode(ERRCODE_INTERNAL_ERROR),
-					 errmsg("compaction graph changed before publication "
-							"of index \"%s\"",
-							RelationGetRelationName(index))));
+		if (!tp_publication_identity_matches(current_meta, publication))
+		{
+			UnlockReleaseBuffer(metabuf);
+			metabuf = InvalidBuffer;
+			if (acquired_here)
+			{
+				tp_release_index_lock(index_state);
+				acquired_here = false;
+			}
+			goto publication_done;
+		}
 
 		memcpy(current_counts,
 			   current_meta->level_counts,
@@ -1333,7 +1404,8 @@ tp_publish_compaction_output(
 			if (new_count > plan->output_capacity)
 				ereport(ERROR,
 						(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
-						 errmsg("bm25 segment count limit reached at level "
+						 errmsg("bm25 segment count limit reached at "
+								"level "
 								"%u",
 								level)));
 		}
@@ -1366,8 +1438,14 @@ tp_publish_compaction_output(
 
 		if (tp_debug_panic_before_compaction_publish)
 			elog(PANIC,
-				 "pg_textsearch: debug crash before compaction publication");
+				 "pg_textsearch: debug crash before compaction "
+				 "publication");
 
+		/*
+		 * Every output and detached tombstone page has already been
+		 * WAL-logged.  WAL insertion order places this reachability record
+		 * after those page records, without a relation-wide buffer flush.
+		 */
 		publication_state = GenericXLogStart(index);
 		meta_copy		  = GenericXLogRegisterBuffer(
 				(GenericXLogState *)publication_state, metabuf, 0);
@@ -1420,7 +1498,8 @@ tp_publish_compaction_output(
 			if (RelationNeedsWAL(index))
 				XLogFlush(publication_lsn);
 			elog(PANIC,
-				 "pg_textsearch: debug crash after compaction publication");
+				 "pg_textsearch: debug crash after compaction "
+				 "publication");
 		}
 		if (BufferIsValid(tailbuf))
 		{
@@ -1458,6 +1537,10 @@ tp_publish_compaction_output(
 		output->owned_output_roots	  = NULL;
 		output->owned_output_count	  = 0;
 		output->owned_output_capacity = 0;
+		published					  = true;
+
+	publication_done:
+		Assert(!published || output->publication_started);
 	}
 	PG_CATCH();
 	{
@@ -1483,10 +1566,85 @@ tp_publish_compaction_output(
 					HOLD_INTERRUPTS();
 				UnlockReleaseBuffer(metabuf);
 			}
-			if (index_state->lock_held)
+			if (acquired_here && index_state->lock_held)
 				tp_release_index_lock(index_state);
-			tp_discard_compaction_output(index, output);
 		}
+		PG_RE_THROW();
+	}
+	PG_END_TRY();
+
+	return published;
+}
+
+static void
+tp_complete_compaction_publication(
+		TpLocalIndexState	 *index_state,
+		Relation			  index,
+		const TpIndexMetaPage snapshot,
+		TpCompactionPlan	 *plan,
+		TpCompactionOutput	 *output)
+{
+	FullTransactionId merged_fxid;
+
+	output->publication_started = false;
+	PG_TRY();
+	{
+		/*
+		 * The prepared segment and tombstone chains are unreachable and
+		 * immutable.  Validate them completely before any publication lock.
+		 */
+		if (!tp_validate_compaction_output(index, plan, output))
+			ereport(ERROR,
+					(errcode(ERRCODE_DATA_CORRUPTED),
+					 errmsg("invalid prepared compaction output for index "
+							"\"%s\"",
+							RelationGetRelationName(index))));
+
+		/*
+		 * Assign an XID before emitting the restamp WAL.  The in-progress
+		 * transaction pins primary and standby horizons through graph
+		 * publication, including snapshots that start after restamping.
+		 */
+		merged_fxid = GetCurrentFullTransactionId();
+		tp_tombstone_restamp_detached(index, output->tombstones, merged_fxid);
+		if (!index_state->lock_held)
+			tp_debug_compaction_pause(
+					tp_debug_compaction_pause_after_restamp_ms,
+					"after-restamp",
+					RelationGetRelid(index));
+
+		for (;;)
+		{
+			TpCompactionPublication publication;
+
+			tp_prepare_compaction_publication(
+					index_state, index, snapshot, plan, &publication);
+			if (!index_state->lock_held)
+				tp_debug_compaction_pause(
+						tp_debug_compaction_pause_before_publish_ms,
+						"before-publish",
+						RelationGetRelid(index));
+
+			if (tp_publish_compaction_output(
+						index_state,
+						index,
+						snapshot,
+						plan,
+						output,
+						&publication))
+				break;
+
+			ereport(LOG,
+					(errmsg("pg_textsearch compaction publication retry for "
+							"index %u backend %d",
+							RelationGetRelid(index),
+							MyProcPid)));
+		}
+	}
+	PG_CATCH();
+	{
+		if (!output->publication_started)
+			tp_discard_compaction_output(index, output);
 		PG_RE_THROW();
 	}
 	PG_END_TRY();
@@ -1776,38 +1934,32 @@ tp_select_compaction_plan(
 	volatile bool	acquired_here = false;
 	TpIndexMetaPage snapshot;
 	bool			selected = false;
+	bool			private_compaction;
 
 	Assert(snapshot_out != NULL);
 	*snapshot_out = NULL;
 	memset(plan, 0, sizeof(*plan));
+	private_compaction = tp_compaction_is_private(index_state, index);
 
 	PG_TRY();
 	{
-		if (!index_state->lock_held)
+		if (!private_compaction)
 		{
 			tp_acquire_index_lock(index_state, LW_SHARED);
 			acquired_here = true;
 		}
-		else if (
-				index_state->lock_mode != LW_EXCLUSIVE ||
-				!LWLockHeldByMeInMode(
-						&index_state->shared->lock, LW_EXCLUSIVE))
-			ereport(ERROR,
-					(errcode(ERRCODE_INTERNAL_ERROR),
-					 errmsg("private compaction selection requires the "
-							"per-index exclusive lock")));
 
 		snapshot = tp_get_metapage(index);
-		if (tp_compaction_candidate(snapshot->level_counts, first_level) <
-			TP_MAX_LEVELS)
-			selected =
-					tp_build_ordinary_plan(index, snapshot, first_level, plan);
-
 		if (acquired_here)
 		{
 			tp_release_index_lock(index_state);
 			acquired_here = false;
 		}
+
+		if (tp_compaction_candidate(snapshot->level_counts, first_level) <
+			TP_MAX_LEVELS)
+			selected =
+					tp_build_ordinary_plan(index, snapshot, first_level, plan);
 	}
 	PG_FINALLY();
 	{
@@ -1838,38 +1990,32 @@ tp_select_force_compaction_plan(
 	volatile bool	acquired_here = false;
 	TpIndexMetaPage snapshot;
 	bool			selected;
+	bool			private_compaction;
 
 	Assert(snapshot_out != NULL);
 	*snapshot_out = NULL;
 	memset(plan, 0, sizeof(*plan));
+	private_compaction = tp_compaction_is_private(index_state, index);
 
 	PG_TRY();
 	{
-		if (!index_state->lock_held)
+		if (!private_compaction)
 		{
 			tp_acquire_index_lock(index_state, LW_SHARED);
 			acquired_here = true;
 		}
-		else if (
-				index_state->lock_mode != LW_EXCLUSIVE ||
-				!LWLockHeldByMeInMode(
-						&index_state->shared->lock, LW_EXCLUSIVE))
-			ereport(ERROR,
-					(errcode(ERRCODE_INTERNAL_ERROR),
-					 errmsg("private force-compaction selection requires "
-							"the per-index exclusive lock")));
 
 		snapshot = tp_get_metapage(index);
-		tp_collect_force_sources(index, snapshot, plan);
-		tp_build_force_batches(plan);
-		selected = plan->num_sources > 0 &&
-				   !tp_plan_is_noop(index, snapshot, plan);
-
 		if (acquired_here)
 		{
 			tp_release_index_lock(index_state);
 			acquired_here = false;
 		}
+
+		tp_collect_force_sources(index, snapshot, plan);
+		tp_build_force_batches(plan);
+		selected = plan->num_sources > 0 &&
+				   !tp_plan_is_noop(index, snapshot, plan);
 	}
 	PG_FINALLY();
 	{
@@ -1933,7 +2079,8 @@ tp_compact_once(
 		IndexFreeSpaceMapVacuum(index);
 
 	tp_build_compaction_output(index, snapshot, &plan, &output);
-	tp_publish_compaction_output(index_state, index, snapshot, &plan, &output);
+	tp_complete_compaction_publication(
+			index_state, index, snapshot, &plan, &output);
 	pfree(snapshot);
 	tp_free_compaction_plan(&plan);
 	return true;
@@ -1972,7 +2119,8 @@ tp_force_compact(TpLocalIndexState *index_state, Relation index)
 				RelationGetRelid(index));
 
 	tp_build_compaction_output(index, snapshot, &plan, &output);
-	tp_publish_compaction_output(index_state, index, snapshot, &plan, &output);
+	tp_complete_compaction_publication(
+			index_state, index, snapshot, &plan, &output);
 	pfree(snapshot);
 	tp_free_compaction_plan(&plan);
 }

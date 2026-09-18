@@ -111,11 +111,14 @@ EOF
 verify_guc_contract() {
     local defaults
     local output
+    local pause_guc
 
     log "Checking compaction pause GUC contract..."
     if ! defaults=$(sql -F '|' -c "
         SELECT current_setting(
                    'pg_textsearch.debug_compaction_pause_after_select_ms'),
+               current_setting(
+                   'pg_textsearch.debug_compaction_pause_source_estimate_ms'),
                current_setting(
                    'pg_textsearch.debug_compaction_pause_before_publish_ms'),
                current_setting(
@@ -123,8 +126,8 @@ verify_guc_contract() {
         2>&1); then
         fail "compaction pause GUCs are unavailable: ${defaults}"
     fi
-    [ "${defaults}" = "0|0|0" ] ||
-        fail "compaction pause GUC defaults are not 0|0|0: ${defaults}"
+    [ "${defaults}" = "0|0|0|0" ] ||
+        fail "compaction pause GUC defaults are not 0|0|0|0: ${defaults}"
 
     if output=$(sql -c "
         SET pg_textsearch.debug_compaction_pause_after_select_ms = 60001;" \
@@ -135,6 +138,14 @@ verify_guc_contract() {
         fail "after-select range rejection was unexpected: ${output}"
 
     if output=$(sql -c "
+        SET pg_textsearch.debug_compaction_pause_source_estimate_ms = 60001;" \
+        2>&1); then
+        fail "source-estimate pause accepted a value above 60000"
+    fi
+    [[ "${output}" == *"outside the valid range"* ]] ||
+        fail "source-estimate range rejection was unexpected: ${output}"
+
+    if output=$(sql -c "
         SET pg_textsearch.debug_compaction_pause_after_restamp_ms = 60001;" \
         2>&1); then
         fail "after-restamp pause accepted a value above 60000"
@@ -143,14 +154,17 @@ verify_guc_contract() {
         fail "after-restamp range rejection was unexpected: ${output}"
 
     sql -c "CREATE ROLE pgts_pause_user;" >/dev/null
-    if output=$(sql -c "
-        SET ROLE pgts_pause_user;
-        SET pg_textsearch.debug_compaction_pause_before_publish_ms = 1;" \
-        2>&1); then
-        fail "non-superuser changed a compaction pause GUC"
-    fi
-    [[ "${output}" == *"permission denied"* ]] ||
-        fail "non-superuser GUC rejection was unexpected: ${output}"
+    for pause_guc in \
+        pg_textsearch.debug_compaction_pause_source_estimate_ms \
+        pg_textsearch.debug_compaction_pause_before_publish_ms; do
+        if output=$(sql -c "
+            SET ROLE pgts_pause_user;
+            SET ${pause_guc} = 1;" 2>&1); then
+            fail "non-superuser changed ${pause_guc}"
+        fi
+        [[ "${output}" == *"permission denied"* ]] ||
+            fail "non-superuser ${pause_guc} rejection was unexpected: ${output}"
+    done
 }
 
 seed_index() {
@@ -182,12 +196,14 @@ seed_index() {
 seed_all_indexes() {
     log "Seeding independent indexes with deterministic compaction debt..."
     seed_index scan_docs scan_idx scancase
+    seed_index planning_docs planning_idx planningcase
     seed_index restamp_docs restamp_idx restampcase
     seed_index insert_docs insert_idx insertcase
     seed_index spill_docs spill_idx spillcase
     seed_index serial_docs serial_idx serialcase
     seed_index parallel_a_docs parallel_a_idx parallelacase
     seed_index parallel_b_docs parallel_b_idx parallelbcase
+    seed_index publication_docs publication_idx publicationcase
     seed_index cancel_docs cancel_idx cancelcase
 }
 
@@ -284,6 +300,22 @@ assert_all_documents() {
 }
 
 STARTED_PID=
+start_compaction_with_settings() {
+    local app_name=$1
+    local index_name=$2
+    local settings=$3
+    local output_file=$4
+
+    PGAPPNAME="${app_name}" \
+        psql -h "${SOCKET_DIR}" -p "${TEST_PORT}" -d "${TEST_DB}" \
+        -qAt -v ON_ERROR_STOP=1 \
+        -c "SET statement_timeout = '90s';
+            ${settings}
+            SELECT bm25_compact_step('${index_name}'::regclass);" \
+        >"${output_file}" 2>&1 &
+    STARTED_PID=$!
+}
+
 start_compaction() {
     local app_name=$1
     local index_name=$2
@@ -291,14 +323,9 @@ start_compaction() {
     local pause_ms=$4
     local output_file=$5
 
-    PGAPPNAME="${app_name}" \
-        psql -h "${SOCKET_DIR}" -p "${TEST_PORT}" -d "${TEST_DB}" \
-        -qAt -v ON_ERROR_STOP=1 \
-        -c "SET statement_timeout = '90s';
-            SET ${guc_name} = ${pause_ms};
-            SELECT bm25_compact_step('${index_name}'::regclass);" \
-        >"${output_file}" 2>&1 &
-    STARTED_PID=$!
+    start_compaction_with_settings \
+        "${app_name}" "${index_name}" \
+        "SET ${guc_name} = ${pause_ms};" "${output_file}"
 }
 
 start_sql() {
@@ -405,6 +432,34 @@ require_completion_during_pause() {
     log "${label} completed while compaction was still paused"
 }
 
+wait_for_spill_queue_or_completion() {
+    local operation_pid=$1
+    local backend=$2
+    local blocker=$3
+    local deadline=$((SECONDS + 3))
+    local blocked
+
+    while ((SECONDS < deadline)); do
+        blocked=$(sql -c "
+            SELECT wait_event_type = 'LWLock' AND
+                   wait_event = 'tapir_index_lock'
+              FROM pg_stat_activity
+             WHERE pid = ${backend};" \
+            2>/dev/null || true)
+        if [ "${blocked}" = "t" ]; then
+            log "Observed spill backend ${backend} queued behind ${blocker}"
+            return
+        fi
+        if ! kill -0 "${operation_pid}" 2>/dev/null; then
+            log "Spill completed before it needed to queue"
+            return
+        fi
+        sleep 0.05
+    done
+
+    fail "spill neither queued nor completed within 3 seconds"
+}
+
 test_scan_progress() {
     local compactor_output="${CLIENT_DIR}/scan_compactor.log"
     local scan_output="${CLIENT_DIR}/scan_reader.log"
@@ -438,6 +493,65 @@ test_scan_progress() {
 
     wait_success "${compactor_pid}" 10 "scan compactor" "${compactor_output}"
     assert_all_documents scan_docs scan_idx scancase
+}
+
+test_source_estimation_progress() {
+    local compactor_output="${CLIENT_DIR}/planning_compactor.log"
+    local spill_output="${CLIENT_DIR}/planning_spill.log"
+    local scan_output="${CLIENT_DIR}/planning_reader.log"
+    local compactor_pid
+    local spiller_pid
+    local spiller_backend
+    local reader_pid
+    local backend
+    local oid
+    local reader_count
+
+    log "Case: ranked scan passes a spill queued during source estimation..."
+    oid=$(index_oid planning_idx)
+    start_compaction_with_settings \
+        pgts-planning-compactor planning_idx \
+        "SET pg_textsearch.debug_compaction_pause_source_estimate_ms = ${PAUSE_MS};
+         SET pg_textsearch.debug_compaction_pause_after_select_ms = ${PAUSE_MS};" \
+        "${compactor_output}"
+    compactor_pid=${STARTED_PID}
+    backend=$(backend_pid pgts-planning-compactor)
+    wait_for_marker source-estimate "${oid}" "${backend}"
+
+    start_sql pgts-planning-spill "
+        SELECT pg_sleep(0.25);
+        INSERT INTO planning_docs(body)
+        SELECT 'common planningcase concurrent prefix ' || gs
+          FROM generate_series(1, 8) gs;
+        SELECT bm25_spill_index('planning_idx');" "${spill_output}"
+    spiller_pid=${STARTED_PID}
+    spiller_backend=$(backend_pid pgts-planning-spill)
+    wait_for_spill_queue_or_completion \
+        "${spiller_pid}" "${spiller_backend}" "${backend}"
+
+    start_sql pgts-planning-reader "
+        SET enable_seqscan = off;
+        SELECT count(*) FROM (
+            SELECT id FROM planning_docs
+             ORDER BY body <@> to_bm25query(
+                          'planningcase', 'planning_idx')
+             LIMIT 1000
+        ) ranked;" "${scan_output}"
+    reader_pid=${STARTED_PID}
+    require_completion_during_pause \
+        "${reader_pid}" "${compactor_pid}" "source-estimation ranked scan" \
+        "${scan_output}" source-estimate "${oid}" "${backend}"
+    reader_count=$(tail -n 1 "${scan_output}")
+    [[ "${reader_count}" =~ ^[0-9]+$ ]] ||
+        fail "source-estimation ranked scan returned '${reader_count}'"
+
+    require_completion_during_pause \
+        "${spiller_pid}" "${compactor_pid}" "source-estimation spill" \
+        "${spill_output}" source-estimate "${oid}" "${backend}"
+    wait_success "${compactor_pid}" 15 \
+        "planning compactor" "${compactor_output}"
+    assert_graph planning_idx "{1,1,0,0,0,0,0,0}"
+    assert_all_documents planning_docs planning_idx planningcase
 }
 
 test_scan_progress_after_restamp() {
@@ -642,6 +756,60 @@ test_different_index_overlap() {
     assert_all_documents parallel_b_docs parallel_b_idx parallelbcase
 }
 
+test_publication_preparation_retry() {
+    local compactor_output="${CLIENT_DIR}/publication_compactor.log"
+    local first_spill_output="${CLIENT_DIR}/publication_first_spill.log"
+    local second_spill_output="${CLIENT_DIR}/publication_second_spill.log"
+    local compactor_pid
+    local spiller_pid
+    local backend
+    local oid
+    local retry_marker
+    local retry_count
+
+    log "Case: publication retries after a spill races prepared identity..."
+    oid=$(index_oid publication_idx)
+    start_compaction_with_settings \
+        pgts-publication-compactor publication_idx \
+        "SET pg_textsearch.debug_compaction_pause_after_select_ms = ${PAUSE_MS};
+         SET pg_textsearch.debug_compaction_pause_before_publish_ms = ${PAUSE_MS};" \
+        "${compactor_output}"
+    compactor_pid=${STARTED_PID}
+    backend=$(backend_pid pgts-publication-compactor)
+    wait_for_marker after-select "${oid}" "${backend}"
+
+    start_sql pgts-publication-first-spill "
+        INSERT INTO publication_docs(body)
+        SELECT 'common publicationcase first prefix ' || gs
+          FROM generate_series(1, 5) gs;
+        SELECT bm25_spill_index('publication_idx');" "${first_spill_output}"
+    spiller_pid=${STARTED_PID}
+    require_completion_during_pause \
+        "${spiller_pid}" "${compactor_pid}" "first publication spill" \
+        "${first_spill_output}" after-select "${oid}" "${backend}"
+
+    wait_for_marker before-publish "${oid}" "${backend}"
+    start_sql pgts-publication-second-spill "
+        INSERT INTO publication_docs(body)
+        SELECT 'common publicationcase second prefix ' || gs
+          FROM generate_series(1, 7) gs;
+        SELECT bm25_spill_index('publication_idx');" "${second_spill_output}"
+    spiller_pid=${STARTED_PID}
+    require_completion_during_pause \
+        "${spiller_pid}" "${compactor_pid}" "second publication spill" \
+        "${second_spill_output}" before-publish "${oid}" "${backend}"
+
+    wait_success "${compactor_pid}" 15 \
+        "publication compactor" "${compactor_output}"
+    retry_marker="pg_textsearch compaction publication retry for index ${oid} backend ${backend}"
+    retry_count=$(grep -Fc "${retry_marker}" "${LOGFILE}" || true)
+    [ "${retry_count}" = "1" ] ||
+        fail "publication retried ${retry_count} times after one identity race"
+    assert_graph publication_idx "{2,1,0,0,0,0,0,0}"
+    assert_all_documents \
+        publication_docs publication_idx publicationcase
+}
+
 test_cancel_before_publish() {
     local output="${CLIENT_DIR}/cancel_compactor.log"
     local compactor_pid
@@ -679,12 +847,14 @@ main() {
     setup_cluster
     verify_guc_contract
     seed_all_indexes
+    test_source_estimation_progress
     test_scan_progress
     test_scan_progress_after_restamp
     test_insert_progress
     test_spill_prefix_progress
     test_same_index_serialization
     test_different_index_overlap
+    test_publication_preparation_retry
     test_cancel_before_publish
     log "All deterministic non-blocking compaction cases passed"
 }
