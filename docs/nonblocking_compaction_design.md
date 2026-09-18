@@ -186,7 +186,7 @@ background compaction policy.
 | compaction planning | per-index maintenance object lock | none |
 | compaction build | per-index maintenance object lock | none |
 | compaction publication | per-index maintenance object lock | `LW_EXCLUSIVE` |
-| VACUUM metapage snapshot | per-index maintenance object lock | brief `LW_SHARED` |
+| VACUUM graph/root snapshot | per-index maintenance object lock | bounded `LW_SHARED` |
 | VACUUM identify / bitmap mutation | per-index maintenance object lock | none |
 | VACUUM graph publication | per-index maintenance object lock | brief `LW_EXCLUSIVE` |
 | tombstone drain | none | `LW_EXCLUSIVE` |
@@ -462,11 +462,12 @@ compaction is likewise deferred. An affected legacy segment cannot represent
 deletions without replacement, so parallel VACUUM fails closed with a request
 to retry using `VACUUM (PARALLEL 0)`.
 
-VACUUM holds the per-index shared lock only while copying the metapage. It
-identifies dead document IDs and mutates V5 alive bitmaps without that lock;
-the maintenance lock keeps compaction and another VACUUM away, while spills
-only prepend immutable L0 segments. Graph replacement and metapage-statistic
-changes use short, validated exclusive publication sections.
+VACUUM holds the per-index shared lock while copying the metapage and every
+published segment root in the bounded graph snapshot. It identifies dead
+document IDs and mutates V5 alive bitmaps without that lock; the maintenance
+lock keeps compaction and another VACUUM away, while spills only prepend
+immutable L0 segments. Graph replacement and metapage-statistic changes use
+short, validated exclusive publication sections.
 
 An all-dead V5 segment may remain linked during parallel VACUUM because that
 context cannot assign the reclaim XID. Later serial VACUUM and ordinary
