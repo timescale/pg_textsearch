@@ -360,18 +360,19 @@ fi
 vacuum_replace_body="$(
     sed -n '/^tp_vacuum_replace_segment($/,/^}$/p' "${VACUUM_SOURCE}"
 )"
-vacuum_replace_xid_line="$(
-    grep -n 'vacuum_fxid.*GetCurrentFullTransactionId()' \
-        <<<"${vacuum_replace_body}" | head -1 | cut -d: -f1 || true
-)"
 vacuum_replace_tombstone_line="$(
     grep -n 'tp_publish_prepared_segment_replacement' \
         <<<"${vacuum_replace_body}" | head -1 | cut -d: -f1 || true
 )"
-if [[ -z "${vacuum_replace_xid_line}" ||
+vacuum_replace_parallel_mode_line="$(
+    grep -n 'TP_SEGMENT_REPLACEMENT_RECLAIM_AFTER_PUBLICATION' \
+        <<<"${vacuum_replace_body}" | head -1 | cut -d: -f1 || true
+)"
+if [[ -z "${vacuum_replace_parallel_mode_line}" ||
       -z "${vacuum_replace_tombstone_line}" ||
-      "${vacuum_replace_xid_line}" -ge "${vacuum_replace_tombstone_line}" ]]; then
-    echo "VACUUM replacement must assign its reclaim XID before shared publication" >&2
+      "${vacuum_replace_parallel_mode_line}" -ge \
+          "${vacuum_replace_tombstone_line}" ]]; then
+    echo "parallel VACUUM replacement must select after-publication reclaim" >&2
     review_failures=$((review_failures + 1))
 fi
 if grep -Eq '^tp_vacuum_(graph_matches|prepare_replacement)\(' \
@@ -388,6 +389,32 @@ if ! grep -Fq 'tp_prepare_single_replacement_plan' \
    ! grep -Fq 'tp_complete_compaction_publication' \
         <<<"${replacement_publish_body}"; then
     echo "single-run replacement must use compaction publication machinery" >&2
+    review_failures=$((review_failures + 1))
+fi
+replacement_complete_line="$(
+    grep -n 'tp_complete_compaction_publication' \
+        <<<"${replacement_publish_body}" | head -1 | cut -d: -f1 || true
+)"
+replacement_next_xid_line="$(
+    grep -n 'reclaim_fxid = ReadNextFullTransactionId()' \
+        <<<"${replacement_publish_body}" | head -1 | cut -d: -f1 || true
+)"
+replacement_deferred_build_line="$(
+    grep -n 'tp_tombstone_build_detached' \
+        <<<"${replacement_publish_body}" | tail -1 | cut -d: -f1 || true
+)"
+replacement_attach_line="$(
+    grep -n 'tp_publish_detached_tombstones' \
+        <<<"${replacement_publish_body}" | head -1 | cut -d: -f1 || true
+)"
+if [[ -z "${replacement_complete_line}" ||
+      -z "${replacement_next_xid_line}" ||
+      -z "${replacement_deferred_build_line}" ||
+      -z "${replacement_attach_line}" ||
+      "${replacement_complete_line}" -ge "${replacement_next_xid_line}" ||
+      "${replacement_next_xid_line}" -ge "${replacement_deferred_build_line}" ||
+      "${replacement_deferred_build_line}" -ge "${replacement_attach_line}" ]]; then
+    echo "split VACUUM reclaim must sample its horizon after graph publication" >&2
     review_failures=$((review_failures + 1))
 fi
 if ! grep -Fq 'stats_policy == TP_STATS_REBASE_STRICT' \
