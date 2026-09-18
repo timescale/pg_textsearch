@@ -537,9 +537,15 @@ and retains it through its bounded merge work. Each output build drops the
 per-index lock exactly like ordinary compaction.
 
 Relation truncation remains an exclusive phase. It acquires the per-index
-lock in `LW_EXCLUSIVE`, computes the high-water mark, and truncates before
-releasing it. The maintenance lock ensures no unreachable compaction output
-is being constructed concurrently.
+lock in `LW_EXCLUSIVE`, scans backward from EOF, and truncates only the
+contiguous suffix already stamped `TP_FREE_PAGE_MAGIC`. The first DEAD
+memtable page, valid structural page, unknown page, or orphan stops the scan.
+The free-page stamp is the proof that reclaim detached the page from every
+owner and emitted any required standby conflict WAL; absence from the current
+published graph is not reclaim proof. The maintenance lock ensures no
+unreachable compaction output is being constructed concurrently and the
+per-index lock prevents a recyclable suffix page from being claimed between
+inspection and `RelationTruncate()`.
 
 Normal compaction never truncates the relation.
 
@@ -594,8 +600,9 @@ Ownership transfers only after `GenericXLogFinish()` succeeds.
 
 A backend crash bypasses those catches and can leave unreachable output pages.
 This is an accepted leak until `REINDEX`; it cannot produce wrong query
-results or unsafe page reuse. A durable scratch-allocation manifest is a
-separate future enhancement.
+results or unsafe page reuse. Force-merge truncation stops at those unstamped
+orphans rather than reclaiming them from graph absence. A durable
+scratch-allocation manifest is a separate future enhancement.
 
 ### During publication
 

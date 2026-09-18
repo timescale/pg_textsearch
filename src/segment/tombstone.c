@@ -533,14 +533,10 @@ tp_tombstone_drain(
 		tombstone_unlink(index, victim_prev, victim, victim_next);
 
 		/*
-		 * Free under the same lock as the unlink.  Once unlinked the
-		 * blocks are invisible to tp_tombstone_max_used_block(), so
-		 * tp_truncate_dead_pages() (bm25_force_merge, same lock) could
-		 * truncate below them, leaving these frees to read past EOF or
-		 * to stamp a block that a truncate plus re-extension already
-		 * handed to a live structure.  Freeing before the unlink is no
-		 * better: a still-chained tombstone's blocks could be claimed
-		 * from the FSM, then freed again by a later drain.
+		 * Free under the same lock as the unlink so no other index
+		 * mutation observes an intermediate state.  Freeing before the
+		 * unlink is unsafe: a still-chained tombstone's blocks could be
+		 * claimed from the FSM, then freed again by a later drain.
 		 *
 		 * No CHECK_FOR_INTERRUPTS here — the tombstone is already
 		 * unlinked, so erroring part-way strands the rest.  The loop
@@ -577,9 +573,8 @@ tp_pending_free_block_count(Relation index)
 	 * Caller must hold the per-index LWLock in shared mode so a
 	 * concurrent drain/enqueue can't recycle a tombstone page mid-walk
 	 * (see tp_pending_free_pages in dump.c).  Under that lock an
-	 * invalid page can only mean real corruption, so we ERROR like the
-	 * sibling walkers tp_tombstone_drain / tp_tombstone_max_used_block
-	 * rather than silently returning a short count.
+	 * invalid page can only mean real corruption, so we ERROR like
+	 * tp_tombstone_drain rather than silently returning a short count.
 	 */
 	while (cur != InvalidBlockNumber)
 	{
@@ -611,53 +606,4 @@ tp_pending_free_block_count(Relation index)
 	}
 
 	return total;
-}
-
-BlockNumber
-tp_tombstone_max_used_block(Relation index)
-{
-	BlockNumber max_used = 0;
-	BlockNumber cur		 = tp_tombstone_read_head(index);
-
-	while (cur != InvalidBlockNumber)
-	{
-		Buffer			buf;
-		Page			page;
-		TpTombstonePage t;
-		BlockNumber		next;
-		uint32			k;
-
-		CHECK_FOR_INTERRUPTS();
-
-		buf = ReadBuffer(index, cur);
-		LockBuffer(buf, BUFFER_LOCK_SHARE);
-		page = BufferGetPage(buf);
-		if (!tp_tombstone_page_is_valid(page))
-		{
-			UnlockReleaseBuffer(buf);
-			ereport(ERROR,
-					(errcode(ERRCODE_DATA_CORRUPTED),
-					 errmsg("pg_textsearch: corrupt tombstone page %u "
-							"in index \"%s\"",
-							cur,
-							RelationGetRelationName(index))));
-		}
-
-		t = tp_tombstone_page(page);
-
-		/* The tombstone page itself must survive truncation. */
-		if (cur + 1 > max_used)
-			max_used = cur + 1;
-
-		/* So must every displaced block it parks. */
-		for (k = 0; k < t->num_blocks; k++)
-			if (t->blocks[k] + 1 > max_used)
-				max_used = t->blocks[k] + 1;
-
-		next = t->next_page;
-		UnlockReleaseBuffer(buf);
-		cur = next;
-	}
-
-	return max_used;
 }

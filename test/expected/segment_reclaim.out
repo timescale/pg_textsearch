@@ -302,5 +302,118 @@ vacuum_reused_freed_pages_no_extension
 t
 (1 row)
 \pset format aligned
+-- Force merge may truncate only pages that reclaim has already stamped
+-- recyclable. Build a free-page pool below a one-page memtable at EOF, then
+-- let force merge spill into that pool. The retired memtable page remains
+-- protected by dead_fxid and must survive until VACUUM emits conflict WAL and
+-- stamps it TP_FREE_PAGE_MAGIC.
+\pset format unaligned
+CREATE TABLE truncate_docs (id int, body text)
+    WITH (autovacuum_enabled = false);
+INSERT INTO truncate_docs
+SELECT g, 'truncate alpha beta gamma ' || g || ' ' ||
+       repeat(md5(g::text), 4)
+FROM generate_series(1, 2000) g;
+CREATE INDEX truncate_idx ON truncate_docs
+    USING bm25 (body)
+    WITH (text_config = 'english', compaction = 'off');
+NOTICE:  BM25 index build started for relation truncate_idx
+NOTICE:  Using text search configuration: english
+NOTICE:  Using index options: k1=1.20, b=0.75
+NOTICE:  BM25 index build completed: 2000 documents, avg_length=6.07
+INSERT INTO truncate_docs
+SELECT g, 'truncate alpha beta delta ' || g || ' ' ||
+       repeat(md5(g::text), 4)
+FROM generate_series(2001, 4000) g;
+SELECT bm25_spill_index('truncate_idx') > 0 AS truncate_pool_spilled;
+truncate_pool_spilled
+t
+(1 row)
+SELECT bm25_force_merge('truncate_idx');
+bm25_force_merge
+
+(1 row)
+SELECT bm25_pending_free_pages('truncate_idx') > 0
+    AS truncate_pool_parked;
+truncate_pool_parked
+t
+(1 row)
+INSERT INTO truncate_docs VALUES (4001, 'truncate eof marker');
+CREATE TEMP TABLE truncate_suffix AS
+SELECT max(blkno)::bigint AS blkno
+FROM bm25_memtable_chain('truncate_idx');
+SELECT blkno + 1 =
+           pg_relation_size('truncate_idx'::regclass, 'main') /
+           current_setting('block_size')::int
+    AS truncate_memtable_at_eof
+FROM truncate_suffix;
+truncate_memtable_at_eof
+t
+(1 row)
+SELECT txid_current() IS NOT NULL AS truncate_t1;
+truncate_t1
+t
+(1 row)
+SELECT txid_current() IS NOT NULL AS truncate_t2;
+truncate_t2
+t
+(1 row)
+VACUUM truncate_docs;
+SELECT bm25_pending_free_pages('truncate_idx') = 0
+    AS truncate_pool_drained;
+truncate_pool_drained
+t
+(1 row)
+SELECT bm25_force_merge('truncate_idx');
+bm25_force_merge
+
+(1 row)
+SELECT EXISTS (
+           SELECT 1
+           FROM bm25_memtable_dead_pages('truncate_idx') dead,
+                truncate_suffix suffix
+           WHERE dead.blkno = suffix.blkno
+             AND dead.dead_fxid > 0
+       )
+       AND (
+           SELECT blkno <
+                  pg_relation_size('truncate_idx'::regclass, 'main') /
+                  current_setting('block_size')::int
+           FROM truncate_suffix
+       )
+    AS force_merge_preserved_unreclaimed_suffix;
+force_merge_preserved_unreclaimed_suffix
+t
+(1 row)
+SELECT txid_current() IS NOT NULL AS truncate_reclaim_t1;
+truncate_reclaim_t1
+t
+(1 row)
+SELECT txid_current() IS NOT NULL AS truncate_reclaim_t2;
+truncate_reclaim_t2
+t
+(1 row)
+VACUUM truncate_docs;
+CREATE TEMP TABLE truncate_recyclable_size AS
+SELECT pg_relation_size('truncate_idx'::regclass, 'main') /
+       current_setting('block_size')::int AS blocks;
+SELECT bm25_force_merge('truncate_idx');
+bm25_force_merge
+
+(1 row)
+SELECT before.blocks >
+           pg_relation_size('truncate_idx'::regclass, 'main') /
+           current_setting('block_size')::int
+       AND suffix.blkno >=
+           pg_relation_size('truncate_idx'::regclass, 'main') /
+           current_setting('block_size')::int
+    AS force_merge_truncated_recyclable_suffix
+FROM truncate_recyclable_size before,
+     truncate_suffix suffix;
+force_merge_truncated_recyclable_suffix
+t
+(1 row)
+DROP TABLE truncate_docs;
+\pset format aligned
 DROP TABLE reclaim_docs;
 DROP EXTENSION pg_textsearch CASCADE;

@@ -100,7 +100,7 @@ PGDLLEXPORT Datum tp_handler(PG_FUNCTION_ARGS);
 /* Link a segment as the new L0 chain head in the metapage */
 void tp_link_l0_chain_head(Relation index, BlockNumber segment_root);
 
-/* Truncate dead pages by walking segment chains for max used block */
+/* Truncate a contiguous EOF suffix already stamped recyclable */
 void tp_truncate_dead_pages(Relation index);
 
 /*

@@ -287,6 +287,9 @@ A handled error before publication returns every explicitly tracked output and
 tombstone allocation to the FSM without freeing selected source pages. A
 backend crash can leave unreachable pre-publication output pages; they cannot
 affect queries or be mistaken for live pages and are reclaimed by `REINDEX`.
+Force-merge relation truncation does not reclaim those orphans by inference:
+it removes only a contiguous EOF suffix whose pages already carry
+`TP_FREE_PAGE_MAGIC`.
 An unfinished publication `GenericXLog` state is aborted on handled errors,
 and the still-unreachable prepared pages are discarded. Once
 `GenericXLogFinish()` succeeds, cleanup does not recycle pages whose ownership
@@ -312,6 +315,13 @@ newly allocated pages are not marked DEAD, while `dead_fxid` prevents a
 retired page from entering the FSM before old primary or feedback-protected
 standby snapshots are safe. Before each reclaimed page is free-stamped, stock
 conflict-only WAL protects disconnected or no-feedback standby readers.
+
+`bm25_force_merge()` may shrink the physical relation only across consecutive
+EOF pages already stamped `TP_FREE_PAGE_MAGIC`. The stamp proves normal
+reclaim completed: the page is detached from every owning structure and any
+required standby conflict WAL was inserted before it entered the FSM. A DEAD
+memtable page, a valid structural page, an unknown page, or an unreachable
+orphan stops truncation even when no current graph edge references it.
 
 If VACUUM is admitted first, compaction waits and later builds from the updated
 alive bits. If compaction is admitted first, VACUUM waits and then discovers

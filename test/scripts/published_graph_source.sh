@@ -50,10 +50,24 @@ assert_no_lazy_graph_walk() {
     fi
 }
 
+assert_recyclable_suffix_truncation() {
+    local body
+
+    body="$(extract_body "${BUILD_SOURCE}" "tp_truncate_dead_pages")"
+    if ! grep -Fq "tp_page_is_recyclable(page)" <<<"${body}" ||
+       ! grep -Fq "truncate_to - 1" <<<"${body}" ||
+       ! grep -Fq "RelationTruncate(index, truncate_to)" <<<"${body}" ||
+       grep -Fq "tp_segment_graph_snapshot_create(" <<<"${body}" ||
+       grep -Fq "tp_tombstone_max_used_block(" <<<"${body}"; then
+        echo "force-merge truncation must remove only a recyclable EOF suffix" \
+            >&2
+        exit 1
+    fi
+}
+
 assert_snapshot_owner "${DUMP_SOURCE}" "tp_summarize_index_to_output"
 assert_snapshot_owner "${DUMP_SOURCE}" "tp_dump_index_to_output"
 assert_snapshot_owner "${DUMP_SOURCE}" "tp_debug_pageviz_to_file"
-assert_snapshot_owner "${BUILD_SOURCE}" "tp_truncate_dead_pages"
 assert_snapshot_owner "${VACUUM_SOURCE}" "tp_bulkdelete"
 assert_snapshot_owner "${VACUUM_SOURCE}" "tp_vacuumcleanup"
 
@@ -62,8 +76,8 @@ assert_no_lazy_graph_walk "${DUMP_SOURCE}" "tp_dump_index_to_output"
 assert_no_lazy_graph_walk "${DUMP_SOURCE}" "count_segments"
 assert_no_lazy_graph_walk "${DUMP_SOURCE}" "collect_segment_info"
 assert_no_lazy_graph_walk "${DUMP_SOURCE}" "mark_segment_pages"
-assert_no_lazy_graph_walk "${BUILD_SOURCE}" "tp_truncate_dead_pages"
 assert_no_lazy_graph_walk "${VACUUM_SOURCE}" "tp_count_live_docs"
 assert_no_lazy_graph_walk "${VACUUM_SOURCE}" "tp_vacuum_identify_affected"
+assert_recyclable_suffix_truncation
 
 echo "Published graph source guards passed"

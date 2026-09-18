@@ -36,6 +36,7 @@
 #include "access/rls.h"
 #include "constants.h"
 #include "index/compaction_request.h"
+#include "index/freepage.h"
 #include "index/metapage.h"
 #include "index/registry.h"
 #include "index/state.h"
@@ -45,11 +46,9 @@
 #include "segment/compaction.h"
 #include "segment/dictionary.h"
 #include "segment/docmap.h"
-#include "segment/graph_snapshot.h"
 #include "segment/io.h"
 #include "segment/merge.h"
 #include "segment/segment.h"
-#include "segment/tombstone.h"
 #include "types/array.h"
 #include "types/vector.h"
 
@@ -556,128 +555,47 @@ tp_link_l0_chain_head(Relation index, BlockNumber segment_root)
 }
 
 /*
- * Truncate dead pages from an index relation.
+ * Truncate recyclable pages from the end of an index relation.
  *
- * Walks all segment chains via the metapage to find the highest
- * block still in use, then truncates everything beyond it.
- * This reclaims pages freed by compaction (which sit below the
- * high-water mark) and unused pool margin from parallel builds.
+ * Only a contiguous EOF suffix already carrying TP_FREE_PAGE_MAGIC is safe
+ * to remove.  That stamp proves the page was unlinked from every owning
+ * structure and completed the appropriate reclaim protocol, including
+ * standby conflict WAL when it could still be visible to an old snapshot.
  *
- * Includes the on-disk memtable chain in the high-water mark
- * calculation: those pages hold live, not-yet-spilled documents
- * and must not be truncated even when a caller (e.g.
- * bm25_force_merge) only intended to reclaim segment space.
- * Caller is responsible for serializing concurrent extension of
- * the chain by holding the per-index LWLock EXCLUSIVE.
+ * Absence from the current published graph is not proof of recyclability:
+ * DEAD memtable pages remain protected by dead_fxid, and a crash or handled
+ * error can leave unreachable structural pages.  Stop at any DEAD, live,
+ * unknown, or orphan page rather than inferring that it is disposable.
+ *
+ * Caller must hold the per-index LWLock EXCLUSIVE so no allocator can claim
+ * a stamped suffix page between inspection and RelationTruncate().
  */
 void
 tp_truncate_dead_pages(Relation index)
 {
-	TpSegmentGraphSnapshot *snapshot;
-	BlockNumber				max_used = 1; /* at least metapage */
-	BlockNumber				nblocks;
-	BlockNumber				chain_blk;
-	int						level;
+	BlockNumber nblocks		= RelationGetNumberOfBlocks(index);
+	BlockNumber truncate_to = nblocks;
 
-	snapshot = tp_segment_graph_snapshot_create(index);
-	for (level = 0; level < TP_MAX_LEVELS; level++)
+	while (truncate_to > TP_METAPAGE_BLKNO + 1)
 	{
-		const BlockNumber *roots;
-		uint32			   root_count;
+		BlockNumber blk = truncate_to - 1;
+		Buffer		buf;
+		Page		page;
+		bool		recyclable;
 
-		roots = tp_segment_graph_snapshot_level(snapshot, level, &root_count);
-		for (uint32 root_idx = 0; root_idx < root_count; root_idx++)
-		{
-			BlockNumber *pages;
-			uint32		 num_pages;
-			uint32		 i;
-			BlockNumber	 seg = roots[root_idx];
+		buf = ReadBuffer(index, blk);
+		LockBuffer(buf, BUFFER_LOCK_SHARE);
+		page	   = BufferGetPage(buf);
+		recyclable = tp_page_is_recyclable(page);
+		UnlockReleaseBuffer(buf);
 
-			num_pages = tp_segment_collect_pages(index, seg, &pages);
-			for (i = 0; i < num_pages; i++)
-			{
-				if (pages[i] + 1 > max_used)
-					max_used = pages[i] + 1;
-			}
-			if (pages)
-				pfree(pages);
-		}
+		if (!recyclable)
+			break;
+		truncate_to = blk;
 	}
 
-	/*
-	 * Walk the on-disk memtable chain (including continuation
-	 * pages reached via fragment head records) so live pages are
-	 * never truncated.  Each link is read under SHARED buffer
-	 * lock; the per-index LWLock held by the caller (EXCLUSIVE)
-	 * ensures no concurrent extension races us.
-	 *
-	 * The graph snapshot's metapage copy normalizes a v6 metapage
-	 * left over from a v1.2.x upgrade (issue #383), so absent
-	 * memtable fields read as InvalidBlockNumber rather than the
-	 * raw zero bytes at that offset.
-	 */
-	chain_blk = snapshot->metapage.memtable_head_blkno;
-	while (chain_blk != InvalidBlockNumber)
-	{
-		Buffer				  cbuf;
-		Page				  cpage;
-		TpMemtablePageHeader *chdr;
-		BlockNumber			  next_blk;
-
-		if (chain_blk + 1 > max_used)
-			max_used = chain_blk + 1;
-
-		cbuf = ReadBuffer(index, chain_blk);
-		LockBuffer(cbuf, BUFFER_LOCK_SHARE);
-		cpage = BufferGetPage(cbuf);
-		if (!tp_memtable_page_is_valid(cpage))
-		{
-			UnlockReleaseBuffer(cbuf);
-			tp_segment_graph_snapshot_free(snapshot);
-			ereport(ERROR,
-					(errcode(ERRCODE_DATA_CORRUPTED),
-					 errmsg("pg_textsearch memtable page at block %u in "
-							"index \"%s\" has invalid magic",
-							chain_blk,
-							RelationGetRelationName(index))));
-		}
-		chdr	 = tp_memtable_page_header(cpage);
-		next_blk = chdr->next_block;
-
-		/*
-		 * A fragment head page's next_block points to the first
-		 * continuation page; walk through them so they're all
-		 * included in max_used.  Continuation pages link
-		 * forward via their own next_block field to the next
-		 * continuation, terminating when the next non-
-		 * continuation page is reached (or InvalidBlockNumber).
-		 */
-		UnlockReleaseBuffer(cbuf);
-		chain_blk = next_blk;
-	}
-
-	tp_segment_graph_snapshot_free(snapshot);
-
-	/*
-	 * Fold in the deferred-free tombstone chain (issue #380): both
-	 * the tombstone pages and the displaced blocks they park must
-	 * survive truncation.  Truncating a parked page would dangle
-	 * pending_free_head and (being WAL-logged) could yank a page a
-	 * hot standby is still reading out from under it.  Read the
-	 * chain after releasing the metapage buffer to avoid taking a
-	 * second SHARE lock on block 0; the caller's per-index
-	 * LWLock EXCLUSIVE keeps the chain stable.
-	 */
-	{
-		BlockNumber tomb_max = tp_tombstone_max_used_block(index);
-
-		if (tomb_max > max_used)
-			max_used = tomb_max;
-	}
-
-	nblocks = RelationGetNumberOfBlocks(index);
-	if (max_used < nblocks)
-		RelationTruncate(index, max_used);
+	if (truncate_to < nblocks)
+		RelationTruncate(index, truncate_to);
 }
 
 /*
