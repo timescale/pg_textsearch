@@ -38,6 +38,7 @@
 #include "memtable/page.h"
 #include "segment/alive_bitset.h"
 #include "segment/compaction.h"
+#include "segment/graph_snapshot.h"
 #include "segment/io.h"
 #include "segment/merge.h"
 #include "segment/segment.h"
@@ -51,7 +52,6 @@
 typedef struct TpVacuumSegmentInfo
 {
 	BlockNumber root_block;
-	BlockNumber next_segment;
 	uint32		level;
 	uint32		num_docs;	  /* segment header num_docs */
 	uint64		total_tokens; /* segment header total_tokens */
@@ -224,16 +224,21 @@ tp_collect_reachable_chain_blocks(Relation indexrel)
  * have no alive-bitset so their alive count equals num_docs.
  */
 static uint64
-tp_count_live_docs(Relation index, TpIndexMetaPage metap)
+tp_count_live_docs(
+		Relation index, const TpSegmentGraphSnapshot *segment_snapshot)
 {
 	uint64 alive = 0;
 
 	for (int level = 0; level < TP_MAX_LEVELS; level++)
 	{
-		BlockNumber seg = metap->level_heads[level];
+		const BlockNumber *roots;
+		uint32			   root_count;
 
-		while (seg != InvalidBlockNumber)
+		roots = tp_segment_graph_snapshot_level(
+				segment_snapshot, level, &root_count);
+		for (uint32 root_idx = 0; root_idx < root_count; root_idx++)
 		{
+			BlockNumber		 seg	= roots[root_idx];
 			TpSegmentReader *reader = tp_segment_open(index, seg);
 
 			if (!reader || !reader->header)
@@ -246,7 +251,6 @@ tp_count_live_docs(Relation index, TpIndexMetaPage metap)
 			alive += (reader->header->alive_bitset_offset > 0)
 						   ? reader->header->alive_count
 						   : reader->header->num_docs;
-			seg = reader->header->next_segment;
 			tp_segment_close(reader);
 		}
 	}
@@ -300,12 +304,12 @@ tp_apply_vacuum_shrinkage(
  */
 static TpVacuumSegmentInfo *
 tp_vacuum_identify_affected(
-		Relation				index,
-		TpIndexMetaPage			metap,
-		IndexBulkDeleteCallback callback,
-		void				   *callback_state,
-		int					   *num_segments_out,
-		int64				   *total_dead_out)
+		Relation					  index,
+		const TpSegmentGraphSnapshot *segment_snapshot,
+		IndexBulkDeleteCallback		  callback,
+		void						 *callback_state,
+		int							 *num_segments_out,
+		int64						 *total_dead_out)
 {
 	TpVacuumSegmentInfo *segments;
 	/* Keep both CTID scratch arrays within roughly one PostgreSQL block. */
@@ -323,12 +327,16 @@ tp_vacuum_identify_affected(
 
 	for (int level = 0; level < TP_MAX_LEVELS; level++)
 	{
-		BlockNumber seg = metap->level_heads[level];
+		const BlockNumber *roots;
+		uint32			   root_count;
 
-		while (seg != InvalidBlockNumber)
+		roots = tp_segment_graph_snapshot_level(
+				segment_snapshot, level, &root_count);
+		for (uint32 root_idx = 0; root_idx < root_count; root_idx++)
 		{
 			TpSegmentReader *reader;
 			uint32			 seg_dead = 0;
+			BlockNumber		 seg	  = roots[root_idx];
 
 			reader = tp_segment_open_ex(index, seg, false);
 			if (!reader || !reader->header)
@@ -414,7 +422,6 @@ tp_vacuum_identify_affected(
 				}
 
 				segments[count].root_block	 = seg;
-				segments[count].next_segment = reader->header->next_segment;
 				segments[count].level		 = level;
 				segments[count].num_docs	 = reader->header->num_docs;
 				segments[count].total_tokens = reader->header->total_tokens;
@@ -428,7 +435,6 @@ tp_vacuum_identify_affected(
 			total_dead += seg_dead;
 			count++;
 
-			seg = reader->header->next_segment;
 			tp_segment_close(reader);
 		}
 	}
@@ -841,13 +847,14 @@ tp_bulkdelete(
 		IndexBulkDeleteCallback callback,
 		void				   *callback_state)
 {
-	TpIndexMetaPage		 metap;
-	TpLocalIndexState	*index_state;
-	TpVacuumSegmentInfo *segments;
-	int					 num_segments;
-	int64				 total_dead;
-	volatile bool		 maintenance_locked = false;
-	volatile bool		 index_lock_held	= false;
+	TpIndexMetaPage			metap;
+	TpSegmentGraphSnapshot *segment_snapshot;
+	TpLocalIndexState	   *index_state;
+	TpVacuumSegmentInfo	   *segments;
+	int						num_segments;
+	int64					total_dead;
+	volatile bool			maintenance_locked = false;
+	volatile bool			index_lock_held	   = false;
 	bool parallel_context = IsInParallelMode() || IsParallelWorker();
 
 	if (stats == NULL)
@@ -910,21 +917,16 @@ tp_bulkdelete(
 			index_lock_held = true;
 		}
 
-		/* Re-read metapage after spill and maintenance admission. */
+		/* Snapshot the published roots after spill and maintenance admission.
+		 */
 		pfree(metap);
-		metap = tp_get_metapage(info->index);
-		if (!metap)
-		{
-			stats->num_pages		= 1;
-			stats->num_index_tuples = 0;
-			stats->tuples_removed	= 0;
-			goto bulkdelete_done;
-		}
+		segment_snapshot = tp_segment_graph_snapshot_create(info->index);
+		metap			 = &segment_snapshot->metapage;
 
 		/* Phase 2: Identify affected segments. */
 		segments = tp_vacuum_identify_affected(
 				info->index,
-				metap,
+				segment_snapshot,
 				callback,
 				callback_state,
 				&num_segments,
@@ -936,10 +938,12 @@ tp_bulkdelete(
 			stats->num_index_tuples = (double)metap->total_docs;
 			stats->tuples_removed	= 0;
 			stats->pages_deleted	= 0;
-			pfree(metap);
 			pfree(segments);
+			tp_segment_graph_snapshot_free(segment_snapshot);
 			goto bulkdelete_done;
 		}
+
+		tp_segment_graph_snapshot_free(segment_snapshot);
 
 		elog(DEBUG1,
 			 "Tapir VACUUM: %lld dead tuples across %d segments",
@@ -1109,7 +1113,6 @@ tp_bulkdelete(
 		stats->tuples_removed = (double)total_dead;
 		stats->pages_deleted  = 0;
 
-		pfree(metap);
 		for (int i = 0; i < num_segments; i++)
 		{
 			if (segments[i].dead_doc_ids)
@@ -1145,9 +1148,9 @@ tp_bulkdelete(
 IndexBulkDeleteResult *
 tp_vacuumcleanup(IndexVacuumInfo *info, IndexBulkDeleteResult *stats)
 {
-	TpIndexMetaPage	   metap;
-	TpLocalIndexState *index_state;
-	int				   freed_pages;
+	TpSegmentGraphSnapshot *segment_snapshot;
+	TpLocalIndexState	   *index_state;
+	int						freed_pages;
 
 	/* Initialize stats if not provided */
 	if (stats == NULL)
@@ -1169,21 +1172,17 @@ tp_vacuumcleanup(IndexVacuumInfo *info, IndexBulkDeleteResult *stats)
 				info->index, index_state, TP_MIN_SPILL_PAGES);
 
 	/*
-	 * Acquire the per-index LWLock in shared mode *before* reading the
-	 * metapage so the level_heads snapshot we walk in tp_count_live_docs
-	 * stays valid: concurrent spills / compactions take LW_EXCLUSIVE to
-	 * mutate level_heads and free segment pages via the FSM, so a snapshot
-	 * read outside the lock could leave us opening a block a merge has
-	 * already recycled ("invalid segment header").  Acquire after the
-	 * spill above (which takes LW_EXCLUSIVE itself) to avoid a
-	 * shared->exclusive upgrade.
+	 * Acquire the per-index LWLock in shared mode before taking the bounded
+	 * root snapshot consumed by tp_count_live_docs.  Concurrent spills /
+	 * compactions take LW_EXCLUSIVE to publish roots and recycle pages.
+	 * Acquire after the spill above (which takes LW_EXCLUSIVE itself) to
+	 * avoid a shared->exclusive upgrade.
 	 */
 	if (index_state != NULL)
 		tp_acquire_index_lock(index_state, LW_SHARED);
 
-	/* Get current index statistics from metapage (under the shared lock) */
-	metap = tp_get_metapage(info->index);
-	if (metap)
+	segment_snapshot = tp_segment_graph_snapshot_create(info->index);
+	if (segment_snapshot)
 	{
 		stats->num_pages = 1;
 		/*
@@ -1199,7 +1198,8 @@ tp_vacuumcleanup(IndexVacuumInfo *info, IndexBulkDeleteResult *stats)
 		 * about to tp_segment_open.
 		 */
 		stats->num_index_tuples = (double)
-				tp_count_live_docs(info->index, metap);
+				tp_count_live_docs(info->index, segment_snapshot);
+		tp_segment_graph_snapshot_free(segment_snapshot);
 		if (index_state != NULL)
 			tp_release_index_lock(index_state);
 
@@ -1251,8 +1251,6 @@ tp_vacuumcleanup(IndexVacuumInfo *info, IndexBulkDeleteResult *stats)
 				IndexFreeSpaceMapVacuum(info->index);
 			}
 		}
-
-		pfree(metap);
 	}
 	else
 	{
@@ -1260,7 +1258,7 @@ tp_vacuumcleanup(IndexVacuumInfo *info, IndexBulkDeleteResult *stats)
 			tp_release_index_lock(index_state);
 
 		elog(WARNING,
-			 "Tapir vacuum cleanup: couldn't read metapage "
+			 "Tapir vacuum cleanup: couldn't snapshot segment graph "
 			 "for index %s",
 			 RelationGetRelationName(info->index));
 

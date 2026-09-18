@@ -27,6 +27,7 @@
 #include "index/state.h"
 #include "memtable/chain_source.h"
 #include "memtable/page.h"
+#include "segment/graph_snapshot.h"
 #include "segment/io.h"
 #include "segment/segment.h"
 #include "segment/tombstone.h"
@@ -159,17 +160,18 @@ dump_memtable(DumpOutput *out, TpLocalIndexState *index_state, Relation rel)
 void
 tp_summarize_index_to_output(const char *index_name, DumpOutput *out)
 {
-	Oid				   index_oid;
-	Relation		   index_rel = NULL;
-	TpIndexMetaPage	   metap	 = NULL;
-	TpLocalIndexState *index_state;
-	uint32			   memtable_terms = 0;
-	uint32			   memtable_docs  = 0;
-	int				   segment_count  = 0;
-	uint32			   segment_terms  = 0;
-	uint32			   segment_docs	  = 0;
-	uint32			   segment_alive  = 0;
-	bool			   acquired_lock  = false;
+	Oid						index_oid;
+	Relation				index_rel = NULL;
+	TpIndexMetaPage			metap	  = NULL;
+	TpSegmentGraphSnapshot *snapshot  = NULL;
+	TpLocalIndexState	   *index_state;
+	uint32					memtable_terms = 0;
+	uint32					memtable_docs  = 0;
+	int						segment_count  = 0;
+	uint32					segment_terms  = 0;
+	uint32					segment_docs   = 0;
+	uint32					segment_alive  = 0;
+	bool					acquired_lock  = false;
 
 	dump_printf(out, "Index: %s\n", index_name);
 
@@ -183,9 +185,6 @@ tp_summarize_index_to_output(const char *index_name, DumpOutput *out)
 	/* Open the index */
 	index_rel = index_open(index_oid, AccessShareLock);
 
-	/* Get the metapage */
-	metap = tp_get_metapage(index_rel);
-
 	/* Get index state */
 	index_state = tp_get_local_index_state(index_oid);
 	if (index_state == NULL)
@@ -194,33 +193,24 @@ tp_summarize_index_to_output(const char *index_name, DumpOutput *out)
 				out,
 				"ERROR: Could not get index state for '%s'\n",
 				index_name);
-		if (metap)
-			pfree(metap);
 		if (index_rel)
 			index_close(index_rel, AccessShareLock);
 		return;
 	}
 
 	/*
-	 * Issue #404: the segment walks below open pages by block number from
-	 * metap->level_heads[], which races a concurrent spill/merge that
-	 * frees and recycles those blocks ("invalid segment header"). Hold the
-	 * per-index lock SHARED and re-read the metapage under it. On error the
-	 * end-of-xact LWLockReleaseAll plus state cleanup reset the lock.
+	 * Issue #404: hold the per-index lock SHARED while consuming the
+	 * bounded segment-root snapshot so concurrent spill/merge cannot
+	 * recycle a root before it is opened.  On error the end-of-xact
+	 * LWLockReleaseAll plus state cleanup reset the lock.
 	 */
 	if (index_state != NULL && !index_state->lock_held)
 	{
 		tp_acquire_index_lock(index_state, LW_SHARED);
 		acquired_lock = true;
 	}
-	if (index_state != NULL)
-	{
-		TpIndexMetaPage fresh = tp_get_metapage(index_rel);
-
-		if (metap)
-			pfree(metap);
-		metap = fresh;
-	}
+	snapshot = tp_segment_graph_snapshot_create(index_rel);
+	metap	 = &snapshot->metapage;
 	/*
 	 * Corpus statistics.
 	 *
@@ -333,18 +323,21 @@ tp_summarize_index_to_output(const char *index_name, DumpOutput *out)
 
 		for (level = 0; level < TP_MAX_LEVELS; level++)
 		{
-			BlockNumber current_segment;
-			int			level_segment_count = 0;
+			const BlockNumber *roots;
+			uint32			   root_count;
+			int				   level_segment_count = 0;
 
-			if (!metap || metap->level_heads[level] == InvalidBlockNumber)
+			roots = tp_segment_graph_snapshot_level(
+					snapshot, level, &root_count);
+			if (root_count == 0)
 				continue;
 
-			has_segments	= true;
-			current_segment = metap->level_heads[level];
+			has_segments = true;
 
-			while (current_segment != InvalidBlockNumber)
+			for (uint32 root_idx = 0; root_idx < root_count; root_idx++)
 			{
 				TpSegmentReader *reader;
+				BlockNumber		 current_segment = roots[root_idx];
 
 				CHECK_FOR_INTERRUPTS();
 
@@ -392,12 +385,11 @@ tp_summarize_index_to_output(const char *index_name, DumpOutput *out)
 								header->num_terms,
 								header->num_docs);
 
-					current_segment = header->next_segment;
 					tp_segment_close(reader);
 				}
 				else
 				{
-					current_segment = InvalidBlockNumber;
+					break;
 				}
 			}
 		}
@@ -446,8 +438,7 @@ tp_summarize_index_to_output(const char *index_name, DumpOutput *out)
 	/* Cleanup */
 	if (acquired_lock)
 		tp_release_index_lock(index_state);
-	if (metap)
-		pfree(metap);
+	tp_segment_graph_snapshot_free(snapshot);
 	if (index_rel)
 		index_close(index_rel, AccessShareLock);
 }
@@ -458,11 +449,12 @@ tp_summarize_index_to_output(const char *index_name, DumpOutput *out)
 void
 tp_dump_index_to_output(const char *index_name, DumpOutput *out)
 {
-	Oid				   index_oid;
-	Relation		   index_rel = NULL;
-	TpIndexMetaPage	   metap	 = NULL;
-	TpLocalIndexState *index_state;
-	bool			   acquired_lock = false;
+	Oid						index_oid;
+	Relation				index_rel = NULL;
+	TpIndexMetaPage			metap	  = NULL;
+	TpSegmentGraphSnapshot *snapshot  = NULL;
+	TpLocalIndexState	   *index_state;
+	bool					acquired_lock = false;
 
 	dump_printf(out, "Tapir Index Debug: %s\n", index_name);
 
@@ -476,9 +468,6 @@ tp_dump_index_to_output(const char *index_name, DumpOutput *out)
 	/* Open the index */
 	index_rel = index_open(index_oid, AccessShareLock);
 
-	/* Get the metapage */
-	metap = tp_get_metapage(index_rel);
-
 	/* Get index state */
 	index_state = tp_get_local_index_state(index_oid);
 	if (index_state == NULL)
@@ -487,31 +476,23 @@ tp_dump_index_to_output(const char *index_name, DumpOutput *out)
 				out,
 				"ERROR: Could not get index state for '%s'\n",
 				index_name);
-		if (metap)
-			pfree(metap);
 		if (index_rel)
 			index_close(index_rel, AccessShareLock);
 		return;
 	}
 
 	/*
-	 * Issue #404: hold the per-index lock (SHARED) and re-read the
-	 * metapage under it before walking segments below; see the matching
-	 * comment in tp_summarize_index_to_output.
+	 * Issue #404: hold the per-index lock (SHARED) while consuming the
+	 * bounded segment-root snapshot; see the matching comment in
+	 * tp_summarize_index_to_output.
 	 */
 	if (index_state != NULL && !index_state->lock_held)
 	{
 		tp_acquire_index_lock(index_state, LW_SHARED);
 		acquired_lock = true;
 	}
-	if (index_state != NULL)
-	{
-		TpIndexMetaPage fresh = tp_get_metapage(index_rel);
-
-		if (metap)
-			pfree(metap);
-		metap = fresh;
-	}
+	snapshot = tp_segment_graph_snapshot_create(index_rel);
+	metap	 = &snapshot->metapage;
 
 	/*
 	 * Corpus statistics.  See the comment in
@@ -597,55 +578,28 @@ tp_dump_index_to_output(const char *index_name, DumpOutput *out)
 	/* Detailed segment dump (first 2 per level) */
 	{
 		int		  level;
-		int		  total_segments = 0;
+		int		  total_segments = snapshot->root_count;
 		int		  dumped_count	 = 0;
 		const int max_dump		 = 2;
-		bool	  has_segments	 = false;
-
-		/* First count total segments across all levels */
-		for (level = 0; level < TP_MAX_LEVELS; level++)
-		{
-			BlockNumber current_segment;
-
-			if (!metap || metap->level_heads[level] == InvalidBlockNumber)
-				continue;
-
-			has_segments	= true;
-			current_segment = metap->level_heads[level];
-
-			while (current_segment != InvalidBlockNumber)
-			{
-				TpSegmentReader *reader;
-
-				reader = tp_segment_open(index_rel, current_segment);
-				if (reader && reader->header)
-				{
-					total_segments++;
-					current_segment = reader->header->next_segment;
-					tp_segment_close(reader);
-				}
-				else
-				{
-					current_segment = InvalidBlockNumber;
-				}
-			}
-		}
+		bool	  has_segments	 = snapshot->root_count > 0;
 
 		/* Now dump first N segments from each level */
 		for (level = 0; level < TP_MAX_LEVELS; level++)
 		{
-			BlockNumber current_segment;
-			int			level_dumped = 0;
+			const BlockNumber *roots;
+			uint32			   root_count;
+			int				   level_dumped = 0;
 
-			if (!metap || metap->level_heads[level] == InvalidBlockNumber)
+			roots = tp_segment_graph_snapshot_level(
+					snapshot, level, &root_count);
+			if (root_count == 0)
 				continue;
 
-			current_segment = metap->level_heads[level];
-
-			while (current_segment != InvalidBlockNumber &&
-				   level_dumped < max_dump)
+			for (uint32 root_idx = 0;
+				 root_idx < root_count && level_dumped < max_dump;
+				 root_idx++)
 			{
-				TpSegmentReader *reader;
+				BlockNumber current_segment = roots[root_idx];
 
 				CHECK_FOR_INTERRUPTS();
 
@@ -653,18 +607,6 @@ tp_dump_index_to_output(const char *index_name, DumpOutput *out)
 				tp_dump_segment_to_output(index_rel, current_segment, out);
 				dumped_count++;
 				level_dumped++;
-
-				/* Read next_segment from header to traverse the chain */
-				reader = tp_segment_open(index_rel, current_segment);
-				if (reader && reader->header)
-				{
-					current_segment = reader->header->next_segment;
-					tp_segment_close(reader);
-				}
-				else
-				{
-					current_segment = InvalidBlockNumber;
-				}
 			}
 		}
 
@@ -685,8 +627,7 @@ tp_dump_index_to_output(const char *index_name, DumpOutput *out)
 	/* Cleanup */
 	if (acquired_lock)
 		tp_release_index_lock(index_state);
-	if (metap)
-		pfree(metap);
+	tp_segment_graph_snapshot_free(snapshot);
 	if (index_rel)
 		index_close(index_rel, AccessShareLock);
 }
@@ -1082,36 +1023,9 @@ mark_special_pages(
  * Count segments in the index.
  */
 static int
-count_segments(Relation index_rel, TpIndexMetaPage metap)
+count_segments(const TpSegmentGraphSnapshot *snapshot)
 {
-	int count = 0;
-	int level;
-
-	if (!metap)
-		return 0;
-
-	for (level = 0; level < TP_MAX_LEVELS; level++)
-	{
-		BlockNumber seg_root = metap->level_heads[level];
-
-		while (seg_root != InvalidBlockNumber)
-		{
-			TpSegmentReader *reader = tp_segment_open(index_rel, seg_root);
-
-			if (!reader || !reader->header)
-			{
-				if (reader)
-					tp_segment_close(reader);
-				break;
-			}
-
-			count++;
-			seg_root = reader->header->next_segment;
-			tp_segment_close(reader);
-		}
-	}
-
-	return count;
+	return snapshot ? (int)snapshot->root_count : 0;
 }
 
 /*
@@ -1120,24 +1034,24 @@ count_segments(Relation index_rel, TpIndexMetaPage metap)
  */
 static void
 collect_segment_info(
-		Relation index_rel, TpIndexMetaPage metap, SegmentInfo *segments)
+		Relation					  index_rel,
+		const TpSegmentGraphSnapshot *snapshot,
+		SegmentInfo					 *segments)
 {
 	int num_segments = 0;
 	int level;
 
 	for (level = 0; level < TP_MAX_LEVELS; level++)
 	{
-		BlockNumber seg_root;
-		int			seg_in_level = 0;
+		const BlockNumber *roots;
+		uint32			   root_count;
 
-		if (!metap || metap->level_heads[level] == InvalidBlockNumber)
-			continue;
-
-		seg_root = metap->level_heads[level];
-
-		while (seg_root != InvalidBlockNumber)
+		roots = tp_segment_graph_snapshot_level(snapshot, level, &root_count);
+		for (uint32 seg_in_level = 0; seg_in_level < root_count;
+			 seg_in_level++)
 		{
 			TpSegmentReader *reader;
+			BlockNumber		 seg_root = roots[seg_in_level];
 
 			reader = tp_segment_open(index_rel, seg_root);
 			if (!reader || !reader->header)
@@ -1154,8 +1068,6 @@ collect_segment_info(
 			segments[num_segments].root_block	= seg_root;
 
 			num_segments++;
-			seg_in_level++;
-			seg_root = reader->header->next_segment;
 			tp_segment_close(reader);
 		}
 	}
@@ -1255,30 +1167,28 @@ mark_page_index_pages(
  */
 static void
 mark_segment_pages(
-		Relation		index_rel,
-		TpIndexMetaPage metap,
-		PageMapEntry   *page_map,
-		BlockNumber		total_blocks,
-		SegmentInfo	   *segments,
-		int				num_segments)
+		Relation					  index_rel,
+		const TpSegmentGraphSnapshot *snapshot,
+		PageMapEntry				 *page_map,
+		BlockNumber					  total_blocks,
+		SegmentInfo					 *segments,
+		int							  num_segments)
 {
 	int level;
 
 	for (level = 0; level < TP_MAX_LEVELS; level++)
 	{
-		BlockNumber seg_root;
-		int			seg_in_level = 0;
+		const BlockNumber *roots;
+		uint32			   root_count;
 
-		if (!metap || metap->level_heads[level] == InvalidBlockNumber)
-			continue;
-
-		seg_root = metap->level_heads[level];
-
-		while (seg_root != InvalidBlockNumber)
+		roots = tp_segment_graph_snapshot_level(snapshot, level, &root_count);
+		for (uint32 seg_in_level = 0; seg_in_level < root_count;
+			 seg_in_level++)
 		{
 			TpSegmentReader *reader;
 			uint32			 i;
 			int				 global_idx = -1;
+			BlockNumber		 seg_root	= roots[seg_in_level];
 
 			reader = tp_segment_open(index_rel, seg_root);
 			if (!reader || !reader->header)
@@ -1324,8 +1234,6 @@ mark_segment_pages(
 					global_idx,
 					seg_in_level);
 
-			seg_in_level++;
-			seg_root = reader->header->next_segment;
 			tp_segment_close(reader);
 		}
 	}
@@ -1539,17 +1447,18 @@ write_pageviz_map(
 static void
 tp_debug_pageviz_to_file(const char *index_name, const char *filename)
 {
-	Oid				   index_oid;
-	Relation		   index_rel = NULL;
-	TpIndexMetaPage	   metap	 = NULL;
-	TpLocalIndexState *index_state;
-	bool			   acquired_lock = false;
-	BlockNumber		   total_blocks	 = 0;
-	PageMapEntry	  *page_map		 = NULL;
-	SegmentInfo		  *segments		 = NULL;
-	int				   num_segments	 = 0;
-	PageCounts		   counts;
-	FILE			  *fp;
+	Oid						index_oid;
+	Relation				index_rel = NULL;
+	TpIndexMetaPage			metap	  = NULL;
+	TpSegmentGraphSnapshot *snapshot  = NULL;
+	TpLocalIndexState	   *index_state;
+	bool					acquired_lock = false;
+	BlockNumber				total_blocks  = 0;
+	PageMapEntry		   *page_map	  = NULL;
+	SegmentInfo			   *segments	  = NULL;
+	int						num_segments  = 0;
+	PageCounts				counts;
+	FILE				   *fp;
 
 	/* Open output file */
 	fp = fopen(filename, "w");
@@ -1572,21 +1481,14 @@ tp_debug_pageviz_to_file(const char *index_name, const char *filename)
 	/* Open index and get metapage */
 	index_rel	 = index_open(index_oid, AccessShareLock);
 	total_blocks = RelationGetNumberOfBlocks(index_rel);
-	metap		 = tp_get_metapage(index_rel);
 	index_state	 = tp_get_local_index_state(index_oid);
 	if (index_state != NULL && !index_state->lock_held)
 	{
 		tp_acquire_index_lock(index_state, LW_SHARED);
 		acquired_lock = true;
 	}
-	if (index_state != NULL)
-	{
-		TpIndexMetaPage fresh = tp_get_metapage(index_rel);
-
-		if (metap)
-			pfree(metap);
-		metap = fresh;
-	}
+	snapshot = tp_segment_graph_snapshot_create(index_rel);
+	metap	 = &snapshot->metapage;
 
 	if (total_blocks == 0)
 	{
@@ -1598,15 +1500,20 @@ tp_debug_pageviz_to_file(const char *index_name, const char *filename)
 	page_map = palloc0(total_blocks * sizeof(PageMapEntry));
 
 	/* Count and allocate segments array */
-	num_segments = count_segments(index_rel, metap);
+	num_segments = count_segments(snapshot);
 	if (num_segments > 0)
 		segments = palloc(num_segments * sizeof(SegmentInfo));
 
 	mark_special_pages(index_rel, metap, page_map, total_blocks);
 	if (num_segments > 0)
-		collect_segment_info(index_rel, metap, segments);
+		collect_segment_info(index_rel, snapshot, segments);
 	mark_segment_pages(
-			index_rel, metap, page_map, total_blocks, segments, num_segments);
+			index_rel,
+			snapshot,
+			page_map,
+			total_blocks,
+			segments,
+			num_segments);
 
 	/* Count and write output */
 	count_page_types(page_map, total_blocks, &counts);
@@ -1621,8 +1528,7 @@ cleanup:
 		pfree(segments);
 	if (page_map)
 		pfree(page_map);
-	if (metap)
-		pfree(metap);
+	tp_segment_graph_snapshot_free(snapshot);
 	if (index_rel)
 		index_close(index_rel, AccessShareLock);
 	fclose(fp);

@@ -34,7 +34,9 @@ SELECT bm25_spill_index('coverage_idx');
 
 -- Test bm25_summarize_index with segment data
 -- This exercises tp_summarize_index_to_output with segments
-SELECT bm25_summarize_index('coverage_idx') IS NOT NULL AS summarize_segment;
+SELECT bm25_summarize_index('coverage_idx')
+           ~ E'L0 Segment 1:.*\n  Total: 1 segments'
+    AS summarize_segment;
 
 -- Test bm25_dump_index with segment data
 -- This exercises tp_dump_segment_to_output, read_dict_entry, read_term_at_index
@@ -83,8 +85,11 @@ FROM generate_series(1, 100) AS i;
 
 SELECT bm25_spill_index('coverage_idx');
 
--- Dump with multiple segments
-SELECT length(bm25_dump_index('coverage_idx')) > 0 AS dump_multi_segment;
+-- Both debug readers must enumerate every root recorded by the metapage.
+SELECT bm25_summarize_index('coverage_idx') ~ E'Total: 2 segments'
+       AND bm25_dump_index('coverage_idx') LIKE
+           '%========== Segment at block %'
+    AS dump_multi_segment;
 
 -- =============================================================================
 -- Test 6: Page visualization - moved behind DEBUG_DUMP_INDEX compile flag
