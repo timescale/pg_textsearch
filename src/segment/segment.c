@@ -32,6 +32,7 @@
 #include "index/metapage.h"
 #include "index/state.h"
 #include "segment/alive_bitset.h"
+#include "segment/compaction.h"
 #include "segment/compression.h"
 #include "segment/dictionary.h"
 #include "segment/docmap.h"
@@ -979,6 +980,8 @@ tp_segment_writer_allocate_page(TpSegmentWriter *writer)
 	tp_segment_writer_grow_pages(writer);
 	new_page = allocate_segment_page(writer->index);
 	writer->pages[writer->pages_allocated++] = new_page;
+	tp_debug_compaction_allocation_pause(
+			writer->index, TP_COMPACTION_ALLOCATION_PAUSE_OUTPUT_DATA);
 	return new_page;
 }
 
@@ -1024,6 +1027,8 @@ write_page_index_internal(
 	{
 		index_pages[i] = allocate_segment_page(index);
 		(*owned_count)++;
+		tp_debug_compaction_allocation_pause(
+				index, TP_COMPACTION_ALLOCATION_PAUSE_PAGE_INDEX);
 	}
 
 	/*

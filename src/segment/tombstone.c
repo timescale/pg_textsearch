@@ -18,6 +18,7 @@
 #include "index/freepage.h"
 #include "index/metapage.h"
 #include "index/state.h"
+#include "segment/compaction.h"
 #include "segment/io.h"
 #include "segment/tombstone.h"
 
@@ -197,6 +198,8 @@ tombstone_build_internal(
 
 		Assert(batch->owned_count < batch->owned_capacity);
 		batch->owned_pages[batch->owned_count++] = blk;
+		tp_debug_compaction_allocation_pause(
+				index, TP_COMPACTION_ALLOCATION_PAUSE_TOMBSTONE);
 
 		tombstone_write_page(
 				index, blk, blocks, start, chunk, merged_fxid, next_page);

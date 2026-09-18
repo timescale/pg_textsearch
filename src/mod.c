@@ -161,6 +161,21 @@ int tp_debug_compaction_pause_source_estimate_ms  = 0;
 int tp_debug_compaction_pause_before_publish_ms	  = 0;
 int tp_debug_compaction_pause_after_restamp_ms	  = 0;
 int tp_debug_index_lock_pause_exclusive_waiter_ms = 0;
+int tp_debug_compaction_pause_after_allocation =
+		TP_COMPACTION_ALLOCATION_PAUSE_NONE;
+
+static const struct config_enum_entry
+		tp_debug_compaction_allocation_pause_options[] = {
+				{"none", TP_COMPACTION_ALLOCATION_PAUSE_NONE, false},
+				{"output-data",
+				 TP_COMPACTION_ALLOCATION_PAUSE_OUTPUT_DATA,
+				 false},
+				{"page-index",
+				 TP_COMPACTION_ALLOCATION_PAUSE_PAGE_INDEX,
+				 false},
+				{"tombstone", TP_COMPACTION_ALLOCATION_PAUSE_TOMBSTONE, false},
+				{NULL, 0, false},
+};
 
 /* Per-level segment capacity; the debug GUC may lower it in tests. */
 int tp_max_segments_per_level = PG_UINT16_MAX;
@@ -825,6 +840,20 @@ _PG_init(void)
 			0,
 			0,
 			60000,
+			PGC_SUSET,
+			0,
+			NULL,
+			NULL,
+			NULL);
+
+	DefineCustomEnumVariable(
+			"pg_textsearch.debug_compaction_pause_after_allocation",
+			"Pause compaction after its first selected allocation.",
+			"Testing-only selector for the first output data page, page-index "
+			"page, or detached tombstone container allocation.",
+			&tp_debug_compaction_pause_after_allocation,
+			TP_COMPACTION_ALLOCATION_PAUSE_NONE,
+			tp_debug_compaction_allocation_pause_options,
 			PGC_SUSET,
 			0,
 			NULL,

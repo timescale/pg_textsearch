@@ -122,12 +122,14 @@ verify_guc_contract() {
                current_setting(
                    'pg_textsearch.debug_compaction_pause_before_publish_ms'),
                current_setting(
-                   'pg_textsearch.debug_compaction_pause_after_restamp_ms');" \
+                   'pg_textsearch.debug_compaction_pause_after_restamp_ms'),
+               current_setting(
+                   'pg_textsearch.debug_compaction_pause_after_allocation');" \
         2>&1); then
         fail "compaction pause GUCs are unavailable: ${defaults}"
     fi
-    [ "${defaults}" = "0|0|0|0" ] ||
-        fail "compaction pause GUC defaults are not 0|0|0|0: ${defaults}"
+    [ "${defaults}" = "0|0|0|0|none" ] ||
+        fail "compaction pause GUC defaults are not 0|0|0|0|none: ${defaults}"
 
     if output=$(sql -c "
         SET pg_textsearch.debug_compaction_pause_after_select_ms = 60001;" \
@@ -165,6 +167,14 @@ verify_guc_contract() {
         [[ "${output}" == *"permission denied"* ]] ||
             fail "non-superuser ${pause_guc} rejection was unexpected: ${output}"
     done
+    if output=$(sql -c "
+        SET ROLE pgts_pause_user;
+        SET pg_textsearch.debug_compaction_pause_after_allocation =
+            'output-data';" 2>&1); then
+        fail "non-superuser changed allocation pause selector"
+    fi
+    [[ "${output}" == *"permission denied"* ]] ||
+        fail "non-superuser allocation pause rejection was unexpected: ${output}"
 }
 
 seed_index() {
@@ -205,6 +215,11 @@ seed_all_indexes() {
     seed_index parallel_b_docs parallel_b_idx parallelbcase
     seed_index publication_docs publication_idx publicationcase
     seed_index cancel_docs cancel_idx cancelcase
+    for phase in output_data page_index tombstone; do
+        seed_index "${phase}_docs" "${phase}_idx" "${phase}case"
+        seed_index "${phase}_control_docs" "${phase}_control_idx" \
+            "${phase}case"
+    done
 }
 
 test_inline_policy_runs_one_pass() {
@@ -243,6 +258,16 @@ index_oid() {
 
 graph() {
     sql -c "SELECT bm25_level_counts('${1}'::regclass)::text;"
+}
+
+pending_free() {
+    sql -c "SELECT bm25_pending_free_pages('${1}');"
+}
+
+relation_blocks() {
+    sql -c "
+        SELECT pg_relation_size('${1}'::regclass, 'main') /
+               current_setting('block_size')::bigint;"
 }
 
 assert_graph() {
@@ -406,6 +431,23 @@ wait_for_marker() {
         sleep 0.05
     done
     fail "did not observe log marker: ${marker}"
+}
+
+wait_for_allocation_marker() {
+    local phase=$1
+    local oid=$2
+    local backend=$3
+    local deadline=$((SECONDS + 10))
+    local marker="pg_textsearch compaction pause at ${phase} for index ${oid} backend ${backend}"
+
+    while ((SECONDS < deadline)); do
+        if grep -Fq "${marker}" "${LOGFILE}" 2>/dev/null; then
+            log "Observed ${phase} allocation marker for index ${oid}, backend ${backend}"
+            return
+        fi
+        sleep 0.05
+    done
+    fail "did not observe allocation log marker: ${marker}"
 }
 
 assert_still_paused() {
@@ -873,6 +915,94 @@ test_cancel_before_publish() {
     assert_all_documents cancel_docs cancel_idx cancelcase
 }
 
+test_cancel_after_allocation() {
+    local phase=$1
+    local table_name=$2
+    local index_name=$3
+    local control_table=$4
+    local control_index=$5
+    local token=$6
+    local app_name="pgts-${phase}-cancel"
+    local output="${CLIENT_DIR}/${phase}_cancel.log"
+    local compactor_pid
+    local backend
+    local oid
+    local before_graph
+    local before_pending
+    local before_blocks
+    local cancelled_blocks
+    local final_blocks
+    local control_before_blocks
+    local control_final_blocks
+    local cancel_result
+
+    log "Case: cancellation after ${phase} allocation discards owned pages..."
+    oid=$(index_oid "${index_name}")
+    before_graph=$(graph "${index_name}")
+    before_pending=$(pending_free "${index_name}")
+    before_blocks=$(relation_blocks "${index_name}")
+    control_before_blocks=$(relation_blocks "${control_index}")
+
+    start_compaction_with_settings \
+        "${app_name}" "${index_name}" \
+        "SET pg_textsearch.debug_compaction_pause_after_allocation = '${phase}';" \
+        "${output}"
+    compactor_pid=${STARTED_PID}
+    backend=$(backend_pid "${app_name}")
+    wait_for_allocation_marker "${phase}" "${oid}" "${backend}"
+
+    cancel_result=$(sql -c "SELECT pg_cancel_backend(${backend});")
+    [ "${cancel_result}" = "t" ] ||
+        fail "pg_cancel_backend(${backend}) returned ${cancel_result}"
+    wait_for_exit "${compactor_pid}" 10 "${phase} cancelled compactor"
+    if wait "${compactor_pid}"; then
+        fail "${phase} cancelled compactor unexpectedly succeeded"
+    fi
+    grep -Fq "canceling statement due to user request" "${output}" ||
+        fail "${phase} compactor did not report query cancellation"
+
+    [ "$(graph "${index_name}")" = "${before_graph}" ] ||
+        fail "${phase} cancellation changed the published segment graph"
+    [ "$(pending_free "${index_name}")" = "${before_pending}" ] ||
+        fail "${phase} cancellation changed the pending-free count"
+    assert_all_documents "${table_name}" "${index_name}" "${token}"
+    cancelled_blocks=$(relation_blocks "${index_name}")
+    [ "${cancelled_blocks}" -ge "${before_blocks}" ] ||
+        fail "${phase} cancellation unexpectedly shrank the index"
+
+    sql -c "SELECT bm25_compact_step('${index_name}'::regclass);" >/dev/null
+    sql -c "SELECT bm25_compact_step('${control_index}'::regclass);" >/dev/null
+    assert_graph "${index_name}" "{0,1,0,0,0,0,0,0}"
+    assert_graph "${control_index}" "{0,1,0,0,0,0,0,0}"
+    assert_all_documents "${table_name}" "${index_name}" "${token}"
+    assert_all_documents "${control_table}" "${control_index}" "${token}"
+
+    final_blocks=$(relation_blocks "${index_name}")
+    control_final_blocks=$(relation_blocks "${control_index}")
+    [ $((final_blocks - before_blocks)) -eq \
+      $((control_final_blocks - control_before_blocks)) ] ||
+        fail "${phase} discarded pages were not reused by later compaction"
+
+    sql -c "
+        INSERT INTO ${table_name}(body)
+        VALUES ('common ${token} post-cancel spill');
+        SELECT bm25_spill_index('${index_name}');" >/dev/null
+    assert_graph "${index_name}" "{1,1,0,0,0,0,0,0}"
+    assert_all_documents "${table_name}" "${index_name}" "${token}"
+}
+
+test_partial_allocation_cancellation() {
+    test_cancel_after_allocation \
+        output-data output_data_docs output_data_idx \
+        output_data_control_docs output_data_control_idx output_datacase
+    test_cancel_after_allocation \
+        page-index page_index_docs page_index_idx \
+        page_index_control_docs page_index_control_idx page_indexcase
+    test_cancel_after_allocation \
+        tombstone tombstone_docs tombstone_idx \
+        tombstone_control_docs tombstone_control_idx tombstonecase
+}
+
 main() {
     setup_cluster
     verify_guc_contract
@@ -887,6 +1017,7 @@ main() {
     test_different_index_overlap
     test_publication_preparation_retry
     test_cancel_before_publish
+    test_partial_allocation_cancellation
     log "All deterministic non-blocking compaction cases passed"
 }
 

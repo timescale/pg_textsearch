@@ -11,10 +11,22 @@
 struct TpLocalIndexState;
 typedef struct RelationData *Relation;
 
+typedef enum TpCompactionAllocationPause
+{
+	TP_COMPACTION_ALLOCATION_PAUSE_NONE,
+	TP_COMPACTION_ALLOCATION_PAUSE_OUTPUT_DATA,
+	TP_COMPACTION_ALLOCATION_PAUSE_PAGE_INDEX,
+	TP_COMPACTION_ALLOCATION_PAUSE_TOMBSTONE
+} TpCompactionAllocationPause;
+
 extern int tp_debug_compaction_pause_after_select_ms;
 extern int tp_debug_compaction_pause_source_estimate_ms;
 extern int tp_debug_compaction_pause_before_publish_ms;
 extern int tp_debug_compaction_pause_after_restamp_ms;
+extern int tp_debug_compaction_pause_after_allocation;
+
+extern void tp_debug_compaction_allocation_pause(
+		Relation index, TpCompactionAllocationPause phase);
 
 extern uint64 tp_max_segment_size_bytes(void);
 

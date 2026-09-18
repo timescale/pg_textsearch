@@ -105,6 +105,8 @@ typedef enum TpStatsRebasePolicy
 	TP_STATS_REBASE_CLAMP_LEGACY_VACUUM
 } TpStatsRebasePolicy;
 
+static bool tp_debug_compaction_build_active = false;
+
 static void tp_free_compaction_plan(TpCompactionPlan *plan);
 
 static void
@@ -135,6 +137,37 @@ tp_debug_compaction_pause(int pause_ms, const char *phase, Oid index_oid)
 					phase,
 					index_oid,
 					MyProcPid)));
+}
+
+void
+tp_debug_compaction_allocation_pause(
+		Relation index, TpCompactionAllocationPause phase)
+{
+	const char *phase_name;
+
+	if (!tp_debug_compaction_build_active ||
+		tp_debug_compaction_pause_after_allocation != (int)phase)
+		return;
+
+	switch (phase)
+	{
+	case TP_COMPACTION_ALLOCATION_PAUSE_OUTPUT_DATA:
+		phase_name = "output-data";
+		break;
+	case TP_COMPACTION_ALLOCATION_PAUSE_PAGE_INDEX:
+		phase_name = "page-index";
+		break;
+	case TP_COMPACTION_ALLOCATION_PAUSE_TOMBSTONE:
+		phase_name = "tombstone";
+		break;
+	case TP_COMPACTION_ALLOCATION_PAUSE_NONE:
+	default:
+		return;
+	}
+
+	tp_debug_compaction_pause_after_allocation =
+			TP_COMPACTION_ALLOCATION_PAUSE_NONE;
+	tp_debug_compaction_pause(60000, phase_name, RelationGetRelid(index));
 }
 
 void
@@ -1283,6 +1316,7 @@ tp_build_compaction_output(
 	uint32		 displaced_count = 0;
 
 	tp_initialize_compaction_output(plan, output);
+	tp_debug_compaction_build_active = true;
 	PG_TRY();
 	{
 		for (uint32 i = 0; i < plan->num_sources; i++)
@@ -1439,10 +1473,12 @@ tp_build_compaction_output(
 	}
 	PG_CATCH();
 	{
+		tp_debug_compaction_build_active = false;
 		tp_discard_compaction_output(index, output);
 		PG_RE_THROW();
 	}
 	PG_END_TRY();
+	tp_debug_compaction_build_active = false;
 }
 
 static bool
