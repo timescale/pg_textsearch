@@ -7,7 +7,6 @@
 #include <postgres.h>
 
 #include <access/genam.h>
-#include <access/generic_xlog.h>
 #include <access/heapam.h>
 #include <access/transam.h>
 #include <catalog/index.h>
@@ -41,7 +40,6 @@
 #include "segment/compaction.h"
 #include "segment/graph_snapshot.h"
 #include "segment/io.h"
-#include "segment/merge.h"
 #include "segment/segment.h"
 #include "segment/tombstone.h"
 
@@ -623,97 +621,10 @@ tp_vacuum_rebuild_segment(
 	return new_root;
 }
 
-static bool
-tp_vacuum_graph_matches(
-		Relation index, Page page, const TpSegmentGraphSnapshot *snapshot)
-{
-	TpIndexMetaPage current;
-	bool			matches;
-
-	current = tp_metapage_copy_from_page(index, page);
-	matches = current->magic == snapshot->metapage.magic &&
-			  current->version == snapshot->metapage.version &&
-			  current->text_config_oid == snapshot->metapage.text_config_oid &&
-			  current->_unused_total_terms ==
-					  snapshot->metapage._unused_total_terms &&
-			  current->k1 == snapshot->metapage.k1 &&
-			  current->b == snapshot->metapage.b &&
-			  current->root_blkno == snapshot->metapage.root_blkno &&
-			  current->term_stats_root == snapshot->metapage.term_stats_root &&
-			  current->_unused_docid_page ==
-					  snapshot->metapage._unused_docid_page &&
-			  current->capabilities == snapshot->metapage.capabilities &&
-			  memcmp(current->level_heads,
-					 snapshot->metapage.level_heads,
-					 sizeof(current->level_heads)) == 0 &&
-			  memcmp(current->level_counts,
-					 snapshot->metapage.level_counts,
-					 sizeof(current->level_counts)) == 0;
-	pfree(current);
-	return matches;
-}
-
-static TpSegmentGraphSnapshot *
-tp_vacuum_prepare_replacement(
-		TpLocalIndexState *index_state,
-		Relation		   index,
-		uint32			   level,
-		BlockNumber		   old_root,
-		BlockNumber		  *prev_root,
-		BlockNumber		  *next_root)
-{
-	volatile bool			locked = false;
-	TpSegmentGraphSnapshot *snapshot;
-	const BlockNumber	   *roots;
-	uint32					root_count;
-	bool					found = false;
-
-	PG_TRY();
-	{
-		tp_acquire_index_lock(index_state, LW_SHARED);
-		locked	 = true;
-		snapshot = tp_segment_graph_snapshot_create(index);
-		tp_release_index_lock(index_state);
-		locked = false;
-	}
-	PG_FINALLY();
-	{
-		if (locked && index_state->lock_held)
-			tp_release_index_lock(index_state);
-	}
-	PG_END_TRY();
-
-	roots = tp_segment_graph_snapshot_level(snapshot, level, &root_count);
-	for (uint32 i = 0; i < root_count; i++)
-	{
-		if (roots[i] != old_root)
-			continue;
-
-		*prev_root = (i == 0) ? InvalidBlockNumber : roots[i - 1];
-		*next_root = (i + 1 == root_count) ? InvalidBlockNumber : roots[i + 1];
-		found	   = true;
-		break;
-	}
-
-	if (!found)
-	{
-		tp_segment_graph_snapshot_free(snapshot);
-		ereport(ERROR,
-				(errcode(ERRCODE_INTERNAL_ERROR),
-				 errmsg("VACUUM replacement source %u is no longer "
-						"published at level %u",
-						old_root,
-						level)));
-	}
-
-	return snapshot;
-}
-
 /*
- * Publish one prepared legacy replacement.  Output construction, source-page
- * collection, and tombstone construction happen without the per-index lock.
- * A shared graph snapshot records any concurrent L0 prefix; the exclusive
- * section validates that exact graph and only then swaps the source.
+ * Hand one rebuilt legacy source to the shared prepared-publication engine.
+ * VACUUM assigns the reclaim XID first; the compaction layer then owns output
+ * linking, page collection, tombstones, prefix validation, and publication.
  */
 static void
 tp_vacuum_replace_segment(
@@ -725,244 +636,18 @@ tp_vacuum_replace_segment(
 		uint64			   docs_shrinkage,
 		uint64			   tokens_shrinkage)
 {
-	BlockNumber		 *old_pages = NULL;
-	uint32			  old_page_count;
 	FullTransactionId vacuum_fxid;
-	volatile bool	  published							  = false;
-	volatile bool	  index_locked						  = false;
-	volatile Buffer	  metabuf							  = InvalidBuffer;
-	volatile Buffer	  new_buf							  = InvalidBuffer;
-	volatile Buffer	  prev_buf							  = InvalidBuffer;
-	volatile Buffer	  tail_buf							  = InvalidBuffer;
-	GenericXLogState *volatile xlog_state				  = NULL;
-	TpSegmentGraphSnapshot *volatile publication_snapshot = NULL;
-	volatile TpDetachedTombstoneBatch tombstones;
 
-	memset((TpDetachedTombstoneBatch *)&tombstones, 0, sizeof(tombstones));
-	tombstones.head = InvalidBlockNumber;
-	tombstones.tail = InvalidBlockNumber;
-
-	PG_TRY();
-	{
-		old_page_count = tp_segment_collect_pages(index, old_root, &old_pages);
-		if (old_page_count == 0)
-			ereport(ERROR,
-					(errcode(ERRCODE_DATA_CORRUPTED),
-					 errmsg("VACUUM replacement source %u has no pages",
-							old_root)));
-		vacuum_fxid = GetCurrentFullTransactionId();
-		tp_tombstone_build_detached(
-				index,
-				old_pages,
-				old_page_count,
-				vacuum_fxid,
-				(TpDetachedTombstoneBatch *)&tombstones);
-
-		for (;;)
-		{
-			BlockNumber		prev_root;
-			BlockNumber		next_root;
-			Page			current_page;
-			TpIndexMetaPage current_meta;
-			BlockNumber		current_pending;
-			Page			meta_copy;
-			TpIndexMetaPage meta;
-
-			publication_snapshot = tp_vacuum_prepare_replacement(
-					index_state,
-					index,
-					level,
-					old_root,
-					&prev_root,
-					&next_root);
-
-			tp_acquire_index_lock(index_state, LW_EXCLUSIVE);
-			index_locked = true;
-			metabuf		 = ReadBuffer(index, TP_METAPAGE_BLKNO);
-			LockBuffer((Buffer)metabuf, BUFFER_LOCK_EXCLUSIVE);
-			current_page = BufferGetPage((Buffer)metabuf);
-			if (!tp_vacuum_graph_matches(
-						index,
-						current_page,
-						(const TpSegmentGraphSnapshot *)publication_snapshot))
-			{
-				UnlockReleaseBuffer((Buffer)metabuf);
-				metabuf = InvalidBuffer;
-				tp_release_index_lock(index_state);
-				index_locked = false;
-				tp_segment_graph_snapshot_free(
-						(TpSegmentGraphSnapshot *)publication_snapshot);
-				publication_snapshot = NULL;
-				CHECK_FOR_INTERRUPTS();
-				continue;
-			}
-
-			current_meta	= (TpIndexMetaPage)PageGetContents(current_page);
-			current_pending = current_meta->version < TP_METAPAGE_VERSION_V8
-									? InvalidBlockNumber
-									: current_meta->pending_free_head;
-
-			if (BlockNumberIsValid(prev_root))
-			{
-				Page		prev_page;
-				char	   *prev_content;
-				uint32		prev_version;
-				BlockNumber recorded_next;
-
-				prev_buf = ReadBuffer(index, prev_root);
-				LockBuffer((Buffer)prev_buf, BUFFER_LOCK_EXCLUSIVE);
-				prev_page	  = BufferGetPage((Buffer)prev_buf);
-				prev_content  = PageGetContents(prev_page);
-				prev_version  = ((TpSegmentHeader *)prev_content)->version;
-				recorded_next = prev_version <= TP_SEGMENT_FORMAT_VERSION_3
-									  ? ((TpSegmentHeaderV3 *)prev_content)
-												->next_segment
-									  : ((TpSegmentHeader *)prev_content)
-												->next_segment;
-				if (recorded_next != old_root)
-					ereport(ERROR,
-							(errcode(ERRCODE_INTERNAL_ERROR),
-							 errmsg("VACUUM replacement predecessor "
-									"changed before publication")));
-			}
-
-			if (BlockNumberIsValid(new_root))
-			{
-				new_buf = ReadBuffer(index, new_root);
-				LockBuffer((Buffer)new_buf, BUFFER_LOCK_EXCLUSIVE);
-			}
-
-			xlog_state = GenericXLogStart(index);
-			meta_copy  = GenericXLogRegisterBuffer(
-					 (GenericXLogState *)xlog_state, (Buffer)metabuf, 0);
-
-			if (BufferIsValid((Buffer)new_buf))
-			{
-				Page			 new_page;
-				TpSegmentHeader *new_header;
-
-				new_page = GenericXLogRegisterBuffer(
-						(GenericXLogState *)xlog_state, (Buffer)new_buf, 0);
-				((PageHeader)new_page)->pd_lower = BLCKSZ;
-				new_header = (TpSegmentHeader *)PageGetContents(new_page);
-				new_header->next_segment = next_root;
-				new_header->level		 = level;
-			}
-
-			if (BufferIsValid((Buffer)prev_buf))
-			{
-				Page		prev_copy;
-				char	   *prev_content;
-				uint32		prev_version;
-				BlockNumber replacement_next = BlockNumberIsValid(new_root)
-													 ? new_root
-													 : next_root;
-
-				prev_copy = GenericXLogRegisterBuffer(
-						(GenericXLogState *)xlog_state, (Buffer)prev_buf, 0);
-				((PageHeader)prev_copy)->pd_lower = BLCKSZ;
-				prev_content					  = PageGetContents(prev_copy);
-				prev_version = ((TpSegmentHeader *)prev_content)->version;
-				if (prev_version <= TP_SEGMENT_FORMAT_VERSION_3)
-					((TpSegmentHeaderV3 *)prev_content)->next_segment =
-							replacement_next;
-				else
-					((TpSegmentHeader *)prev_content)->next_segment =
-							replacement_next;
-			}
-
-			tail_buf = tp_tombstone_attach_detached(
-					(GenericXLogState *)xlog_state,
-					index,
-					*(TpDetachedTombstoneBatch *)&tombstones,
-					current_pending);
-
-			tp_metapage_upgrade_to_current(index, meta_copy);
-			meta = (TpIndexMetaPage)PageGetContents(meta_copy);
-			if (!BlockNumberIsValid(prev_root))
-				meta->level_heads[level] = BlockNumberIsValid(new_root)
-												 ? new_root
-												 : next_root;
-			if (!BlockNumberIsValid(new_root))
-				meta->level_counts[level]--;
-			if (tombstones.container_pages > 0)
-				meta->pending_free_head = tombstones.head;
-			meta->total_docs = meta->total_docs >= docs_shrinkage
-									 ? meta->total_docs - docs_shrinkage
-									 : 0;
-			meta->total_len	 = meta->total_len >= tokens_shrinkage
-									 ? meta->total_len - tokens_shrinkage
-									 : 0;
-
-			GenericXLogFinish((GenericXLogState *)xlog_state);
-			xlog_state = NULL;
-			published  = true;
-
-			if (BufferIsValid((Buffer)tail_buf))
-			{
-				UnlockReleaseBuffer((Buffer)tail_buf);
-				tail_buf = InvalidBuffer;
-			}
-			if (BufferIsValid((Buffer)prev_buf))
-			{
-				UnlockReleaseBuffer((Buffer)prev_buf);
-				prev_buf = InvalidBuffer;
-			}
-			if (BufferIsValid((Buffer)new_buf))
-			{
-				UnlockReleaseBuffer((Buffer)new_buf);
-				new_buf = InvalidBuffer;
-			}
-			UnlockReleaseBuffer((Buffer)metabuf);
-			metabuf = InvalidBuffer;
-			tp_release_index_lock(index_state);
-			index_locked = false;
-			tp_segment_graph_snapshot_free(
-					(TpSegmentGraphSnapshot *)publication_snapshot);
-			publication_snapshot = NULL;
-			break;
-		}
-	}
-	PG_CATCH();
-	{
-		if (!published)
-		{
-			if (xlog_state != NULL)
-				GenericXLogAbort((GenericXLogState *)xlog_state);
-			if ((BufferIsValid((Buffer)tail_buf) ||
-				 BufferIsValid((Buffer)prev_buf) ||
-				 BufferIsValid((Buffer)new_buf) ||
-				 BufferIsValid((Buffer)metabuf)) &&
-				InterruptHoldoffCount == 0)
-				HOLD_INTERRUPTS();
-			if (BufferIsValid((Buffer)tail_buf))
-				UnlockReleaseBuffer((Buffer)tail_buf);
-			if (BufferIsValid((Buffer)prev_buf))
-				UnlockReleaseBuffer((Buffer)prev_buf);
-			if (BufferIsValid((Buffer)new_buf))
-				UnlockReleaseBuffer((Buffer)new_buf);
-			if (BufferIsValid((Buffer)metabuf))
-				UnlockReleaseBuffer((Buffer)metabuf);
-			if (index_locked && index_state->lock_held)
-				tp_release_index_lock(index_state);
-			if (publication_snapshot != NULL)
-				tp_segment_graph_snapshot_free(
-						(TpSegmentGraphSnapshot *)publication_snapshot);
-			if (BlockNumberIsValid(new_root))
-				tp_discard_unpublished_segment(index, new_root);
-			tp_tombstone_discard_detached(
-					index, *(TpDetachedTombstoneBatch *)&tombstones);
-		}
-		if (old_pages != NULL)
-			pfree(old_pages);
-		PG_RE_THROW();
-	}
-	PG_END_TRY();
-
-	if (old_pages != NULL)
-		pfree(old_pages);
-	if (tombstones.owned_pages != NULL)
-		pfree(tombstones.owned_pages);
+	vacuum_fxid = GetCurrentFullTransactionId();
+	tp_publish_prepared_segment_replacement(
+			index_state,
+			index,
+			level,
+			old_root,
+			new_root,
+			docs_shrinkage,
+			tokens_shrinkage,
+			vacuum_fxid);
 }
 
 /*

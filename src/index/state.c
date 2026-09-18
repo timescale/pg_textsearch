@@ -47,6 +47,8 @@
 #include "segment/merge.h"
 #include "segment/segment.h"
 
+extern int tp_debug_index_lock_pause_exclusive_waiter_ms;
+
 /* Cache of local index states */
 static HTAB *local_state_cache = NULL;
 
@@ -1205,6 +1207,29 @@ get_memtable(TpLocalIndexState *local_state)
 			local_state->dsa, local_state->shared->memtable_dp);
 }
 
+static void
+tp_debug_pause_exclusive_waiter(TpLocalIndexState *local_state)
+{
+	int remaining_ms = tp_debug_index_lock_pause_exclusive_waiter_ms;
+
+	if (remaining_ms <= 0)
+		return;
+
+	ereport(LOG,
+			(errmsg("pg_textsearch index lock exclusive waiter registered "
+					"for index %u backend %d",
+					local_state->shared->index_oid,
+					MyProcPid)));
+	while (remaining_ms > 0)
+	{
+		int sleep_ms = Min(remaining_ms, 10);
+
+		CHECK_FOR_INTERRUPTS();
+		pg_usleep(sleep_ms * 1000L);
+		remaining_ms -= sleep_ms;
+	}
+}
+
 /*
  * Acquire the per-index lock if not already held by this backend.
  * Ensures memory consistency on NUMA systems through LWLock's
@@ -1263,6 +1288,8 @@ tp_acquire_index_lock(TpLocalIndexState *local_state, LWLockMode mode)
 
 	PG_TRY();
 	{
+		if (mode == LW_EXCLUSIVE)
+			tp_debug_pause_exclusive_waiter(local_state);
 		LWLockAcquire(&local_state->shared->lock, mode);
 	}
 	PG_FINALLY();

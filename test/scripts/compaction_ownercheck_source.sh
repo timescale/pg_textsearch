@@ -190,6 +190,10 @@ complete_body="$(
 validate_body="$(
     sed -n '/^tp_validate_selected_runs($/,/^}$/p' "${COMPACTION_SOURCE}"
 )"
+replacement_publish_body="$(
+    sed -n '/^tp_publish_prepared_segment_replacement($/,/^}$/p' \
+        "${COMPACTION_SOURCE}"
+)"
 publish_acquire_line="$(
     grep -n 'tp_acquire_index_lock(index_state, LW_EXCLUSIVE)' \
         <<<"${publish_body}" | head -1 | cut -d: -f1 || true
@@ -273,7 +277,7 @@ if [[ -z "${publish_output_validation_line}" ||
    ! grep -Fq 'GenericXLogAbort' <<<"${publish_body}" ||
    ! grep -Fq 'GenericXLogStart(index)' <<<"${publish_body}" ||
    ! grep -Fq 'tp_publication_identity_matches' <<<"${publish_body}" ||
-   ! grep -Fq 'predecessor->next_segment = output->output_heads[0]' \
+   ! grep -Fq 'tp_segment_page_set_link' \
        <<<"${publish_body}" ||
    ! grep -Fq 'current_pending' <<<"${publish_body}" ||
    ! grep -Fq 'current_docs - output->removed_docs' <<<"${publish_body}"; then
@@ -290,7 +294,8 @@ if ! grep -Fq 'tp_acquire_index_lock(index_state, LW_SHARED)' \
 fi
 if ! grep -Fq 'current_meta->level_counts[level] -' <<<"${validate_body}" ||
    ! grep -Fq 'snapshot->level_counts[level]' <<<"${validate_body}" ||
-   ! grep -Fq '*l0_predecessor = current' <<<"${validate_body}"; then
+   ! grep -Fq 'level_predecessor = current' <<<"${validate_body}" ||
+   ! grep -Fq '*predecessor' <<<"${validate_body}"; then
     echo "compaction validation must preserve a spill-prepended L0 prefix" >&2
     exit 1
 fi
@@ -350,13 +355,29 @@ vacuum_replace_xid_line="$(
         <<<"${vacuum_replace_body}" | head -1 | cut -d: -f1 || true
 )"
 vacuum_replace_tombstone_line="$(
-    grep -n 'tp_tombstone_build_detached' \
+    grep -n 'tp_publish_prepared_segment_replacement' \
         <<<"${vacuum_replace_body}" | head -1 | cut -d: -f1 || true
 )"
 if [[ -z "${vacuum_replace_xid_line}" ||
       -z "${vacuum_replace_tombstone_line}" ||
       "${vacuum_replace_xid_line}" -ge "${vacuum_replace_tombstone_line}" ]]; then
-    echo "VACUUM replacement must assign its reclaim XID before tombstone build" >&2
+    echo "VACUUM replacement must assign its reclaim XID before shared publication" >&2
+    review_failures=$((review_failures + 1))
+fi
+if grep -Eq '^tp_vacuum_(graph_matches|prepare_replacement)\(' \
+        "${VACUUM_SOURCE}" ||
+   grep -Eq 'GenericXLog|tp_tombstone_(build|attach|discard)' \
+        <<<"${vacuum_replace_body}"; then
+    echo "VACUUM must use the shared prepared single-run publisher" >&2
+    review_failures=$((review_failures + 1))
+fi
+if ! grep -Fq 'tp_prepare_single_replacement_plan' \
+        <<<"${replacement_publish_body}" ||
+   ! grep -Fq 'tp_tombstone_build_detached' \
+        <<<"${replacement_publish_body}" ||
+   ! grep -Fq 'tp_complete_compaction_publication' \
+        <<<"${replacement_publish_body}"; then
+    echo "single-run replacement must use compaction publication machinery" >&2
     review_failures=$((review_failures + 1))
 fi
 

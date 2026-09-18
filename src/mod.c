@@ -156,10 +156,11 @@ bool tp_debug_panic_before_compaction_publish = false;
 bool tp_debug_panic_after_compaction_publish  = false;
 
 /* Debug: deterministic runtime maintenance pauses for concurrency tests. */
-int tp_debug_compaction_pause_after_select_ms	 = 0;
-int tp_debug_compaction_pause_source_estimate_ms = 0;
-int tp_debug_compaction_pause_before_publish_ms	 = 0;
-int tp_debug_compaction_pause_after_restamp_ms	 = 0;
+int tp_debug_compaction_pause_after_select_ms	  = 0;
+int tp_debug_compaction_pause_source_estimate_ms  = 0;
+int tp_debug_compaction_pause_before_publish_ms	  = 0;
+int tp_debug_compaction_pause_after_restamp_ms	  = 0;
+int tp_debug_index_lock_pause_exclusive_waiter_ms = 0;
 
 /* Per-level segment capacity; the debug GUC may lower it in tests. */
 int tp_max_segments_per_level = PG_UINT16_MAX;
@@ -806,6 +807,21 @@ _PG_init(void)
 			"Testing-only interruptible pause after assigning the reclaim "
 			"horizon and before publishing the replacement graph.",
 			&tp_debug_compaction_pause_after_restamp_ms,
+			0,
+			0,
+			60000,
+			PGC_SUSET,
+			0,
+			NULL,
+			NULL,
+			NULL);
+
+	DefineCustomIntVariable(
+			"pg_textsearch.debug_index_lock_pause_exclusive_waiter_ms",
+			"Pause after registering an exclusive per-index lock waiter.",
+			"Testing-only interruptible pause after incrementing the "
+			"writer-preference waiter count and before LWLock acquisition.",
+			&tp_debug_index_lock_pause_exclusive_waiter_ms,
 			0,
 			0,
 			60000,

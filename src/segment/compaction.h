@@ -11,14 +11,6 @@
 struct TpLocalIndexState;
 typedef struct RelationData *Relation;
 
-typedef struct TpCompactionPublication
-{
-	TpIndexMetaPageData metapage;
-	BlockNumber			l0_predecessor;
-	BlockNumber			l0_head;
-	uint16				l0_count;
-} TpCompactionPublication;
-
 extern int tp_debug_compaction_pause_after_select_ms;
 extern int tp_debug_compaction_pause_source_estimate_ms;
 extern int tp_debug_compaction_pause_before_publish_ms;
@@ -53,6 +45,21 @@ tp_compact_step(struct TpLocalIndexState *index_state, Relation index);
  */
 extern bool
 tp_compact_empty_step(struct TpLocalIndexState *index_state, Relation index);
+
+/*
+ * Publish one already-built replacement for one published source segment.
+ * The caller holds maintenance and assigns reclaim_fxid before calling.
+ * This function takes ownership of replacement_root on entry.
+ */
+extern void tp_publish_prepared_segment_replacement(
+		struct TpLocalIndexState *index_state,
+		Relation				  index,
+		uint32					  level,
+		BlockNumber				  source_root,
+		BlockNumber				  replacement_root,
+		uint64					  removed_docs,
+		uint64					  removed_tokens,
+		FullTransactionId		  reclaim_fxid);
 
 extern void
 tp_force_compact(struct TpLocalIndexState *index_state, Relation index);

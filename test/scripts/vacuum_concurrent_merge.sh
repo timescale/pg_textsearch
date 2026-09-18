@@ -283,6 +283,46 @@ wait_for_vacuum_marker() {
     error "did not observe log marker: ${marker}"
 }
 
+wait_for_exclusive_waiter_marker() {
+    local oid=$1
+    local backend=$2
+    local deadline=$((SECONDS + 10))
+    local marker="pg_textsearch index lock exclusive waiter registered for index ${oid} backend ${backend}"
+
+    while ((SECONDS < deadline)); do
+        if grep -Fq "${marker}" "${LOGFILE}" 2>/dev/null; then
+            log "Observed exclusive waiter marker for index ${oid}, backend ${backend}"
+            return
+        fi
+        sleep 0.05
+    done
+    error "did not observe log marker: ${marker}"
+}
+
+assert_vacuum_identification_paused() {
+    local oid=$1
+    local backend=$2
+    local client_pid=$3
+    local marker="pg_textsearch VACUUM resume after identification for index ${oid} backend ${backend}"
+    local active
+
+    if grep -Fq "${marker}" "${LOGFILE}" 2>/dev/null; then
+        error "VACUUM resumed before the later-reader proof completed"
+    fi
+    kill -0 "${client_pid}" 2>/dev/null ||
+        error "VACUUM client exited before the later-reader proof completed"
+    active=$(sql -c "
+        SELECT EXISTS (
+            SELECT 1
+              FROM pg_stat_activity
+             WHERE pid = ${backend}
+               AND state = 'active'
+               AND query = 'VACUUM identify_docs;'
+        );")
+    [ "${active}" = "t" ] ||
+        error "VACUUM backend ${backend} is no longer paused in identification"
+}
+
 assert_still_paused() {
     local phase=$1
     local oid=$2
@@ -340,6 +380,7 @@ test_vacuum_identification_does_not_gate_readers() {
     local spill_pid
     local reader_pid
     local vacuum_backend
+    local spill_backend
     local oid
     local reader_result
 
@@ -360,13 +401,19 @@ test_vacuum_identification_does_not_gate_readers() {
 
     PGAPPNAME=pgts-identify-spill \
         PGOPTIONS="-c statement_timeout=90000 -c lock_timeout=30000" \
-        sql -c "
-            INSERT INTO identify_docs(body)
-            VALUES ('queued spill reader visibility');
-            SELECT bm25_spill_index('identify_bm25');" \
+        psql -h "${SOCKET_DIR}" -p "${TEST_PORT}" -d "${TEST_DB}" \
+        -qAt -v ON_ERROR_STOP=1 \
+        -c "SELECT pg_backend_pid();" \
+        -c "INSERT INTO identify_docs(body)
+            VALUES ('queued spill reader visibility');" \
+        -c "SET pg_textsearch.debug_index_lock_pause_exclusive_waiter_ms=500;" \
+        -c "SELECT bm25_spill_index('identify_bm25');" \
         >"${spill_output}" 2>&1 &
     spill_pid=$!
-    sleep 0.25
+    spill_backend=$(client_backend_pid "${spill_output}" "identification spill")
+    wait_for_exclusive_waiter_marker "${oid}" "${spill_backend}"
+    assert_vacuum_identification_paused \
+        "${oid}" "${vacuum_backend}" "${vacuum_pid}"
 
     PGAPPNAME=pgts-identify-reader \
         PGOPTIONS="-c statement_timeout=2000 -c lock_timeout=1500" \
@@ -387,13 +434,13 @@ test_vacuum_identification_does_not_gate_readers() {
     [ "${reader_result}" = "1" ] ||
         error "later identification reader returned ${reader_result}"
 
-    kill -0 "${vacuum_pid}" 2>/dev/null ||
-        error "VACUUM identification ended before reader proof"
+    assert_vacuum_identification_paused \
+        "${oid}" "${vacuum_backend}" "${vacuum_pid}"
+    log "Later reader completed while VACUUM identification was paused"
+
     wait_success "${vacuum_pid}" 15 "identification VACUUM" \
         "${vacuum_output}"
     wait_success "${spill_pid}" 15 "identification spill" "${spill_output}"
-
-    log "Later reader completed while VACUUM identification was paused"
 }
 
 test_vacuum_waits_for_force_merge() {

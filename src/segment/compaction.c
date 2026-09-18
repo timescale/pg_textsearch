@@ -26,6 +26,7 @@
 #include "segment/alive_bitset.h"
 #include "segment/compaction.h"
 #include "segment/format.h"
+#include "segment/graph_snapshot.h"
 #include "segment/io.h"
 #include "segment/merge.h"
 #include "segment/pagemapper.h"
@@ -69,6 +70,7 @@ typedef struct TpCompactionPlan
 	TpCompactionBatch  *batches;
 	uint32				num_batches;
 	uint32				output_capacity;
+	uint16				prefix_counts[TP_MAX_LEVELS];
 	BlockNumber			selected_heads[TP_MAX_LEVELS];
 	uint16				selected_counts[TP_MAX_LEVELS];
 	BlockNumber			retained_heads[TP_MAX_LEVELS];
@@ -87,6 +89,17 @@ typedef struct TpCompactionOutput
 	TpDetachedTombstoneBatch tombstones;
 	bool					 publication_started;
 } TpCompactionOutput;
+
+typedef struct TpCompactionPublication
+{
+	TpIndexMetaPageData metapage;
+	BlockNumber			predecessor;
+	uint32				predecessor_level;
+	BlockNumber			l0_head;
+	uint16				l0_count;
+} TpCompactionPublication;
+
+static void tp_free_compaction_plan(TpCompactionPlan *plan);
 
 static void
 tp_debug_compaction_pause(int pause_ms, const char *phase, Oid index_oid)
@@ -868,6 +881,57 @@ tp_read_segment_link(
 }
 
 static bool
+tp_segment_page_link(Page page, uint32 *level, BlockNumber *next)
+{
+	char  *contents = PageGetContents(page);
+	uint32 magic;
+	uint32 version;
+
+	memcpy(&magic, contents, sizeof(magic));
+	memcpy(&version, contents + sizeof(magic), sizeof(version));
+	if (magic != TP_SEGMENT_MAGIC)
+		return false;
+
+	if (version <= TP_SEGMENT_FORMAT_VERSION_3)
+	{
+		TpSegmentHeaderV3 *header = (TpSegmentHeaderV3 *)contents;
+
+		*level = header->level;
+		*next  = header->next_segment;
+	}
+	else if (version <= TP_SEGMENT_FORMAT_VERSION_4)
+	{
+		TpSegmentHeaderV4 *header = (TpSegmentHeaderV4 *)contents;
+
+		*level = header->level;
+		*next  = header->next_segment;
+	}
+	else if (version <= TP_SEGMENT_FORMAT_VERSION)
+	{
+		TpSegmentHeader *header = (TpSegmentHeader *)contents;
+
+		*level = header->level;
+		*next  = header->next_segment;
+	}
+	else
+		return false;
+
+	return true;
+}
+
+static void
+tp_segment_page_set_link(Page page, BlockNumber next)
+{
+	char  *contents = PageGetContents(page);
+	uint32 version	= ((TpSegmentHeader *)contents)->version;
+
+	if (version <= TP_SEGMENT_FORMAT_VERSION_3)
+		((TpSegmentHeaderV3 *)contents)->next_segment = next;
+	else
+		((TpSegmentHeader *)contents)->next_segment = next;
+}
+
+static bool
 tp_metapage_identity_matches(
 		const TpIndexMetaPageData *current,
 		const TpIndexMetaPageData *snapshot)
@@ -900,14 +964,16 @@ tp_validate_selected_runs(
 		const TpIndexMetaPage snapshot,
 		TpIndexMetaPage		  current_meta,
 		TpCompactionPlan	 *plan,
-		BlockNumber			 *l0_predecessor)
+		BlockNumber			 *predecessor,
+		uint32				 *predecessor_level)
 {
 	HASHCTL ctl;
 	HTAB   *visited;
 	uint32	source_index = 0;
 	bool	valid		 = false;
 
-	*l0_predecessor = InvalidBlockNumber;
+	*predecessor	   = InvalidBlockNumber;
+	*predecessor_level = TP_MAX_LEVELS;
 	if (!tp_metapage_identity_matches(current_meta, snapshot))
 		return false;
 
@@ -932,8 +998,10 @@ tp_validate_selected_runs(
 	for (uint32 level = 0; level < TP_MAX_LEVELS; level++)
 	{
 		BlockNumber current;
+		BlockNumber level_predecessor = InvalidBlockNumber;
 
-		if ((uint32)plan->selected_counts[level] +
+		if ((uint32)plan->prefix_counts[level] +
+					(uint32)plan->selected_counts[level] +
 					(uint32)plan->retained_counts[level] !=
 			(uint32)snapshot->level_counts[level])
 			goto done;
@@ -960,8 +1028,8 @@ tp_validate_selected_runs(
 					goto done;
 				if (!tp_read_segment_link(index, current, level, &next))
 					goto done;
-				*l0_predecessor = current;
-				current			= next;
+				level_predecessor = current;
+				current			  = next;
 			}
 			if (current != snapshot->level_heads[level])
 				goto done;
@@ -978,12 +1046,35 @@ tp_validate_selected_runs(
 
 		if (plan->selected_counts[level] == 0)
 		{
-			if (plan->selected_heads[level] != InvalidBlockNumber)
+			if (plan->prefix_counts[level] != 0 ||
+				plan->selected_heads[level] != InvalidBlockNumber)
 				goto done;
 			continue;
 		}
+
+		for (uint16 i = 0; i < plan->prefix_counts[level]; i++)
+		{
+			BlockNumber next;
+			bool		found;
+
+			if (!BlockNumberIsValid(current))
+				goto done;
+			(void)hash_search(visited, &current, HASH_ENTER, &found);
+			if (found || !tp_read_segment_link(index, current, level, &next))
+				goto done;
+			level_predecessor = current;
+			current			  = next;
+		}
+
 		if (plan->selected_heads[level] != current)
 			goto done;
+		if (BlockNumberIsValid(level_predecessor))
+		{
+			if (BlockNumberIsValid(*predecessor))
+				goto done;
+			*predecessor	   = level_predecessor;
+			*predecessor_level = level;
+		}
 
 		for (uint16 i = 0; i < plan->selected_counts[level]; i++)
 		{
@@ -1050,7 +1141,8 @@ tp_prepare_compaction_publication(
 {
 	volatile bool	acquired_here = false;
 	TpIndexMetaPage current_meta;
-	BlockNumber		l0_predecessor;
+	BlockNumber		predecessor;
+	uint32			predecessor_level;
 	bool			valid;
 
 	PG_TRY();
@@ -1071,15 +1163,21 @@ tp_prepare_compaction_publication(
 
 		current_meta = tp_get_metapage(index);
 		valid		 = tp_validate_selected_runs(
-				   index, snapshot, current_meta, plan, &l0_predecessor);
+				   index,
+				   snapshot,
+				   current_meta,
+				   plan,
+				   &predecessor,
+				   &predecessor_level);
 		if (valid)
 		{
 			memcpy(&publication->metapage,
 				   current_meta,
 				   sizeof(publication->metapage));
-			publication->l0_predecessor = l0_predecessor;
-			publication->l0_head		= current_meta->level_heads[0];
-			publication->l0_count		= current_meta->level_counts[0];
+			publication->predecessor	   = predecessor;
+			publication->predecessor_level = predecessor_level;
+			publication->l0_head		   = current_meta->level_heads[0];
+			publication->l0_count		   = current_meta->level_counts[0];
 		}
 		pfree(current_meta);
 
@@ -1345,7 +1443,6 @@ static bool
 tp_publish_compaction_output(
 		TpLocalIndexState			  *index_state,
 		Relation					   index,
-		const TpIndexMetaPage		   snapshot,
 		TpCompactionPlan			  *plan,
 		TpCompactionOutput			  *output,
 		const TpCompactionPublication *publication)
@@ -1355,9 +1452,9 @@ tp_publish_compaction_output(
 	volatile Buffer tailbuf						 = InvalidBuffer;
 	GenericXLogState *volatile publication_state = NULL;
 	volatile bool acquired_here					 = false;
-	BlockNumber	  l0_predecessor				 = publication->l0_predecessor;
-	bool		  l0_changes;
-	bool		  published = false;
+	BlockNumber	  predecessor					 = publication->predecessor;
+	uint32		  predecessor_level = publication->predecessor_level;
+	bool		  published			= false;
 
 	PG_TRY();
 	{
@@ -1436,24 +1533,28 @@ tp_publish_compaction_output(
 					 errmsg("compaction shrinkage exceeds current index "
 							"statistics")));
 
-		l0_changes = plan->selected_counts[0] > 0 ||
-					 output->output_counts[0] > 0;
-		if (l0_changes && BlockNumberIsValid(l0_predecessor))
+		if (BlockNumberIsValid(predecessor))
 		{
-			Page			 predecessor_page;
-			TpSegmentHeader *predecessor;
+			Page		predecessor_page;
+			uint32		recorded_level;
+			BlockNumber recorded_next;
 
-			predecessor_buf = ReadBuffer(index, l0_predecessor);
-			LockBuffer(predecessor_buf, BUFFER_LOCK_EXCLUSIVE);
-			predecessor_page = BufferGetPage(predecessor_buf);
-			predecessor = (TpSegmentHeader *)PageGetContents(predecessor_page);
-			if (predecessor->magic != TP_SEGMENT_MAGIC ||
-				predecessor->level != 0 ||
-				predecessor->next_segment != snapshot->level_heads[0])
+			if (predecessor_level >= TP_MAX_LEVELS)
 				ereport(ERROR,
 						(errcode(ERRCODE_INTERNAL_ERROR),
-						 errmsg("concurrent L0 prefix changed before "
-								"compaction publication")));
+						 errmsg("invalid compaction predecessor level")));
+
+			predecessor_buf = ReadBuffer(index, predecessor);
+			LockBuffer(predecessor_buf, BUFFER_LOCK_EXCLUSIVE);
+			predecessor_page = BufferGetPage(predecessor_buf);
+			if (!tp_segment_page_link(
+						predecessor_page, &recorded_level, &recorded_next) ||
+				recorded_level != predecessor_level ||
+				recorded_next != plan->selected_heads[predecessor_level])
+				ereport(ERROR,
+						(errcode(ERRCODE_INTERNAL_ERROR),
+						 errmsg("compaction predecessor changed before "
+								"publication")));
 		}
 
 		if (tp_debug_panic_before_compaction_publish)
@@ -1472,14 +1573,13 @@ tp_publish_compaction_output(
 
 		if (BufferIsValid(predecessor_buf))
 		{
-			Page			 predecessor_copy;
-			TpSegmentHeader *predecessor;
+			Page predecessor_copy;
 
 			predecessor_copy = GenericXLogRegisterBuffer(
 					(GenericXLogState *)publication_state, predecessor_buf, 0);
 			((PageHeader)predecessor_copy)->pd_lower = BLCKSZ;
-			predecessor = (TpSegmentHeader *)PageGetContents(predecessor_copy);
-			predecessor->next_segment = output->output_heads[0];
+			tp_segment_page_set_link(
+					predecessor_copy, output->output_heads[predecessor_level]);
 		}
 
 		tailbuf = tp_tombstone_attach_detached(
@@ -1497,7 +1597,7 @@ tp_publish_compaction_output(
 
 			if (!level_changes)
 				continue;
-			if (level != 0 || !BlockNumberIsValid(l0_predecessor))
+			if (!BlockNumberIsValid(predecessor) || level != predecessor_level)
 				meta->level_heads[level] = output->output_heads[level];
 			meta->level_counts[level] =
 					(uint16)((uint32)current_counts[level] -
@@ -1602,7 +1702,8 @@ tp_complete_compaction_publication(
 		Relation			  index,
 		const TpIndexMetaPage snapshot,
 		TpCompactionPlan	 *plan,
-		TpCompactionOutput	 *output)
+		TpCompactionOutput	 *output,
+		FullTransactionId	  reclaim_fxid)
 {
 	FullTransactionId merged_fxid;
 
@@ -1621,17 +1722,23 @@ tp_complete_compaction_publication(
 							RelationGetRelationName(index))));
 
 		/*
-		 * Assign an XID before emitting the restamp WAL.  The in-progress
-		 * transaction pins primary and standby horizons through graph
-		 * publication, including snapshots that start after restamping.
+		 * Ordinary compaction assigns and restamps here.  A prepared
+		 * single-run replacement arrives with a VACUUM-assigned XID and
+		 * tombstones already stamped during construction.  In both cases
+		 * the in-progress transaction pins primary and standby horizons
+		 * through graph publication.
 		 */
-		merged_fxid = GetCurrentFullTransactionId();
-		tp_tombstone_restamp_detached(index, output->tombstones, merged_fxid);
-		if (!index_state->lock_held)
-			tp_debug_compaction_pause(
-					tp_debug_compaction_pause_after_restamp_ms,
-					"after-restamp",
-					RelationGetRelid(index));
+		if (!FullTransactionIdIsValid(reclaim_fxid))
+		{
+			merged_fxid = GetCurrentFullTransactionId();
+			tp_tombstone_restamp_detached(
+					index, output->tombstones, merged_fxid);
+			if (!index_state->lock_held)
+				tp_debug_compaction_pause(
+						tp_debug_compaction_pause_after_restamp_ms,
+						"after-restamp",
+						RelationGetRelid(index));
+		}
 
 		for (;;)
 		{
@@ -1646,12 +1753,7 @@ tp_complete_compaction_publication(
 						RelationGetRelid(index));
 
 			if (tp_publish_compaction_output(
-						index_state,
-						index,
-						snapshot,
-						plan,
-						output,
-						&publication))
+						index_state, index, plan, output, &publication))
 				break;
 
 			ereport(LOG,
@@ -1668,6 +1770,268 @@ tp_complete_compaction_publication(
 		PG_RE_THROW();
 	}
 	PG_END_TRY();
+}
+
+static TpIndexMetaPage
+tp_prepare_single_replacement_plan(
+		TpLocalIndexState *index_state,
+		Relation		   index,
+		uint32			   level,
+		BlockNumber		   source_root,
+		TpCompactionPlan  *plan)
+{
+	volatile bool			acquired_here = false;
+	TpSegmentGraphSnapshot *graph;
+	TpIndexMetaPage			snapshot;
+	const BlockNumber	   *roots;
+	uint32					root_count;
+	uint32					position;
+	bool					found = false;
+	bool					private_compaction;
+
+	if (level >= TP_MAX_LEVELS)
+		ereport(ERROR,
+				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+				 errmsg("invalid replacement segment level %u", level)));
+
+	memset(plan, 0, sizeof(*plan));
+	private_compaction = tp_compaction_is_private(index_state, index);
+	PG_TRY();
+	{
+		if (!private_compaction)
+		{
+			tp_acquire_index_lock(index_state, LW_SHARED);
+			acquired_here = true;
+		}
+
+		graph = tp_segment_graph_snapshot_create(index);
+		if (acquired_here)
+		{
+			tp_release_index_lock(index_state);
+			acquired_here = false;
+		}
+	}
+	PG_FINALLY();
+	{
+		if (acquired_here && index_state->lock_held)
+			tp_release_index_lock(index_state);
+	}
+	PG_END_TRY();
+
+	roots = tp_segment_graph_snapshot_level(graph, level, &root_count);
+	for (position = 0; position < root_count; position++)
+	{
+		if (roots[position] == source_root)
+		{
+			found = true;
+			break;
+		}
+	}
+	if (!found)
+	{
+		tp_segment_graph_snapshot_free(graph);
+		ereport(ERROR,
+				(errcode(ERRCODE_INTERNAL_ERROR),
+				 errmsg("prepared replacement source %u is no longer "
+						"published at level %u",
+						source_root,
+						level)));
+	}
+
+	snapshot  = palloc(sizeof(*snapshot));
+	*snapshot = graph->metapage;
+
+	for (uint32 current_level = 0; current_level < TP_MAX_LEVELS;
+		 current_level++)
+	{
+		plan->selected_heads[current_level] = InvalidBlockNumber;
+		plan->retained_heads[current_level] =
+				snapshot->level_heads[current_level];
+		plan->retained_counts[current_level] =
+				snapshot->level_counts[current_level];
+	}
+
+	plan->source_capacity			= 1;
+	plan->output_capacity			= PG_UINT16_MAX;
+	plan->sources					= palloc0(sizeof(TpCompactionSource));
+	plan->sources[0].root			= source_root;
+	plan->sources[0].source_level	= level;
+	plan->sources[0].chain_position = position;
+	plan->num_sources				= 1;
+	plan->prefix_counts[level]		= (uint16)position;
+	plan->selected_heads[level]		= source_root;
+	plan->selected_counts[level]	= 1;
+	plan->retained_heads[level]		= (position + 1 < root_count)
+											? roots[position + 1]
+											: InvalidBlockNumber;
+	plan->retained_counts[level]	= (uint16)(root_count - position - 1);
+
+	tp_segment_graph_snapshot_free(graph);
+	return snapshot;
+}
+
+static void
+tp_prepare_single_replacement_root(
+		Relation	index,
+		BlockNumber replacement_root,
+		uint32		level,
+		BlockNumber next)
+{
+	volatile Buffer buf				 = InvalidBuffer;
+	GenericXLogState *volatile state = NULL;
+
+	if (!BlockNumberIsValid(replacement_root))
+		return;
+
+	PG_TRY();
+	{
+		Page			 page;
+		Page			 copy;
+		TpSegmentHeader *header;
+
+		buf = ReadBuffer(index, replacement_root);
+		LockBuffer((Buffer)buf, BUFFER_LOCK_EXCLUSIVE);
+		page   = BufferGetPage((Buffer)buf);
+		header = (TpSegmentHeader *)PageGetContents(page);
+		if (header->magic != TP_SEGMENT_MAGIC ||
+			header->version != TP_SEGMENT_FORMAT_VERSION)
+			ereport(ERROR,
+					(errcode(ERRCODE_DATA_CORRUPTED),
+					 errmsg("invalid prepared replacement segment at "
+							"block %u",
+							replacement_root)));
+
+		state = GenericXLogStart(index);
+		copy  = GenericXLogRegisterBuffer(
+				 (GenericXLogState *)state, (Buffer)buf, 0);
+		((PageHeader)copy)->pd_lower = BLCKSZ;
+		header				 = (TpSegmentHeader *)PageGetContents(copy);
+		header->level		 = level;
+		header->next_segment = next;
+
+		GenericXLogFinish((GenericXLogState *)state);
+		state = NULL;
+		UnlockReleaseBuffer((Buffer)buf);
+		buf = InvalidBuffer;
+	}
+	PG_CATCH();
+	{
+		if (state != NULL)
+			GenericXLogAbort((GenericXLogState *)state);
+		if (BufferIsValid((Buffer)buf))
+		{
+			if (InterruptHoldoffCount == 0)
+				HOLD_INTERRUPTS();
+			UnlockReleaseBuffer((Buffer)buf);
+		}
+		PG_RE_THROW();
+	}
+	PG_END_TRY();
+}
+
+void
+tp_publish_prepared_segment_replacement(
+		TpLocalIndexState *index_state,
+		Relation		   index,
+		uint32			   level,
+		BlockNumber		   source_root,
+		BlockNumber		   replacement_root,
+		uint64			   removed_docs,
+		uint64			   removed_tokens,
+		FullTransactionId  reclaim_fxid)
+{
+	TpCompactionPlan   plan;
+	TpCompactionOutput output;
+	TpIndexMetaPage volatile snapshot		= NULL;
+	BlockNumber *volatile source_pages		= NULL;
+	volatile bool		 completion_started = false;
+	volatile BlockNumber unclaimed_root		= replacement_root;
+	uint32				 source_page_count;
+
+	memset(&plan, 0, sizeof(plan));
+	memset(&output, 0, sizeof(output));
+	output.tombstones.head = InvalidBlockNumber;
+	output.tombstones.tail = InvalidBlockNumber;
+
+	PG_TRY();
+	{
+		BlockNumber *pages;
+
+		if (BlockNumberIsValid((BlockNumber)unclaimed_root))
+		{
+			output.owned_output_roots	 = palloc(sizeof(BlockNumber));
+			output.owned_output_roots[0] = (BlockNumber)unclaimed_root;
+			output.owned_output_count	 = 1;
+			output.owned_output_capacity = 1;
+			unclaimed_root				 = InvalidBlockNumber;
+		}
+
+		if (!FullTransactionIdIsValid(reclaim_fxid))
+			ereport(ERROR,
+					(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+					 errmsg("prepared replacement requires a reclaim XID")));
+
+		snapshot = tp_prepare_single_replacement_plan(
+				index_state, index, level, source_root, &plan);
+		memcpy(output.output_heads,
+			   plan.retained_heads,
+			   sizeof(output.output_heads));
+		if (BlockNumberIsValid(replacement_root))
+		{
+			tp_prepare_single_replacement_root(
+					index,
+					replacement_root,
+					level,
+					plan.retained_heads[level]);
+			output.output_heads[level]	= replacement_root;
+			output.output_counts[level] = 1;
+		}
+		output.removed_docs	  = removed_docs;
+		output.removed_tokens = removed_tokens;
+
+		source_page_count =
+				tp_segment_collect_pages(index, source_root, &pages);
+		source_pages = pages;
+		if (source_page_count == 0)
+			ereport(ERROR,
+					(errcode(ERRCODE_DATA_CORRUPTED),
+					 errmsg("prepared replacement source %u has no pages",
+							source_root)));
+		tp_tombstone_build_detached(
+				index,
+				(BlockNumber *)source_pages,
+				source_page_count,
+				reclaim_fxid,
+				&output.tombstones);
+		pfree((BlockNumber *)source_pages);
+		source_pages = NULL;
+
+		completion_started = true;
+		tp_complete_compaction_publication(
+				index_state,
+				index,
+				(TpIndexMetaPage)snapshot,
+				&plan,
+				&output,
+				reclaim_fxid);
+	}
+	PG_CATCH();
+	{
+		if (BlockNumberIsValid((BlockNumber)unclaimed_root))
+			tp_discard_unpublished_segment(index, (BlockNumber)unclaimed_root);
+		else if (!completion_started && !output.publication_started)
+			tp_discard_compaction_output(index, &output);
+		if (source_pages != NULL)
+			pfree((BlockNumber *)source_pages);
+		if (snapshot != NULL)
+			pfree((TpIndexMetaPage)snapshot);
+		tp_free_compaction_plan(&plan);
+		PG_RE_THROW();
+	}
+	PG_END_TRY();
+
+	pfree((TpIndexMetaPage)snapshot);
+	tp_free_compaction_plan(&plan);
 }
 
 static uint32
@@ -1855,8 +2219,6 @@ tp_assign_ordinary_batches(
 		planned_outputs[output_level]++;
 	}
 }
-
-static void tp_free_compaction_plan(TpCompactionPlan *plan);
 
 static bool
 tp_build_empty_plan(
@@ -2188,7 +2550,12 @@ tp_compact_once(
 
 	tp_build_compaction_output(index, snapshot, &plan, &output);
 	tp_complete_compaction_publication(
-			index_state, index, snapshot, &plan, &output);
+			index_state,
+			index,
+			snapshot,
+			&plan,
+			&output,
+			InvalidFullTransactionId);
 	pfree(snapshot);
 	tp_free_compaction_plan(&plan);
 	return true;
@@ -2234,7 +2601,12 @@ tp_force_compact(TpLocalIndexState *index_state, Relation index)
 
 	tp_build_compaction_output(index, snapshot, &plan, &output);
 	tp_complete_compaction_publication(
-			index_state, index, snapshot, &plan, &output);
+			index_state,
+			index,
+			snapshot,
+			&plan,
+			&output,
+			InvalidFullTransactionId);
 	pfree(snapshot);
 	tp_free_compaction_plan(&plan);
 }
