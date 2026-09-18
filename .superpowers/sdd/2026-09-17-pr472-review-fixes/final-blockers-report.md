@@ -21,6 +21,9 @@
   - `6c4011f0` — support legacy segments in parallel VACUUM
   - `4ce2e55e` — check the compaction maintenance object lock
   - `3e67bda0` — update the split-publication source guard
+- Fix-round validation:
+  - `7a3b26ba` — make segment correctness failures fatal and structurally
+    validate split-reclaim control flow
 
 ## RED evidence
 
@@ -177,6 +180,17 @@ PG_CONFIG=/home/azureuser/.copilot/session-state/8bf506c4-245d-4e44-88e9-46c7473
 - The final clean rebuild, formatting check, 79/79 SQL regressions, complete
   shell suite, and empty `test/regression.diffs` all passed after the
   spill-horizon fix.
+- `segment.sh` now uses ranked index scans instead of opaque score cutoffs for
+  its concurrent count checks. Test 2 finished with exactly 80 matches, and
+  all 50 Test 6 reads returned exactly 200 rows; any nonnumeric, missing, or
+  out-of-range result now fails the script.
+- The compaction source guard rejects both a reversed parallel/serial reclaim
+  ternary and an inverted post-publication `if (defer_reclaim)` branch. The
+  post-publication branch is extracted only after the completed graph
+  publication call and requires horizon sampling, detached tombstone build,
+  and detached publication in that order.
+- The complete short-path `test-shell` suite and standalone
+  `standby_reclaim.sh` passed after these guard and harness corrections.
 - `vacuum_concurrent_merge.sh`: three consecutive final full-scale runs
   passed after the gate change. Each included the condition-proven lock-order
   case, paused reclaim proof, maintenance serialization, and full stress
