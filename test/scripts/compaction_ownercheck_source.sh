@@ -364,14 +364,20 @@ vacuum_replace_tombstone_line="$(
     grep -n 'tp_publish_prepared_segment_replacement' \
         <<<"${vacuum_replace_body}" | head -1 | cut -d: -f1 || true
 )"
-vacuum_replace_parallel_mode_line="$(
-    grep -n 'TP_SEGMENT_REPLACEMENT_RECLAIM_AFTER_PUBLICATION' \
-        <<<"${vacuum_replace_body}" | head -1 | cut -d: -f1 || true
+normalize_whitespace() {
+    tr '\n\t' '  ' | sed -E 's/[[:space:]]+/ /g; s/^ //; s/ $//'
+}
+
+vacuum_replace_normalized="$(
+    normalize_whitespace <<<"${vacuum_replace_body}"
 )"
-if [[ -z "${vacuum_replace_parallel_mode_line}" ||
-      -z "${vacuum_replace_tombstone_line}" ||
-      "${vacuum_replace_parallel_mode_line}" -ge \
-          "${vacuum_replace_tombstone_line}" ]]; then
+expected_reclaim_mapping='TpSegmentReplacementReclaimMode reclaim_mode = parallel_context ? TP_SEGMENT_REPLACEMENT_RECLAIM_AFTER_PUBLICATION : TP_SEGMENT_REPLACEMENT_RECLAIM_ATOMIC;'
+vacuum_reclaim_mapping="$(
+    grep -o 'TpSegmentReplacementReclaimMode reclaim_mode = [^;]*;' \
+        <<<"${vacuum_replace_normalized}" || true
+)"
+if [[ "${vacuum_reclaim_mapping}" != "${expected_reclaim_mapping}" ||
+      -z "${vacuum_replace_tombstone_line}" ]]; then
     echo "parallel VACUUM replacement must select after-publication reclaim" >&2
     review_failures=$((review_failures + 1))
 fi
@@ -391,27 +397,52 @@ if ! grep -Fq 'tp_prepare_single_replacement_plan' \
     echo "single-run replacement must use compaction publication machinery" >&2
     review_failures=$((review_failures + 1))
 fi
-replacement_complete_line="$(
-    grep -n 'tp_complete_compaction_publication' \
-        <<<"${replacement_publish_body}" | head -1 | cut -d: -f1 || true
+post_publication_defer_block="$(
+    awk '
+        /tp_complete_compaction_publication\(/ {
+            in_completion = 1
+            next
+        }
+        in_completion && /\);[[:space:]]*$/ {
+            in_completion = 0
+            after_completion = 1
+            next
+        }
+        after_completion &&
+                /^[[:space:]]*if \(defer_reclaim\)[[:space:]]*$/ {
+            capture = 1
+        }
+        capture {
+            print
+            opens = gsub(/\{/, "{")
+            closes = gsub(/\}/, "}")
+            depth += opens - closes
+            if (opens > 0)
+                saw_open = 1
+            if (saw_open && depth == 0)
+                exit
+        }
+    ' <<<"${replacement_publish_body}"
 )"
 replacement_next_xid_line="$(
     grep -n 'reclaim_fxid = ReadNextFullTransactionId()' \
-        <<<"${replacement_publish_body}" | head -1 | cut -d: -f1 || true
+        <<<"${post_publication_defer_block}" |
+        head -1 | cut -d: -f1 || true
 )"
 replacement_deferred_build_line="$(
     grep -n 'tp_tombstone_build_detached' \
-        <<<"${replacement_publish_body}" | tail -1 | cut -d: -f1 || true
+        <<<"${post_publication_defer_block}" |
+        head -1 | cut -d: -f1 || true
 )"
 replacement_attach_line="$(
     grep -n 'tp_publish_detached_tombstones' \
-        <<<"${replacement_publish_body}" | head -1 | cut -d: -f1 || true
+        <<<"${post_publication_defer_block}" |
+        head -1 | cut -d: -f1 || true
 )"
-if [[ -z "${replacement_complete_line}" ||
+if [[ -z "${post_publication_defer_block}" ||
       -z "${replacement_next_xid_line}" ||
       -z "${replacement_deferred_build_line}" ||
       -z "${replacement_attach_line}" ||
-      "${replacement_complete_line}" -ge "${replacement_next_xid_line}" ||
       "${replacement_next_xid_line}" -ge "${replacement_deferred_build_line}" ||
       "${replacement_deferred_build_line}" -ge "${replacement_attach_line}" ]]; then
     echo "split VACUUM reclaim must sample its horizon after graph publication" >&2
