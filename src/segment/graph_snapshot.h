@@ -21,6 +21,7 @@ typedef struct TpSegmentGraphSnapshot
 	uint32				root_count;
 } TpSegmentGraphSnapshot;
 
+extern int tp_debug_segment_graph_snapshot_pause_before_unlock_ms;
 extern int tp_debug_segment_graph_snapshot_pause_ms;
 
 extern TpSegmentGraphSnapshot							*

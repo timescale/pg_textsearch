@@ -27,6 +27,7 @@ READER_BACKEND_PID=
 READER_OPEN=false
 HELD_FEEDBACK_XMIN=
 COMPACTOR_PID=
+COMPACTOR_BACKEND_PID=
 SNAPSHOT_READER_PID=
 
 wait_for_child_exit() {
@@ -76,6 +77,9 @@ cleanup() {
     local status=$?
 
     set +e
+    if [ -n "${COMPACTOR_BACKEND_PID}" ]; then
+        kill -CONT "${COMPACTOR_BACKEND_PID}" 2>/dev/null || true
+    fi
     if [ -n "${SNAPSHOT_READER_PID}" ] &&
        kill -0 "${SNAPSHOT_READER_PID}" 2>/dev/null; then
         kill -TERM "${SNAPSHOT_READER_PID}" 2>/dev/null || true
@@ -98,18 +102,25 @@ trap cleanup EXIT INT TERM
 
 wait_for_compaction_pause() {
     local index_oid=$1
+    local output=$2
     local marker="pg_textsearch compaction pause at after-restamp"
     local logfile="${PRIMARY_DIR}/log/postgres.log"
+    local marker_line
 
     for _ in $(seq 1 300); do
-        if grep -Fq "${marker} for index ${index_oid}" \
-            "${logfile}" 2>/dev/null; then
+        marker_line=$(grep -F "${marker} for index ${index_oid}" \
+            "${logfile}" 2>/dev/null | tail -1 || true)
+        if [ -n "${marker_line}" ]; then
+            COMPACTOR_BACKEND_PID=$(sed -n \
+                's/.* backend \([0-9][0-9]*\).*/\1/p' <<<"${marker_line}")
+            [ -n "${COMPACTOR_BACKEND_PID}" ] ||
+                error "Could not parse compactor backend PID: ${marker_line}"
             log "Compaction reached the pre-publication pause"
             return 0
         fi
         if ! kill -0 "${COMPACTOR_PID}" 2>/dev/null; then
             error "Compactor exited before the pre-publication pause: \
-$(cat "${PRIMARY_DIR}/compactor.out" 2>/dev/null || echo no output)"
+$(cat "${output}" 2>/dev/null || echo no output)"
         fi
         sleep 0.1
     done
@@ -118,15 +129,16 @@ $(cat "${PRIMARY_DIR}/compactor.out" 2>/dev/null || echo no output)"
 }
 
 wait_for_snapshot_pause() {
-    local index_oid=$1
-    local output=$2
-    local marker="pg_textsearch segment graph snapshot pause for index \
-${index_oid}"
+    local phase=$1
+    local index_oid=$2
+    local output=$3
+    local marker="pg_textsearch segment graph snapshot pause at ${phase} \
+for index ${index_oid}"
     local logfile="${STANDBY_DIR}/log/postgres.log"
 
     for _ in $(seq 1 300); do
         if grep -Fq "${marker}" "${logfile}" 2>/dev/null; then
-            log "Standby query copied its complete segment-root snapshot"
+            log "Standby query reached segment snapshot phase ${phase}"
             return 0
         fi
         if ! kill -0 "${SNAPSHOT_READER_PID}" 2>/dev/null; then
@@ -142,6 +154,8 @@ $(cat "${output}" 2>/dev/null || echo no output)"
 }
 
 wait_for_compactor() {
+    local output=$1
+
     for _ in $(seq 1 400); do
         if ! kill -0 "${COMPACTOR_PID}" 2>/dev/null; then
             if wait "${COMPACTOR_PID}"; then
@@ -149,7 +163,7 @@ wait_for_compactor() {
                 return 0
             fi
             error "Compactor failed: \
-$(cat "${PRIMARY_DIR}/compactor.out" 2>/dev/null || echo no output)"
+$(cat "${output}" 2>/dev/null || echo no output)"
         fi
         sleep 0.1
     done
@@ -399,7 +413,7 @@ EOF
 test_atomic_segment_graph_snapshot() {
     local actual_count actual_rows expected expected_rows graph index_oid
     local output="${STANDBY_DIR}/segment_snapshot_reader.out"
-    local result spilled
+    local pre_publish_lsn replay_blocked result spilled target_lsn
 
     log "Case: standby scoring uses one atomic segment-root snapshot..."
     primary_sql "
@@ -436,11 +450,14 @@ test_atomic_segment_graph_snapshot() {
     index_oid=$(primary_sql_quiet \
         "SELECT 'snapshot_idx'::regclass::oid;")
     primary_sql "
-        SET pg_textsearch.debug_compaction_pause_after_restamp_ms = 30000;
+        SET pg_textsearch.debug_compaction_pause_after_restamp_ms = 5000;
         SELECT bm25_force_merge('snapshot_idx');" \
         >"${PRIMARY_DIR}/snapshot_compactor.out" 2>&1 &
     COMPACTOR_PID=$!
-    wait_for_compaction_pause "${index_oid}"
+    wait_for_compaction_pause \
+        "${index_oid}" "${PRIMARY_DIR}/snapshot_compactor.out"
+    kill -STOP "${COMPACTOR_BACKEND_PID}"
+    sleep 6
 
     primary_sql "
         INSERT INTO snapshot_rec
@@ -462,19 +479,40 @@ test_atomic_segment_graph_snapshot() {
     psql -X -tAq -v ON_ERROR_STOP=1 -p "${STANDBY_PORT}" \
         -d "${TEST_DB}" >"${output}" 2>&1 <<'SQL' &
 SET enable_seqscan = off;
-SET pg_textsearch.debug_segment_graph_snapshot_pause_ms = 45000;
+SET pg_textsearch.debug_segment_graph_snapshot_pause_before_unlock_ms = 15000;
+SET pg_textsearch.debug_segment_graph_snapshot_pause_ms = 15000;
 SELECT id
   FROM snapshot_rec
  ORDER BY body <@> to_bm25query('alpha', 'snapshot_idx')
  LIMIT 9000;
 SQL
     SNAPSHOT_READER_PID=$!
-    wait_for_snapshot_pause "${index_oid}" "${output}"
-    kill -0 "${COMPACTOR_PID}" 2>/dev/null ||
-        error "Compactor published before the standby snapshot pause"
-
-    wait_for_compactor
+    wait_for_snapshot_pause before-unlock "${index_oid}" "${output}"
+    pre_publish_lsn=$(primary_sql_quiet \
+        "SELECT pg_current_wal_flush_lsn();")
+    kill -CONT "${COMPACTOR_BACKEND_PID}"
+    wait_for_compactor "${PRIMARY_DIR}/snapshot_compactor.out"
+    COMPACTOR_BACKEND_PID=
     primary_sql "CREATE TABLE snapshot_flush_publish (id integer);" >/dev/null
+    target_lsn=$(primary_sql_quiet "SELECT pg_current_wal_flush_lsn();")
+
+    replay_blocked=f
+    for _ in $(seq 1 50); do
+        replay_blocked=$(primary_sql_quiet "
+            SELECT coalesce(bool_or(
+                       replay_lsn >= '${pre_publish_lsn}'::pg_lsn
+                   AND replay_lsn < '${target_lsn}'::pg_lsn), false)
+              FROM pg_stat_replication;")
+        [ "${replay_blocked}" = "t" ] && break
+        sleep 0.1
+    done
+    [ "${replay_blocked}" = "t" ] ||
+        error "Standby replay was not blocked by the metapage share lock"
+    kill -0 "${SNAPSHOT_READER_PID}" 2>/dev/null ||
+        error "Standby snapshot reader left its pre-unlock pause early"
+    log "Standby replay remained blocked during the pre-unlock pause"
+
+    wait_for_snapshot_pause after-unlock "${index_oid}" "${output}"
     wait_for_standby_catchup 30 ||
         error "Standby did not replay publication during snapshot scoring"
     kill -0 "${SNAPSHOT_READER_PID}" 2>/dev/null ||
@@ -552,7 +590,8 @@ EOF
         >"${PRIMARY_DIR}/compactor.out" 2>&1 &
     COMPACTOR_PID=$!
     wait_for_compaction_pause \
-        "$(primary_sql_quiet "SELECT 'rec_idx'::regclass::oid;")"
+        "$(primary_sql_quiet "SELECT 'rec_idx'::regclass::oid;")" \
+        "${PRIMARY_DIR}/compactor.out"
 
     # Advance the primary and standby XID horizons while the old graph is
     # still published.  The cursor opened below must therefore be protected
@@ -592,7 +631,8 @@ EOF
     wait_for_feedback_xmin
     log "Late ranked cursor PID ${READER_BACKEND_PID} is open on the old graph"
 
-    wait_for_compactor
+    wait_for_compactor "${PRIMARY_DIR}/compactor.out"
+    COMPACTOR_BACKEND_PID=
     parked_before_vacuum=$(primary_sql_quiet \
         "SELECT bm25_pending_free_pages('rec_idx');")
     case "${parked_before_vacuum}" in

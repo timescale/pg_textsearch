@@ -800,6 +800,22 @@ _PG_init(void)
 			NULL);
 
 	DefineCustomIntVariable(
+			"pg_textsearch."
+			"debug_segment_graph_snapshot_pause_before_unlock_ms",
+			"Pause before releasing a completed segment-root graph.",
+			"Testing-only interruptible pause after copying every segment "
+			"root while retaining the metapage buffer share lock.",
+			&tp_debug_segment_graph_snapshot_pause_before_unlock_ms,
+			0,
+			0,
+			60000,
+			PGC_SUSET,
+			0,
+			NULL,
+			NULL,
+			NULL);
+
+	DefineCustomIntVariable(
 			"pg_textsearch.debug_segment_graph_snapshot_pause_ms",
 			"Pause after copying a complete segment-root graph.",
 			"Testing-only interruptible pause after releasing the metapage "

@@ -17,23 +17,25 @@
 #include "segment/io.h"
 #include "segment/segment.h"
 
-int tp_debug_segment_graph_snapshot_pause_ms = 0;
+int tp_debug_segment_graph_snapshot_pause_before_unlock_ms = 0;
+int tp_debug_segment_graph_snapshot_pause_ms			   = 0;
 
 static void
-tp_debug_segment_graph_snapshot_pause(Relation index)
+tp_debug_segment_graph_snapshot_pause(
+		Relation index, int pause_ms, const char *phase)
 {
 	TimestampTz deadline;
 
-	if (tp_debug_segment_graph_snapshot_pause_ms <= 0)
+	if (pause_ms <= 0)
 		return;
 
 	ereport(LOG,
-			(errmsg("pg_textsearch segment graph snapshot pause for index %u "
-					"backend %d",
+			(errmsg("pg_textsearch segment graph snapshot pause at %s for "
+					"index %u backend %d",
+					phase,
 					RelationGetRelid(index),
 					MyProcPid)));
-	deadline = TimestampTzPlusMilliseconds(
-			GetCurrentTimestamp(), tp_debug_segment_graph_snapshot_pause_ms);
+	deadline = TimestampTzPlusMilliseconds(GetCurrentTimestamp(), pause_ms);
 	for (;;)
 	{
 		CHECK_FOR_INTERRUPTS();
@@ -42,8 +44,9 @@ tp_debug_segment_graph_snapshot_pause(Relation index)
 		pg_usleep(10000L);
 	}
 	ereport(LOG,
-			(errmsg("pg_textsearch segment graph snapshot resume for index %u "
-					"backend %d",
+			(errmsg("pg_textsearch segment graph snapshot resume after %s for "
+					"index %u backend %d",
+					phase,
 					RelationGetRelid(index),
 					MyProcPid)));
 }
@@ -127,8 +130,13 @@ tp_segment_graph_snapshot_create(Relation index)
 	snapshot->level_offsets[TP_MAX_LEVELS] = snapshot->root_count;
 	Assert(snapshot->root_count == expected_roots);
 
+	tp_debug_segment_graph_snapshot_pause(
+			index,
+			tp_debug_segment_graph_snapshot_pause_before_unlock_ms,
+			"before-unlock");
 	UnlockReleaseBuffer(buffer);
-	tp_debug_segment_graph_snapshot_pause(index);
+	tp_debug_segment_graph_snapshot_pause(
+			index, tp_debug_segment_graph_snapshot_pause_ms, "after-unlock");
 
 	return snapshot;
 }

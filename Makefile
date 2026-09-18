@@ -102,7 +102,8 @@ include $(PGXS)
 # SQL regression tests
 test: test-compaction-ownercheck test-compaction-request-source \
 	test-segment-io-limits test-boolean-lock test-boolean-memory \
-	test-boolean-rescan test-mixed-update-query-benchmark
+	test-boolean-rescan test-graph-snapshot-source \
+	test-mixed-update-query-benchmark
 	@echo "Running SQL regression tests..."
 	@$(pg_regress_installcheck) $(REGRESS_OPTS) $(REGRESS)
 
@@ -120,6 +121,9 @@ test-boolean-memory:
 
 test-boolean-rescan:
 	@./test/scripts/boolean_rescan_source.sh
+
+test-graph-snapshot-source:
+	@./test/scripts/graph_snapshot_source.sh
 
 test-segment-io-limits:
 	@set -e; tmp_dir="$$(mktemp -d)"; \
@@ -142,10 +146,12 @@ test-durable:
 # Run source-level guards with every regression entry point.
 installcheck: test-compaction-ownercheck test-compaction-request-source \
 	test-segment-io-limits test-boolean-lock test-boolean-memory \
-	test-boolean-rescan test-mixed-update-query-benchmark
+	test-boolean-rescan test-graph-snapshot-source \
+	test-mixed-update-query-benchmark
 test-local: test-compaction-ownercheck test-compaction-request-source \
 	test-segment-io-limits test-boolean-lock test-boolean-memory \
-	test-boolean-rescan test-mixed-update-query-benchmark
+	test-boolean-rescan test-graph-snapshot-source \
+	test-mixed-update-query-benchmark
 
 # Custom local test target with dedicated PostgreSQL instance
 test-local: install
