@@ -2,7 +2,8 @@
 
 ## Status and commits
 
-- Base: `07166697900433b3e9b70099044706330ba10fe3`
+- Final implementation range:
+  `95e03ef6cc9659c7ae0e076b564292e66ad2bd36..3e67bda0585799653c98223437670ac5cfc15abc`
 - Initial implementation:
   - `c94c2fd3` — common standby generation and unlocked VACUUM reclaim
   - `e1042428` — initial verification report
@@ -13,9 +14,13 @@
   - `0958a343` — condition-controlled tail-extension gate and reader-scoped
     recovery-conflict assertions
 - Final review follow-up:
-  - this commit — sample the DEAD-memtable reuse horizon after unpublication
+  - `659b4eae` — sample the DEAD-memtable reuse horizon after unpublication
     and add a condition-gated standby regression
-- All confirmed blockers are fixed and verified on PostgreSQL 18.6.
+- Legacy parallel VACUUM follow-up:
+  - `9e2413d7` — design parallel legacy VACUUM publication
+  - `6c4011f0` — support legacy segments in parallel VACUUM
+  - `4ce2e55e` — check the compaction maintenance object lock
+  - `3e67bda0` — update the split-publication source guard
 
 ## RED evidence
 
@@ -70,6 +75,21 @@ output that combines the expected cancellation with an invalid-magic error.
      still-published old chain with `xmin=858` while its pages were stamped
      with `dead_fxid=857`.
    - Reuse conflict WAL at horizon 857 would not cancel that newer reader.
+
+### Legacy parallel VACUUM follow-up
+
+- RED: an affected V4 singleton under `VACUUM (PARALLEL 1)` raised
+  `cannot vacuum legacy pg_textsearch segments during a parallel operation`.
+- GREEN: the same command launched one worker, retained exactly 15,000 ranked
+  rows, replaced the old root, and increased the deferred-free page count.
+- The split protocol publishes the replacement graph first, samples
+  `ReadNextFullTransactionId()` after unpublication WAL, then attaches the
+  displaced pages under the still-held maintenance lock.
+
+### Maintenance-lock assertion follow-up
+
+- The SQL regression now checks the `pg_am` object lock at `objsubid = 3` in
+  `ExclusiveLock`, rather than unrelated relation-lock columns and mode.
 
 ## Final ownership, locking, and WAL contracts
 
