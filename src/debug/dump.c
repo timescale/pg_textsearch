@@ -27,6 +27,8 @@
 #include "index/state.h"
 #include "memtable/chain_source.h"
 #include "memtable/page.h"
+#include "segment/compaction.h"
+#include "segment/format.h"
 #include "segment/graph_snapshot.h"
 #include "segment/io.h"
 #include "segment/segment.h"
@@ -891,6 +893,145 @@ tp_test_corrupt_tombstone_head(PG_FUNCTION_ARGS)
 	index_close(index_rel, RowExclusiveLock);
 
 	PG_RETURN_INT64((int64)head);
+}
+
+/*
+ * bm25_test_make_legacy_segment(idx, total_tokens) -> root block
+ *
+ * INTERNAL-ONLY test scaffold.  Rewrites a singleton current-format segment
+ * header as V4 while preserving all section offsets, and replaces its token
+ * total with the supplied historical value.  This models upgraded indexes
+ * whose legacy header statistics were inflated by older spill/merge bugs.
+ */
+PG_FUNCTION_INFO_V1(tp_test_make_legacy_segment);
+
+Datum
+tp_test_make_legacy_segment(PG_FUNCTION_ARGS)
+{
+	Oid				   index_oid	= PG_GETARG_OID(0);
+	int64			   total_tokens = PG_GETARG_INT64(1);
+	Relation		   index_rel;
+	TpLocalIndexState *index_state;
+	TpIndexMetaPage	   metap;
+	BlockNumber		   root			 = InvalidBlockNumber;
+	uint32			   segment_count = 0;
+	volatile Buffer	   buf			 = InvalidBuffer;
+	GenericXLogState *volatile state = NULL;
+	volatile bool maintenance_locked = false;
+	volatile bool index_locked		 = false;
+
+	if (!superuser())
+		ereport(ERROR,
+				(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
+				 errmsg("must be superuser to create a legacy test segment")));
+	if (total_tokens < 0)
+		ereport(ERROR,
+				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+				 errmsg("legacy test token total must be nonnegative")));
+
+	index_rel	= index_open(index_oid, RowExclusiveLock);
+	index_state = tp_get_local_index_state(index_oid);
+	if (index_state == NULL)
+	{
+		char *relname = pstrdup(RelationGetRelationName(index_rel));
+
+		index_close(index_rel, RowExclusiveLock);
+		ereport(ERROR,
+				(errcode(ERRCODE_INTERNAL_ERROR),
+				 errmsg("could not get index state for \"%s\"", relname)));
+	}
+
+	tp_compaction_lock(index_rel);
+	maintenance_locked = true;
+	PG_TRY();
+	{
+		Page			  page;
+		Page			  copy;
+		TpSegmentHeader	  current;
+		TpSegmentHeaderV4 legacy;
+
+		tp_acquire_index_lock(index_state, LW_EXCLUSIVE);
+		index_locked = true;
+		metap		 = tp_get_metapage(index_rel);
+		for (uint32 level = 0; level < TP_MAX_LEVELS; level++)
+		{
+			segment_count += metap->level_counts[level];
+			if (metap->level_counts[level] != 0)
+				root = metap->level_heads[level];
+		}
+		pfree(metap);
+		if (segment_count != 1 || !BlockNumberIsValid(root))
+			ereport(ERROR,
+					(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
+					 errmsg("legacy test requires exactly one segment")));
+
+		buf = ReadBuffer(index_rel, root);
+		LockBuffer((Buffer)buf, BUFFER_LOCK_EXCLUSIVE);
+		page = BufferGetPage((Buffer)buf);
+		memcpy(&current, PageGetContents(page), sizeof(current));
+		if (current.magic != TP_SEGMENT_MAGIC ||
+			current.version != TP_SEGMENT_FORMAT_VERSION)
+			ereport(ERROR,
+					(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
+					 errmsg("legacy test source is not a current-format "
+							"segment")));
+
+		memset(&legacy, 0, sizeof(legacy));
+		legacy.magic			   = current.magic;
+		legacy.version			   = TP_SEGMENT_FORMAT_VERSION_4;
+		legacy.created_at		   = current.created_at;
+		legacy.num_pages		   = current.num_pages;
+		legacy.data_size		   = current.data_size;
+		legacy.level			   = current.level;
+		legacy.next_segment		   = current.next_segment;
+		legacy.dictionary_offset   = current.dictionary_offset;
+		legacy.strings_offset	   = current.strings_offset;
+		legacy.entries_offset	   = current.entries_offset;
+		legacy.postings_offset	   = current.postings_offset;
+		legacy.skip_index_offset   = current.skip_index_offset;
+		legacy.fieldnorm_offset	   = current.fieldnorm_offset;
+		legacy.ctid_pages_offset   = current.ctid_pages_offset;
+		legacy.ctid_offsets_offset = current.ctid_offsets_offset;
+		legacy.num_terms		   = current.num_terms;
+		legacy.num_docs			   = current.num_docs;
+		legacy.total_tokens		   = (uint64)total_tokens;
+		legacy.page_index		   = current.page_index;
+
+		state = GenericXLogStart(index_rel);
+		copy  = GenericXLogRegisterBuffer(
+				 (GenericXLogState *)state, (Buffer)buf, 0);
+		((PageHeader)copy)->pd_lower = BLCKSZ;
+		memcpy(PageGetContents(copy), &legacy, sizeof(legacy));
+		GenericXLogFinish((GenericXLogState *)state);
+		state = NULL;
+		UnlockReleaseBuffer((Buffer)buf);
+		buf = InvalidBuffer;
+		tp_release_index_lock(index_state);
+		index_locked = false;
+		tp_compaction_unlock(index_rel);
+		maintenance_locked = false;
+	}
+	PG_CATCH();
+	{
+		if (state != NULL)
+			GenericXLogAbort((GenericXLogState *)state);
+		if (BufferIsValid((Buffer)buf))
+		{
+			if (InterruptHoldoffCount == 0)
+				HOLD_INTERRUPTS();
+			UnlockReleaseBuffer((Buffer)buf);
+		}
+		if (index_locked && index_state->lock_held)
+			tp_release_index_lock(index_state);
+		if (maintenance_locked)
+			tp_compaction_unlock(index_rel);
+		index_close(index_rel, RowExclusiveLock);
+		PG_RE_THROW();
+	}
+	PG_END_TRY();
+
+	index_close(index_rel, RowExclusiveLock);
+	PG_RETURN_INT64((int64)root);
 }
 
 /*

@@ -99,6 +99,12 @@ typedef struct TpCompactionPublication
 	uint16				l0_count;
 } TpCompactionPublication;
 
+typedef enum TpStatsRebasePolicy
+{
+	TP_STATS_REBASE_STRICT,
+	TP_STATS_REBASE_CLAMP_LEGACY_VACUUM
+} TpStatsRebasePolicy;
+
 static void tp_free_compaction_plan(TpCompactionPlan *plan);
 
 static void
@@ -1445,7 +1451,8 @@ tp_publish_compaction_output(
 		Relation					   index,
 		TpCompactionPlan			  *plan,
 		TpCompactionOutput			  *output,
-		const TpCompactionPublication *publication)
+		const TpCompactionPublication *publication,
+		TpStatsRebasePolicy			   stats_policy)
 {
 	volatile Buffer metabuf						 = InvalidBuffer;
 	volatile Buffer predecessor_buf				 = InvalidBuffer;
@@ -1504,6 +1511,11 @@ tp_publish_compaction_output(
 		current_docs	= current_meta->total_docs;
 		current_tokens	= current_meta->total_len;
 		current_pending = tp_metapage_pending_free_head(current_meta);
+		if (stats_policy != TP_STATS_REBASE_STRICT &&
+			stats_policy != TP_STATS_REBASE_CLAMP_LEGACY_VACUUM)
+			ereport(ERROR,
+					(errcode(ERRCODE_INTERNAL_ERROR),
+					 errmsg("invalid compaction statistic rebase policy")));
 
 		for (uint32 level = 0; level < TP_MAX_LEVELS; level++)
 		{
@@ -1526,8 +1538,9 @@ tp_publish_compaction_output(
 								"%u",
 								level)));
 		}
-		if (current_docs < output->removed_docs ||
-			current_tokens < output->removed_tokens)
+		if (stats_policy == TP_STATS_REBASE_STRICT &&
+			(current_docs < output->removed_docs ||
+			 current_tokens < output->removed_tokens))
 			ereport(ERROR,
 					(errcode(ERRCODE_DATA_CORRUPTED),
 					 errmsg("compaction shrinkage exceeds current index "
@@ -1606,8 +1619,20 @@ tp_publish_compaction_output(
 		}
 		if (output->tombstones.container_pages > 0)
 			meta->pending_free_head = output->tombstones.head;
-		meta->total_docs = current_docs - output->removed_docs;
-		meta->total_len	 = current_tokens - output->removed_tokens;
+		if (stats_policy == TP_STATS_REBASE_CLAMP_LEGACY_VACUUM)
+		{
+			meta->total_docs = current_docs >= output->removed_docs
+									 ? current_docs - output->removed_docs
+									 : 0;
+			meta->total_len	 = current_tokens >= output->removed_tokens
+									 ? current_tokens - output->removed_tokens
+									 : 0;
+		}
+		else
+		{
+			meta->total_docs = current_docs - output->removed_docs;
+			meta->total_len	 = current_tokens - output->removed_tokens;
+		}
 
 		publication_lsn = GenericXLogFinish(
 				(GenericXLogState *)publication_state);
@@ -1703,7 +1728,8 @@ tp_complete_compaction_publication(
 		const TpIndexMetaPage snapshot,
 		TpCompactionPlan	 *plan,
 		TpCompactionOutput	 *output,
-		FullTransactionId	  reclaim_fxid)
+		FullTransactionId	  reclaim_fxid,
+		TpStatsRebasePolicy	  stats_policy)
 {
 	FullTransactionId merged_fxid;
 
@@ -1753,7 +1779,12 @@ tp_complete_compaction_publication(
 						RelationGetRelid(index));
 
 			if (tp_publish_compaction_output(
-						index_state, index, plan, output, &publication))
+						index_state,
+						index,
+						plan,
+						output,
+						&publication,
+						stats_policy))
 				break;
 
 			ereport(LOG,
@@ -2013,7 +2044,8 @@ tp_publish_prepared_segment_replacement(
 				(TpIndexMetaPage)snapshot,
 				&plan,
 				&output,
-				reclaim_fxid);
+				reclaim_fxid,
+				TP_STATS_REBASE_CLAMP_LEGACY_VACUUM);
 	}
 	PG_CATCH();
 	{
@@ -2555,7 +2587,8 @@ tp_compact_once(
 			snapshot,
 			&plan,
 			&output,
-			InvalidFullTransactionId);
+			InvalidFullTransactionId,
+			TP_STATS_REBASE_STRICT);
 	pfree(snapshot);
 	tp_free_compaction_plan(&plan);
 	return true;
@@ -2606,7 +2639,8 @@ tp_force_compact(TpLocalIndexState *index_state, Relation index)
 			snapshot,
 			&plan,
 			&output,
-			InvalidFullTransactionId);
+			InvalidFullTransactionId,
+			TP_STATS_REBASE_STRICT);
 	pfree(snapshot);
 	tp_free_compaction_plan(&plan);
 }

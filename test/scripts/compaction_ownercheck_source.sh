@@ -380,6 +380,13 @@ if ! grep -Fq 'tp_prepare_single_replacement_plan' \
     echo "single-run replacement must use compaction publication machinery" >&2
     review_failures=$((review_failures + 1))
 fi
+if ! grep -Fq 'stats_policy == TP_STATS_REBASE_STRICT' \
+        <<<"${publish_body}" ||
+   ! grep -Fq 'TP_STATS_REBASE_CLAMP_LEGACY_VACUUM' \
+        <<<"${replacement_publish_body}"; then
+    echo "only legacy VACUUM replacement may clamp statistic rebasing" >&2
+    review_failures=$((review_failures + 1))
+fi
 
 discard_body="$(
     sed -n '/^tp_discard_compaction_output(Relation index, /,/^}$/p' \
