@@ -30,6 +30,10 @@ READER_OPEN=false
 HELD_FEEDBACK_XMIN=
 COMPACTOR_PID=
 COMPACTOR_BACKEND_PID=
+SPILLER_PID=
+SPILLER_BACKEND_PID=
+SPILL_GATE_PID=
+SPILL_GATE_OPEN=false
 SNAPSHOT_READER_PID=
 SNAPSHOT_READER_BACKEND_PID=
 
@@ -83,6 +87,9 @@ cleanup() {
     if [ -n "${COMPACTOR_BACKEND_PID}" ]; then
         kill -CONT "${COMPACTOR_BACKEND_PID}" 2>/dev/null || true
     fi
+    if [ -n "${SPILLER_BACKEND_PID}" ]; then
+        kill -CONT "${SPILLER_BACKEND_PID}" 2>/dev/null || true
+    fi
     if [ -n "${SNAPSHOT_READER_PID}" ] &&
        kill -0 "${SNAPSHOT_READER_PID}" 2>/dev/null; then
         kill -TERM "${SNAPSHOT_READER_PID}" 2>/dev/null || true
@@ -92,6 +99,20 @@ cleanup() {
        kill -0 "${COMPACTOR_PID}" 2>/dev/null; then
         kill -TERM "${COMPACTOR_PID}" 2>/dev/null || true
         wait_for_child_exit "${COMPACTOR_PID}" 50 || true
+    fi
+    if [ -n "${SPILLER_PID}" ] &&
+       kill -0 "${SPILLER_PID}" 2>/dev/null; then
+        kill -TERM "${SPILLER_PID}" 2>/dev/null || true
+        wait_for_child_exit "${SPILLER_PID}" 50 || true
+    fi
+    if [ "${SPILL_GATE_OPEN}" = "true" ]; then
+        exec 7>&- || true
+        SPILL_GATE_OPEN=false
+    fi
+    if [ -n "${SPILL_GATE_PID}" ] &&
+       kill -0 "${SPILL_GATE_PID}" 2>/dev/null; then
+        kill -TERM "${SPILL_GATE_PID}" 2>/dev/null || true
+        wait_for_child_exit "${SPILL_GATE_PID}" 50 || true
     fi
     reader_close
     if [ "${status}" -eq 0 ]; then
@@ -129,6 +150,34 @@ $(cat "${output}" 2>/dev/null || echo no output)"
     done
 
     error "Timed out 30s waiting for pre-publication pause"
+}
+
+wait_for_spill_pause() {
+    local index_oid=$1
+    local output=$2
+    local marker="pg_textsearch spill before-finalize gate"
+    local logfile="${PRIMARY_DIR}/log/postgres.log"
+    local marker_line
+
+    for _ in $(seq 1 300); do
+        marker_line=$(grep -F "${marker} for index ${index_oid}" \
+            "${logfile}" 2>/dev/null | tail -1 || true)
+        if [ -n "${marker_line}" ]; then
+            SPILLER_BACKEND_PID=$(sed -n \
+                's/.* backend \([0-9][0-9]*\).*/\1/p' <<<"${marker_line}")
+            [ -n "${SPILLER_BACKEND_PID}" ] ||
+                error "Could not parse spiller backend PID: ${marker_line}"
+            log "Spill reached the pre-finalize gate"
+            return 0
+        fi
+        if ! kill -0 "${SPILLER_PID}" 2>/dev/null; then
+            error "Spiller exited before the pre-finalize pause: \
+$(cat "${output}" 2>/dev/null || echo no output)"
+        fi
+        sleep 0.1
+    done
+
+    error "Timed out 30s waiting for pre-finalize spill gate"
 }
 
 wait_for_snapshot_pause() {
@@ -172,6 +221,24 @@ $(cat "${output}" 2>/dev/null || echo no output)"
     done
 
     error "Timed out 40s waiting for compactor PID ${COMPACTOR_PID}"
+}
+
+wait_for_spiller() {
+    local output=$1
+
+    for _ in $(seq 1 400); do
+        if ! kill -0 "${SPILLER_PID}" 2>/dev/null; then
+            if wait "${SPILLER_PID}"; then
+                SPILLER_PID=
+                return 0
+            fi
+            error "Spiller failed: \
+$(cat "${output}" 2>/dev/null || echo no output)"
+        fi
+        sleep 0.1
+    done
+
+    error "Timed out 40s waiting for spiller PID ${SPILLER_PID}"
 }
 
 wait_for_snapshot_reader() {
@@ -728,6 +795,126 @@ SQL
     log "PASS: standalone standby race preserved score ${baseline}"
 }
 
+test_memtable_retire_horizon_covers_prepublish_reader() {
+    local dead_fxid gate_dir gate_key gate_locked index_oid output
+    local reader_xmin spill_output
+
+    log "Case: memtable retire horizon covers pre-publication readers..."
+    primary_sql "
+        CREATE TABLE retire_horizon_rec (
+            id integer PRIMARY KEY,
+            body text NOT NULL
+        ) WITH (autovacuum_enabled = false);
+        INSERT INTO retire_horizon_rec
+        SELECT g, 'retire horizon committed segment ' || g
+          FROM generate_series(1, 1000) g;
+        CREATE INDEX retire_horizon_idx
+            ON retire_horizon_rec USING bm25(body)
+            WITH (text_config = 'english', compaction = 'off');
+        INSERT INTO retire_horizon_rec
+        SELECT g, 'retire horizon old memtable ' || g
+          FROM generate_series(1001, 1500) g;
+        CREATE TABLE retire_horizon_flush_before (id integer);" >/dev/null
+    wait_for_standby_catchup 30 ||
+        error "Standby did not catch up before retire-horizon race"
+
+    index_oid=$(primary_sql_quiet \
+        "SELECT 'retire_horizon_idx'::regclass::oid;")
+    gate_key=472495
+    gate_dir="${PRIMARY_DIR}/retire_horizon_gate"
+    rm -rf "${gate_dir}"
+    mkdir -p "${gate_dir}"
+    mkfifo "${gate_dir}/in"
+    psql -X -tAq -v ON_ERROR_STOP=1 -p "${PRIMARY_PORT}" \
+        -d "${TEST_DB}" <"${gate_dir}/in" >"${gate_dir}/out" \
+        2>"${gate_dir}/err" &
+    SPILL_GATE_PID=$!
+    exec 7>"${gate_dir}/in"
+    SPILL_GATE_OPEN=true
+    printf 'SELECT pg_advisory_lock(%s, 0);\n' "${gate_key}" >&7
+    gate_locked=false
+    for _ in $(seq 1 100); do
+        if [ "$(primary_sql_quiet "
+            SELECT count(*)
+              FROM pg_locks
+             WHERE locktype = 'advisory'
+                AND classid = ${gate_key}
+                AND objid = 0
+                AND objsubid = 2
+               AND mode = 'ExclusiveLock'
+               AND granted;")" = "1" ]; then
+            gate_locked=true
+            break
+        fi
+        kill -0 "${SPILL_GATE_PID}" 2>/dev/null ||
+            error "Spill gate session exited before acquiring its lock"
+        sleep 0.1
+    done
+    [ "${gate_locked}" = "true" ] ||
+        error "Timed out waiting for spill advisory gate"
+
+    spill_output="${PRIMARY_DIR}/retire_horizon_spill.out"
+    rm -f "${spill_output}"
+    psql -X -tAq -v ON_ERROR_STOP=1 -p "${PRIMARY_PORT}" \
+        -d "${TEST_DB}" >"${spill_output}" 2>&1 <<'SQL' &
+SET pg_textsearch.debug_spill_before_finalize_gate = 472495;
+SELECT bm25_spill_index('retire_horizon_idx') > 0;
+SQL
+    SPILLER_PID=$!
+    wait_for_spill_pause "${index_oid}" "${spill_output}"
+
+    primary_sql "
+        SELECT txid_current();
+        CREATE TABLE retire_horizon_flush_between (id integer);" >/dev/null
+    wait_for_standby_catchup 30 ||
+        error "Standby did not replay the intervening transaction"
+
+    output="${STANDBY_DIR}/retire_horizon_reader.out"
+    rm -f "${output}"
+    psql -X -tAq -v ON_ERROR_STOP=1 -p "${STANDBY_PORT}" \
+        -d "${TEST_DB}" >"${output}" 2>&1 <<'SQL' &
+SELECT pg_backend_pid();
+SET enable_seqscan = off;
+SET pg_textsearch.debug_segment_graph_snapshot_pause_ms = 30000;
+SELECT id
+  FROM retire_horizon_rec
+ ORDER BY body <@> to_bm25query('retire', 'retire_horizon_idx')
+ LIMIT 1500;
+SQL
+    SNAPSHOT_READER_PID=$!
+    SNAPSHOT_READER_BACKEND_PID=$(snapshot_reader_backend_pid "${output}")
+    wait_for_snapshot_pause after-unlock "${index_oid}" "${output}"
+    reader_xmin=$(standby_sql_quiet "
+        SELECT backend_xmin
+          FROM pg_stat_activity
+         WHERE pid = ${SNAPSHOT_READER_BACKEND_PID};")
+    [ -n "${reader_xmin}" ] ||
+        error "Pre-publication reader has no active snapshot xmin"
+
+    printf 'SELECT pg_advisory_unlock(%s, 0);\n' "${gate_key}" >&7
+    exec 7>&-
+    SPILL_GATE_OPEN=false
+    wait "${SPILL_GATE_PID}" ||
+        error "Spill gate session failed: $(cat "${gate_dir}/err")"
+    SPILL_GATE_PID=
+    wait_for_spiller "${spill_output}"
+    SPILLER_BACKEND_PID=
+    dead_fxid=$(primary_sql_quiet "
+        SELECT min(dead_fxid)
+          FROM bm25_memtable_dead_pages('retire_horizon_idx');")
+    [ -n "${dead_fxid}" ] ||
+        error "Retire-horizon spill produced no DEAD pages"
+
+    [ "${dead_fxid}" -ge "${reader_xmin}" ] ||
+        error "DEAD horizon ${dead_fxid} does not cover newer old-chain \
+reader xmin ${reader_xmin}"
+
+    kill -TERM "${SNAPSHOT_READER_PID}" 2>/dev/null || true
+    wait_for_child_exit "${SNAPSHOT_READER_PID}" 50 || true
+    SNAPSHOT_READER_PID=
+    log "PASS: DEAD horizon ${dead_fxid} covers reader xmin ${reader_xmin}"
+}
+
 test_disconnected_memtable_reuse_conflict() {
     local conflict_end_lsn conflict_records conflict_start_lsn dead_after
     local dead_before dead_fxid expected_ids final_ids graph index_oid output
@@ -1129,6 +1316,7 @@ the standby cursor ended"
     test_atomic_segment_graph_snapshot
     test_atomic_ranked_memtable_generation
     test_atomic_standalone_memtable_generation
+    test_memtable_retire_horizon_covers_prepublish_reader
     test_disconnected_memtable_reuse_conflict
     test_ranked_promotion_pins_recovery_mode
     log "All standby reclaim overlap checks passed"

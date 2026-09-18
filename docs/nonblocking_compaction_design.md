@@ -441,6 +441,11 @@ standby snapshots before subsequent WAL can reuse those pages. This protects a
 query that remains active while its standby disconnects and later resumes
 replay, without adding a pg_textsearch resource manager.
 
+Spill reads the DEAD-page horizon only after `tp_spill_finalize()` inserts the
+WAL record that removes the old chain from the metapage. A standby snapshot
+that can still discover that chain therefore advertises an xmin at or below
+the stored horizon, matching PostgreSQL's btree page-deletion protocol.
+
 ## VACUUM
 
 Segments are immutable except for their alive bitmaps and chain metadata.

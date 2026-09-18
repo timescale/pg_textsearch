@@ -10,8 +10,11 @@
   - `149de820` — writer-compatible snapshots, memtable reuse conflict WAL,
     promotion pinning, deterministic tests, and corrected contracts
 - Test-validity follow-up:
-  - this commit — condition-controlled tail-extension gate and reader-scoped
+  - `0958a343` — condition-controlled tail-extension gate and reader-scoped
     recovery-conflict assertions
+- Final review follow-up:
+  - this commit — sample the DEAD-memtable reuse horizon after unpublication
+    and add a condition-gated standby regression
 - All confirmed blockers are fixed and verified on PostgreSQL 18.6.
 
 ## RED evidence
@@ -58,6 +61,16 @@ Tests were added before each production fix.
 The new assertion self-test rejects both stale unrelated conflict output and
 output that combines the expected cancellation with an invalid-magic error.
 
+### Final review blocker
+
+1. **Premature DEAD-memtable reuse horizon**
+   - Spill sampled `ReadNextFullTransactionId()` before the WAL record that
+     removed the old chain from the metapage.
+   - A transaction committed in that window, and a standby then captured the
+     still-published old chain with `xmin=858` while its pages were stamped
+     with `dead_fxid=857`.
+   - Reuse conflict WAL at horizon 857 would not cancel that newer reader.
+
 ## Final ownership, locking, and WAL contracts
 
 ### Common read snapshot
@@ -86,6 +99,10 @@ recyclable free-page stamp and enters the page in the FSM. WAL ordering
 therefore cancels disconnected/no-feedback standby snapshots before later WAL
 can overwrite a retired chain page.
 
+Spill now samples `dead_fxid` after `tp_spill_finalize()` inserts the
+unpublication WAL. Every standby snapshot that can still discover the old
+chain therefore has xmin at or below the reuse-conflict horizon.
+
 ### VACUUM reclaim
 
 `tp_vacuumcleanup()` still retains maintenance through the O(index-pages)
@@ -110,6 +127,12 @@ results. The recovery-conflict validator reads only the redirected output of
 the memtable reader, requires PostgreSQL's exact cancellation text, and rejects
 invalid page/magic/index-corruption messages.
 
+The spill-horizon regression similarly holds an advisory gate immediately
+before `tp_spill_finalize()`, replays an intervening transaction, and proves a
+standby reader captured the still-published chain before releasing publication.
+The old ordering failed with `dead_fxid=857`, `xmin=858`; the fixed ordering
+passes with `dead_fxid=858`, `xmin=858`.
+
 ## GREEN evidence
 
 PostgreSQL 18 environment:
@@ -128,8 +151,12 @@ PG_CONFIG=/home/azureuser/.copilot/session-state/8bf506c4-245d-4e44-88e9-46c7473
   - The disconnected old-chain reader was canceled before 23 reclaimed pages
     were reused, with cancellation proven from that reader's output only.
   - Promotion race returned IDs 1..1500 exactly once.
+  - Pre-publication old-chain reader xmin was covered by the DEAD horizon.
   - Existing ranked, standalone, segment-reclaim, and recovery-conflict cases
     remained green.
+- The final clean rebuild, formatting check, 79/79 SQL regressions, complete
+  shell suite, and empty `test/regression.diffs` all passed after the
+  spill-horizon fix.
 - `vacuum_concurrent_merge.sh`: three consecutive final full-scale runs
   passed after the gate change. Each included the condition-proven lock-order
   case, paused reclaim proof, maintenance serialization, and full stress
@@ -143,8 +170,9 @@ PG_CONFIG=/home/azureuser/.copilot/session-state/8bf506c4-245d-4e44-88e9-46c7473
 ## Files
 
 - Snapshot/append/promotion:
-  `src/segment/graph_snapshot.c`, `src/memtable/chain_walker.{c,h}`,
-  `src/memtable/log.{c,h}`, `src/scoring/bm25.c`, `src/mod.c`.
+  `src/access/build.c`, `src/segment/graph_snapshot.c`,
+  `src/memtable/chain_walker.{c,h}`, `src/memtable/log.{c,h}`,
+  `src/scoring/bm25.c`, `src/mod.c`.
 - Reuse conflict:
   `src/index/freepage.{c,h}`, `src/access/vacuum.c`,
   `src/segment/tombstone.c`.

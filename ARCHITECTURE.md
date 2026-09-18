@@ -247,6 +247,8 @@ As a safety fallback for a standby that disconnects while an old-generation
 query remains active, both tombstone drain and DEAD-memtable reclaim emit the
 stock `XLOG_BTREE_REUSE_PAGE` conflict-only WAL record before reuse. Memtable
 reclaim uses each page's `dead_fxid`; tombstone drain uses the batch horizon.
+Spill samples `dead_fxid` only after the WAL record that unpublishes the old
+chain, so every standby snapshot that can still discover that chain is covered.
 Replay cancels any conflicting standby snapshot before later WAL can reuse
 those pages.
 Feedback therefore preserves query continuity; the conflict record preserves

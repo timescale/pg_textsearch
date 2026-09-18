@@ -150,6 +150,7 @@ bool tp_log_cache_state = false;
 
 /* Debug: trigger PANIC after spill finalize for crash-safety testing */
 bool tp_debug_panic_after_spill_finalize = false;
+int	 tp_debug_spill_before_finalize_gate = 0;
 
 /* Debug: trigger PANIC around compaction publication. */
 bool tp_debug_panic_before_compaction_publish = false;
@@ -743,6 +744,21 @@ _PG_init(void)
 			false,
 			PGC_SUSET, /* superuser-only: forces a server-wide PANIC,
 						* so unprivileged roles must not reach it */
+			0,
+			NULL,
+			NULL,
+			NULL);
+
+	DefineCustomIntVariable(
+			"pg_textsearch.debug_spill_before_finalize_gate",
+			"Gate a spill before publishing its replacement segment.",
+			"Testing-only advisory lock key used after identifying the old "
+			"memtable chain and before tp_spill_finalize.",
+			&tp_debug_spill_before_finalize_gate,
+			0,
+			0,
+			INT_MAX,
+			PGC_SUSET,
 			0,
 			NULL,
 			NULL,

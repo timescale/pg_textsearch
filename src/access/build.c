@@ -86,6 +86,31 @@ typedef struct TpPreparedSpill
 } TpPreparedSpill;
 
 extern int tp_debug_index_lock_exclusive_waiter_gate;
+extern int tp_debug_spill_before_finalize_gate;
+
+static void
+tp_debug_gate_spill_before_finalize(Relation index)
+{
+	LOCKTAG gate_tag;
+	int		gate_key = tp_debug_spill_before_finalize_gate;
+
+	if (gate_key <= 0)
+		return;
+
+	SET_LOCKTAG_ADVISORY(gate_tag, MyDatabaseId, gate_key, 0, 2);
+	ereport(LOG,
+			(errmsg("pg_textsearch spill before-finalize gate for "
+					"index %u backend %d",
+					RelationGetRelid(index),
+					MyProcPid)));
+	(void)LockAcquire(&gate_tag, ShareLock, true, false);
+	(void)LockRelease(&gate_tag, ShareLock, true);
+	ereport(LOG,
+			(errmsg("pg_textsearch spill passed before-finalize gate for "
+					"index %u backend %d",
+					RelationGetRelid(index),
+					MyProcPid)));
+}
 
 static void
 tp_debug_gate_spill_threshold_check(TpLocalIndexState *index_state)
@@ -261,11 +286,11 @@ tp_finish_spill(
 		FullTransactionId horizon;
 		TpIndexMetaPage	  metap;
 
-		horizon	   = ReadNextFullTransactionId();
 		metap	   = tp_get_metapage(index_rel);
 		chain_head = metap->memtable_head_blkno;
 		pfree(metap);
 
+		tp_debug_gate_spill_before_finalize(index_rel);
 		tp_spill_finalize(
 				index_state,
 				index_rel,
@@ -282,6 +307,12 @@ tp_finish_spill(
 				 "(tp_debug_panic_after_spill_finalize)");
 		}
 
+		/*
+		 * Sample only after the unpublication WAL is inserted.  Every
+		 * standby snapshot that can still discover the old chain then has
+		 * xmin at or below this reuse-conflict horizon.
+		 */
+		horizon = ReadNextFullTransactionId();
 		if (BlockNumberIsValid(chain_head))
 			tp_memtable_mark_chain_dead(index_rel, chain_head, horizon);
 	}
