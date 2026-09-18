@@ -1,8 +1,12 @@
 # Build artifacts
 *.o
+*.obj
 *.bc
 *.so
 *.dylib
+*.dll
+*.exp
+*.lib
 
 # Test artifacts
 test/regression.diffs
