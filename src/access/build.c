@@ -315,7 +315,7 @@ tp_compact_inline(TpLocalIndexState *index_state, Relation index_rel)
 	tp_compaction_lock(index_rel);
 	PG_TRY();
 	{
-		tp_maybe_compact_level(index_state, index_rel, 0);
+		(void)tp_compact_step(index_state, index_rel);
 	}
 	PG_FINALLY();
 	{
@@ -324,6 +324,14 @@ tp_compact_inline(TpLocalIndexState *index_state, Relation index_rel)
 		tp_compaction_unlock(index_rel);
 	}
 	PG_END_TRY();
+}
+
+static void
+tp_compact_build_private(TpLocalIndexState *index_state, Relation index_rel)
+{
+	Assert(index_state->lock_held);
+	while (tp_compact_step(index_state, index_rel))
+		CHECK_FOR_INTERRUPTS();
 }
 
 static void
@@ -1412,7 +1420,7 @@ tp_build_callback(
 		pgstat_progress_update_param(
 				PROGRESS_CREATEIDX_SUBPHASE, TP_PHASE_COMPACTING);
 		if (tp_index_compaction_mode(bs->index) == TP_COMPACTION_INLINE)
-			tp_maybe_compact_level(bs->index_state, bs->index, 0);
+			tp_compact_build_private(bs->index_state, bs->index);
 		pgstat_progress_update_param(
 				PROGRESS_CREATEIDX_SUBPHASE, TP_PHASE_LOADING);
 	}
@@ -1720,7 +1728,7 @@ tp_build(Relation heap, Relation index, IndexInfo *indexInfo)
 			{
 				pgstat_progress_update_param(
 						PROGRESS_CREATEIDX_SUBPHASE, TP_PHASE_COMPACTING);
-				tp_maybe_compact_level(index_state, index, 0);
+				tp_compact_build_private(index_state, index);
 			}
 		}
 

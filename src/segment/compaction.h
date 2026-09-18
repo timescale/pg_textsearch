@@ -26,10 +26,6 @@ extern void tp_compaction_unlock(Relation index);
  * Advisory only; see the comment on the definition.
  */
 extern bool tp_compaction_needed(Relation index);
-extern void tp_maybe_compact_level(
-		struct TpLocalIndexState *index_state,
-		Relation				  index,
-		uint32					  first_level);
 
 /*
  * Run at most one bounded compaction pass and report whether one ran.

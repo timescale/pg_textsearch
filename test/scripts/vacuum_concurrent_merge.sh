@@ -86,12 +86,14 @@ diagnose() {
          WHERE (locktype = 'relation'
                 AND relation IN ('docs_bm25'::regclass,
                                  'coord_bm25'::regclass,
-                                 'identify_bm25'::regclass))
+                                 'identify_bm25'::regclass,
+                                 'yield_bm25'::regclass))
             OR (locktype = 'object'
                 AND classid = 'pg_am'::regclass
                 AND objid IN ('docs_bm25'::regclass,
                               'coord_bm25'::regclass,
-                              'identify_bm25'::regclass))
+                              'identify_bm25'::regclass,
+                              'yield_bm25'::regclass))
          ORDER BY pid, locktype, mode;" 2>&1 || true
     warn "server log tail:"
     tail -n 80 "${LOGFILE}" 2>/dev/null || true
@@ -209,6 +211,27 @@ SELECT 'identify vacuum document ' || gs || ' ' || repeat(md5(gs::text), 8)
 FROM generate_series(1, 20000) gs;
 SELECT bm25_spill_index('identify_bm25');
 DELETE FROM identify_docs WHERE id <= 1000;
+
+CREATE TABLE yield_docs (
+    id bigserial PRIMARY KEY,
+    body text NOT NULL
+);
+CREATE INDEX yield_bm25 ON yield_docs USING bm25(body)
+    WITH (text_config='english', compaction='off');
+ALTER TABLE yield_docs SET (autovacuum_enabled=false);
+INSERT INTO yield_docs(body)
+SELECT 'yieldcase batch1 document ' || gs FROM generate_series(1, 8) gs;
+SELECT bm25_spill_index('yield_bm25');
+INSERT INTO yield_docs(body)
+SELECT 'yieldcase batch2 document ' || gs FROM generate_series(1, 8) gs;
+SELECT bm25_spill_index('yield_bm25');
+INSERT INTO yield_docs(body)
+SELECT 'yieldcase batch3 document ' || gs FROM generate_series(1, 8) gs;
+SELECT bm25_spill_index('yield_bm25');
+INSERT INTO yield_docs(body)
+SELECT 'yieldcase batch4 document ' || gs FROM generate_series(1, 8) gs;
+SELECT bm25_spill_index('yield_bm25');
+DELETE FROM yield_docs WHERE id <= 4;
 SQL
 }
 
@@ -597,6 +620,98 @@ test_vacuum_waits_for_force_merge() {
     log "VACUUM waited for force merge and removed all known deleted documents"
 }
 
+test_compact_yields_to_vacuum() {
+    local compactor_output="${ERR_DIR}/yield_compactor.log"
+    local vacuum_output="${ERR_DIR}/yield_vacuum.log"
+    local compactor_pid
+    local vacuum_pid
+    local compactor_backend
+    local vacuum_backend
+    local oid
+    local lock_proof=f
+    local deadline
+    local select_marker
+    local vacuum_marker
+    local second_select_line
+    local vacuum_line
+    local levels
+
+    log "Case: explicit compaction yields maintenance between passes..."
+    oid=$(sql -c "SELECT 'yield_bm25'::regclass::oid;")
+    levels=$(sql -c "SELECT bm25_level_counts('yield_bm25'::regclass);")
+    [ "${levels}" = "{4,0,0,0,0,0,0,0}" ] ||
+        error "yield_bm25 starts with unexpected levels ${levels}"
+
+    PGAPPNAME=pgts-yield-compactor \
+        sql -c "
+            SET statement_timeout = '90s';
+            SET pg_textsearch.segments_per_level = 2;
+            SET pg_textsearch.debug_compaction_pause_after_select_ms = ${PAUSE_MS};
+            SELECT bm25_compact('yield_bm25'::regclass);" \
+        >"${compactor_output}" 2>&1 &
+    compactor_pid=$!
+    compactor_backend=$(backend_pid pgts-yield-compactor)
+    wait_for_marker after-select "${oid}" "${compactor_backend}"
+
+    PGAPPNAME=pgts-yield-vacuum \
+        PGOPTIONS="-c statement_timeout=90000 -c lock_timeout=30000 -c pg_textsearch.debug_compaction_pause_source_estimate_ms=1000" \
+        psql -h "${SOCKET_DIR}" -p "${TEST_PORT}" -d "${TEST_DB}" \
+        -qAt -v ON_ERROR_STOP=1 \
+        -c "SELECT pg_backend_pid();" -c "VACUUM yield_docs;" \
+        >"${vacuum_output}" 2>&1 &
+    vacuum_pid=$!
+    vacuum_backend=$(client_backend_pid "${vacuum_output}" "yield VACUUM")
+
+    deadline=$((SECONDS + 3))
+    while ((SECONDS < deadline)); do
+        lock_proof=$(sql -c "
+            SELECT EXISTS (
+                SELECT 1
+                  FROM pg_stat_activity activity
+                  JOIN pg_locks pending
+                    ON pending.pid = activity.pid
+                 WHERE activity.pid = ${vacuum_backend}
+                   AND activity.state = 'active'
+                   AND ${compactor_backend} =
+                       ANY (pg_blocking_pids(activity.pid))
+                   AND pending.locktype = 'object'
+                   AND pending.classid = 'pg_am'::regclass
+                   AND pending.objid = ${oid}
+                   AND pending.objsubid = 3
+                   AND pending.mode = 'ExclusiveLock'
+                   AND NOT pending.granted
+            );" 2>/dev/null || true)
+        if [ "${lock_proof}" = "t" ]; then
+            break
+        fi
+        sleep 0.05
+    done
+    [ "${lock_proof}" = "t" ] ||
+        error "VACUUM did not queue behind the first compaction pass"
+
+    wait_success "${compactor_pid}" 30 "yielding compactor" \
+        "${compactor_output}"
+    wait_success "${vacuum_pid}" 30 "yield VACUUM" "${vacuum_output}"
+
+    select_marker="pg_textsearch compaction pause at after-select for index ${oid} backend ${compactor_backend}"
+    vacuum_marker="pg_textsearch VACUUM pause during identification for index ${oid} backend ${vacuum_backend}"
+    second_select_line=$(grep -Fn "${select_marker}" "${LOGFILE}" |
+        sed -n '2s/:.*//p')
+    vacuum_line=$(grep -Fn "${vacuum_marker}" "${LOGFILE}" |
+        sed -n '1s/:.*//p')
+    [ -n "${second_select_line}" ] ||
+        error "explicit compaction did not begin a second pass"
+    [ -n "${vacuum_line}" ] ||
+        error "queued VACUUM never acquired maintenance"
+    ((vacuum_line < second_select_line)) ||
+        error "second compaction pass selected sources before queued VACUUM acquired maintenance"
+
+    levels=$(sql -c "SELECT bm25_level_counts('yield_bm25'::regclass);")
+    [ "${levels}" = "{0,0,1,0,0,0,0,0}" ] ||
+        error "explicit compaction left unexpected levels ${levels}"
+    log "Queued VACUUM acquired maintenance between compaction passes"
+}
+
 # Spill the memtable aggressively so many small segments accrue for the
 # merger to compact.
 writer() {
@@ -689,6 +804,7 @@ setup_test_db
 seed_data
 test_vacuum_identification_does_not_gate_readers
 test_vacuum_waits_for_force_merge
+test_compact_yields_to_vacuum
 run_test
 
 log "All tests passed!"

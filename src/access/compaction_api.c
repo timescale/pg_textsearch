@@ -202,6 +202,7 @@ tp_compact_index(PG_FUNCTION_ARGS)
 	Oid				   indexoid = PG_GETARG_OID(0);
 	Relation		   index_rel;
 	TpLocalIndexState *index_state;
+	volatile bool	   pass_ran;
 
 	if (RecoveryInProgress())
 		ereport(ERROR,
@@ -224,16 +225,28 @@ tp_compact_index(PG_FUNCTION_ARGS)
 				 errmsg("could not get index state for \"%s\"", relname)));
 	}
 
-	tp_compaction_lock(index_rel);
 	PG_TRY();
 	{
-		tp_maybe_compact_level(index_state, index_rel, 0);
+		do
+		{
+			tp_compaction_lock(index_rel);
+			PG_TRY(_pass);
+			{
+				pass_ran = tp_compact_step(index_state, index_rel);
+			}
+			PG_FINALLY(_pass);
+			{
+				if (index_state->lock_held)
+					tp_release_index_lock(index_state);
+				tp_compaction_unlock(index_rel);
+			}
+			PG_END_TRY(_pass);
+
+			CHECK_FOR_INTERRUPTS();
+		} while (pass_ran);
 	}
 	PG_FINALLY();
 	{
-		if (index_state->lock_held)
-			tp_release_index_lock(index_state);
-		tp_compaction_unlock(index_rel);
 		relation_close(index_rel, RowExclusiveLock);
 	}
 	PG_END_TRY();

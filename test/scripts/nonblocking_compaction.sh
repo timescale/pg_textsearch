@@ -207,6 +207,36 @@ seed_all_indexes() {
     seed_index cancel_docs cancel_idx cancelcase
 }
 
+test_inline_policy_runs_one_pass() {
+    local batch
+
+    log "Case: visible inline compaction runs one bounded pass..."
+    sql -c "
+        CREATE TABLE inline_once_docs (
+            id bigserial PRIMARY KEY,
+            body text NOT NULL
+        );
+        CREATE INDEX inline_once_idx ON inline_once_docs USING bm25(body)
+            WITH (text_config = 'english', compaction = 'off');" >/dev/null
+
+    for batch in 1 2 3 4 5 6 7; do
+        sql -c "
+            INSERT INTO inline_once_docs(body)
+            SELECT 'inlineonce batch${batch} document ' || gs
+              FROM generate_series(1, 8) gs;
+            SELECT bm25_spill_index('inline_once_idx');" >/dev/null
+    done
+
+    sql -c "
+        ALTER INDEX inline_once_idx SET (compaction = 'inline');
+        INSERT INTO inline_once_docs(body)
+        SELECT 'inlineonce batch8 document ' || gs
+          FROM generate_series(1, 8) gs;
+        SELECT bm25_spill_index('inline_once_idx');" >/dev/null
+
+    assert_graph inline_once_idx "{4,1,0,0,0,0,0,0}"
+}
+
 index_oid() {
     sql -c "SELECT '${1}'::regclass::oid;"
 }
@@ -847,6 +877,7 @@ main() {
     setup_cluster
     verify_guc_contract
     seed_all_indexes
+    test_inline_policy_runs_one_pass
     test_source_estimation_progress
     test_scan_progress
     test_scan_progress_after_restamp

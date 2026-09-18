@@ -2594,14 +2594,6 @@ tp_compact_once(
 	return true;
 }
 
-void
-tp_maybe_compact_level(
-		TpLocalIndexState *index_state, Relation index, uint32 first_level)
-{
-	while (tp_compact_once(index_state, index, first_level, false))
-		;
-}
-
 bool
 tp_compact_step(TpLocalIndexState *index_state, Relation index)
 {
