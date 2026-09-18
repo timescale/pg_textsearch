@@ -19,6 +19,12 @@ typedef enum TpCompactionAllocationPause
 	TP_COMPACTION_ALLOCATION_PAUSE_TOMBSTONE
 } TpCompactionAllocationPause;
 
+typedef enum TpSegmentReplacementReclaimMode
+{
+	TP_SEGMENT_REPLACEMENT_RECLAIM_ATOMIC,
+	TP_SEGMENT_REPLACEMENT_RECLAIM_AFTER_PUBLICATION
+} TpSegmentReplacementReclaimMode;
+
 extern int tp_debug_compaction_pause_after_select_ms;
 extern int tp_debug_compaction_pause_source_estimate_ms;
 extern int tp_debug_compaction_pause_before_publish_ms;
@@ -56,18 +62,20 @@ tp_compact_empty_step(struct TpLocalIndexState *index_state, Relation index);
 
 /*
  * Publish one already-built replacement for one published source segment.
- * The caller holds maintenance and assigns reclaim_fxid before calling.
+ * The caller holds maintenance.  Atomic reclaim assigns an XID before
+ * tombstone construction; after-publication reclaim samples a horizon after
+ * source unpublication.
  * This function takes ownership of replacement_root on entry.
  */
 extern void tp_publish_prepared_segment_replacement(
-		struct TpLocalIndexState *index_state,
-		Relation				  index,
-		uint32					  level,
-		BlockNumber				  source_root,
-		BlockNumber				  replacement_root,
-		uint64					  removed_docs,
-		uint64					  removed_tokens,
-		FullTransactionId		  reclaim_fxid);
+		struct TpLocalIndexState	   *index_state,
+		Relation						index,
+		uint32							level,
+		BlockNumber						source_root,
+		BlockNumber						replacement_root,
+		uint64							removed_docs,
+		uint64							removed_tokens,
+		TpSegmentReplacementReclaimMode reclaim_mode);
 
 extern void
 tp_force_compact(struct TpLocalIndexState *index_state, Relation index);

@@ -1702,6 +1702,117 @@ tp_publish_compaction_output(
 }
 
 static void
+tp_publish_detached_tombstones(
+		TpLocalIndexState		 *index_state,
+		Relation				  index,
+		TpDetachedTombstoneBatch *batch)
+{
+	volatile Buffer metabuf						 = InvalidBuffer;
+	volatile Buffer tailbuf						 = InvalidBuffer;
+	GenericXLogState *volatile publication_state = NULL;
+	volatile bool acquired_here					 = false;
+	volatile bool published						 = false;
+
+	PG_TRY();
+	{
+		Page			current_page;
+		TpIndexMetaPage current_meta;
+		BlockNumber		current_pending;
+		Page			meta_copy;
+		TpIndexMetaPage meta;
+
+		if (!index_state->lock_held)
+		{
+			tp_acquire_index_lock(index_state, LW_EXCLUSIVE);
+			acquired_here = true;
+		}
+		else if (
+				index_state->lock_mode != LW_EXCLUSIVE ||
+				!LWLockHeldByMeInMode(
+						&index_state->shared->lock, LW_EXCLUSIVE))
+			ereport(ERROR,
+					(errcode(ERRCODE_INTERNAL_ERROR),
+					 errmsg("tombstone publication requires the per-index "
+							"exclusive lock")));
+
+		metabuf = ReadBuffer(index, TP_METAPAGE_BLKNO);
+		LockBuffer(metabuf, BUFFER_LOCK_EXCLUSIVE);
+		current_page	= BufferGetPage(metabuf);
+		current_meta	= (TpIndexMetaPage)PageGetContents(current_page);
+		current_pending = tp_metapage_pending_free_head(current_meta);
+
+		publication_state = GenericXLogStart(index);
+		meta_copy		  = GenericXLogRegisterBuffer(
+				(GenericXLogState *)publication_state, metabuf, 0);
+		tailbuf = tp_tombstone_attach_detached(
+				(GenericXLogState *)publication_state,
+				index,
+				*batch,
+				current_pending);
+		tp_metapage_upgrade_to_current(index, meta_copy);
+		meta					= (TpIndexMetaPage)PageGetContents(meta_copy);
+		meta->pending_free_head = batch->head;
+
+		GenericXLogFinish((GenericXLogState *)publication_state);
+		publication_state = NULL;
+		published		  = true;
+
+		if (BufferIsValid(tailbuf))
+		{
+			UnlockReleaseBuffer(tailbuf);
+			tailbuf = InvalidBuffer;
+		}
+		UnlockReleaseBuffer(metabuf);
+		metabuf = InvalidBuffer;
+		if (acquired_here)
+		{
+			tp_release_index_lock(index_state);
+			acquired_here = false;
+		}
+
+		pfree(batch->owned_pages);
+		batch->head			   = InvalidBlockNumber;
+		batch->tail			   = InvalidBlockNumber;
+		batch->container_pages = 0;
+		batch->owned_pages	   = NULL;
+		batch->owned_count	   = 0;
+		batch->owned_capacity  = 0;
+	}
+	PG_CATCH();
+	{
+		if (!published && publication_state != NULL)
+			GenericXLogAbort((GenericXLogState *)publication_state);
+		if (BufferIsValid(tailbuf))
+		{
+			if (InterruptHoldoffCount == 0)
+				HOLD_INTERRUPTS();
+			UnlockReleaseBuffer(tailbuf);
+		}
+		if (BufferIsValid(metabuf))
+		{
+			if (InterruptHoldoffCount == 0)
+				HOLD_INTERRUPTS();
+			UnlockReleaseBuffer(metabuf);
+		}
+		if (acquired_here && index_state->lock_held)
+			tp_release_index_lock(index_state);
+		if (published)
+		{
+			if (batch->owned_pages != NULL)
+				pfree(batch->owned_pages);
+			batch->head			   = InvalidBlockNumber;
+			batch->tail			   = InvalidBlockNumber;
+			batch->container_pages = 0;
+			batch->owned_pages	   = NULL;
+			batch->owned_count	   = 0;
+			batch->owned_capacity  = 0;
+		}
+		PG_RE_THROW();
+	}
+	PG_END_TRY();
+}
+
+static void
 tp_complete_compaction_publication(
 		TpLocalIndexState	 *index_state,
 		Relation			  index,
@@ -1709,6 +1820,7 @@ tp_complete_compaction_publication(
 		TpCompactionPlan	 *plan,
 		TpCompactionOutput	 *output,
 		FullTransactionId	  reclaim_fxid,
+		bool				  defer_reclaim,
 		TpStatsRebasePolicy	  stats_policy)
 {
 	FullTransactionId merged_fxid;
@@ -1728,13 +1840,17 @@ tp_complete_compaction_publication(
 							RelationGetRelationName(index))));
 
 		/*
-		 * Ordinary compaction assigns and restamps here.  A prepared
-		 * single-run replacement arrives with a VACUUM-assigned XID and
-		 * tombstones already stamped during construction.  In both cases
-		 * the in-progress transaction pins primary and standby horizons
-		 * through graph publication.
+		 * Ordinary compaction assigns and restamps here.  An atomic prepared
+		 * replacement arrives with a VACUUM-assigned XID and tombstones
+		 * already stamped during construction.  A split replacement
+		 * publishes without reclaim work and samples its horizon afterward.
 		 */
-		if (!FullTransactionIdIsValid(reclaim_fxid))
+		if (defer_reclaim)
+		{
+			Assert(!FullTransactionIdIsValid(reclaim_fxid));
+			Assert(output->tombstones.container_pages == 0);
+		}
+		else if (!FullTransactionIdIsValid(reclaim_fxid))
 		{
 			merged_fxid = GetCurrentFullTransactionId();
 			tp_tombstone_restamp_detached(
@@ -1942,27 +2058,37 @@ tp_prepare_single_replacement_root(
 
 void
 tp_publish_prepared_segment_replacement(
-		TpLocalIndexState *index_state,
-		Relation		   index,
-		uint32			   level,
-		BlockNumber		   source_root,
-		BlockNumber		   replacement_root,
-		uint64			   removed_docs,
-		uint64			   removed_tokens,
-		FullTransactionId  reclaim_fxid)
+		TpLocalIndexState			   *index_state,
+		Relation						index,
+		uint32							level,
+		BlockNumber						source_root,
+		BlockNumber						replacement_root,
+		uint64							removed_docs,
+		uint64							removed_tokens,
+		TpSegmentReplacementReclaimMode reclaim_mode)
 {
 	TpCompactionPlan   plan;
 	TpCompactionOutput output;
-	TpIndexMetaPage volatile snapshot		= NULL;
-	BlockNumber *volatile source_pages		= NULL;
-	volatile bool		 completion_started = false;
-	volatile BlockNumber unclaimed_root		= replacement_root;
+	bool			   defer_reclaim = reclaim_mode ==
+						 TP_SEGMENT_REPLACEMENT_RECLAIM_AFTER_PUBLICATION;
+	FullTransactionId reclaim_fxid = InvalidFullTransactionId;
+	TpDetachedTombstoneBatch volatile deferred_tombstones;
+	TpIndexMetaPage volatile snapshot				  = NULL;
+	BlockNumber *volatile source_pages				  = NULL;
+	volatile bool		 completion_started			  = false;
+	volatile bool		 deferred_tombstones_attached = false;
+	volatile BlockNumber unclaimed_root				  = replacement_root;
 	uint32				 source_page_count;
 
 	memset(&plan, 0, sizeof(plan));
 	memset(&output, 0, sizeof(output));
-	output.tombstones.head = InvalidBlockNumber;
-	output.tombstones.tail = InvalidBlockNumber;
+	memset((TpDetachedTombstoneBatch *)&deferred_tombstones,
+		   0,
+		   sizeof(deferred_tombstones));
+	output.tombstones.head	 = InvalidBlockNumber;
+	output.tombstones.tail	 = InvalidBlockNumber;
+	deferred_tombstones.head = InvalidBlockNumber;
+	deferred_tombstones.tail = InvalidBlockNumber;
 
 	PG_TRY();
 	{
@@ -1977,10 +2103,11 @@ tp_publish_prepared_segment_replacement(
 			unclaimed_root				 = InvalidBlockNumber;
 		}
 
-		if (!FullTransactionIdIsValid(reclaim_fxid))
+		if (reclaim_mode != TP_SEGMENT_REPLACEMENT_RECLAIM_ATOMIC &&
+			reclaim_mode != TP_SEGMENT_REPLACEMENT_RECLAIM_AFTER_PUBLICATION)
 			ereport(ERROR,
 					(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
-					 errmsg("prepared replacement requires a reclaim XID")));
+					 errmsg("invalid prepared replacement reclaim mode")));
 
 		snapshot = tp_prepare_single_replacement_plan(
 				index_state, index, level, source_root, &plan);
@@ -2008,14 +2135,18 @@ tp_publish_prepared_segment_replacement(
 					(errcode(ERRCODE_DATA_CORRUPTED),
 					 errmsg("prepared replacement source %u has no pages",
 							source_root)));
-		tp_tombstone_build_detached(
-				index,
-				(BlockNumber *)source_pages,
-				source_page_count,
-				reclaim_fxid,
-				&output.tombstones);
-		pfree((BlockNumber *)source_pages);
-		source_pages = NULL;
+		if (!defer_reclaim)
+		{
+			reclaim_fxid = GetCurrentFullTransactionId();
+			tp_tombstone_build_detached(
+					index,
+					(BlockNumber *)source_pages,
+					source_page_count,
+					reclaim_fxid,
+					&output.tombstones);
+			pfree((BlockNumber *)source_pages);
+			source_pages = NULL;
+		}
 
 		completion_started = true;
 		tp_complete_compaction_publication(
@@ -2025,7 +2156,25 @@ tp_publish_prepared_segment_replacement(
 				&plan,
 				&output,
 				reclaim_fxid,
+				defer_reclaim,
 				TP_STATS_REBASE_CLAMP_LEGACY_VACUUM);
+		if (defer_reclaim)
+		{
+			reclaim_fxid = ReadNextFullTransactionId();
+			tp_tombstone_build_detached(
+					index,
+					(BlockNumber *)source_pages,
+					source_page_count,
+					reclaim_fxid,
+					(TpDetachedTombstoneBatch *)&deferred_tombstones);
+			tp_publish_detached_tombstones(
+					index_state,
+					index,
+					(TpDetachedTombstoneBatch *)&deferred_tombstones);
+			deferred_tombstones_attached = true;
+			pfree((BlockNumber *)source_pages);
+			source_pages = NULL;
+		}
 	}
 	PG_CATCH();
 	{
@@ -2033,6 +2182,10 @@ tp_publish_prepared_segment_replacement(
 			tp_discard_unpublished_segment(index, (BlockNumber)unclaimed_root);
 		else if (!completion_started && !output.publication_started)
 			tp_discard_compaction_output(index, &output);
+		if (!deferred_tombstones_attached &&
+			deferred_tombstones.owned_pages != NULL)
+			tp_tombstone_discard_detached(
+					index, *(TpDetachedTombstoneBatch *)&deferred_tombstones);
 		if (source_pages != NULL)
 			pfree((BlockNumber *)source_pages);
 		if (snapshot != NULL)
@@ -2569,6 +2722,7 @@ tp_compact_once(
 			&plan,
 			&output,
 			InvalidFullTransactionId,
+			false,
 			TP_STATS_REBASE_STRICT);
 	pfree(snapshot);
 	tp_free_compaction_plan(&plan);
@@ -2613,6 +2767,7 @@ tp_force_compact(TpLocalIndexState *index_state, Relation index)
 			&plan,
 			&output,
 			InvalidFullTransactionId,
+			false,
 			TP_STATS_REBASE_STRICT);
 	pfree(snapshot);
 	tp_free_compaction_plan(&plan);

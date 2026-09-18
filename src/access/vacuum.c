@@ -652,8 +652,8 @@ tp_vacuum_rebuild_segment(
 
 /*
  * Hand one rebuilt legacy source to the shared prepared-publication engine.
- * VACUUM assigns the reclaim XID first; the compaction layer then owns output
- * linking, page collection, tombstones, prefix validation, and publication.
+ * The compaction layer owns output linking, page collection, tombstones,
+ * prefix validation, and publication.
  */
 static void
 tp_vacuum_replace_segment(
@@ -663,11 +663,13 @@ tp_vacuum_replace_segment(
 		BlockNumber		   old_root,
 		BlockNumber		   new_root,
 		uint64			   docs_shrinkage,
-		uint64			   tokens_shrinkage)
+		uint64			   tokens_shrinkage,
+		bool			   parallel_context)
 {
-	FullTransactionId vacuum_fxid;
+	TpSegmentReplacementReclaimMode reclaim_mode =
+			parallel_context ? TP_SEGMENT_REPLACEMENT_RECLAIM_AFTER_PUBLICATION
+							 : TP_SEGMENT_REPLACEMENT_RECLAIM_ATOMIC;
 
-	vacuum_fxid = GetCurrentFullTransactionId();
 	tp_publish_prepared_segment_replacement(
 			index_state,
 			index,
@@ -676,7 +678,7 @@ tp_vacuum_replace_segment(
 			new_root,
 			docs_shrinkage,
 			tokens_shrinkage,
-			vacuum_fxid);
+			reclaim_mode);
 }
 
 /*
@@ -855,31 +857,6 @@ tp_bulkdelete(
 			 num_segments);
 
 		/*
-		 * Legacy segments have no alive bitmap, so VACUUM must replace them
-		 * to remove dead TIDs.  Safe replacement needs an assigned XID to pin
-		 * the deferred-reclaim horizon through publication, but PostgreSQL
-		 * forbids XID assignment after entering parallel mode.  Fail before
-		 * mutating any segment so heap cleanup cannot outpace this index.
-		 */
-		if (parallel_context)
-		{
-			for (int i = 0; i < num_segments; i++)
-			{
-				if (segments[i].affected && !segments[i].is_v5)
-					ereport(ERROR,
-							(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-							 errmsg("cannot vacuum legacy pg_textsearch "
-									"segments during a parallel operation"),
-							 errdetail(
-									 "Index \"%s\" requires segment "
-									 "replacement to remove dead tuples.",
-									 RelationGetRelationName(info->index)),
-							 errhint("Retry with VACUUM (PARALLEL 0), or "
-									 "REINDEX the pg_textsearch index.")));
-			}
-		}
-
-		/*
 		 * Phase 3: mark dead docs or rebuild affected legacy segments.
 		 * V5 mutations need only their segment-buffer locks.  Legacy
 		 * replacements prepare their output and page list unlocked, then
@@ -937,7 +914,8 @@ tp_bulkdelete(
 							segments[i].root_block,
 							new_root,
 							docs_shrinkage,
-							tokens_shrinkage);
+							tokens_shrinkage,
+							parallel_context);
 				}
 			}
 		}

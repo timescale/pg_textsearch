@@ -100,7 +100,92 @@ SELECT 'parallel vacuum document ' || gs || ' ' || repeat(md5(gs::text), 4)
 FROM generate_series(1, 20000) gs;
 SELECT bm25_spill_index('docs_bm25');
 DELETE FROM docs;
+
+CREATE TABLE legacy_docs (
+    id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    body text NOT NULL
+);
+CREATE INDEX legacy_docs_bm25 ON legacy_docs USING bm25(body)
+    WITH (text_config = 'english', compaction = 'off');
+INSERT INTO legacy_docs (body)
+SELECT 'parallel legacy document ' || gs || ' ' ||
+       repeat(md5(gs::text), 4)
+FROM generate_series(1, 20000) gs;
+SELECT bm25_spill_index('legacy_docs_bm25');
 SQL
+
+legacy_root=$(
+    "${PSQL[@]}" -c "
+        SELECT bm25_test_make_legacy_segment(
+                   'legacy_docs_bm25'::regclass, 1000000);"
+)
+"${PSQL[@]}" -c \
+    "DELETE FROM legacy_docs WHERE id <= 5000;" >/dev/null
+legacy_pending_before=$(
+    "${PSQL[@]}" -c \
+        "SELECT bm25_pending_free_pages('legacy_docs_bm25');"
+)
+
+if ! legacy_vacuum_output=$(
+    "${PSQL[@]}" <<'SQL' 2>&1
+SET min_parallel_index_scan_size = 0;
+VACUUM (PARALLEL 1, VERBOSE) legacy_docs;
+SQL
+); then
+    echo "${legacy_vacuum_output}" >&2
+    exit 1
+fi
+
+if ! grep -q "launched 1 parallel vacuum worker" \
+    <<<"${legacy_vacuum_output}"; then
+    echo "parallel legacy VACUUM did not launch a worker" >&2
+    echo "${legacy_vacuum_output}" >&2
+    exit 1
+fi
+
+legacy_remaining=$(
+    "${PSQL[@]}" -c "
+        SELECT count(*)
+          FROM (
+                SELECT id
+                  FROM legacy_docs
+                 ORDER BY body <@> to_bm25query(
+                         'parallel legacy', 'legacy_docs_bm25')
+               ) ranked;"
+)
+if [ "${legacy_remaining}" != "15000" ]; then
+    echo "parallel legacy VACUUM retained ${legacy_remaining}/15000 documents" \
+        >&2
+    exit 1
+fi
+
+legacy_summary=$(
+    "${PSQL[@]}" -c \
+        "SELECT bm25_summarize_index('legacy_docs_bm25');"
+)
+legacy_new_root=$(
+    sed -n 's/.*L0 Segment 1: block=\([0-9][0-9]*\).*/\1/p' \
+        <<<"${legacy_summary}"
+)
+if [ -z "${legacy_new_root}" ]; then
+    echo "parallel legacy VACUUM summary has no L0 segment root" >&2
+    echo "${legacy_summary}" >&2
+    exit 1
+fi
+if [ "${legacy_new_root}" = "${legacy_root}" ]; then
+    echo "parallel legacy VACUUM did not replace root ${legacy_root}" >&2
+    exit 1
+fi
+
+legacy_pending_after=$(
+    "${PSQL[@]}" -c \
+        "SELECT bm25_pending_free_pages('legacy_docs_bm25');"
+)
+if [ "${legacy_pending_after}" -le "${legacy_pending_before}" ]; then
+    echo "parallel legacy VACUUM pending-free pages did not increase: " \
+        "${legacy_pending_before} -> ${legacy_pending_after}" >&2
+    exit 1
+fi
 
 if ! spill_vacuum_output=$(
     "${PSQL[@]}" <<'SQL' 2>&1
