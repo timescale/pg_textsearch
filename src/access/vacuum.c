@@ -717,8 +717,7 @@ tp_bulkdelete(
 	TpVacuumSegmentInfo	   *segments;
 	int						num_segments;
 	int64					total_dead;
-	volatile bool			maintenance_locked = false;
-	volatile bool			index_lock_held	   = false;
+	volatile bool			index_lock_held = false;
 	bool parallel_context	 = IsInParallelMode() || IsParallelWorker();
 	bool needs_empty_cleanup = false;
 
@@ -752,7 +751,7 @@ tp_bulkdelete(
 
 	/*
 	 * Phase 1: Spill memtable so all data is in segments.  Pass
-	 * min_postings=1 to preserve existing "spill anything non-empty"
+	 * min_pages=1 to preserve existing "spill anything non-empty"
 	 * behavior for the bulkdelete path.
 	 */
 	index_state = tp_get_local_index_state(RelationGetRelid(info->index));
@@ -777,25 +776,18 @@ tp_bulkdelete(
 	 * while concurrent spills may safely prepend an L0 prefix.
 	 */
 	tp_compaction_lock(info->index);
-	maintenance_locked = true;
 	PG_TRY();
 	{
-		if (index_state != NULL)
-		{
-			tp_acquire_index_lock(index_state, LW_SHARED);
-			index_lock_held = true;
-		}
+		tp_acquire_index_lock(index_state, LW_SHARED);
+		index_lock_held = true;
 
 		/* Snapshot the published roots after spill and maintenance admission.
 		 */
 		pfree(metap);
 		segment_snapshot = tp_segment_graph_snapshot_create(info->index);
 		metap			 = &segment_snapshot->metapage;
-		if (index_lock_held)
-		{
-			tp_release_index_lock(index_state);
-			index_lock_held = false;
-		}
+		tp_release_index_lock(index_state);
+		index_lock_held = false;
 
 		/* Phase 2: Identify affected segments. */
 		segments = tp_vacuum_identify_affected(
@@ -936,22 +928,13 @@ tp_bulkdelete(
 		}
 		pfree(segments);
 
-	bulkdelete_done:
-		if (index_lock_held)
-		{
-			tp_release_index_lock(index_state);
-			index_lock_held = false;
-		}
+	bulkdelete_done:;
 	}
 	PG_FINALLY();
 	{
-		if (index_lock_held && index_state != NULL && index_state->lock_held)
+		if (index_lock_held)
 			tp_release_index_lock(index_state);
-		if (maintenance_locked)
-		{
-			tp_compaction_unlock(info->index);
-			maintenance_locked = false;
-		}
+		tp_compaction_unlock(info->index);
 	}
 	PG_END_TRY();
 
@@ -985,9 +968,12 @@ tp_vacuumcleanup(IndexVacuumInfo *info, IndexBulkDeleteResult *stats)
 	 * runt L0 segment away.
 	 */
 	index_state = tp_get_local_index_state(RelationGetRelid(info->index));
-	if (index_state != NULL)
-		tp_spill_memtable_if_needed(
-				info->index, index_state, TP_MIN_SPILL_PAGES);
+	if (index_state == NULL)
+		ereport(ERROR,
+				(errcode(ERRCODE_INTERNAL_ERROR),
+				 errmsg("could not get index state for \"%s\"",
+						RelationGetRelationName(info->index))));
+	tp_spill_memtable_if_needed(info->index, index_state, TP_MIN_SPILL_PAGES);
 
 	/*
 	 * Maintenance stabilizes segment payloads while cleanup removes at most
@@ -999,21 +985,15 @@ tp_vacuumcleanup(IndexVacuumInfo *info, IndexBulkDeleteResult *stats)
 	maintenance_locked = true;
 	PG_TRY();
 	{
-		if (index_state != NULL && !IsInParallelMode() && !IsParallelWorker())
+		if (!IsInParallelMode() && !IsParallelWorker())
 			(void)tp_compact_empty_step(index_state, info->index);
 
-		if (index_state != NULL)
-		{
-			tp_acquire_index_lock(index_state, LW_SHARED);
-			index_lock_held = true;
-		}
+		tp_acquire_index_lock(index_state, LW_SHARED);
+		index_lock_held = true;
 
 		segment_snapshot = tp_segment_graph_snapshot_create(info->index);
-		if (index_lock_held)
-		{
-			tp_release_index_lock(index_state);
-			index_lock_held = false;
-		}
+		tp_release_index_lock(index_state);
+		index_lock_held = false;
 
 		stats->num_pages = 1;
 		/*
@@ -1043,18 +1023,12 @@ tp_vacuumcleanup(IndexVacuumInfo *info, IndexBulkDeleteResult *stats)
 		 * the metapage chain, not these blocks.  Spill (LW_EXCLUSIVE)
 		 * waits until this scan finishes.
 		 */
-		if (index_state != NULL)
-		{
-			tp_acquire_index_lock(index_state, LW_SHARED);
-			index_lock_held = true;
-		}
+		tp_acquire_index_lock(index_state, LW_SHARED);
+		index_lock_held = true;
 		freed_pages =
 				tp_reclaim_dead_memtable_pages(info->index, info->heaprel);
-		if (index_lock_held)
-		{
-			tp_release_index_lock(index_state);
-			index_lock_held = false;
-		}
+		tp_release_index_lock(index_state);
+		index_lock_held = false;
 
 		if (stats->pages_deleted == 0 && stats->tuples_removed == 0 &&
 			freed_pages == 0)
@@ -1075,7 +1049,6 @@ tp_vacuumcleanup(IndexVacuumInfo *info, IndexBulkDeleteResult *stats)
 		 * drained tombstone (own_lock=true) so concurrent reads never
 		 * wait more than a single unlink plus its page frees.
 		 */
-		if (index_state != NULL)
 		{
 			uint32 drained = tp_tombstone_drain(
 					info->index,
@@ -1092,7 +1065,7 @@ tp_vacuumcleanup(IndexVacuumInfo *info, IndexBulkDeleteResult *stats)
 	}
 	PG_FINALLY();
 	{
-		if (index_lock_held && index_state != NULL && index_state->lock_held)
+		if (index_lock_held)
 			tp_release_index_lock(index_state);
 		if (maintenance_locked)
 			tp_compaction_unlock(info->index);

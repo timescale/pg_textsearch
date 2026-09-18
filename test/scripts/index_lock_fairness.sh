@@ -325,7 +325,73 @@ run_test() {
     log "TEST PASSED: exclusive release preceded shared acquisition"
 }
 
+run_spill_threshold_recheck_test() {
+    local gate_pid
+    local vacuum_pid
+    local vacuum_backend
+    local oid
+    local marker
+    local segment_count
+    local spill_was_empty
+
+    log "Case: threshold spill rechecks after waiting for exclusive..."
+    $PSQL <<'SQL' >/dev/null
+CREATE TABLE threshold_docs (id bigserial PRIMARY KEY, content text NOT NULL);
+CREATE INDEX threshold_bm25 ON threshold_docs USING bm25(content)
+    WITH (text_config='english');
+INSERT INTO threshold_docs (content)
+SELECT 'threshold pending document ' || gs || ' ' || md5(gs::text)
+FROM generate_series(1, 1000) gs;
+SQL
+    oid=$($PSQL -c "SELECT 'threshold_bm25'::regclass::oid;")
+
+    mkfifo "${DATA_DIR}/threshold_gate.fifo"
+    exec 9<>"${DATA_DIR}/threshold_gate.fifo"
+    PGAPPNAME=pgts-fair-gate $PSQL \
+        <"${DATA_DIR}/threshold_gate.fifo" \
+        >"${ERR_DIR}/threshold_gate.log" 2>&1 &
+    gate_pid=$!
+    printf "SELECT pg_advisory_lock(%d, 0);\n" "${GATE_KEY}" >&9
+    wait_for_gate_lock
+
+    PGAPPNAME=pgts-threshold-vacuum \
+        PGOPTIONS="-c statement_timeout=60000 -c pg_textsearch.debug_index_lock_exclusive_waiter_gate=${GATE_KEY}" \
+        $PSQL -c "VACUUM threshold_docs;" \
+        >"${ERR_DIR}/threshold_vacuum.log" 2>&1 &
+    vacuum_pid=$!
+    vacuum_backend=$(backend_pid pgts-threshold-vacuum)
+    marker="pg_textsearch spill threshold check passed for index ${oid} backend ${vacuum_backend}"
+    wait_for_log_marker "${marker}"
+
+    $PSQL <<'SQL' >/dev/null
+SELECT bm25_spill_index('threshold_bm25');
+INSERT INTO threshold_docs (content)
+VALUES ('fresh below threshold');
+SQL
+
+    printf "SELECT pg_advisory_unlock(%d, 0);\n" "${GATE_KEY}" >&9
+    wait "${vacuum_pid}" || fail "threshold VACUUM failed"
+    printf "\\q\n" >&9
+    exec 9>&-
+    wait "${gate_pid}" || fail "threshold gate backend failed"
+
+    segment_count=$($PSQL -c "
+        SELECT regexp_count(
+            bm25_dump_index('threshold_bm25'),
+            '========== Segment at block ');")
+    [ "${segment_count}" = "1" ] ||
+        fail "queued VACUUM spilled a fresh below-threshold chain"
+
+    spill_was_empty=$($PSQL -c "
+        SELECT bm25_spill_index('threshold_bm25') IS NULL;")
+    [ "${spill_was_empty}" = "f" ] ||
+        fail "fresh below-threshold chain was not left in the memtable"
+
+    log "TEST PASSED: threshold spill skipped the fresh runt chain"
+}
+
 setup_test_db
 seed_data
 verify_gate_guc
 run_test
+run_spill_threshold_recheck_test

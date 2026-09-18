@@ -83,7 +83,7 @@ tp_discard_unpublished_segment(Relation index, BlockNumber root)
 	IndexFreeSpaceMapVacuum(index);
 }
 
-void
+static void
 tp_discard_unpublished_pages(
 		Relation index, BlockNumber *pages, uint32 num_pages)
 {

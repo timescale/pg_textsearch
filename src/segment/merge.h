@@ -75,5 +75,3 @@ extern bool tp_merge_segment_batch(
  * Published segments must instead go through standby-safe deferred reclaim.
  */
 extern void tp_discard_unpublished_segment(Relation index, BlockNumber root);
-extern void tp_discard_unpublished_pages(
-		Relation index, BlockNumber *pages, uint32 num_pages);

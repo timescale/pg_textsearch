@@ -273,53 +273,47 @@ client_backend_pid() {
     error "${label} did not report its backend PID within 10 seconds"
 }
 
-wait_for_marker() {
-    local phase=$1
-    local oid=$2
-    local backend=$3
+wait_for_log_marker() {
+    local marker=$1
+    local observed=$2
     local deadline=$((SECONDS + 10))
-    local marker="pg_textsearch compaction pause at ${phase} for index ${oid} backend ${backend}"
 
     while ((SECONDS < deadline)); do
         if grep -Fq "${marker}" "${LOGFILE}" 2>/dev/null; then
-            log "Observed ${phase} marker for index ${oid}, backend ${backend}"
+            log "${observed}"
             return
         fi
         sleep 0.05
     done
     error "did not observe log marker: ${marker}"
+}
+
+wait_for_marker() {
+    local phase=$1
+    local oid=$2
+    local backend=$3
+    local marker="pg_textsearch compaction pause at ${phase} for index ${oid} backend ${backend}"
+
+    wait_for_log_marker "${marker}" \
+        "Observed ${phase} marker for index ${oid}, backend ${backend}"
 }
 
 wait_for_vacuum_marker() {
     local oid=$1
     local backend=$2
-    local deadline=$((SECONDS + 10))
     local marker="pg_textsearch VACUUM pause during identification for index ${oid} backend ${backend}"
 
-    while ((SECONDS < deadline)); do
-        if grep -Fq "${marker}" "${LOGFILE}" 2>/dev/null; then
-            log "Observed VACUUM identification marker for index ${oid}, backend ${backend}"
-            return
-        fi
-        sleep 0.05
-    done
-    error "did not observe log marker: ${marker}"
+    wait_for_log_marker "${marker}" \
+        "Observed VACUUM identification marker for index ${oid}, backend ${backend}"
 }
 
 wait_for_exclusive_waiter_marker() {
     local oid=$1
     local backend=$2
-    local deadline=$((SECONDS + 10))
     local marker="pg_textsearch index lock exclusive waiter registered for index ${oid} backend ${backend}"
 
-    while ((SECONDS < deadline)); do
-        if grep -Fq "${marker}" "${LOGFILE}" 2>/dev/null; then
-            log "Observed exclusive waiter marker for index ${oid}, backend ${backend}"
-            return
-        fi
-        sleep 0.05
-    done
-    error "did not observe log marker: ${marker}"
+    wait_for_log_marker "${marker}" \
+        "Observed exclusive waiter marker for index ${oid}, backend ${backend}"
 }
 
 assert_vacuum_identification_paused() {

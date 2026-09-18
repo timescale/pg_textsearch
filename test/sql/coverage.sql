@@ -87,8 +87,9 @@ SELECT bm25_spill_index('coverage_idx');
 
 -- Both debug readers must enumerate every root recorded by the metapage.
 SELECT bm25_summarize_index('coverage_idx') ~ E'Total: 2 segments'
-       AND bm25_dump_index('coverage_idx') LIKE
-           '%========== Segment at block %'
+       AND regexp_count(
+               bm25_dump_index('coverage_idx'),
+               '========== Segment at block ') = 2
     AS dump_multi_segment;
 
 -- =============================================================================

@@ -118,34 +118,6 @@ extern void
 tp_tombstone_discard_detached(Relation index, TpDetachedTombstoneBatch batch);
 
 /*
- * Park `num_blocks` displaced blocks into one or more freshly
- * allocated tombstone pages, stamping `merged_fxid` and chaining the
- * batch tail to `old_head`.  Each page is written in its own
- * GenericXLog record (still unreferenced until the caller installs
- * the returned head into metap->pending_free_head in the SAME record
- * as the level-swap).  Returns the head block of the new batch, or
- * `old_head` unchanged when num_blocks == 0.
- */
-extern BlockNumber tp_tombstone_enqueue(
-		Relation		  index,
-		BlockNumber		 *blocks,
-		uint32			  num_blocks,
-		FullTransactionId merged_fxid,
-		BlockNumber		  old_head);
-
-/*
- * Variant for callers that do not serialize against concurrent FSM
- * allocators.  Extends the relation instead of reusing an FSM free
- * page.
- */
-extern BlockNumber tp_tombstone_enqueue_extend(
-		Relation		  index,
-		BlockNumber		 *blocks,
-		uint32			  num_blocks,
-		FullTransactionId merged_fxid,
-		BlockNumber		  old_head);
-
-/*
  * Drain past-horizon tombstones.  For each tombstone whose
  * merged_fxid < `horizon`, WAL-unlink it then tp_record_free_index_page
  * its listed blocks and its own page.

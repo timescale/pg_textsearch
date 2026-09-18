@@ -56,30 +56,6 @@ tp_tombstone_page_is_valid(Page page)
 		   t->num_blocks <= TP_TOMBSTONE_CAPACITY;
 }
 
-/*
- * Allocate one index page for a tombstone page.  With use_fsm, reuse
- * a recyclable free page from the FSM (skipping any live-structure
- * block the non-crash-safe FSM offers); otherwise reserve a new block
- * through the same bulk-extension API used by memtable and segment
- * allocation.  The page is fully overwritten by the GenericXLog image
- * below, so its prior contents are irrelevant.
- */
-static BlockNumber
-tombstone_alloc_page(Relation index, bool use_fsm)
-{
-	Buffer		buffer;
-	BlockNumber block;
-
-	if (use_fsm)
-		return tp_fsm_claim_or_extend_block(index);
-
-	buffer = ExtendBufferedRel(
-			BMR_REL(index), MAIN_FORKNUM, NULL, EB_LOCK_FIRST);
-	block = BufferGetBlockNumber(buffer);
-	UnlockReleaseBuffer(buffer);
-	return block;
-}
-
 static void
 tombstone_write_page(
 		Relation		   index,
@@ -163,11 +139,10 @@ tombstone_build_internal(
 		const BlockNumber		 *blocks,
 		uint32					  num_blocks,
 		FullTransactionId		  merged_fxid,
-		BlockNumber				  next_page,
-		bool					  use_fsm,
 		TpDetachedTombstoneBatch *batch)
 {
-	uint32 remaining = num_blocks;
+	BlockNumber next_page = InvalidBlockNumber;
+	uint32		remaining = num_blocks;
 
 	Assert(batch != NULL);
 	memset(batch, 0, sizeof(*batch));
@@ -183,9 +158,8 @@ tombstone_build_internal(
 
 	/*
 	 * Build the batch tail-first so each page's next_page points at
-	 * an already-decided successor.  Detached construction passes
-	 * InvalidBlockNumber for the first page, while the compatibility
-	 * enqueue APIs pass their existing chain head.
+	 * an already-decided successor.  Active construction is always
+	 * detached, so the first page terminates at InvalidBlockNumber.
 	 *
 	 * Per-page chunking honors TP_TOMBSTONE_CAPACITY.  We assign the
 	 * LAST chunk of `blocks` to the first page, walking backwards.
@@ -194,7 +168,7 @@ tombstone_build_internal(
 	{
 		uint32		chunk = Min(remaining, TP_TOMBSTONE_CAPACITY);
 		uint32		start = remaining - chunk;
-		BlockNumber blk	  = tombstone_alloc_page(index, use_fsm);
+		BlockNumber blk	  = tp_fsm_claim_or_extend_block(index);
 
 		Assert(batch->owned_count < batch->owned_capacity);
 		batch->owned_pages[batch->owned_count++] = blk;
@@ -221,14 +195,7 @@ tp_tombstone_build_detached(
 		FullTransactionId		  merged_fxid,
 		TpDetachedTombstoneBatch *batch)
 {
-	tombstone_build_internal(
-			index,
-			blocks,
-			num_blocks,
-			merged_fxid,
-			InvalidBlockNumber,
-			true,
-			batch);
+	tombstone_build_internal(index, blocks, num_blocks, merged_fxid, batch);
 }
 
 void
@@ -368,80 +335,6 @@ tp_tombstone_discard_detached(Relation index, TpDetachedTombstoneBatch batch)
 		IndexFreeSpaceMapVacuum(index);
 	if (batch.owned_pages != NULL)
 		pfree(batch.owned_pages);
-}
-
-BlockNumber
-tp_tombstone_enqueue(
-		Relation		  index,
-		BlockNumber		 *blocks,
-		uint32			  num_blocks,
-		FullTransactionId merged_fxid,
-		BlockNumber		  old_head)
-{
-	volatile TpDetachedTombstoneBatch batch;
-
-	if (num_blocks == 0)
-		return old_head;
-
-	memset((TpDetachedTombstoneBatch *)&batch, 0, sizeof(batch));
-	PG_TRY();
-	{
-		tombstone_build_internal(
-				index,
-				blocks,
-				num_blocks,
-				merged_fxid,
-				old_head,
-				true,
-				(TpDetachedTombstoneBatch *)&batch);
-	}
-	PG_CATCH();
-	{
-		tp_tombstone_discard_detached(
-				index, *(TpDetachedTombstoneBatch *)&batch);
-		PG_RE_THROW();
-	}
-	PG_END_TRY();
-	if (batch.owned_pages != NULL)
-		pfree(batch.owned_pages);
-	return batch.head;
-}
-
-BlockNumber
-tp_tombstone_enqueue_extend(
-		Relation		  index,
-		BlockNumber		 *blocks,
-		uint32			  num_blocks,
-		FullTransactionId merged_fxid,
-		BlockNumber		  old_head)
-{
-	volatile TpDetachedTombstoneBatch batch;
-
-	if (num_blocks == 0)
-		return old_head;
-
-	memset((TpDetachedTombstoneBatch *)&batch, 0, sizeof(batch));
-	PG_TRY();
-	{
-		tombstone_build_internal(
-				index,
-				blocks,
-				num_blocks,
-				merged_fxid,
-				old_head,
-				false,
-				(TpDetachedTombstoneBatch *)&batch);
-	}
-	PG_CATCH();
-	{
-		tp_tombstone_discard_detached(
-				index, *(TpDetachedTombstoneBatch *)&batch);
-		PG_RE_THROW();
-	}
-	PG_END_TRY();
-	if (batch.owned_pages != NULL)
-		pfree(batch.owned_pages);
-	return batch.head;
 }
 
 /*

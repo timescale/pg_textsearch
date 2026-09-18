@@ -50,6 +50,8 @@ typedef struct TpCompactionSource
 	BlockNumber		  root;
 	uint32			  source_level;
 	uint32			  chain_position;
+	bool			  has_dead_docs;
+	uint64			  total_tokens;
 	TpSegmentEstimate estimate;
 } TpCompactionSource;
 
@@ -467,7 +469,11 @@ tp_collect_source(
 			plan->num_sources == 1 &&
 					tp_compaction_maintenance_lock_held(index),
 			RelationGetRelid(index));
-	next = reader->header->next_segment;
+	source->has_dead_docs = reader->header->alive_bitset_offset > 0 &&
+							reader->header->alive_count <
+									reader->header->num_docs;
+	source->total_tokens = reader->header->total_tokens;
+	next				 = reader->header->next_segment;
 	tp_segment_close(reader);
 	return next;
 }
@@ -784,16 +790,7 @@ tp_plan_is_noop(
 	 */
 	for (uint32 i = 0; i < plan->num_sources; i++)
 	{
-		TpSegmentReader *reader =
-				tp_segment_open(index, plan->sources[i].root);
-		bool has_dead_docs;
-
-		if (reader == NULL)
-			return false;
-		has_dead_docs = reader->header->alive_bitset_offset > 0 &&
-						reader->header->alive_count < reader->header->num_docs;
-		tp_segment_close(reader);
-		if (has_dead_docs)
+		if (plan->sources[i].has_dead_docs)
 			return false;
 	}
 
@@ -852,74 +849,6 @@ tp_discard_compaction_output(Relation index, TpCompactionOutput *output)
 }
 
 static bool
-tp_read_segment_link(
-		Relation	 index,
-		BlockNumber	 root,
-		uint32		 expected_level,
-		BlockNumber *next)
-{
-	Buffer		buf;
-	Page		page;
-	char	   *contents;
-	uint32		magic;
-	uint32		version;
-	uint32		level;
-	BlockNumber next_segment;
-
-	if (!BlockNumberIsValid(root))
-		return false;
-
-	buf = ReadBuffer(index, root);
-	LockBuffer(buf, BUFFER_LOCK_SHARE);
-	page	 = BufferGetPage(buf);
-	contents = PageGetContents(page);
-	memcpy(&magic, contents, sizeof(magic));
-	memcpy(&version, contents + sizeof(magic), sizeof(version));
-
-	if (magic != TP_SEGMENT_MAGIC)
-	{
-		UnlockReleaseBuffer(buf);
-		return false;
-	}
-
-	if (version <= TP_SEGMENT_FORMAT_VERSION_3)
-	{
-		TpSegmentHeaderV3 header;
-
-		memcpy(&header, contents, sizeof(header));
-		level		 = header.level;
-		next_segment = header.next_segment;
-	}
-	else if (version <= TP_SEGMENT_FORMAT_VERSION_4)
-	{
-		TpSegmentHeaderV4 header;
-
-		memcpy(&header, contents, sizeof(header));
-		level		 = header.level;
-		next_segment = header.next_segment;
-	}
-	else if (version <= TP_SEGMENT_FORMAT_VERSION)
-	{
-		TpSegmentHeader header;
-
-		memcpy(&header, contents, sizeof(header));
-		level		 = header.level;
-		next_segment = header.next_segment;
-	}
-	else
-	{
-		UnlockReleaseBuffer(buf);
-		return false;
-	}
-
-	UnlockReleaseBuffer(buf);
-	if (level != expected_level)
-		return false;
-	*next = next_segment;
-	return true;
-}
-
-static bool
 tp_segment_page_link(Page page, uint32 *level, BlockNumber *next)
 {
 	char  *contents = PageGetContents(page);
@@ -955,6 +884,34 @@ tp_segment_page_link(Page page, uint32 *level, BlockNumber *next)
 	else
 		return false;
 
+	return true;
+}
+
+static bool
+tp_read_segment_link(
+		Relation	 index,
+		BlockNumber	 root,
+		uint32		 expected_level,
+		BlockNumber *next)
+{
+	Buffer		buf;
+	Page		page;
+	uint32		level;
+	BlockNumber next_segment;
+	bool		decoded;
+
+	if (!BlockNumberIsValid(root))
+		return false;
+
+	buf = ReadBuffer(index, root);
+	LockBuffer(buf, BUFFER_LOCK_SHARE);
+	page	= BufferGetPage(buf);
+	decoded = tp_segment_page_link(page, &level, &next_segment);
+	UnlockReleaseBuffer(buf);
+
+	if (!decoded || level != expected_level)
+		return false;
+	*next = next_segment;
 	return true;
 }
 
@@ -1321,30 +1278,17 @@ tp_build_compaction_output(
 	{
 		for (uint32 i = 0; i < plan->num_sources; i++)
 		{
-			TpSegmentReader *reader;
-
-			reader = tp_segment_open(index, plan->sources[i].root);
-			if (reader == NULL)
-				ereport(ERROR,
-						(errcode(ERRCODE_DATA_CORRUPTED),
-						 errmsg("could not open segment at block %u",
-								plan->sources[i].root)));
-
 			if (!tp_u64_add(
 						selected_docs,
-						(uint64)reader->header->num_docs,
+						plan->sources[i].estimate.docs,
 						&selected_docs) ||
 				!tp_u64_add(
 						selected_tokens,
-						reader->header->total_tokens,
+						plan->sources[i].total_tokens,
 						&selected_tokens))
-			{
-				tp_segment_close(reader);
 				ereport(ERROR,
 						(errcode(ERRCODE_DATA_CORRUPTED),
 						 errmsg("source segment statistics overflow")));
-			}
-			tp_segment_close(reader);
 		}
 
 		for (uint32 reverse = plan->num_batches; reverse > 0; reverse--)
@@ -2577,10 +2521,11 @@ tp_select_force_compaction_plan(
  * private
  * per-index lock for the whole build because the index is not yet visible.
  *
- * Runtime selection takes LW_SHARED briefly, output construction holds no
- * per-index lock, and validation plus the one GenericXLog publication take
- * fair LW_EXCLUSIVE.  The maintenance lock keeps selected segment payloads
- * immutable while a concurrent spill may prepend an L0 prefix.
+ * Runtime selection and publication preparation take LW_SHARED briefly,
+ * output construction holds no per-index lock, and only the final
+ * GenericXLog publication takes fair LW_EXCLUSIVE.  The maintenance lock
+ * keeps selected segment payloads immutable while a concurrent spill may
+ * prepend an L0 prefix.
  */
 static bool
 tp_compact_once(

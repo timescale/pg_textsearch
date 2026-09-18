@@ -21,6 +21,8 @@
 #include <nodes/value.h>
 #include <optimizer/optimizer.h>
 #include <storage/bufmgr.h>
+#include <storage/lmgr.h>
+#include <storage/lock.h>
 #include <tsearch/ts_type.h>
 #include <utils/acl.h>
 #include <utils/backend_progress.h>
@@ -82,6 +84,27 @@ typedef struct TpPreparedSpill
 	uint64			 docs_delta;
 	uint64			 len_delta;
 } TpPreparedSpill;
+
+extern int tp_debug_index_lock_exclusive_waiter_gate;
+
+static void
+tp_debug_gate_spill_threshold_check(TpLocalIndexState *index_state)
+{
+	LOCKTAG gate_tag;
+	int		gate_key = tp_debug_index_lock_exclusive_waiter_gate;
+
+	if (gate_key <= 0)
+		return;
+
+	SET_LOCKTAG_ADVISORY(gate_tag, MyDatabaseId, gate_key, 0, 2);
+	ereport(LOG,
+			(errmsg("pg_textsearch spill threshold check passed for index %u "
+					"backend %d",
+					index_state->shared->index_oid,
+					MyProcPid)));
+	(void)LockAcquire(&gate_tag, ShareLock, true, false);
+	(void)LockRelease(&gate_tag, ShareLock, true);
+}
 
 void
 tp_build_progress_begin(void)
@@ -382,8 +405,8 @@ tp_apply_compaction_policy(
  * chain-page count below which the spill is a no-op — used by
  * VACUUM cleanup and the shutdown hook to avoid producing runt
  * L0 segments on lightly-loaded indexes.  The pre-lock read is
- * a fast bailout; if it races with an insert, the worst case
- * is a harmless no-op inside tp_do_spill().
+ * a fast bailout; the authoritative check runs after exclusive
+ * acquisition because another backend may have spilled meanwhile.
  */
 void
 tp_spill_memtable_if_needed(
@@ -401,10 +424,13 @@ tp_spill_memtable_if_needed(
 	if (pg_atomic_read_u32(&index_state->shared->chain_page_count) < min_pages)
 		return;
 
+	tp_debug_gate_spill_threshold_check(index_state);
 	tp_acquire_index_lock(index_state, LW_EXCLUSIVE);
 	PG_TRY();
 	{
-		spilled = tp_do_spill(index_state, index, NULL);
+		if (pg_atomic_read_u32(&index_state->shared->chain_page_count) >=
+			min_pages)
+			spilled = tp_do_spill(index_state, index, NULL);
 	}
 	PG_FINALLY();
 	{
@@ -420,52 +446,19 @@ tp_spill_memtable_if_needed(
  * Auto-spill the on-disk memtable when the chain grows past the
  * configured page threshold (issue #374).
  *
- * The pre-lock read of chain_page_count is a fast bailout
- * (approximate: a concurrent insert may have bumped the counter
- * since we read it).  False positives just trigger an
- * unnecessary lock acquisition (re-checked under LW_EXCLUSIVE
- * below); false negatives mean this insert doesn't spill but
- * the next one will.
+ * The shared spill helper owns the fast and under-lock threshold
+ * checks so every threshold-driven caller has identical race
+ * behavior.
  */
 static void
 tp_auto_spill_if_needed(TpLocalIndexState *index_state, Relation index_rel)
 {
-	uint32 threshold;
-	bool   spilled = false;
+	uint32 threshold = (uint32)tp_memtable_pages_threshold;
 
-	if (!index_state || !index_rel || !index_state->shared)
-		return;
-
-	threshold = (uint32)tp_memtable_pages_threshold;
 	if (threshold == 0)
 		return; /* auto-spill disabled */
 
-	if (pg_atomic_read_u32(&index_state->shared->chain_page_count) < threshold)
-		return;
-
-	/*
-	 * Acquire exclusive lock to spill.  This blocks concurrent
-	 * inserters (who hold LW_SHARED) until the spill completes.
-	 * The spill itself writes segment pages and updates the
-	 * metapage — it does not acquire any other LWLock or
-	 * heavyweight lock, so deadlock is not possible.
-	 */
-	tp_acquire_index_lock(index_state, LW_EXCLUSIVE);
-	PG_TRY();
-	{
-		/* Re-check: another backend may have spilled while we waited. */
-		if (pg_atomic_read_u32(&index_state->shared->chain_page_count) >=
-			threshold)
-			spilled = tp_do_spill(index_state, index_rel, NULL);
-	}
-	PG_FINALLY();
-	{
-		if (index_state->lock_held)
-			tp_release_index_lock(index_state);
-	}
-	PG_END_TRY();
-
-	tp_apply_compaction_policy(index_state, index_rel, spilled);
+	tp_spill_memtable_if_needed(index_rel, index_state, threshold);
 }
 
 /*

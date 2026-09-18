@@ -450,16 +450,14 @@ backend_pid() {
     fail "backend ${app_name} did not appear within 10 seconds"
 }
 
-wait_for_marker() {
-    local phase=$1
-    local oid=$2
-    local backend=$3
+wait_for_log_marker() {
+    local marker=$1
+    local observed=$2
     local deadline=$((SECONDS + 10))
-    local marker="pg_textsearch compaction pause at ${phase} for index ${oid} backend ${backend}"
 
     while ((SECONDS < deadline)); do
         if grep -Fq "${marker}" "${LOGFILE}" 2>/dev/null; then
-            log "Observed ${phase} marker for index ${oid}, backend ${backend}"
+            log "${observed}"
             return
         fi
         sleep 0.05
@@ -467,21 +465,24 @@ wait_for_marker() {
     fail "did not observe log marker: ${marker}"
 }
 
+wait_for_marker() {
+    local phase=$1
+    local oid=$2
+    local backend=$3
+    local marker="pg_textsearch compaction pause at ${phase} for index ${oid} backend ${backend}"
+
+    wait_for_log_marker "${marker}" \
+        "Observed ${phase} marker for index ${oid}, backend ${backend}"
+}
+
 wait_for_allocation_marker() {
     local phase=$1
     local oid=$2
     local backend=$3
-    local deadline=$((SECONDS + 10))
     local marker="pg_textsearch compaction pause at ${phase} for index ${oid} backend ${backend}"
 
-    while ((SECONDS < deadline)); do
-        if grep -Fq "${marker}" "${LOGFILE}" 2>/dev/null; then
-            log "Observed ${phase} allocation marker for index ${oid}, backend ${backend}"
-            return
-        fi
-        sleep 0.05
-    done
-    fail "did not observe allocation log marker: ${marker}"
+    wait_for_log_marker "${marker}" \
+        "Observed ${phase} allocation marker for index ${oid}, backend ${backend}"
 }
 
 assert_still_paused() {

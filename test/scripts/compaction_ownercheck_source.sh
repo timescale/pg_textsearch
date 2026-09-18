@@ -100,8 +100,18 @@ then apply compaction policy" >&2
 }
 
 check_spill_policy_order tp_spill_memtable_if_needed
-check_spill_policy_order tp_auto_spill_if_needed
 check_spill_policy_order tp_spill_memtable
+
+auto_spill_body="$(
+    sed -n '/^tp_auto_spill_if_needed(/,/^}$/p' "${BUILD_SOURCE}"
+)"
+if ! grep -Fq 'tp_spill_memtable_if_needed(' <<<"${auto_spill_body}" ||
+   grep -Fq 'tp_acquire_index_lock' <<<"${auto_spill_body}" ||
+   grep -Fq 'tp_do_spill' <<<"${auto_spill_body}" ||
+   grep -Fq 'tp_apply_compaction_policy' <<<"${auto_spill_body}"; then
+    echo "automatic spill must delegate to the shared threshold helper" >&2
+    exit 1
+fi
 
 check_compaction_lock_order() {
     local function_name="$1"
@@ -448,15 +458,16 @@ if ! grep -Fq 'PG_CATCH();' <<<"${attach_body}" ||
     review_failures=$((review_failures + 1))
 fi
 
-tombstone_alloc_body="$(
-    sed -n '/^tombstone_alloc_page(Relation index, bool use_fsm)$/,/^}$/p' \
+tombstone_build_body="$(
+    sed -n '/^tombstone_build_internal($/,/^}$/p' \
         "${TOMBSTONE_SOURCE}"
 )"
-if ! grep -Fq 'ExtendBufferedRel(' <<<"${tombstone_alloc_body}" ||
-   ! grep -Fq 'BMR_REL(index)' <<<"${tombstone_alloc_body}" ||
-   ! grep -Fq 'EB_LOCK_FIRST' <<<"${tombstone_alloc_body}" ||
-   grep -Fq 'P_NEW' "${TOMBSTONE_SOURCE}"; then
-    echo "extend-only tombstones must use the bulk extension reservation" >&2
+if ! grep -Fq 'tp_fsm_claim_or_extend_block(index)' \
+        <<<"${tombstone_build_body}" ||
+   grep -Fq 'use_fsm' "${TOMBSTONE_SOURCE}" ||
+   grep -Fq 'tp_tombstone_enqueue' "${TOMBSTONE_SOURCE}" ||
+   grep -Fq 'tp_tombstone_enqueue' "${TOMBSTONE_HEADER}"; then
+    echo "tombstone construction must stay detached and use the shared allocator" >&2
     review_failures=$((review_failures + 1))
 fi
 
