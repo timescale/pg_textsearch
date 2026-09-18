@@ -475,9 +475,36 @@ is already in parallel mode. Those contexts cannot assign an XID. A V5 segment
 that becomes empty therefore keeps its zeroed alive bitmap and remains
 physically linked until later serial compaction; it is immediately logically
 empty and does not return dead TIDs. Spill remains durable, but spill-time
-compaction is likewise deferred. An affected legacy segment cannot represent
-deletions without replacement, so parallel VACUUM fails closed with a request
-to retry using `VACUUM (PARALLEL 0)`.
+compaction is likewise deferred.
+
+An affected legacy segment cannot represent deletions without replacement, so
+parallel VACUUM uses a split publication protocol:
+
+1. build and validate the replacement output while the old graph remains
+   published;
+2. publish the replacement graph without attaching the displaced source pages
+   to the deferred-free chain;
+3. after the unpublication WAL record is inserted, sample
+   `ReadNextFullTransactionId()`;
+4. build a detached tombstone batch for the now-unreachable source pages with
+   that horizon;
+5. briefly reacquire the per-index exclusive lock and attach the batch to the
+   current `pending_free_head`.
+
+The maintenance lock remains held throughout, so no segment mutation can race
+either publication. Tombstone drain may change `pending_free_head` between
+them; the attachment record uses its current value. Primary readers that
+retained the old graph precede the first exclusive publication. Standby
+readers that can discover it must have taken their snapshot before replay of
+the unpublication record. Both are therefore covered by the horizon sampled
+after that record, without assigning an XID in parallel mode.
+
+A crash or error after graph publication but before tombstone attachment can
+leak unreachable source or detached tombstone-container pages, but cannot make
+them reachable or reusable. `REINDEX` can recover that bounded orphaned space.
+Once graph publication succeeds, cleanup must not discard the published output
+or return any displaced source page to the FSM. Normal serial VACUUM and
+compaction retain the existing single-publication assigned-XID protocol.
 
 VACUUM holds the per-index shared lock while copying the metapage, every
 published segment root, and the memtable endpoint in the bounded read
@@ -641,6 +668,9 @@ Required cases:
     canceled by conflict WAL before reclaimed pages are reused.
 16. Ranked scoring promoted after snapshot acquisition keeps the recovery
     source decision and returns the exact captured generation.
+17. `VACUUM (PARALLEL 1)` replaces an affected legacy segment, preserves exact
+    ranked results, upgrades the segment to the current format, and parks the
+    displaced pages with a post-unpublication reclaim horizon.
 
 ### Failure and recovery tests
 
@@ -713,6 +743,8 @@ do not stall foreground readers or memtable inserts.
   O(index-pages), or O(terms) work.
 - Empty segments left by parallel VACUUM are removed by later serial
   maintenance even below normal compaction thresholds.
+- Parallel VACUUM replaces affected legacy segments without assigning an XID
+  in parallel mode or weakening standby-safe deferred reclaim.
 - V8 compaction preserves the existing deferred-free chain.
 - Compaction performs no relation-wide buffer flush.
 - Multi-pass compaction yields same-index maintenance admission between passes.
