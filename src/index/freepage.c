@@ -9,6 +9,9 @@
 #include <postgres.h>
 
 #include <access/generic_xlog.h>
+#include <access/nbtxlog.h>
+#include <access/xlog.h>
+#include <access/xloginsert.h>
 #include <miscadmin.h>
 #include <storage/bufmgr.h>
 #include <storage/indexfsm.h>
@@ -22,6 +25,25 @@ tp_page_is_recyclable(Page page)
 	TpFreePageData *f = (TpFreePageData *)PageGetContents(page);
 
 	return f->magic == TP_FREE_PAGE_MAGIC;
+}
+
+void
+tp_log_page_reuse_conflict(
+		Relation index, BlockNumber block, FullTransactionId horizon)
+{
+	xl_btree_reuse_page xlrec;
+
+	if (!RelationNeedsWAL(index) || !XLogStandbyInfoActive())
+		return;
+
+	xlrec.locator				  = index->rd_locator;
+	xlrec.block					  = block;
+	xlrec.snapshotConflictHorizon = horizon;
+	xlrec.isCatalogRel			  = false;
+
+	XLogBeginInsert();
+	XLogRegisterData((char *)&xlrec, SizeOfBtreeReusePage);
+	XLogInsert(RM_BTREE_ID, XLOG_BTREE_REUSE_PAGE);
 }
 
 void

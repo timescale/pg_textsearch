@@ -198,15 +198,17 @@ can prepend segments while compaction builds. Preserving that prefix requires
 changing the `next_segment` pointer of its last segment.
 
 Primary scans retain `LW_SHARED`, so exclusive publication cannot overlap
-their read snapshot. Recovery does not acquire that extension lock. Every
-reader therefore also holds the metapage buffer in share mode while copying
-all segment root block numbers and the memtable head/tail, then captures the
-tail free offset before releasing the metapage. Generic WAL replay locks the
-metapage exclusively for spill or graph publication, so recovery scoring sees
-the complete old generation or the complete new generation. It uses the
-copied roots and bounded memtable endpoint directly and never rereads the
-metapage or follows a possibly newer `next_segment` link. Primary cache
-selection and standalone admission ordering are unchanged.
+their read snapshot. Recovery does not acquire that extension lock. A reader
+first copies and releases a candidate memtable head/tail, locks the candidate
+tail SHARED, then locks the metapage SHARED and validates that the candidate
+is current. It retries on mismatch. This tail -> metapage order matches
+new-tail writers and avoids metapage -> tail ABBA. With both held, the reader
+copies all segment roots and the tail free offset. Generic WAL replay therefore
+exposes one old or new generation. Recovery scoring consumes the copied roots
+and bounded endpoint without rereading the metapage. Ranked scoring pins its
+recovery decision before snapshot acquisition, so promotion cannot switch
+source modes mid-generation. Primary cache selection and standalone admission
+ordering are unchanged.
 
 ## Spill and compaction policy
 
@@ -396,14 +398,15 @@ and reacquires maintenance before reselecting.
 Query, debug, and maintenance root enumerators use one common index read
 snapshot helper:
 
-1. lock the metapage buffer in share mode;
-2. copy corpus metadata, level heads, and level counts;
-3. while retaining that buffer lock, follow each chain for exactly its
-   recorded count and copy every segment root block number;
-4. capture a bounded memtable endpoint from the copied head and tail, including
-   the tail page's free offset;
-5. reject short, long, cyclic, or unreadable chains as corruption;
-6. release the metapage buffer and consume only the copied roots and endpoint.
+1. copy a candidate memtable head/tail under metapage SHARE and release it;
+2. for a nonempty chain, lock the candidate tail SHARE;
+3. lock the metapage SHARE, copy corpus metadata, and validate the candidate;
+4. on mismatch, release metapage then tail and retry;
+5. with tail then metapage held, capture the tail free offset and follow each
+   segment chain for exactly its recorded count;
+6. reject inconsistent empty pointers and short, long, cyclic, or unreadable
+   chains as corruption;
+7. release metapage then tail and consume only the copied roots and endpoint.
 
 This helper is used by ranked BMW scans, standalone scoring, Boolean scans,
 debug/summary functions, and maintenance code that needs a stable root list.
@@ -416,9 +419,9 @@ execution consumes the same endpoint directly.
 
 A primary scan that starts before publication also holds `LW_SHARED`, so
 exclusive publication waits for it. A standby scan has no extension lock, but
-its metapage buffer lock blocks Generic WAL replay until both the root list and
-memtable endpoint have been copied. In both cases the reader sees one old or
-new generation and never follows links lazily after publication.
+its tail-then-metapage buffer locks block Generic WAL replay until both the
+root list and memtable endpoint have been copied. In both cases the reader sees
+one old or new generation and never follows links lazily after publication.
 
 Displaced source pages are still parked rather than immediately returned to
 the FSM. This remains necessary for:
@@ -430,12 +433,13 @@ the FSM. This remains necessary for:
 Tombstone drain keeps its existing exclusive lock and horizon check.
 `hot_standby_feedback = on` remains required on query-serving standbys so
 connected readers normally hold the primary reclaim horizon and complete
-without cancellation. Before a reclaimable tombstone batch enters the FSM,
-drain also emits PostgreSQL's stock `XLOG_BTREE_REUSE_PAGE` conflict-only WAL
-record. Its redo path does not inspect btree storage; it cancels old standby
-snapshots before subsequent WAL can reuse those pages. This protects a query
-that remains active while its standby disconnects and later resumes replay,
-without adding a pg_textsearch resource manager.
+without cancellation. Before a reclaimable tombstone batch or DEAD memtable
+page enters the FSM, the shared free-page helper emits PostgreSQL's stock
+`XLOG_BTREE_REUSE_PAGE` conflict-only WAL record with the batch horizon or
+page `dead_fxid`. Its redo path does not inspect btree storage; it cancels old
+standby snapshots before subsequent WAL can reuse those pages. This protects a
+query that remains active while its standby disconnects and later resumes
+replay, without adding a pg_textsearch resource manager.
 
 ## VACUUM
 
@@ -479,7 +483,9 @@ per-index LWLock during that scan. A racing spill can make the captured
 reachable-chain set conservative, so pages are retained until a later VACUUM;
 live/new pages are not DEAD, page buffer locks serialize inspection, and
 `dead_fxid` prevents reuse while an old snapshot can reference a retired
-chain. Graph replacement and metapage-statistic changes use short, validated
+chain. Conflict WAL precedes every reclaimed memtable page's free stamp so
+disconnected/no-feedback standby snapshots are canceled before overwrite.
+Graph replacement and metapage-statistic changes use short, validated
 exclusive publication sections.
 
 An all-dead V5 segment may remain linked during parallel VACUUM because that
@@ -624,6 +630,12 @@ Required cases:
 13. A paused full-fork DEAD-memtable reclaim allows an exclusive spill and a
     later ranked reader to finish while force merge remains serialized by
     maintenance.
+14. A new-tail append paused while holding the old tail cannot deadlock a
+    concurrent read snapshot; both complete with exact ranked results.
+15. A disconnected no-feedback standby reader over a retired memtable is
+    canceled by conflict WAL before reclaimed pages are reused.
+16. Ranked scoring promoted after snapshot acquisition keeps the recovery
+    source decision and returns the exact captured generation.
 
 ### Failure and recovery tests
 

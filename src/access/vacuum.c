@@ -1120,7 +1120,9 @@ tp_vacuumcleanup(IndexVacuumInfo *info, IndexBulkDeleteResult *stats)
  * never DEAD, and each inspection is serialized by the page buffer
  * lock.  If the snapshot observes the post-spill head, dead_fxid still
  * prevents reuse while an older primary or feedback-protected standby
- * snapshot can reference the retired chain.
+ * snapshot can reference the retired chain.  Before each page is free
+ * stamped, stock conflict-only WAL cancels standby snapshots that outlived
+ * feedback or a replication disconnect.
  */
 int
 tp_reclaim_dead_memtable_pages(Relation indexrel, Relation heaprel)
@@ -1175,6 +1177,8 @@ tp_reclaim_dead_memtable_pages(Relation indexrel, Relation heaprel)
 			hash_search(reachable, &blk, HASH_FIND, &found);
 			if (!found)
 			{
+				FullTransactionId dead_fxid = hdr->dead_fxid;
+
 				/*
 				 * Release the SHARE lock before returning the page to
 				 * the FSM: tp_record_free_index_page re-locks
@@ -1186,6 +1190,7 @@ tp_reclaim_dead_memtable_pages(Relation indexrel, Relation heaprel)
 				 * between the release and the stamp.
 				 */
 				UnlockReleaseBuffer(buf);
+				tp_log_page_reuse_conflict(indexrel, blk, dead_fxid);
 				tp_record_free_index_page(indexrel, blk);
 				reclaimed_pages++;
 				continue;

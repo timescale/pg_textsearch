@@ -103,7 +103,8 @@ include $(PGXS)
 test: test-compaction-ownercheck test-compaction-request-source \
 	test-segment-io-limits test-boolean-lock test-boolean-memory \
 	test-boolean-rescan test-graph-snapshot-source test-published-graph-source \
-	test-vacuum-reclaim-source test-mixed-update-query-benchmark
+	test-vacuum-reclaim-source test-reclaim-conflict-source \
+	test-mixed-update-query-benchmark
 	@echo "Running SQL regression tests..."
 	@$(pg_regress_installcheck) $(REGRESS_OPTS) $(REGRESS)
 
@@ -131,6 +132,9 @@ test-published-graph-source:
 test-vacuum-reclaim-source:
 	@./test/scripts/vacuum_reclaim_source.sh
 
+test-reclaim-conflict-source:
+	@./test/scripts/reclaim_conflict_source.sh
+
 test-segment-io-limits:
 	@set -e; tmp_dir="$$(mktemp -d)"; \
 	trap 'rm -rf "$$tmp_dir"' EXIT; \
@@ -153,11 +157,13 @@ test-durable:
 installcheck: test-compaction-ownercheck test-compaction-request-source \
 	test-segment-io-limits test-boolean-lock test-boolean-memory \
 	test-boolean-rescan test-graph-snapshot-source test-published-graph-source \
-	test-vacuum-reclaim-source test-mixed-update-query-benchmark
+	test-vacuum-reclaim-source test-reclaim-conflict-source \
+	test-mixed-update-query-benchmark
 test-local: test-compaction-ownercheck test-compaction-request-source \
 	test-segment-io-limits test-boolean-lock test-boolean-memory \
 	test-boolean-rescan test-graph-snapshot-source test-published-graph-source \
-	test-vacuum-reclaim-source test-mixed-update-query-benchmark
+	test-vacuum-reclaim-source test-reclaim-conflict-source \
+	test-mixed-update-query-benchmark
 
 # Custom local test target with dedicated PostgreSQL instance
 test-local: install

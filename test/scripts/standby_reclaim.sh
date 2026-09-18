@@ -29,6 +29,7 @@ HELD_FEEDBACK_XMIN=
 COMPACTOR_PID=
 COMPACTOR_BACKEND_PID=
 SNAPSHOT_READER_PID=
+SNAPSHOT_READER_BACKEND_PID=
 
 wait_for_child_exit() {
     local pid=$1
@@ -188,6 +189,47 @@ $(cat "${output}" 2>/dev/null || echo no output)"
 
     error "Timed out 70s waiting for standby snapshot reader PID \
 ${SNAPSHOT_READER_PID}"
+}
+
+snapshot_reader_backend_pid() {
+    local output=$1
+    local deadline=$((SECONDS + 10))
+    local pid
+
+    while ((SECONDS < deadline)); do
+        pid=$(sed -n '1p' "${output}" 2>/dev/null || true)
+        if [[ "${pid}" =~ ^[0-9]+$ ]]; then
+            echo "${pid}"
+            return
+        fi
+        sleep 0.05
+    done
+    error "Standby snapshot reader did not report its backend PID"
+}
+
+wait_for_snapshot_reader_conflict() {
+    local output=$1
+    local deadline=$((SECONDS + 45))
+    local status
+
+    while kill -0 "${SNAPSHOT_READER_PID}" 2>/dev/null; do
+        ((SECONDS < deadline)) ||
+            error "Old-memtable reader was not canceled by conflict WAL"
+        sleep 0.1
+    done
+
+    set +e
+    wait "${SNAPSHOT_READER_PID}"
+    status=$?
+    set -e
+    SNAPSHOT_READER_PID=
+    [ "${status}" -ne 0 ] ||
+        error "Old-memtable reader completed without a recovery conflict"
+    if ! grep -Eq 'conflict with recovery|recovery conflict' "${output}" &&
+       ! grep -Eq 'conflict with recovery|recovery conflict' \
+           "${STANDBY_DIR}/log/postgres.log"; then
+        error "Old-memtable reader failed without recovery-conflict evidence"
+    fi
 }
 
 reader_open() {
@@ -687,6 +729,216 @@ SQL
     log "PASS: standalone standby race preserved score ${baseline}"
 }
 
+test_disconnected_memtable_reuse_conflict() {
+    local conflict_end_lsn conflict_records conflict_start_lsn dead_after
+    local dead_before dead_fxid expected_ids final_ids graph index_oid output
+    local pending reader_xmin reused spilled
+
+    log "Case: reclaimed memtable reuse cancels disconnected old readers..."
+    cat >> "${STANDBY_DIR}/postgresql.conf" <<EOF
+hot_standby_feedback = off
+EOF
+    pg_ctl restart -D "${STANDBY_DIR}" \
+        -l "${STANDBY_DIR}/postgres.log" -w -t 30 >/dev/null
+
+    primary_sql "
+        CREATE TABLE memreuse_rec (
+            id integer PRIMARY KEY,
+            body text NOT NULL
+        ) WITH (autovacuum_enabled = false);
+        INSERT INTO memreuse_rec
+        SELECT g, 'memreuse committed segment ' || g
+          FROM generate_series(1, 1000) g;
+        CREATE INDEX memreuse_idx ON memreuse_rec USING bm25(body)
+            WITH (text_config = 'english', compaction = 'off');
+        INSERT INTO memreuse_rec
+        SELECT g, 'memreuse retired memtable ' || g || ' ' ||
+                  repeat(md5(g::text), 8)
+          FROM generate_series(1001, 1500) g;
+        CREATE TABLE memreuse_flush_before (id integer);" >/dev/null
+    wait_for_standby_catchup 30 ||
+        error "Standby did not catch up before memtable reuse conflict"
+
+    index_oid=$(primary_sql_quiet "SELECT 'memreuse_idx'::regclass::oid;")
+    output="${STANDBY_DIR}/memreuse_reader.out"
+    rm -f "${output}"
+    psql -X -tAq -v ON_ERROR_STOP=1 -p "${STANDBY_PORT}" \
+        -d "${TEST_DB}" >"${output}" 2>&1 <<'SQL' &
+SELECT pg_backend_pid();
+SET enable_seqscan = off;
+SET pg_textsearch.debug_segment_graph_snapshot_pause_ms = 30000;
+SELECT id
+  FROM memreuse_rec
+ ORDER BY body <@> to_bm25query('memreuse', 'memreuse_idx')
+ LIMIT 1500;
+SQL
+    SNAPSHOT_READER_PID=$!
+    SNAPSHOT_READER_BACKEND_PID=$(snapshot_reader_backend_pid "${output}")
+    wait_for_snapshot_pause after-unlock "${index_oid}" "${output}"
+    reader_xmin=$(standby_sql_quiet "
+        SELECT backend_xmin
+          FROM pg_stat_activity
+         WHERE pid = ${SNAPSHOT_READER_BACKEND_PID};")
+    [ -n "${reader_xmin}" ] ||
+        error "Old-memtable reader has no active snapshot xmin"
+
+    cat >> "${PRIMARY_DIR}/postgresql.conf" <<EOF
+max_wal_senders = 0
+EOF
+    pg_ctl restart -D "${PRIMARY_DIR}" \
+        -l "${PRIMARY_DIR}/postgres.log" -w -t 30 >/dev/null
+    [ "$(primary_sql_quiet "SELECT count(*) FROM pg_stat_replication;")" = "0" ] ||
+        error "Standby remained connected before memtable reclaim"
+
+    spilled=$(primary_sql_quiet \
+        "SELECT bm25_spill_index('memreuse_idx') > 0;")
+    [ "${spilled}" = "t" ] ||
+        error "Memtable reuse case did not spill the captured chain"
+    dead_before=$(primary_sql_quiet \
+        "SELECT count(*) FROM bm25_memtable_dead_pages('memreuse_idx');")
+    [ "${dead_before}" -gt 0 ] ||
+        error "Memtable reuse case produced no DEAD pages"
+    primary_sql "
+        DROP TABLE IF EXISTS memreuse_dead_blocks;
+        CREATE TABLE memreuse_dead_blocks AS
+        SELECT blkno FROM bm25_memtable_dead_pages('memreuse_idx');
+        ALTER TABLE memreuse_dead_blocks ADD PRIMARY KEY (blkno);" >/dev/null
+    dead_fxid=$(primary_sql_quiet "
+        SELECT min(dead_fxid)
+          FROM bm25_memtable_dead_pages('memreuse_idx');")
+    log "Old reader xmin=${reader_xmin}; DEAD horizon=${dead_fxid}"
+    pending=$(primary_sql_quiet \
+        "SELECT bm25_pending_free_pages('memreuse_idx');")
+    [ "${pending}" = "0" ] ||
+        error "Memtable reuse case unexpectedly created segment tombstones"
+
+    for _ in $(seq 1 64); do
+        primary_sql_quiet "SELECT txid_current();" >/dev/null
+    done
+    conflict_start_lsn=$(primary_sql_quiet \
+        "SELECT pg_current_wal_insert_lsn();")
+    primary_sql "VACUUM memreuse_rec;" >/dev/null
+    dead_after=$(primary_sql_quiet \
+        "SELECT count(*) FROM bm25_memtable_dead_pages('memreuse_idx');")
+    [ "${dead_after}" = "0" ] ||
+        error "VACUUM left ${dead_after}/${dead_before} DEAD memtable pages"
+
+    primary_sql "
+        SET pg_textsearch.memtable_pages_threshold = 0;
+        INSERT INTO memreuse_rec
+        SELECT g, 'memreuse replacement chain ' || g || ' ' ||
+                  repeat(md5(g::text), 8)
+          FROM generate_series(1501, 2000) g;" >/dev/null
+    reused=$(primary_sql_quiet "
+        SELECT count(*)
+          FROM bm25_memtable_chain('memreuse_idx') chain
+          JOIN memreuse_dead_blocks dead USING (blkno);")
+    [ "${reused}" -gt 0 ] ||
+        error "Replacement memtable did not reuse a reclaimed DEAD page"
+    conflict_end_lsn=$(primary_sql_quiet \
+        "SELECT pg_current_wal_insert_lsn();")
+    conflict_records=$(pg_waldump -p "${PRIMARY_DIR}/pg_wal" \
+        -s "${conflict_start_lsn}" -e "${conflict_end_lsn}" -r Btree |
+        grep -c "REUSE_PAGE" || true)
+    [ "${conflict_records}" -ge "${dead_before}" ] ||
+        error "WAL contains ${conflict_records}/${dead_before} memtable reuse conflicts"
+    log "WAL contains ${conflict_records} memtable reuse conflict records"
+
+    cat >> "${PRIMARY_DIR}/postgresql.conf" <<EOF
+max_wal_senders = 8
+EOF
+    pg_ctl restart -D "${PRIMARY_DIR}" \
+        -l "${PRIMARY_DIR}/postgres.log" -w -t 30 >/dev/null
+    wait_for_snapshot_reader_conflict "${output}"
+    wait_for_standby_catchup 30 ||
+        error "Standby did not catch up after memtable reuse conflict"
+
+    graph=$(standby_sql_quiet \
+        "SELECT bm25_level_counts('memreuse_idx'::regclass)::text;")
+    [ "${graph}" = "{2,0,0,0,0,0,0,0}" ] ||
+        error "Memtable reuse case changed segment graph unexpectedly: ${graph}"
+    expected_ids=$(seq 1 2000 | paste -sd, -)
+    final_ids=$(standby_sql_quiet "
+        SET enable_seqscan = off;
+        SELECT string_agg(id::text, ',' ORDER BY id)
+          FROM (
+                SELECT id FROM memreuse_rec
+                 ORDER BY body <@> to_bm25query('memreuse', 'memreuse_idx')
+                 LIMIT 2000
+               ) ranked;" | tail -n 1)
+    [ "${final_ids}" = "${expected_ids}" ] ||
+        error "Standby IDs are wrong after memtable conflict and reuse"
+    log "PASS: conflict WAL canceled old memtable reader before ${reused} reused pages"
+}
+
+test_ranked_promotion_pins_recovery_mode() {
+    local actual_count actual_rows expected index_oid output result spilled
+
+    log "Case: ranked scoring pins recovery mode before its snapshot..."
+    primary_sql "
+        CREATE TABLE promotion_generation_rec (
+            id integer PRIMARY KEY,
+            body text NOT NULL
+        ) WITH (autovacuum_enabled = false);
+        INSERT INTO promotion_generation_rec
+        SELECT g, 'promotion generation alpha segment ' || g
+          FROM generate_series(1, 1000) g;
+        CREATE INDEX promotion_generation_idx
+            ON promotion_generation_rec USING bm25(body)
+            WITH (text_config = 'english', compaction = 'off');
+        INSERT INTO promotion_generation_rec
+        SELECT g, 'promotion generation alpha memtable ' || g
+          FROM generate_series(1001, 1500) g;
+        CREATE TABLE promotion_generation_flush_before (id integer);" \
+        >/dev/null
+    wait_for_standby_catchup 30 ||
+        error "Standby did not catch up before promotion generation race"
+
+    index_oid=$(primary_sql_quiet \
+        "SELECT 'promotion_generation_idx'::regclass::oid;")
+    output="${STANDBY_DIR}/promotion_generation_reader.out"
+    rm -f "${output}"
+    psql -X -tAq -v ON_ERROR_STOP=1 -p "${STANDBY_PORT}" \
+        -d "${TEST_DB}" >"${output}" 2>&1 <<'SQL' &
+SELECT pg_backend_pid();
+SET enable_seqscan = off;
+SET pg_textsearch.debug_segment_graph_snapshot_pause_ms = 15000;
+SELECT id
+  FROM promotion_generation_rec
+ ORDER BY body <@> to_bm25query('alpha', 'promotion_generation_idx')
+ LIMIT 1500;
+SQL
+    SNAPSHOT_READER_PID=$!
+    wait_for_snapshot_pause after-unlock "${index_oid}" "${output}"
+
+    spilled=$(primary_sql_quiet \
+        "SELECT bm25_spill_index('promotion_generation_idx') > 0;")
+    [ "${spilled}" = "t" ] ||
+        error "Promotion generation case did not spill the captured memtable"
+    primary_sql "CREATE TABLE promotion_generation_flush_after (id integer);" \
+        >/dev/null
+    wait_for_standby_catchup 30 ||
+        error "Standby did not replay promotion generation spill"
+
+    pg_ctl promote -D "${STANDBY_DIR}" -w >/dev/null
+    [ "$(standby_sql_quiet "SELECT pg_is_in_recovery();")" = "f" ] ||
+        error "Standby did not promote during ranked snapshot pause"
+    wait_for_snapshot_reader "${output}"
+
+    result=$(tail -n +2 "${output}")
+    if grep -Ev '^[0-9]+$' <<<"${result}" >/dev/null; then
+        error "Promotion generation race returned a non-numeric ID"
+    fi
+    expected=$(seq 1 1500)
+    actual_rows="$(printf '%s\n' "${result}" | wc -l | tr -d ' ')"
+    actual_count="$(printf '%s\n' "${result}" | sort -n | uniq | wc -l)"
+    [ "${actual_rows}" = "1500" ] && [ "${actual_count}" = "1500" ] ||
+        error "Promotion generation race returned ${actual_rows} rows, ${actual_count} unique"
+    [ "$(printf '%s\n' "${result}" | sort -n)" = "${expected}" ] ||
+        error "Promotion generation race omitted or duplicated IDs"
+    log "PASS: promotion race returned IDs 1..1500 exactly once"
+}
+
 main() {
     local spilled graph feedback_setting plan first_id remaining
     local parked_before_vacuum parked_after_vacuum drained
@@ -694,6 +946,8 @@ main() {
     local held_ids held_ids_sorted held_id_count duplicate_ids
 
     check_required_tools
+    command -v pg_waldump >/dev/null 2>&1 ||
+        error "pg_waldump not found"
     setup_primary
 
     primary_sql "
@@ -876,6 +1130,8 @@ the standby cursor ended"
     test_atomic_segment_graph_snapshot
     test_atomic_ranked_memtable_generation
     test_atomic_standalone_memtable_generation
+    test_disconnected_memtable_reuse_conflict
+    test_ranked_promotion_pins_recovery_mode
     log "All standby reclaim overlap checks passed"
 }
 

@@ -53,35 +53,38 @@ tp_debug_segment_graph_snapshot_pause(
 					MyProcPid)));
 }
 
-TpSegmentGraphSnapshot *
-tp_segment_graph_snapshot_create(Relation index)
+static void
+tp_read_memtable_snapshot_candidate(
+		Relation index, BlockNumber *head, BlockNumber *tail)
 {
-	TpSegmentGraphSnapshot *snapshot;
-	TpIndexMetaPage			metap;
-	Buffer					buffer;
-	Page					page;
-	uint32					expected_roots = 0;
+	Buffer buffer;
+	Page   page;
 
-	if (!RelationIsValid(index))
-		elog(ERROR,
-			 "invalid relation passed to tp_segment_graph_snapshot_create");
-
-	tp_debug_segment_graph_snapshot_pause(
-			index,
-			tp_debug_segment_graph_snapshot_pause_before_lock_ms,
-			"before-lock");
 	buffer = ReadBuffer(index, TP_METAPAGE_BLKNO);
-	if (!BufferIsValid(buffer))
-		elog(ERROR,
-			 "failed to read metapage buffer for BM25 index \"%s\"",
-			 RelationGetRelationName(index));
-
 	LockBuffer(buffer, BUFFER_LOCK_SHARE);
-	page			   = BufferGetPage(buffer);
-	metap			   = tp_metapage_copy_from_page(index, page);
-	snapshot		   = palloc0(sizeof(TpSegmentGraphSnapshot));
-	snapshot->metapage = *metap;
-	pfree(metap);
+	page  = BufferGetPage(buffer);
+	*head = tp_metapage_read_memtable_head(page);
+	*tail = tp_metapage_read_memtable_tail(page);
+	UnlockReleaseBuffer(buffer);
+}
+
+/*
+ * Writers extend in tail -> new page -> metapage order.  Snapshot retry paths
+ * must therefore release metapage before tail, matching the reverse of their
+ * tail -> metapage acquisition.
+ */
+static void
+tp_release_snapshot_buffers(Buffer buffer, Buffer tail_buffer)
+{
+	UnlockReleaseBuffer(buffer);
+	if (BufferIsValid(tail_buffer))
+		UnlockReleaseBuffer(tail_buffer);
+}
+
+static void
+tp_capture_segment_roots(Relation index, TpSegmentGraphSnapshot *snapshot)
+{
+	uint32 expected_roots = 0;
 
 	for (uint32 level = 0; level < TP_MAX_LEVELS; level++)
 	{
@@ -135,21 +138,89 @@ tp_segment_graph_snapshot_create(Relation index)
 	}
 	snapshot->level_offsets[TP_MAX_LEVELS] = snapshot->root_count;
 	Assert(snapshot->root_count == expected_roots);
+}
 
-	tp_memtable_chain_snapshot_capture(
-			index,
-			snapshot->metapage.memtable_head_blkno,
-			snapshot->metapage.memtable_tail_blkno,
-			&snapshot->memtable);
+TpSegmentGraphSnapshot *
+tp_segment_graph_snapshot_create(Relation index)
+{
+	if (!RelationIsValid(index))
+		elog(ERROR,
+			 "invalid relation passed to tp_segment_graph_snapshot_create");
+
 	tp_debug_segment_graph_snapshot_pause(
 			index,
-			tp_debug_segment_graph_snapshot_pause_before_unlock_ms,
-			"before-unlock");
-	UnlockReleaseBuffer(buffer);
-	tp_debug_segment_graph_snapshot_pause(
-			index, tp_debug_segment_graph_snapshot_pause_ms, "after-unlock");
+			tp_debug_segment_graph_snapshot_pause_before_lock_ms,
+			"before-lock");
 
-	return snapshot;
+	for (;;)
+	{
+		TpSegmentGraphSnapshot *snapshot;
+		TpIndexMetaPage			metap;
+		Buffer					buffer;
+		Buffer					tail_buffer = InvalidBuffer;
+		BlockNumber				candidate_head;
+		BlockNumber				candidate_tail;
+
+		tp_read_memtable_snapshot_candidate(
+				index, &candidate_head, &candidate_tail);
+		if (BlockNumberIsValid(candidate_head) !=
+			BlockNumberIsValid(candidate_tail))
+			ereport(ERROR,
+					(errcode(ERRCODE_INDEX_CORRUPTED),
+					 errmsg("BM25 memtable head/tail validity mismatch")));
+
+		if (BlockNumberIsValid(candidate_tail))
+		{
+			/*
+			 * Never retain the candidate metapage lock while acquiring the
+			 * tail: an extending writer already holds this tail EXCLUSIVE
+			 * before it requests the metapage EXCLUSIVE.
+			 */
+			tail_buffer = ReadBuffer(index, candidate_tail);
+			LockBuffer(tail_buffer, BUFFER_LOCK_SHARE);
+		}
+
+		buffer = ReadBuffer(index, TP_METAPAGE_BLKNO);
+		if (!BufferIsValid(buffer))
+			elog(ERROR,
+				 "failed to read metapage buffer for BM25 index \"%s\"",
+				 RelationGetRelationName(index));
+		LockBuffer(buffer, BUFFER_LOCK_SHARE);
+		metap = tp_metapage_copy_from_page(index, BufferGetPage(buffer));
+
+		if (metap->memtable_head_blkno != candidate_head ||
+			metap->memtable_tail_blkno != candidate_tail)
+		{
+			pfree(metap);
+			tp_release_snapshot_buffers(buffer, tail_buffer);
+			continue;
+		}
+
+		snapshot		   = palloc0(sizeof(TpSegmentGraphSnapshot));
+		snapshot->metapage = *metap;
+		pfree(metap);
+
+		tp_memtable_chain_snapshot_capture_locked(
+				tail_buffer,
+				snapshot->metapage.memtable_head_blkno,
+				snapshot->metapage.memtable_tail_blkno,
+				&snapshot->memtable);
+		tp_capture_segment_roots(index, snapshot);
+
+		tp_debug_segment_graph_snapshot_pause(
+				index,
+				tp_debug_segment_graph_snapshot_pause_before_unlock_ms,
+				"before-unlock");
+		UnlockReleaseBuffer(buffer);
+		if (BufferIsValid(tail_buffer))
+			UnlockReleaseBuffer(tail_buffer);
+		tp_debug_segment_graph_snapshot_pause(
+				index,
+				tp_debug_segment_graph_snapshot_pause_ms,
+				"after-unlock");
+
+		return snapshot;
+	}
 }
 
 const BlockNumber *

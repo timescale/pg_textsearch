@@ -161,6 +161,7 @@ int tp_debug_compaction_pause_source_estimate_ms  = 0;
 int tp_debug_compaction_pause_before_publish_ms	  = 0;
 int tp_debug_compaction_pause_after_restamp_ms	  = 0;
 int tp_debug_vacuum_pause_memtable_reclaim_ms	  = 0;
+int tp_debug_memtable_pause_before_extend_ms	  = 0;
 int tp_debug_index_lock_pause_exclusive_waiter_ms = 0;
 int tp_debug_index_lock_exclusive_waiter_gate	  = 0;
 int tp_debug_compaction_pause_after_allocation =
@@ -839,6 +840,21 @@ _PG_init(void)
 			"Testing-only interruptible pause after entering the index fork "
 			"page loop and before locking its first page.",
 			&tp_debug_vacuum_pause_memtable_reclaim_ms,
+			0,
+			0,
+			60000,
+			PGC_SUSET,
+			0,
+			NULL,
+			NULL,
+			NULL);
+
+	DefineCustomIntVariable(
+			"pg_textsearch.debug_memtable_pause_before_extend_ms",
+			"Pause a memtable append before extending its tail.",
+			"Testing-only interruptible one-shot pause after locking the old "
+			"tail exclusively and before locking the metapage.",
+			&tp_debug_memtable_pause_before_extend_ms,
 			0,
 			0,
 			60000,

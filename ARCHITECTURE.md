@@ -40,16 +40,22 @@ live heap TID occurs in at most one published segment. Segment-local numeric
 `doc_id` values may repeat across segments. This disjointness permits merge and
 scoring paths to avoid cross-segment document deduplication.
 
-Published-graph consumers hold the metapage buffer in share mode while copying
-every segment root for every level and a bounded memtable endpoint (head, tail,
-and the tail free offset). Level counts bound and validate root discovery.
+Published-graph consumers first read and release a candidate memtable
+head/tail, lock the candidate tail in share mode, then lock the metapage in
+share mode and validate that the candidate is still current. On mismatch they
+release metapage then tail and retry. With tail then metapage held, they copy
+every segment root and the bounded memtable endpoint, including the tail free
+offset. Empty chains validate both pointers without a tail lock. Level counts
+bound and validate root discovery.
 Query, debug, and maintenance work then use the explicit root arrays rather
 than lazily following published `next_segment` links. On recovery, ranked,
 standalone, and Boolean scoring consume the bounded chain endpoint instead of
 rereading the metapage. Segment and memtable inputs therefore come from one
 complete old or new generation while Generic WAL replay changes publication.
-Primary ranked and standalone paths retain their existing cache and per-index
-lock admission semantics.
+Ranked scoring pins recovery mode before acquiring the snapshot, so promotion
+during a pause cannot switch that generation to the primary cache path.
+Primary ranked and standalone paths otherwise retain their existing cache and
+per-index lock admission semantics.
 
 ## Memtable Cache
 
@@ -102,12 +108,18 @@ exclusive per-index heavyweight object lock in pg_textsearch's private
 background-compaction admission, so a signaled worker can compact while the
 spilling transaction is still completing pre-commit dispatch. The lock does
 not exclude scans, memtable appends, or ordinary relation locks. Operations
-that need multiple lock classes must acquire them in this order:
+that need multiple lock classes first acquire:
 
 1. per-index maintenance object lock;
-2. per-index LWLock;
-3. metapage buffer lock;
-4. segment or tombstone buffer lock.
+2. per-index LWLock.
+
+Buffer ordering then follows the storage operation. Existing-tail memtable
+extension is tail -> new page -> metapage. The common read snapshot uses
+tail -> metapage after an unlocked candidate read and retry validation; it
+never nests metapage -> tail. Segment and tombstone publication retain their
+own validated buffer order under the per-index lock. Empty-chain bootstrap is
+the only memtable path with no existing tail and locks metapage before its new
+unpublished page.
 
 No path may request maintenance while holding the per-index lock. A spill
 therefore completes L0 publication and releases `LW_EXCLUSIVE` before applying
@@ -231,10 +243,12 @@ horizon and returned to the free-space map only after
 Query-serving hot standbys require `hot_standby_feedback = on` so their oldest
 snapshots hold the primary's reclaim horizon back. Use
 `bm25_pending_free_pages()` to observe displaced segment pages awaiting reuse.
-As a safety fallback for a standby that disconnects while an old-graph query
-remains active, tombstone drain emits the stock `XLOG_BTREE_REUSE_PAGE`
-conflict-only WAL record before unlinking a reclaimable batch. Replay cancels
-any conflicting standby snapshot before later WAL can reuse those pages.
+As a safety fallback for a standby that disconnects while an old-generation
+query remains active, both tombstone drain and DEAD-memtable reclaim emit the
+stock `XLOG_BTREE_REUSE_PAGE` conflict-only WAL record before reuse. Memtable
+reclaim uses each page's `dead_fxid`; tombstone drain uses the batch horizon.
+Replay cancels any conflicting standby snapshot before later WAL can reuse
+those pages.
 Feedback therefore preserves query continuity; the conflict record preserves
 storage correctness when feedback is temporarily unavailable.
 
@@ -294,7 +308,8 @@ inspects pages under their buffer locks. A racing spill can only make that
 reachable set conservative, retaining pages until a later VACUUM. Live and
 newly allocated pages are not marked DEAD, while `dead_fxid` prevents a
 retired page from entering the FSM before old primary or feedback-protected
-standby snapshots are safe.
+standby snapshots are safe. Before each reclaimed page is free-stamped, stock
+conflict-only WAL protects disconnected or no-feedback standby readers.
 
 If VACUUM is admitted first, compaction waits and later builds from the updated
 alive bits. If compaction is admitted first, VACUUM waits and then discovers

@@ -430,7 +430,7 @@ drain_body="$(
     sed -n '/^tp_tombstone_drain($/,/^}$/p' "${TOMBSTONE_SOURCE}"
 )"
 drain_conflict_line="$(
-    grep -n 'tombstone_log_reuse_conflict' <<<"${drain_body}" |
+    grep -n 'tp_log_page_reuse_conflict' <<<"${drain_body}" |
         head -1 | cut -d: -f1 || true
 )"
 drain_unlink_line="$(

@@ -102,6 +102,35 @@ tp_memtable_alloc_page(Relation rel)
 	return ExtendBufferedRel(BMR_REL(rel), MAIN_FORKNUM, NULL, EB_LOCK_FIRST);
 }
 
+static void
+tp_debug_memtable_pause_before_extend(Relation rel)
+{
+	int remaining_ms = tp_debug_memtable_pause_before_extend_ms;
+
+	if (remaining_ms <= 0)
+		return;
+	tp_debug_memtable_pause_before_extend_ms = 0;
+
+	ereport(LOG,
+			(errmsg("pg_textsearch memtable append pause before tail "
+					"extension for index %u backend %d",
+					RelationGetRelid(rel),
+					MyProcPid)));
+	while (remaining_ms > 0)
+	{
+		int sleep_ms = Min(remaining_ms, 10);
+
+		CHECK_FOR_INTERRUPTS();
+		pg_usleep((long)sleep_ms * 1000L);
+		remaining_ms -= sleep_ms;
+	}
+	ereport(LOG,
+			(errmsg("pg_textsearch memtable append resume before tail "
+					"extension for index %u backend %d",
+					RelationGetRelid(rel),
+					MyProcPid)));
+}
+
 /*
  * Bootstrap path: the chain is empty.  Allocate the first page,
  * append the record, and update meta.{head,tail}_blkno — all
@@ -210,6 +239,7 @@ memtable_extend_and_append(
 	TpIndexMetaPage	  metap;
 	GenericXLogState *xlog_state;
 
+	tp_debug_memtable_pause_before_extend(rel);
 	newbuf = tp_memtable_alloc_page(rel);
 	newblk = BufferGetBlockNumber(newbuf);
 

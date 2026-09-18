@@ -7,9 +7,6 @@
 #include <postgres.h>
 
 #include <access/generic_xlog.h>
-#include <access/nbtxlog.h>
-#include <access/xlog.h>
-#include <access/xloginsert.h>
 #include <miscadmin.h>
 #include <storage/bufmgr.h>
 #include <storage/indexfsm.h>
@@ -105,32 +102,6 @@ tombstone_write_page(
 		PG_RE_THROW();
 	}
 	PG_END_TRY();
-}
-
-/*
- * Reuse the stock btree conflict-only WAL record before returning displaced
- * segment pages to the FSM.  Its redo routine does not inspect or modify a
- * btree page: it only resolves standby snapshots at or before the supplied
- * horizon.  This keeps recovery extension-independent while protecting
- * readers that remained active while their standby was disconnected.
- */
-static void
-tombstone_log_reuse_conflict(
-		Relation index, BlockNumber block, FullTransactionId horizon)
-{
-	xl_btree_reuse_page xlrec;
-
-	if (!RelationNeedsWAL(index) || !XLogStandbyInfoActive())
-		return;
-
-	xlrec.locator				  = index->rd_locator;
-	xlrec.block					  = block;
-	xlrec.snapshotConflictHorizon = horizon;
-	xlrec.isCatalogRel			  = false;
-
-	XLogBeginInsert();
-	XLogRegisterData((char *)&xlrec, SizeOfBtreeReusePage);
-	XLogInsert(RM_BTREE_ID, XLOG_BTREE_REUSE_PAGE);
 }
 
 static void
@@ -553,7 +524,7 @@ tp_tombstone_drain(
 			break; /* nothing left to drain */
 		}
 
-		tombstone_log_reuse_conflict(
+		tp_log_page_reuse_conflict(
 				index,
 				victim_count > 0 ? victim_blocks[0] : victim,
 				victim_fxid);

@@ -126,6 +126,7 @@ tp_score_documents(
 	TpDataSource		   *memtable_src = NULL;
 	int						i;
 	int						result_count = 0;
+	bool					recovery;
 
 	/* Basic sanity checks */
 	Assert(local_state != NULL);
@@ -149,13 +150,18 @@ tp_score_documents(
 	 * shrinkage protocol but is not authoritative for queries (it
 	 * would drift on standbys and freshly-opened backends).
 	 */
+	/*
+	 * Promotion may occur while snapshot creation is paused.  Keep source
+	 * selection in the recovery mode that owns this snapshot generation.
+	 */
+	recovery	 = RecoveryInProgress();
 	snapshot	 = tp_segment_graph_snapshot_create(index_relation);
 	total_docs64 = (int64)snapshot->metapage.total_docs;
 	total_len64	 = (int64)snapshot->metapage.total_len;
 	k1			 = snapshot->metapage.k1;
 	b			 = snapshot->metapage.b;
 
-	if (RecoveryInProgress())
+	if (recovery)
 		memtable_src = tp_memtable_chain_source_create_bounded(
 				index_relation,
 				&snapshot->memtable,

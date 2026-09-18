@@ -248,6 +248,17 @@ SELECT 'retired reclaim document ' || gs || ' ' || repeat(md5(gs::text), 8)
 FROM generate_series(1, 6000) gs;
 SELECT bm25_spill_index('reclaim_bm25');
 INSERT INTO reclaim_docs(body) VALUES ('reclaimrace live memtable document');
+
+CREATE TABLE snapshot_lock_docs (
+    id bigserial PRIMARY KEY,
+    body text NOT NULL
+);
+INSERT INTO snapshot_lock_docs(body)
+SELECT 'snapshotlock committed document ' || gs
+FROM generate_series(1, 10) gs;
+CREATE INDEX snapshot_lock_bm25 ON snapshot_lock_docs USING bm25(body)
+    WITH (text_config='english', compaction='off');
+ALTER TABLE snapshot_lock_docs SET (autovacuum_enabled=false);
 SQL
 }
 
@@ -330,6 +341,15 @@ wait_for_reclaim_marker() {
 
     wait_for_log_marker "${marker}" \
         "Observed dead-memtable reclaim marker for index ${oid}, backend ${backend}"
+}
+
+wait_for_memtable_extend_marker() {
+    local oid=$1
+    local backend=$2
+    local marker="pg_textsearch memtable append pause before tail extension for index ${oid} backend ${backend}"
+
+    wait_for_log_marker "${marker}" \
+        "Observed memtable tail-extension marker for index ${oid}, backend ${backend}"
 }
 
 wait_for_exclusive_waiter_marker() {
@@ -436,6 +456,54 @@ assert_no_segment_errors() {
             "${ERR_DIR}" "${LOGFILE}" | sed -n '1,5p'
         error "TEST FAILED: concurrent maintenance reported an index storage error"
     fi
+}
+
+test_memtable_snapshot_lock_order() {
+    local writer_output="${ERR_DIR}/snapshot_lock_writer.log"
+    local reader_output="${ERR_DIR}/snapshot_lock_reader.log"
+    local writer_pid reader_pid writer_backend oid result expected
+
+    log "Case: read snapshot acquires memtable tail before metapage..."
+    oid=$(sql -c "SELECT 'snapshot_lock_bm25'::regclass::oid;")
+
+    PGAPPNAME=pgts-snapshot-lock-writer \
+        PGOPTIONS="-c statement_timeout=30000 -c lock_timeout=15000 -c pg_textsearch.debug_memtable_pause_before_extend_ms=3000" \
+        psql -h "${SOCKET_DIR}" -p "${TEST_PORT}" -d "${TEST_DB}" \
+        -qAt -v ON_ERROR_STOP=1 \
+        -c "SELECT pg_backend_pid();" \
+        -c "INSERT INTO snapshot_lock_docs(body)
+            SELECT 'snapshotlock uncommitted extension ' || gs
+              FROM generate_series(1, 1000) gs;" \
+        >"${writer_output}" 2>&1 &
+    writer_pid=$!
+    writer_backend=$(client_backend_pid \
+        "${writer_output}" "memtable extension writer")
+    wait_for_memtable_extend_marker "${oid}" "${writer_backend}"
+
+    PGAPPNAME=pgts-snapshot-lock-reader \
+        PGOPTIONS="-c statement_timeout=8000 -c lock_timeout=7000" \
+        sql -c "
+            SET enable_seqscan = off;
+            SELECT string_agg(id::text, ',' ORDER BY id)
+              FROM (
+                    SELECT id
+                      FROM snapshot_lock_docs
+                     ORDER BY body <@> to_bm25query(
+                                  'snapshotlock', 'snapshot_lock_bm25')
+                     LIMIT 2000
+                   ) ranked;" \
+        >"${reader_output}" 2>&1 &
+    reader_pid=$!
+
+    wait_success "${reader_pid}" 10 "snapshot lock-order reader" \
+        "${reader_output}"
+    wait_success "${writer_pid}" 10 "memtable extension writer" \
+        "${writer_output}"
+    result=$(tail -n 1 "${reader_output}")
+    expected=$(seq 1 10 | paste -sd, -)
+    [ "${result}" = "${expected}" ] ||
+        error "snapshot lock-order reader returned ${result}, expected ${expected}"
+    log "Tail extension and exact ranked snapshot completed without deadlock"
 }
 
 test_vacuum_reclaim_does_not_gate_readers() {
@@ -949,6 +1017,7 @@ run_test() {
 # Main
 setup_test_db
 seed_data
+test_memtable_snapshot_lock_order
 test_vacuum_reclaim_does_not_gate_readers
 test_vacuum_identification_does_not_gate_readers
 test_vacuum_waits_for_force_merge

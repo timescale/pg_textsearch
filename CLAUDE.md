@@ -39,9 +39,11 @@ consider a dedicated `pg_textsearch` schema for cleaner namespace management.
   conflict-only record before displaced segment pages enter the FSM. There is
   no custom resource manager; pg_textsearch does not register an rmgr. Stock
   PostgreSQL replay reconstructs every page and resolves old standby
-  snapshots without loading `pg_textsearch.so`. Recovery scoring captures
-  segment roots and a bounded memtable endpoint under one metapage buffer
-  share lock, so spill replay cannot mix generations.
+  snapshots without loading `pg_textsearch.so`. Recovery scoring reads a
+  candidate memtable tail, then locks tail-before-metapage and validates it
+  while capturing segment roots and the bounded endpoint, so spill replay
+  cannot mix generations or deadlock tail extension. Ranked scoring pins
+  recovery mode before this snapshot so promotion cannot switch source paths.
   **Read [ARCHITECTURE.md](ARCHITECTURE.md#storage-and-wal) before
   changing the write/read/spill flow.** Closes #345, #349, #350,
   #374.
@@ -58,7 +60,8 @@ consider a dedicated `pg_textsearch` schema for cleaner namespace management.
   standbys serving queries, so their oldest snapshot holds the
   primary's horizon back until they finish reading the pages. At reclaim,
   a stock PostgreSQL page-reuse conflict record also cancels old snapshots
-  that survived a standby disconnect before later WAL can reuse the pages.
+  that survived a standby disconnect before later WAL can reuse either
+  displaced segment pages or DEAD memtable pages.
   Observe the parked count with `bm25_pending_free_pages(index_name)`.
 
 ## Core Architecture

@@ -11,6 +11,7 @@ GRAPH_SOURCE="${REPO_ROOT}/src/segment/graph_snapshot.c"
 QUERY_SOURCE="${REPO_ROOT}/src/types/query.c"
 SCORING_SOURCE="${REPO_ROOT}/src/scoring/bm25.c"
 CHAIN_SOURCE="${REPO_ROOT}/src/memtable/chain_source.c"
+WALKER_SOURCE="${REPO_ROOT}/src/memtable/chain_walker.c"
 
 graph_body="$(
     sed -n '/^tp_segment_graph_snapshot_create(Relation index)/,/^}/p' \
@@ -30,10 +31,14 @@ bounded_source_body="$(
     sed -n '/^tp_memtable_chain_source_create_bounded(/,/^}/p' \
         "${CHAIN_SOURCE}"
 )"
+locked_capture_body="$(
+    sed -n '/^tp_memtable_chain_snapshot_capture_locked(/,/^}/p' \
+        "${WALKER_SOURCE}"
+)"
 
 if [[ -z "${graph_body}" || -z "${query_body}" ||
       -z "${standalone_open_body}" || -z "${scoring_body}" ||
-      -z "${bounded_source_body}" ]]; then
+      -z "${bounded_source_body}" || -z "${locked_capture_body}" ]]; then
     echo "could not extract graph, scoring, or bounded source body" >&2
     exit 1
 fi
@@ -51,12 +56,23 @@ unique_line() {
     cut -d: -f1 <<<"${lines}"
 }
 
-root_complete_line="$(
+candidate_line="$(
+    unique_line "${graph_body}" "tp_read_memtable_snapshot_candidate("
+)"
+tail_lock_line="$(
     unique_line "${graph_body}" \
-        "snapshot->level_offsets[TP_MAX_LEVELS] = snapshot->root_count"
+        "LockBuffer(tail_buffer, BUFFER_LOCK_SHARE)"
+)"
+metapage_lock_line="$(
+    unique_line "${graph_body}" "LockBuffer(buffer, BUFFER_LOCK_SHARE)"
 )"
 memtable_snapshot_line="$(
-    unique_line "${graph_body}" "tp_memtable_chain_snapshot_capture("
+    unique_line "${graph_body}" \
+        "tp_memtable_chain_snapshot_capture_locked("
+)"
+root_complete_line="$(
+    unique_line "${graph_body}" \
+        "tp_capture_segment_roots(index, snapshot)"
 )"
 before_unlock_line="$(
     unique_line "${graph_body}" \
@@ -68,11 +84,25 @@ after_unlock_line="$(
         "tp_debug_segment_graph_snapshot_pause_ms"
 )"
 
-if [[ "${root_complete_line}" -ge "${memtable_snapshot_line}" ||
-      "${memtable_snapshot_line}" -ge "${before_unlock_line}" ||
+tail_unlock_line="$(
+    unique_line "${graph_body}" "UnlockReleaseBuffer(tail_buffer)"
+)"
+
+if [[ "${candidate_line}" -ge "${tail_lock_line}" ||
+      "${tail_lock_line}" -ge "${metapage_lock_line}" ||
+      "${metapage_lock_line}" -ge "${memtable_snapshot_line}" ||
+      "${memtable_snapshot_line}" -ge "${root_complete_line}" ||
+      "${root_complete_line}" -ge "${before_unlock_line}" ||
       "${before_unlock_line}" -ge "${unlock_line}" ||
-      "${unlock_line}" -ge "${after_unlock_line}" ]]; then
-    echo "read snapshot does not capture roots and memtable before unlock" >&2
+      "${unlock_line}" -ge "${tail_unlock_line}" ||
+      "${tail_unlock_line}" -ge "${after_unlock_line}" ]]; then
+    echo "read snapshot does not acquire tail before metapage or unlock in reverse" >&2
+    exit 1
+fi
+
+if grep -Fq "tp_memtable_chain_snapshot_capture(" <<<"${graph_body}" ||
+   grep -Fq "LockBuffer(" <<<"${locked_capture_body}"; then
+    echo "read snapshot helper reacquires tail under the metapage lock" >&2
     exit 1
 fi
 
@@ -142,6 +172,19 @@ if ! grep -Fq "RecoveryInProgress()" <<<"${scoring_body}" ||
         <<<"${scoring_body}" ||
    ! grep -Fq "&snapshot->memtable" <<<"${scoring_body}"; then
     echo "ranked recovery scoring does not use the common memtable snapshot" >&2
+    exit 1
+fi
+
+recovery_line="$(
+    unique_line "${scoring_body}" "RecoveryInProgress()"
+)"
+ranked_snapshot_line="$(
+    unique_line "${scoring_body}" \
+        "tp_segment_graph_snapshot_create(index_relation)"
+)"
+if [[ "${recovery_line}" -ge "${ranked_snapshot_line}" ]] ||
+   ! grep -Fq "if (recovery)" <<<"${scoring_body}"; then
+    echo "ranked scoring does not pin recovery mode before its snapshot" >&2
     exit 1
 fi
 
