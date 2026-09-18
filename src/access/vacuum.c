@@ -29,6 +29,7 @@
 #include <utils/regproc.h>
 #include <utils/rel.h>
 #include <utils/snapmgr.h>
+#include <utils/timestamp.h>
 
 #include "access/am.h"
 #include "access/build_context.h"
@@ -58,8 +59,39 @@ typedef struct TpVacuumSegmentInfo
 	uint32	   *dead_doc_ids; /* Array of dead doc_ids */
 	uint32		dead_count;
 	bool		affected;
-	bool		is_v5; /* true if segment has alive bitset */
+	bool		is_v5;		   /* true if segment has alive bitset */
+	bool		already_empty; /* V5 header already has no live docs */
 } TpVacuumSegmentInfo;
+
+static void
+tp_debug_vacuum_pause_during_identification(Relation index)
+{
+	TimestampTz deadline;
+
+	if (tp_debug_compaction_pause_source_estimate_ms <= 0)
+		return;
+
+	ereport(LOG,
+			(errmsg("pg_textsearch VACUUM pause during identification for "
+					"index %u backend %d",
+					RelationGetRelid(index),
+					MyProcPid)));
+	deadline = TimestampTzPlusMilliseconds(
+			GetCurrentTimestamp(),
+			tp_debug_compaction_pause_source_estimate_ms);
+	for (;;)
+	{
+		CHECK_FOR_INTERRUPTS();
+		if (GetCurrentTimestamp() >= deadline)
+			break;
+		pg_usleep(10000L);
+	}
+	ereport(LOG,
+			(errmsg("pg_textsearch VACUUM resume after identification for "
+					"index %u backend %d",
+					RelationGetRelid(index),
+					MyProcPid)));
+}
 
 /*
  * Convert a 32-bit xid (known to be in the allowable range when
@@ -258,46 +290,6 @@ tp_count_live_docs(
 }
 
 /*
- * Apply the invariant total_docs = Σ segment.num_docs (and its
- * total_len counterpart) on the metapage after Phase 3 has
- * rebuilt or dropped segments.  Subtraction is clamped at zero
- * so a stale shrinkage value (e.g. from pre-fix L0 headers
- * carrying inflated total_tokens) cannot underflow.  See
- * TpIndexMetaPageData.total_docs in metapage.h for the invariant.
- */
-static void
-tp_apply_vacuum_shrinkage(
-		Relation index, uint64 docs_shrinkage, uint64 tokens_shrinkage)
-{
-	Buffer			  mbuf;
-	GenericXLogState *xlog_state;
-	Page			  mpage;
-	TpIndexMetaPage	  mp;
-
-	if (docs_shrinkage == 0 && tokens_shrinkage == 0)
-		return;
-
-	mbuf = ReadBuffer(index, TP_METAPAGE_BLKNO);
-	LockBuffer(mbuf, BUFFER_LOCK_EXCLUSIVE);
-
-	xlog_state = GenericXLogStart(index);
-	mpage	   = GenericXLogRegisterBuffer(xlog_state, mbuf, 0);
-	/* Upgrade legacy metapage before applying shrinkage. */
-	tp_metapage_upgrade_to_current(index, mpage);
-	mp = (TpIndexMetaPage)PageGetContents(mpage);
-
-	mp->total_docs = (mp->total_docs >= docs_shrinkage)
-						   ? mp->total_docs - docs_shrinkage
-						   : 0;
-	mp->total_len  = (mp->total_len >= tokens_shrinkage)
-						   ? mp->total_len - tokens_shrinkage
-						   : 0;
-
-	GenericXLogFinish(xlog_state);
-	UnlockReleaseBuffer(mbuf);
-}
-
-/*
  * Walk all segment docmaps and call the callback for each CTID.
  * Returns an array of TpVacuumSegmentInfo with affected flags set.
  * *num_segments_out receives the total segment count.
@@ -317,9 +309,10 @@ tp_vacuum_identify_affected(
 												  sizeof(OffsetNumber));
 	BlockNumber	 *ctid_pages;
 	OffsetNumber *ctid_offsets;
-	int			  capacity	 = 32;
-	int			  count		 = 0;
-	int64		  total_dead = 0;
+	int			  capacity				= 32;
+	int			  count					= 0;
+	int64		  total_dead			= 0;
+	bool		  identification_paused = false;
 
 	segments	 = palloc(capacity * sizeof(TpVacuumSegmentInfo));
 	ctid_pages	 = palloc(ctid_batch_capacity * sizeof(BlockNumber));
@@ -411,6 +404,12 @@ tp_vacuum_identify_affected(
 							seg_dead++;
 						}
 					}
+
+					if (!identification_paused)
+					{
+						tp_debug_vacuum_pause_during_identification(index);
+						identification_paused = true;
+					}
 				}
 
 				/* Record segment info */
@@ -430,6 +429,9 @@ tp_vacuum_identify_affected(
 				segments[count].affected	 = (seg_dead > 0);
 				segments[count].is_v5 =
 						(reader->header->alive_bitset_offset > 0);
+				segments[count].already_empty = segments[count].is_v5 &&
+												reader->header->alive_count ==
+														0;
 			}
 
 			total_dead += seg_dead;
@@ -621,209 +623,386 @@ tp_vacuum_rebuild_segment(
 	return new_root;
 }
 
+static bool
+tp_vacuum_graph_matches(
+		Relation index, Page page, const TpSegmentGraphSnapshot *snapshot)
+{
+	TpIndexMetaPage current;
+	bool			matches;
+
+	current = tp_metapage_copy_from_page(index, page);
+	matches = current->magic == snapshot->metapage.magic &&
+			  current->version == snapshot->metapage.version &&
+			  current->text_config_oid == snapshot->metapage.text_config_oid &&
+			  current->_unused_total_terms ==
+					  snapshot->metapage._unused_total_terms &&
+			  current->k1 == snapshot->metapage.k1 &&
+			  current->b == snapshot->metapage.b &&
+			  current->root_blkno == snapshot->metapage.root_blkno &&
+			  current->term_stats_root == snapshot->metapage.term_stats_root &&
+			  current->_unused_docid_page ==
+					  snapshot->metapage._unused_docid_page &&
+			  current->capabilities == snapshot->metapage.capabilities &&
+			  memcmp(current->level_heads,
+					 snapshot->metapage.level_heads,
+					 sizeof(current->level_heads)) == 0 &&
+			  memcmp(current->level_counts,
+					 snapshot->metapage.level_counts,
+					 sizeof(current->level_counts)) == 0;
+	pfree(current);
+	return matches;
+}
+
+static TpSegmentGraphSnapshot *
+tp_vacuum_prepare_replacement(
+		TpLocalIndexState *index_state,
+		Relation		   index,
+		uint32			   level,
+		BlockNumber		   old_root,
+		BlockNumber		  *prev_root,
+		BlockNumber		  *next_root)
+{
+	volatile bool			locked = false;
+	TpSegmentGraphSnapshot *snapshot;
+	const BlockNumber	   *roots;
+	uint32					root_count;
+	bool					found = false;
+
+	PG_TRY();
+	{
+		tp_acquire_index_lock(index_state, LW_SHARED);
+		locked	 = true;
+		snapshot = tp_segment_graph_snapshot_create(index);
+		tp_release_index_lock(index_state);
+		locked = false;
+	}
+	PG_FINALLY();
+	{
+		if (locked && index_state->lock_held)
+			tp_release_index_lock(index_state);
+	}
+	PG_END_TRY();
+
+	roots = tp_segment_graph_snapshot_level(snapshot, level, &root_count);
+	for (uint32 i = 0; i < root_count; i++)
+	{
+		if (roots[i] != old_root)
+			continue;
+
+		*prev_root = (i == 0) ? InvalidBlockNumber : roots[i - 1];
+		*next_root = (i + 1 == root_count) ? InvalidBlockNumber : roots[i + 1];
+		found	   = true;
+		break;
+	}
+
+	if (!found)
+	{
+		tp_segment_graph_snapshot_free(snapshot);
+		ereport(ERROR,
+				(errcode(ERRCODE_INTERNAL_ERROR),
+				 errmsg("VACUUM replacement source %u is no longer "
+						"published at level %u",
+						old_root,
+						level)));
+	}
+
+	return snapshot;
+}
+
 /*
- * Replace or remove a segment in a level's chain.
- *
- * If new_root is valid, replaces old_root with new_root in the
- * chain. If new_root is InvalidBlockNumber, removes old_root from
- * the chain entirely.
- *
- * Updates the metapage level_heads/level_counts as needed.
- *
- * Parks old segment pages in the deferred-free tombstone chain so they are
- * not recycled until a later VACUUM observes that the replacement horizon is
- * past every active snapshot.
+ * Publish one prepared legacy replacement.  Output construction, source-page
+ * collection, and tombstone construction happen without the per-index lock.
+ * A shared graph snapshot records any concurrent L0 prefix; the exclusive
+ * section validates that exact graph and only then swaps the source.
  */
 static void
 tp_vacuum_replace_segment(
-		Relation	index,
-		uint32		level,
-		BlockNumber old_root,
-		BlockNumber new_root,
-		BlockNumber prev_root)
+		TpLocalIndexState *index_state,
+		Relation		   index,
+		uint32			   level,
+		BlockNumber		   old_root,
+		BlockNumber		   new_root,
+		uint64			   docs_shrinkage,
+		uint64			   tokens_shrinkage)
 {
-	Buffer			  metabuf;
-	BlockNumber		 *old_pages;
+	BlockNumber		 *old_pages = NULL;
 	uint32			  old_page_count;
-	BlockNumber		  old_next;
 	FullTransactionId vacuum_fxid;
-	BlockNumber		  batch_head = InvalidBlockNumber;
+	volatile bool	  published							  = false;
+	volatile bool	  index_locked						  = false;
+	volatile Buffer	  metabuf							  = InvalidBuffer;
+	volatile Buffer	  new_buf							  = InvalidBuffer;
+	volatile Buffer	  prev_buf							  = InvalidBuffer;
+	volatile Buffer	  tail_buf							  = InvalidBuffer;
+	GenericXLogState *volatile xlog_state				  = NULL;
+	TpSegmentGraphSnapshot *volatile publication_snapshot = NULL;
+	volatile TpDetachedTombstoneBatch tombstones;
 
-	/*
-	 * Read old segment's next_segment pointer before we free it.
-	 * We need this to fix up chain pointers.
-	 */
+	memset((TpDetachedTombstoneBatch *)&tombstones, 0, sizeof(tombstones));
+	tombstones.head = InvalidBlockNumber;
+	tombstones.tail = InvalidBlockNumber;
+
+	PG_TRY();
 	{
-		TpSegmentReader *old_reader;
-
-		old_reader = tp_segment_open(index, old_root);
-		old_next   = old_reader->header->next_segment;
-		tp_segment_close(old_reader);
-	}
-
-	/* Collect old segment pages for deferred reclaim. */
-	old_page_count = tp_segment_collect_pages(index, old_root, &old_pages);
-	vacuum_fxid	   = GetCurrentFullTransactionId();
-	if (old_pages && old_page_count > 0)
-	{
-		/*
-		 * VACUUM holds only LW_SHARED here, so tombstone pages must not
-		 * allocate from the FSM and race concurrent inserts.
-		 */
-		batch_head = tp_tombstone_enqueue_extend(
+		old_page_count = tp_segment_collect_pages(index, old_root, &old_pages);
+		if (old_page_count == 0)
+			ereport(ERROR,
+					(errcode(ERRCODE_DATA_CORRUPTED),
+					 errmsg("VACUUM replacement source %u has no pages",
+							old_root)));
+		vacuum_fxid = GetCurrentFullTransactionId();
+		tp_tombstone_build_detached(
 				index,
 				old_pages,
 				old_page_count,
 				vacuum_fxid,
-				tp_tombstone_read_head(index));
-	}
+				(TpDetachedTombstoneBatch *)&tombstones);
 
-	/*
-	 * Update chain pointers atomically via GenericXLog.
-	 * Up to 3 buffers: metapage, new segment, prev segment.
-	 */
-	{
-		GenericXLogState *xlog_state;
-		Page			  meta_copy;
-		TpIndexMetaPage	  meta_ptr;
-		Buffer			  new_buf  = InvalidBuffer;
-		Buffer			  prev_buf = InvalidBuffer;
-
-		metabuf = ReadBuffer(index, TP_METAPAGE_BLKNO);
-		LockBuffer(metabuf, BUFFER_LOCK_EXCLUSIVE);
-
-		xlog_state = GenericXLogStart(index);
-		meta_copy  = GenericXLogRegisterBuffer(xlog_state, metabuf, 0);
-		/* Upgrade legacy metapage before writing pending_free_head. */
-		tp_metapage_upgrade_to_current(index, meta_copy);
-		meta_ptr = (TpIndexMetaPage)PageGetContents(meta_copy);
-
-		/* Set new segment's next_segment and level */
-		if (new_root != InvalidBlockNumber)
+		for (;;)
 		{
-			Page			 new_page;
-			TpSegmentHeader *new_header;
+			BlockNumber		prev_root;
+			BlockNumber		next_root;
+			Page			current_page;
+			TpIndexMetaPage current_meta;
+			BlockNumber		current_pending;
+			Page			meta_copy;
+			TpIndexMetaPage meta;
 
-			new_buf = ReadBuffer(index, new_root);
-			LockBuffer(new_buf, BUFFER_LOCK_EXCLUSIVE);
-			new_page = GenericXLogRegisterBuffer(xlog_state, new_buf, 0);
-			/* Ensure pd_lower covers content for GenericXLog */
-			((PageHeader)new_page)->pd_lower = BLCKSZ;
-			new_header = (TpSegmentHeader *)PageGetContents(new_page);
-			new_header->next_segment = old_next;
-			new_header->level		 = level;
-		}
+			publication_snapshot = tp_vacuum_prepare_replacement(
+					index_state,
+					index,
+					level,
+					old_root,
+					&prev_root,
+					&next_root);
 
-		if (prev_root == InvalidBlockNumber)
-		{
-			/* old_root was the head of this level */
-			if (new_root != InvalidBlockNumber)
-				meta_ptr->level_heads[level] = new_root;
-			else
+			tp_acquire_index_lock(index_state, LW_EXCLUSIVE);
+			index_locked = true;
+			metabuf		 = ReadBuffer(index, TP_METAPAGE_BLKNO);
+			LockBuffer((Buffer)metabuf, BUFFER_LOCK_EXCLUSIVE);
+			current_page = BufferGetPage((Buffer)metabuf);
+			if (!tp_vacuum_graph_matches(
+						index,
+						current_page,
+						(const TpSegmentGraphSnapshot *)publication_snapshot))
 			{
-				meta_ptr->level_heads[level] = old_next;
-				meta_ptr->level_counts[level]--;
+				UnlockReleaseBuffer((Buffer)metabuf);
+				metabuf = InvalidBuffer;
+				tp_release_index_lock(index_state);
+				index_locked = false;
+				tp_segment_graph_snapshot_free(
+						(TpSegmentGraphSnapshot *)publication_snapshot);
+				publication_snapshot = NULL;
+				CHECK_FOR_INTERRUPTS();
+				continue;
 			}
+
+			current_meta	= (TpIndexMetaPage)PageGetContents(current_page);
+			current_pending = current_meta->version < TP_METAPAGE_VERSION_V8
+									? InvalidBlockNumber
+									: current_meta->pending_free_head;
+
+			if (BlockNumberIsValid(prev_root))
+			{
+				Page		prev_page;
+				char	   *prev_content;
+				uint32		prev_version;
+				BlockNumber recorded_next;
+
+				prev_buf = ReadBuffer(index, prev_root);
+				LockBuffer((Buffer)prev_buf, BUFFER_LOCK_EXCLUSIVE);
+				prev_page	  = BufferGetPage((Buffer)prev_buf);
+				prev_content  = PageGetContents(prev_page);
+				prev_version  = ((TpSegmentHeader *)prev_content)->version;
+				recorded_next = prev_version <= TP_SEGMENT_FORMAT_VERSION_3
+									  ? ((TpSegmentHeaderV3 *)prev_content)
+												->next_segment
+									  : ((TpSegmentHeader *)prev_content)
+												->next_segment;
+				if (recorded_next != old_root)
+					ereport(ERROR,
+							(errcode(ERRCODE_INTERNAL_ERROR),
+							 errmsg("VACUUM replacement predecessor "
+									"changed before publication")));
+			}
+
+			if (BlockNumberIsValid(new_root))
+			{
+				new_buf = ReadBuffer(index, new_root);
+				LockBuffer((Buffer)new_buf, BUFFER_LOCK_EXCLUSIVE);
+			}
+
+			xlog_state = GenericXLogStart(index);
+			meta_copy  = GenericXLogRegisterBuffer(
+					 (GenericXLogState *)xlog_state, (Buffer)metabuf, 0);
+
+			if (BufferIsValid((Buffer)new_buf))
+			{
+				Page			 new_page;
+				TpSegmentHeader *new_header;
+
+				new_page = GenericXLogRegisterBuffer(
+						(GenericXLogState *)xlog_state, (Buffer)new_buf, 0);
+				((PageHeader)new_page)->pd_lower = BLCKSZ;
+				new_header = (TpSegmentHeader *)PageGetContents(new_page);
+				new_header->next_segment = next_root;
+				new_header->level		 = level;
+			}
+
+			if (BufferIsValid((Buffer)prev_buf))
+			{
+				Page		prev_copy;
+				char	   *prev_content;
+				uint32		prev_version;
+				BlockNumber replacement_next = BlockNumberIsValid(new_root)
+													 ? new_root
+													 : next_root;
+
+				prev_copy = GenericXLogRegisterBuffer(
+						(GenericXLogState *)xlog_state, (Buffer)prev_buf, 0);
+				((PageHeader)prev_copy)->pd_lower = BLCKSZ;
+				prev_content					  = PageGetContents(prev_copy);
+				prev_version = ((TpSegmentHeader *)prev_content)->version;
+				if (prev_version <= TP_SEGMENT_FORMAT_VERSION_3)
+					((TpSegmentHeaderV3 *)prev_content)->next_segment =
+							replacement_next;
+				else
+					((TpSegmentHeader *)prev_content)->next_segment =
+							replacement_next;
+			}
+
+			tail_buf = tp_tombstone_attach_detached(
+					(GenericXLogState *)xlog_state,
+					index,
+					*(TpDetachedTombstoneBatch *)&tombstones,
+					current_pending);
+
+			tp_metapage_upgrade_to_current(index, meta_copy);
+			meta = (TpIndexMetaPage)PageGetContents(meta_copy);
+			if (!BlockNumberIsValid(prev_root))
+				meta->level_heads[level] = BlockNumberIsValid(new_root)
+												 ? new_root
+												 : next_root;
+			if (!BlockNumberIsValid(new_root))
+				meta->level_counts[level]--;
+			if (tombstones.container_pages > 0)
+				meta->pending_free_head = tombstones.head;
+			meta->total_docs = meta->total_docs >= docs_shrinkage
+									 ? meta->total_docs - docs_shrinkage
+									 : 0;
+			meta->total_len	 = meta->total_len >= tokens_shrinkage
+									 ? meta->total_len - tokens_shrinkage
+									 : 0;
+
+			GenericXLogFinish((GenericXLogState *)xlog_state);
+			xlog_state = NULL;
+			published  = true;
+
+			if (BufferIsValid((Buffer)tail_buf))
+			{
+				UnlockReleaseBuffer((Buffer)tail_buf);
+				tail_buf = InvalidBuffer;
+			}
+			if (BufferIsValid((Buffer)prev_buf))
+			{
+				UnlockReleaseBuffer((Buffer)prev_buf);
+				prev_buf = InvalidBuffer;
+			}
+			if (BufferIsValid((Buffer)new_buf))
+			{
+				UnlockReleaseBuffer((Buffer)new_buf);
+				new_buf = InvalidBuffer;
+			}
+			UnlockReleaseBuffer((Buffer)metabuf);
+			metabuf = InvalidBuffer;
+			tp_release_index_lock(index_state);
+			index_locked = false;
+			tp_segment_graph_snapshot_free(
+					(TpSegmentGraphSnapshot *)publication_snapshot);
+			publication_snapshot = NULL;
+			break;
 		}
-		else
-		{
-			/* Update prev's next_segment pointer. */
-			Page		prev_page;
-			char	   *prev_content;
-			uint32		prev_version;
-			BlockNumber new_next;
-
-			prev_buf = ReadBuffer(index, prev_root);
-			LockBuffer(prev_buf, BUFFER_LOCK_EXCLUSIVE);
-			prev_page = GenericXLogRegisterBuffer(xlog_state, prev_buf, 0);
-			/* Ensure pd_lower covers content for GenericXLog */
-			((PageHeader)prev_page)->pd_lower = BLCKSZ;
-
-			new_next = (new_root != InvalidBlockNumber) ? new_root : old_next;
-
-			/*
-			 * The previous segment may still be on an older on-disk
-			 * format.  V3 uses uint32 offsets and places next_segment
-			 * at byte 28; V4/V5 use uint64 offsets with 4 bytes of
-			 * padding before data_size, placing next_segment at byte
-			 * 36.  Write at the offset matching the on-disk version
-			 * so we don't clobber adjacent fields.  magic/version
-			 * live at the same bytes in every version, so reading
-			 * version via the V5 struct is safe.
-			 */
-			prev_content = PageGetContents(prev_page);
-			prev_version = ((TpSegmentHeader *)prev_content)->version;
-			if (prev_version <= TP_SEGMENT_FORMAT_VERSION_3)
-				((TpSegmentHeaderV3 *)prev_content)->next_segment = new_next;
-			else
-				((TpSegmentHeader *)prev_content)->next_segment = new_next;
-
-			if (new_root == InvalidBlockNumber)
-				meta_ptr->level_counts[level]--;
-		}
-
-		if (batch_head != InvalidBlockNumber)
-			meta_ptr->pending_free_head = batch_head;
-
-		GenericXLogFinish(xlog_state);
-		if (BufferIsValid(prev_buf))
-			UnlockReleaseBuffer(prev_buf);
-		if (BufferIsValid(new_buf))
-			UnlockReleaseBuffer(new_buf);
-		UnlockReleaseBuffer(metabuf);
 	}
+	PG_CATCH();
+	{
+		if (!published)
+		{
+			if (xlog_state != NULL)
+				GenericXLogAbort((GenericXLogState *)xlog_state);
+			if ((BufferIsValid((Buffer)tail_buf) ||
+				 BufferIsValid((Buffer)prev_buf) ||
+				 BufferIsValid((Buffer)new_buf) ||
+				 BufferIsValid((Buffer)metabuf)) &&
+				InterruptHoldoffCount == 0)
+				HOLD_INTERRUPTS();
+			if (BufferIsValid((Buffer)tail_buf))
+				UnlockReleaseBuffer((Buffer)tail_buf);
+			if (BufferIsValid((Buffer)prev_buf))
+				UnlockReleaseBuffer((Buffer)prev_buf);
+			if (BufferIsValid((Buffer)new_buf))
+				UnlockReleaseBuffer((Buffer)new_buf);
+			if (BufferIsValid((Buffer)metabuf))
+				UnlockReleaseBuffer((Buffer)metabuf);
+			if (index_locked && index_state->lock_held)
+				tp_release_index_lock(index_state);
+			if (publication_snapshot != NULL)
+				tp_segment_graph_snapshot_free(
+						(TpSegmentGraphSnapshot *)publication_snapshot);
+			if (BlockNumberIsValid(new_root))
+				tp_discard_unpublished_segment(index, new_root);
+			tp_tombstone_discard_detached(
+					index, *(TpDetachedTombstoneBatch *)&tombstones);
+		}
+		if (old_pages != NULL)
+			pfree(old_pages);
+		PG_RE_THROW();
+	}
+	PG_END_TRY();
 
-	/* Old pages are parked in the tombstone chain and drained later. */
-	if (old_pages)
+	if (old_pages != NULL)
 		pfree(old_pages);
+	if (tombstones.owned_pages != NULL)
+		pfree(tombstones.owned_pages);
 }
 
 /*
  * Apply dead doc marks to a V5 segment's alive bitset.
  *
- * Loads the bitset, marks dead docs, writes back via
- * GenericXLog.  Returns the new alive_count, or 0 if all
- * docs are dead (caller should drop the segment).
+ * Loads the bitset, marks dead docs, and writes it back via GenericXLog.
+ * Empty segments stay published until serial cleanup compacts their prefix.
  */
-static uint32
+static void
 tp_vacuum_mark_dead(
 		Relation	index,
 		BlockNumber root_block,
 		uint32	   *dead_doc_ids,
-		uint32		dead_count,
-		bool		preserve_empty)
+		uint32		dead_count)
 {
 	TpSegmentReader *reader;
 	TpAliveBitset	*bitset;
-	uint32			 alive;
 
 	reader = tp_segment_open_ex(index, root_block, false);
 	if (!reader || !reader->header)
 	{
 		if (reader)
 			tp_segment_close(reader);
-		return 0;
+		return;
 	}
 
 	bitset = tp_alive_bitset_load(reader);
 	if (!bitset)
 	{
 		tp_segment_close(reader);
-		return 0;
+		return;
 	}
 
 	for (uint32 i = 0; i < dead_count; i++)
 		tp_alive_bitset_mark_dead(bitset, dead_doc_ids[i]);
 
-	alive = bitset->alive_count;
-
-	if (alive > 0 || preserve_empty)
-		tp_alive_bitset_write(bitset, reader, index);
+	tp_alive_bitset_write(bitset, reader, index);
 
 	tp_alive_bitset_free(bitset);
 	tp_segment_close(reader);
-
-	return alive;
 }
 
 /*
@@ -855,7 +1034,8 @@ tp_bulkdelete(
 	int64					total_dead;
 	volatile bool			maintenance_locked = false;
 	volatile bool			index_lock_held	   = false;
-	bool parallel_context = IsInParallelMode() || IsParallelWorker();
+	bool parallel_context	 = IsInParallelMode() || IsParallelWorker();
+	bool needs_empty_cleanup = false;
 
 	if (stats == NULL)
 		stats = (IndexBulkDeleteResult *)palloc0(
@@ -891,8 +1071,12 @@ tp_bulkdelete(
 	 * behavior for the bulkdelete path.
 	 */
 	index_state = tp_get_local_index_state(RelationGetRelid(info->index));
-	if (index_state != NULL)
-		tp_spill_memtable_if_needed(info->index, index_state, 1);
+	if (index_state == NULL)
+		ereport(ERROR,
+				(errcode(ERRCODE_INTERNAL_ERROR),
+				 errmsg("could not get index state for \"%s\"",
+						RelationGetRelationName(info->index))));
+	tp_spill_memtable_if_needed(info->index, index_state, 1);
 
 	/*
 	 * Serialize source-derived maintenance before taking the per-index
@@ -902,10 +1086,10 @@ tp_bulkdelete(
 	 * compaction publishes.
 	 *
 	 * Acquire after Phase 1's spill, which has its own exclusive per-index
-	 * section, then take LW_SHARED across Phase 2 (identify) and Phase 3
-	 * (mark / replace).  The shared lock still excludes spill publication
-	 * while the graph is walked and mutated, while ordinary inserts and
-	 * scans remain compatible.
+	 * section.  LW_SHARED is held only while copying the published graph.
+	 * The maintenance lock keeps those source segments immutable during the
+	 * callback walk, bitmap updates, legacy rebuilds, and page collection,
+	 * while concurrent spills may safely prepend an L0 prefix.
 	 */
 	tp_compaction_lock(info->index);
 	maintenance_locked = true;
@@ -922,6 +1106,11 @@ tp_bulkdelete(
 		pfree(metap);
 		segment_snapshot = tp_segment_graph_snapshot_create(info->index);
 		metap			 = &segment_snapshot->metapage;
+		if (index_lock_held)
+		{
+			tp_release_index_lock(index_state);
+			index_lock_held = false;
+		}
 
 		/* Phase 2: Identify affected segments. */
 		segments = tp_vacuum_identify_affected(
@@ -932,7 +1121,16 @@ tp_bulkdelete(
 				&num_segments,
 				&total_dead);
 
-		if (total_dead == 0)
+		for (int i = 0; i < num_segments; i++)
+		{
+			if (segments[i].already_empty)
+			{
+				needs_empty_cleanup = true;
+				break;
+			}
+		}
+
+		if (total_dead == 0 && !needs_empty_cleanup)
 		{
 			stats->num_pages		= 1;
 			stats->num_index_tuples = (double)metap->total_docs;
@@ -976,133 +1174,66 @@ tp_bulkdelete(
 		}
 
 		/*
-		 * Phase 3: Mark dead docs or rebuild affected segments.  Track
-		 * segment-header shrinkage so we can restore the invariant
-		 * total_docs = Σ segment.num_docs (see metapage.h).  V5 bitset
-		 * flips that leave survivors do not change the segment header's
-		 * num_docs / total_tokens, so they contribute zero shrinkage.
+		 * Phase 3: mark dead docs or rebuild affected legacy segments.
+		 * V5 mutations need only their segment-buffer locks.  Legacy
+		 * replacements prepare their output and page list unlocked, then
+		 * validate and publish in a brief exclusive section.
 		 */
+		for (int level = 0; level < TP_MAX_LEVELS; level++)
 		{
-			uint64 docs_shrinkage	= 0;
-			uint64 tokens_shrinkage = 0;
-
-			for (int level = 0; level < TP_MAX_LEVELS; level++)
+			for (int i = 0; i < num_segments; i++)
 			{
-				BlockNumber prev = InvalidBlockNumber;
+				if ((int)segments[i].level != level || !segments[i].affected)
+					continue;
 
-				for (int i = 0; i < num_segments; i++)
+				if (segments[i].is_v5)
 				{
-					if ((int)segments[i].level != level)
-						continue;
+					/*
+					 * Persist an all-zero bitmap in both serial and
+					 * parallel VACUUM.  Serial amvacuumcleanup removes
+					 * one empty-bearing prefix through the normal
+					 * prepared compaction publication path.
+					 */
+					(void)tp_vacuum_mark_dead(
+							info->index,
+							segments[i].root_block,
+							segments[i].dead_doc_ids,
+							segments[i].dead_count);
+				}
+				else
+				{
+					BlockNumber new_root;
+					uint64		new_docs		 = 0;
+					uint64		new_tokens		 = 0;
+					uint64		docs_shrinkage	 = 0;
+					uint64		tokens_shrinkage = 0;
 
-					if (segments[i].affected)
-					{
-						if (segments[i].is_v5)
-						{
-							/*
-							 * V5 segment: flip bits in alive
-							 * bitset.
-							 */
-							uint32 alive = tp_vacuum_mark_dead(
-									info->index,
-									segments[i].root_block,
-									segments[i].dead_doc_ids,
-									segments[i].dead_count,
-									parallel_context);
+					new_root = tp_vacuum_rebuild_segment(
+							info->index,
+							info->heaprel,
+							segments[i].root_block,
+							level,
+							callback,
+							callback_state,
+							&new_docs,
+							&new_tokens);
 
-							if (alive == 0)
-							{
-								if (parallel_context)
-								{
-									/*
-									 * The zeroed bitmap makes the segment
-									 * logically empty.  Defer its physical
-									 * unlink to serial compaction, which
-									 * can assign the reclaim XID.
-									 */
-									prev = segments[i].root_block;
-								}
-								else
-								{
-									/*
-									 * All docs dead -- drop segment.
-									 */
-									tp_vacuum_replace_segment(
-											info->index,
-											level,
-											segments[i].root_block,
-											InvalidBlockNumber,
-											prev);
-									docs_shrinkage += segments[i].num_docs;
-									tokens_shrinkage +=
-											segments[i].total_tokens;
-									/* prev stays the same */
-								}
-							}
-							else
-							{
-								prev = segments[i].root_block;
-							}
-						}
-						else
-						{
-							/*
-							 * Pre-V5 segment: rebuild into V5.
-							 */
-							BlockNumber new_root;
-							uint64		new_docs   = 0;
-							uint64		new_tokens = 0;
+					if (segments[i].num_docs > new_docs)
+						docs_shrinkage = segments[i].num_docs - new_docs;
+					if (segments[i].total_tokens > new_tokens)
+						tokens_shrinkage = segments[i].total_tokens -
+										   new_tokens;
 
-							new_root = tp_vacuum_rebuild_segment(
-									info->index,
-									info->heaprel,
-									segments[i].root_block,
-									level,
-									callback,
-									callback_state,
-									&new_docs,
-									&new_tokens);
-
-							tp_vacuum_replace_segment(
-									info->index,
-									level,
-									segments[i].root_block,
-									new_root,
-									prev);
-
-							/*
-							 * Clamp to zero: new_tokens is a raw
-							 * re-tokenization sum, while
-							 * segments[i].total_tokens comes from a
-							 * pre-V5 header that may have been written
-							 * with a quantized (merge) or cumulative
-							 * (pre-fix L0 spill) value.  Underflow here
-							 * would wrap into a huge positive shrinkage
-							 * before the tp_apply_vacuum_shrinkage clamp
-							 * sees it.  num_docs has no comparable
-							 * corruption path, but clamping both keeps
-							 * the code symmetric.
-							 */
-							if (segments[i].num_docs > new_docs)
-								docs_shrinkage += segments[i].num_docs -
-												  new_docs;
-							if (segments[i].total_tokens > new_tokens)
-								tokens_shrinkage += segments[i].total_tokens -
-													new_tokens;
-
-							if (new_root != InvalidBlockNumber)
-								prev = new_root;
-						}
-					}
-					else
-					{
-						prev = segments[i].root_block;
-					}
+					tp_vacuum_replace_segment(
+							index_state,
+							info->index,
+							level,
+							segments[i].root_block,
+							new_root,
+							docs_shrinkage,
+							tokens_shrinkage);
 				}
 			}
-
-			tp_apply_vacuum_shrinkage(
-					info->index, docs_shrinkage, tokens_shrinkage);
 		}
 
 		/*
@@ -1151,6 +1282,8 @@ tp_vacuumcleanup(IndexVacuumInfo *info, IndexBulkDeleteResult *stats)
 	TpSegmentGraphSnapshot *segment_snapshot;
 	TpLocalIndexState	   *index_state;
 	int						freed_pages;
+	volatile bool			maintenance_locked = false;
+	volatile bool			index_lock_held	   = false;
 
 	/* Initialize stats if not provided */
 	if (stats == NULL)
@@ -1172,18 +1305,31 @@ tp_vacuumcleanup(IndexVacuumInfo *info, IndexBulkDeleteResult *stats)
 				info->index, index_state, TP_MIN_SPILL_PAGES);
 
 	/*
-	 * Acquire the per-index LWLock in shared mode before taking the bounded
-	 * root snapshot consumed by tp_count_live_docs.  Concurrent spills /
-	 * compactions take LW_EXCLUSIVE to publish roots and recycle pages.
-	 * Acquire after the spill above (which takes LW_EXCLUSIVE itself) to
-	 * avoid a shared->exclusive upgrade.
+	 * Maintenance stabilizes segment payloads while cleanup removes at most
+	 * one empty-bearing prefix and counts live documents.  Parallel VACUUM
+	 * cannot assign the reclaim XID needed by physical cleanup, so it leaves
+	 * zeroed segments for a later serial pass.
 	 */
-	if (index_state != NULL)
-		tp_acquire_index_lock(index_state, LW_SHARED);
-
-	segment_snapshot = tp_segment_graph_snapshot_create(info->index);
-	if (segment_snapshot)
+	tp_compaction_lock(info->index);
+	maintenance_locked = true;
+	PG_TRY();
 	{
+		if (index_state != NULL && !IsInParallelMode() && !IsParallelWorker())
+			(void)tp_compact_empty_step(index_state, info->index);
+
+		if (index_state != NULL)
+		{
+			tp_acquire_index_lock(index_state, LW_SHARED);
+			index_lock_held = true;
+		}
+
+		segment_snapshot = tp_segment_graph_snapshot_create(info->index);
+		if (index_lock_held)
+		{
+			tp_release_index_lock(index_state);
+			index_lock_held = false;
+		}
+
 		stats->num_pages = 1;
 		/*
 		 * reltuples tracks live docs, which can be less than
@@ -1193,15 +1339,16 @@ tp_vacuumcleanup(IndexVacuumInfo *info, IndexBulkDeleteResult *stats)
 		 * regardless of whether tp_bulkdelete ran or this is a
 		 * no-deletes maintenance round.
 		 *
-		 * The per-index LWLock acquired above is held across the walk
-		 * so concurrent spills / compactions can't recycle a page we're
-		 * about to tp_segment_open.
+		 * The maintenance lock keeps compaction and another VACUUM from
+		 * replacing snapshot sources.  A concurrent spill may prepend L0
+		 * but cannot invalidate the copied roots, so the per-index lock is
+		 * not held across this walk.
 		 */
 		stats->num_index_tuples = (double)
 				tp_count_live_docs(info->index, segment_snapshot);
 		tp_segment_graph_snapshot_free(segment_snapshot);
-		if (index_state != NULL)
-			tp_release_index_lock(index_state);
+		tp_compaction_unlock(info->index);
+		maintenance_locked = false;
 
 		/*
 		 * Return DEAD memtable orphan blocks to the index FSM once
@@ -1212,11 +1359,17 @@ tp_vacuumcleanup(IndexVacuumInfo *info, IndexBulkDeleteResult *stats)
 		 * waits until this scan finishes.
 		 */
 		if (index_state != NULL)
+		{
 			tp_acquire_index_lock(index_state, LW_SHARED);
+			index_lock_held = true;
+		}
 		freed_pages =
 				tp_reclaim_dead_memtable_pages(info->index, info->heaprel);
-		if (index_state != NULL)
+		if (index_lock_held)
+		{
 			tp_release_index_lock(index_state);
+			index_lock_held = false;
+		}
 
 		if (stats->pages_deleted == 0 && stats->tuples_removed == 0 &&
 			freed_pages == 0)
@@ -1252,22 +1405,14 @@ tp_vacuumcleanup(IndexVacuumInfo *info, IndexBulkDeleteResult *stats)
 			}
 		}
 	}
-	else
+	PG_FINALLY();
 	{
-		if (index_state != NULL)
+		if (index_lock_held && index_state != NULL && index_state->lock_held)
 			tp_release_index_lock(index_state);
-
-		elog(WARNING,
-			 "Tapir vacuum cleanup: couldn't snapshot segment graph "
-			 "for index %s",
-			 RelationGetRelationName(info->index));
-
-		if (stats->num_pages == 0 && stats->num_index_tuples == 0)
-		{
-			stats->num_pages		= 1;
-			stats->num_index_tuples = 0;
-		}
+		if (maintenance_locked)
+			tp_compaction_unlock(info->index);
 	}
+	PG_END_TRY();
 
 	return stats;
 }

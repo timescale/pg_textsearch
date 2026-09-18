@@ -350,7 +350,7 @@ vacuum_replace_xid_line="$(
         <<<"${vacuum_replace_body}" | head -1 | cut -d: -f1 || true
 )"
 vacuum_replace_tombstone_line="$(
-    grep -n 'batch_head = tp_tombstone_enqueue_extend' \
+    grep -n 'tp_tombstone_build_detached' \
         <<<"${vacuum_replace_body}" | head -1 | cut -d: -f1 || true
 )"
 if [[ -z "${vacuum_replace_xid_line}" ||

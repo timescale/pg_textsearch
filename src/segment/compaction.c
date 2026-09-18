@@ -725,6 +725,26 @@ tp_plan_is_noop(
 			return false;
 	}
 
+	/*
+	 * A structural singleton rewrite is still useful when its alive bitmap
+	 * contains dead documents: merge rewrites only survivors and corrects
+	 * corpus statistics.  In particular, an all-zero singleton disappears.
+	 */
+	for (uint32 i = 0; i < plan->num_sources; i++)
+	{
+		TpSegmentReader *reader =
+				tp_segment_open(index, plan->sources[i].root);
+		bool has_dead_docs;
+
+		if (reader == NULL)
+			return false;
+		has_dead_docs = reader->header->alive_bitset_offset > 0 &&
+						reader->header->alive_count < reader->header->num_docs;
+		tp_segment_close(reader);
+		if (has_dead_docs)
+			return false;
+	}
+
 	buf = ReadBuffer(index, TP_METAPAGE_BLKNO);
 	LockBuffer(buf, BUFFER_LOCK_SHARE);
 	page	= BufferGetPage(buf);
@@ -1839,6 +1859,88 @@ tp_assign_ordinary_batches(
 static void tp_free_compaction_plan(TpCompactionPlan *plan);
 
 static bool
+tp_build_empty_plan(
+		Relation			  index,
+		const TpIndexMetaPage snapshot,
+		uint32				  first_level,
+		TpCompactionPlan	 *plan)
+{
+	for (uint32 level = first_level; level < TP_MAX_LEVELS; level++)
+	{
+		BlockNumber current = snapshot->level_heads[level];
+
+		for (uint32 position = 0;
+			 position < (uint32)snapshot->level_counts[level];
+			 position++)
+		{
+			TpSegmentReader *reader;
+			BlockNumber		 next;
+			bool			 empty;
+
+			if (!BlockNumberIsValid(current))
+				ereport(ERROR,
+						(errcode(ERRCODE_DATA_CORRUPTED),
+						 errmsg("segment chain for level %u ended before "
+								"its recorded count",
+								level)));
+
+			reader = tp_segment_open(index, current);
+			if (reader == NULL)
+				ereport(ERROR,
+						(errcode(ERRCODE_DATA_CORRUPTED),
+						 errmsg("could not open segment at block %u",
+								current)));
+			next  = reader->header->next_segment;
+			empty = reader->header->alive_bitset_offset > 0 &&
+					reader->header->alive_count == 0;
+			tp_segment_close(reader);
+
+			if (empty)
+			{
+				uint32 first_source;
+				uint32 first_batch;
+				uint32 prefix_count = position + 1;
+
+				tp_initialize_ordinary_plan(index, snapshot, plan);
+				first_source = tp_select_level_prefix(
+						index, snapshot, plan, level, prefix_count);
+				first_batch = plan->num_batches;
+				tp_append_bounded_batches(plan, first_source, prefix_count);
+
+				for (uint32 i = first_batch; i < plan->num_batches; i++)
+				{
+					TpCompactionBatch *batch = &plan->batches[i];
+
+					for (uint32 j = 0; j < batch->source_count; j++)
+					{
+						if (plan->sources[batch->first_source + j]
+									.source_level != level)
+							ereport(ERROR,
+									(errcode(ERRCODE_INTERNAL_ERROR),
+									 errmsg("empty cleanup batch crosses "
+											"levels")));
+					}
+					batch->output_level = level;
+				}
+
+				return true;
+			}
+
+			current = next;
+		}
+
+		if (BlockNumberIsValid(current))
+			ereport(ERROR,
+					(errcode(ERRCODE_DATA_CORRUPTED),
+					 errmsg("segment chain for level %u exceeds its "
+							"recorded count",
+							level)));
+	}
+
+	return false;
+}
+
+static bool
 tp_build_ordinary_plan(
 		Relation			  index,
 		const TpIndexMetaPage snapshot,
@@ -1928,6 +2030,7 @@ tp_select_compaction_plan(
 		TpLocalIndexState *index_state,
 		Relation		   index,
 		uint32			   first_level,
+		bool			   empty_only,
 		TpIndexMetaPage	  *snapshot_out,
 		TpCompactionPlan  *plan)
 {
@@ -1956,8 +2059,10 @@ tp_select_compaction_plan(
 			acquired_here = false;
 		}
 
-		if (tp_compaction_candidate(snapshot->level_counts, first_level) <
-			TP_MAX_LEVELS)
+		selected = tp_build_empty_plan(index, snapshot, first_level, plan);
+		if (!selected && !empty_only &&
+			tp_compaction_candidate(snapshot->level_counts, first_level) <
+					TP_MAX_LEVELS)
 			selected =
 					tp_build_ordinary_plan(index, snapshot, first_level, plan);
 	}
@@ -2049,7 +2154,10 @@ tp_select_force_compaction_plan(
  */
 static bool
 tp_compact_once(
-		TpLocalIndexState *index_state, Relation index, uint32 first_level)
+		TpLocalIndexState *index_state,
+		Relation		   index,
+		uint32			   first_level,
+		bool			   empty_only)
 {
 	TpIndexMetaPage	   snapshot;
 	TpCompactionPlan   plan;
@@ -2061,7 +2169,7 @@ tp_compact_once(
 	if (first_level >= TP_MAX_LEVELS)
 		return false;
 	if (!tp_select_compaction_plan(
-				index_state, index, first_level, &snapshot, &plan))
+				index_state, index, first_level, empty_only, &snapshot, &plan))
 		return false;
 
 	if (!private_compaction)
@@ -2090,14 +2198,20 @@ void
 tp_maybe_compact_level(
 		TpLocalIndexState *index_state, Relation index, uint32 first_level)
 {
-	while (tp_compact_once(index_state, index, first_level))
+	while (tp_compact_once(index_state, index, first_level, false))
 		;
 }
 
 bool
 tp_compact_step(TpLocalIndexState *index_state, Relation index)
 {
-	return tp_compact_once(index_state, index, 0);
+	return tp_compact_once(index_state, index, 0, false);
+}
+
+bool
+tp_compact_empty_step(TpLocalIndexState *index_state, Relation index)
+{
+	return tp_compact_once(index_state, index, 0, true);
 }
 
 void

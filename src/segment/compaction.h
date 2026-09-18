@@ -47,5 +47,12 @@ extern void tp_maybe_compact_level(
 extern bool
 tp_compact_step(struct TpLocalIndexState *index_state, Relation index);
 
+/*
+ * Run at most one below-threshold pass whose selected prefix contains an
+ * already-empty V5 segment.  The caller already holds maintenance.
+ */
+extern bool
+tp_compact_empty_step(struct TpLocalIndexState *index_state, Relation index);
+
 extern void
 tp_force_compact(struct TpLocalIndexState *index_state, Relation index);

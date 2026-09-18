@@ -85,11 +85,13 @@ diagnose() {
           FROM pg_locks
          WHERE (locktype = 'relation'
                 AND relation IN ('docs_bm25'::regclass,
-                                 'coord_bm25'::regclass))
+                                 'coord_bm25'::regclass,
+                                 'identify_bm25'::regclass))
             OR (locktype = 'object'
                 AND classid = 'pg_am'::regclass
                 AND objid IN ('docs_bm25'::regclass,
-                              'coord_bm25'::regclass))
+                              'coord_bm25'::regclass,
+                              'identify_bm25'::regclass))
          ORDER BY pid, locktype, mode;" 2>&1 || true
     warn "server log tail:"
     tail -n 80 "${LOGFILE}" 2>/dev/null || true
@@ -194,6 +196,19 @@ SELECT bm25_spill_index('coord_bm25');
 INSERT INTO coord_docs(body)
 SELECT 'coordcase batch4 document ' || gs FROM generate_series(1, 8) gs;
 SELECT bm25_spill_index('coord_bm25');
+
+CREATE TABLE identify_docs (
+    id bigserial PRIMARY KEY,
+    body text NOT NULL
+);
+CREATE INDEX identify_bm25 ON identify_docs USING bm25(body)
+    WITH (text_config='english', compaction='off');
+ALTER TABLE identify_docs SET (autovacuum_enabled=false);
+INSERT INTO identify_docs(body)
+SELECT 'identify vacuum document ' || gs || ' ' || repeat(md5(gs::text), 8)
+FROM generate_series(1, 20000) gs;
+SELECT bm25_spill_index('identify_bm25');
+DELETE FROM identify_docs WHERE id <= 1000;
 SQL
 }
 
@@ -252,6 +267,22 @@ wait_for_marker() {
     error "did not observe log marker: ${marker}"
 }
 
+wait_for_vacuum_marker() {
+    local oid=$1
+    local backend=$2
+    local deadline=$((SECONDS + 10))
+    local marker="pg_textsearch VACUUM pause during identification for index ${oid} backend ${backend}"
+
+    while ((SECONDS < deadline)); do
+        if grep -Fq "${marker}" "${LOGFILE}" 2>/dev/null; then
+            log "Observed VACUUM identification marker for index ${oid}, backend ${backend}"
+            return
+        fi
+        sleep 0.05
+    done
+    error "did not observe log marker: ${marker}"
+}
+
 assert_still_paused() {
     local phase=$1
     local oid=$2
@@ -299,6 +330,70 @@ assert_no_segment_errors() {
             "${ERR_DIR}" "${LOGFILE}" | sed -n '1,5p'
         error "TEST FAILED: concurrent maintenance reported an index storage error"
     fi
+}
+
+test_vacuum_identification_does_not_gate_readers() {
+    local vacuum_output="${ERR_DIR}/identify_vacuum.log"
+    local spill_output="${ERR_DIR}/identify_spill.log"
+    local reader_output="${ERR_DIR}/identify_reader.log"
+    local vacuum_pid
+    local spill_pid
+    local reader_pid
+    local vacuum_backend
+    local oid
+    local reader_result
+
+    log "Case: VACUUM identification does not gate later readers..."
+    oid=$(sql -c "SELECT 'identify_bm25'::regclass::oid;")
+
+    PGAPPNAME=pgts-identify-vacuum \
+        PGOPTIONS="-c statement_timeout=90000 -c lock_timeout=30000 -c pg_textsearch.debug_compaction_pause_source_estimate_ms=${PAUSE_MS}" \
+        psql -h "${SOCKET_DIR}" -p "${TEST_PORT}" -d "${TEST_DB}" \
+        -qAt -v ON_ERROR_STOP=1 \
+        -c "SELECT pg_backend_pid();" \
+        -c "VACUUM identify_docs;" \
+        >"${vacuum_output}" 2>&1 &
+    vacuum_pid=$!
+    vacuum_backend=$(client_backend_pid \
+        "${vacuum_output}" "identification VACUUM client")
+    wait_for_vacuum_marker "${oid}" "${vacuum_backend}"
+
+    PGAPPNAME=pgts-identify-spill \
+        PGOPTIONS="-c statement_timeout=90000 -c lock_timeout=30000" \
+        sql -c "
+            INSERT INTO identify_docs(body)
+            VALUES ('queued spill reader visibility');
+            SELECT bm25_spill_index('identify_bm25');" \
+        >"${spill_output}" 2>&1 &
+    spill_pid=$!
+    sleep 0.25
+
+    PGAPPNAME=pgts-identify-reader \
+        PGOPTIONS="-c statement_timeout=2000 -c lock_timeout=1500" \
+        sql -c "
+            SELECT count(*)
+              FROM (
+                    SELECT id
+                      FROM identify_docs
+                     ORDER BY body <@> to_bm25query(
+                                  'identify', 'identify_bm25')
+                     LIMIT 1
+                   ) ranked;" \
+        >"${reader_output}" 2>&1 &
+    reader_pid=$!
+    wait_success "${reader_pid}" 3 "later identification reader" \
+        "${reader_output}"
+    reader_result=$(tail -n 1 "${reader_output}")
+    [ "${reader_result}" = "1" ] ||
+        error "later identification reader returned ${reader_result}"
+
+    kill -0 "${vacuum_pid}" 2>/dev/null ||
+        error "VACUUM identification ended before reader proof"
+    wait_success "${vacuum_pid}" 15 "identification VACUUM" \
+        "${vacuum_output}"
+    wait_success "${spill_pid}" 15 "identification spill" "${spill_output}"
+
+    log "Later reader completed while VACUUM identification was paused"
 }
 
 test_vacuum_waits_for_force_merge() {
@@ -545,6 +640,7 @@ run_test() {
 # Main
 setup_test_db
 seed_data
+test_vacuum_identification_does_not_gate_readers
 test_vacuum_waits_for_force_merge
 run_test
 

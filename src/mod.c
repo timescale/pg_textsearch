@@ -155,7 +155,7 @@ bool tp_debug_panic_after_spill_finalize = false;
 bool tp_debug_panic_before_compaction_publish = false;
 bool tp_debug_panic_after_compaction_publish  = false;
 
-/* Debug: deterministic runtime compaction pauses for concurrency tests. */
+/* Debug: deterministic runtime maintenance pauses for concurrency tests. */
 int tp_debug_compaction_pause_after_select_ms	 = 0;
 int tp_debug_compaction_pause_source_estimate_ms = 0;
 int tp_debug_compaction_pause_before_publish_ms	 = 0;
@@ -772,9 +772,9 @@ _PG_init(void)
 
 	DefineCustomIntVariable(
 			"pg_textsearch.debug_compaction_pause_source_estimate_ms",
-			"Pause runtime compaction during source estimation.",
+			"Pause runtime maintenance during source identification.",
 			"Testing-only interruptible pause after scanning the first "
-			"source dictionary.",
+			"compaction source dictionary or VACUUM CTID batch.",
 			&tp_debug_compaction_pause_source_estimate_ms,
 			0,
 			0,

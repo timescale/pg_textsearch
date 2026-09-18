@@ -123,8 +123,8 @@ CREATE INDEX reclaim_idx ON reclaim_docs
 
 -- Add a second segment through the on-disk memtable, then delete exactly
 -- those rows so VACUUM drops that all-dead segment.  First create an FSM
--- free-page pool: VACUUM's tombstone pages must not consume it while
--- running under LW_SHARED, or they can race concurrent insert allocation.
+-- free-page pool: unlocked VACUUM preparation may safely allocate its
+-- detached tombstone pages there instead of extending the relation.
 INSERT INTO reclaim_docs
 SELECT g, 'vacuum pool beta term' || (g % 50)
 FROM generate_series(1501, 3000) g;
@@ -145,7 +145,7 @@ SELECT pg_relation_size('reclaim_idx') / current_setting('block_size')::int
 DELETE FROM reclaim_docs WHERE id BETWEEN 3001 AND 3020;
 VACUUM reclaim_docs;
 SELECT pg_relation_size('reclaim_idx') / current_setting('block_size')::int
-    > :blocks_before_vacuum_drop AS vacuum_tombstone_extended;
+    <= :blocks_before_vacuum_drop AS vacuum_tombstone_reused_fsm;
 
 -- VACUUM should park the dropped segment's pages, not recycle them yet.
 SELECT bm25_pending_free_pages('reclaim_idx') > 0 AS parked_after_vacuum_drop;

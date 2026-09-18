@@ -8,13 +8,14 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 PG_CONFIG="${PG_CONFIG:-pg_config}"
 PGBINDIR="$("${PG_CONFIG}" --bindir)"
 export PATH="${PGBINDIR}:${PATH}"
 TEST_PORT=55461
 TEST_DB=parallel_vacuum_test
 DATA_DIR="${SCRIPT_DIR}/../tmp_parallel_vacuum"
-SOCKET_DIR="/tmp/pgts-parallel-vacuum-$$"
+SOCKET_DIR="${REPO_ROOT}/.parallel_vacuum_sock"
 LOGFILE="${DATA_DIR}/postgres.log"
 
 cleanup() {
@@ -164,6 +165,77 @@ remaining=$(
 
 if [ "${remaining}" != "0" ]; then
     echo "parallel VACUUM left ${remaining} deleted documents searchable" >&2
+    exit 1
+fi
+
+parallel_levels=$(
+    "${PSQL[@]}" -c "SELECT bm25_level_counts('docs_bm25');"
+)
+if [ "${parallel_levels}" != "{1,0,0,0,0,0,0,0}" ]; then
+    echo "parallel VACUUM left unexpected levels ${parallel_levels}" >&2
+    exit 1
+fi
+
+"${PSQL[@]}" -c "VACUUM (PARALLEL 0) docs;" >/dev/null
+
+serial_levels=$(
+    "${PSQL[@]}" -c "SELECT bm25_level_counts('docs_bm25');"
+)
+if [ "${serial_levels}" != "{0,0,0,0,0,0,0,0}" ]; then
+    echo "serial VACUUM left empty segment levels ${serial_levels}" >&2
+    exit 1
+fi
+
+"${PSQL[@]}" <<'SQL' >/dev/null
+ALTER TABLE docs ADD COLUMN label text;
+CREATE TABLE control_docs (
+    label text NOT NULL,
+    body text NOT NULL
+);
+CREATE INDEX control_docs_bm25 ON control_docs USING bm25(body)
+    WITH (text_config = 'english', compaction = 'off');
+
+INSERT INTO docs (label, body) VALUES
+    ('short', 'needle alpha beta gamma delta'),
+    ('long', 'needle needle needle needle needle' ||
+             repeat(' filler', 45));
+INSERT INTO control_docs SELECT label, body FROM docs;
+SELECT bm25_spill_index('docs_bm25');
+SELECT bm25_spill_index('control_docs_bm25');
+SQL
+
+cleanup_order=$(
+    "${PSQL[@]}" -c "
+        SELECT string_agg(label, ',' ORDER BY score, label)
+          FROM (
+                SELECT label,
+                       body <@> to_bm25query(
+                           'needle', 'docs_bm25') AS score
+                  FROM docs
+                 ORDER BY body <@> to_bm25query(
+                              'needle', 'docs_bm25')
+               ) ranked;"
+)
+control_order=$(
+    "${PSQL[@]}" -c "
+        SELECT string_agg(label, ',' ORDER BY score, label)
+          FROM (
+                SELECT label,
+                       body <@> to_bm25query(
+                           'needle', 'control_docs_bm25') AS score
+                  FROM control_docs
+                 ORDER BY body <@> to_bm25query(
+                              'needle', 'control_docs_bm25')
+               ) ranked;"
+)
+
+if [ "${control_order}" != "long,short" ]; then
+    echo "control corpus did not produce sensitive order: ${control_order}" >&2
+    exit 1
+fi
+if [ "${cleanup_order}" != "${control_order}" ]; then
+    echo "post-cleanup order ${cleanup_order} differs from control ${control_order}" \
+        >&2
     exit 1
 fi
 
