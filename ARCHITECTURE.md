@@ -40,6 +40,13 @@ live heap TID occurs in at most one published segment. Segment-local numeric
 `doc_id` values may repeat across segments. This disjointness permits merge and
 scoring paths to avoid cross-segment document deduplication.
 
+Published-graph consumers hold the metapage buffer in share mode while copying
+every segment root for every level. Level counts bound and validate discovery,
+but the copied roots—not the counts alone—are the logical graph snapshot.
+Query, debug, and maintenance work then use those explicit root arrays rather
+than lazily following published `next_segment` links. This also gives standby
+readers one complete old or new graph while Generic WAL replay changes links.
+
 ## Memtable Cache
 
 The shared-memory memtable cache accelerates reads but is derived and
@@ -104,7 +111,8 @@ the configured compaction policy.
 
 The `compaction` index option controls spill-time behavior:
 
-- `inline` compacts threshold debt during spills and index builds;
+- `inline` runs one bounded pass after a visible spill; private index builds
+  may drain debt before becoming visible;
 - `background` dispatches a pre-commit request when possible. Runtime
   no-dispatch contexts such as autovacuum and callback re-entry compact
   inline. Index builds leave compaction to the managed workflow after
@@ -116,13 +124,13 @@ Prepared transactions do not flush queued background requests. Unconfigured,
 unresolvable, or failed callbacks do not fall back inline; the compaction debt
 remains for a later spill or explicit maintenance.
 
-`bm25_compact()` holds one per-index maintenance lock while it drives reducible
-debt to completion. Each pass uses brief per-index `LW_SHARED` selection, no
-per-index lock during output build, and fair `LW_EXCLUSIVE` validation and
-publication. `bm25_compact_step()` runs at most one pass. Drive repeated
-maintenance from the return value of `bm25_compact_step()`, not
-`bm25_needs_compaction()`, because over-budget segments can leave a level
-permanently above its advisory threshold.
+Each visible automatic invocation performs at most one bounded pass.
+`bm25_compact()` explicitly drives multiple passes but releases maintenance
+admission between them; `bm25_compact_step()` runs at most one pass. A private
+`CREATE INDEX` build may drain compaction debt before the index becomes
+visible. Drive repeated maintenance from the return value of
+`bm25_compact_step()`, not `bm25_needs_compaction()`, because over-budget
+segments can leave a level permanently above its advisory threshold.
 
 ### Compaction phases
 
@@ -130,9 +138,9 @@ Each runtime pass uses the same phase engine:
 
 1. **Maintenance admission.** Acquire the per-index maintenance lock. A caller
    that waited rechecks compaction debt after admission.
-2. **Select.** Briefly take the per-index lock in `LW_SHARED`, snapshot the
-   metapage, and record exact contiguous source runs and retained remainders.
-   Release the per-index lock before reading complete sources.
+2. **Select.** Briefly take the per-index lock in `LW_SHARED` and copy the
+   metapage. Release it before the maintenance-protected source walk records
+   exact source roots, contiguous runs, and retained remainders.
 3. **Build.** Hold only the maintenance lock while reading immutable sources,
    constructing complete WAL-logged but unreachable output segments,
    collecting displaced source pages, and building a detached tombstone batch
@@ -145,14 +153,15 @@ Each runtime pass uses the same phase engine:
    every detached tombstone container with it while the batch remains
    unreachable and no runtime per-index lock is held. The in-progress
    transaction pins primary and standby horizons through publication.
-5. **Validate.** Acquire fair `LW_EXCLUSIVE` and validate the selected runs,
-   against the current graph. L0 may have only a newly prepended spill prefix;
-   non-L0 chains must be unchanged. Prepared output attachment performs only
-   constant-time endpoint checks in this reader-excluding section.
+5. **Prepare and validate.** Under `LW_SHARED`, validate the selected runs and
+   prepare any L0 prefix added by racing spills. Release the lock, then request
+   fair `LW_EXCLUSIVE`. If another spill wins that race, release exclusive and
+   repeat preparation without rebuilding output.
 6. **Publish.** In one `GenericXLog` action, splice around any accepted L0
    prefix, replace the selected runs, rebase counts and corpus shrinkage from
    current metapage values, and attach the detached tombstone batch to the
-   current pending-free head.
+   current pending-free head. Exclusive work is limited to constant-time
+   identity, predecessor, and detached-tail checks plus publication.
 
 Published physical changes are not undone by transaction rollback.
 
@@ -162,17 +171,18 @@ FSM has no reusable page. Mixing it with `ReadBufferExtended(P_NEW)` would let
 unlocked compaction and concurrent memtable extension reserve the same block
 on PostgreSQL 17.
 
-Publication remains exclusive even though it is bounded. Scans capture level
-heads but follow segment links lazily. Publishing under a shared lock could
-let a scan combine an old metapage head with a rewritten L0 predecessor link
-and omit documents. Under `LW_EXCLUSIVE`, scans that started before
-publication finish on the old graph and later scans see the new graph.
+Publication remains exclusive even though it is bounded. Primary scans that
+started before publication finish from their copied old roots; later scans
+copy the new roots. Standby discovery holds the metapage buffer share lock, so
+replay cannot expose a metapage/link mixture while roots are being copied.
 
 The existing `LW_SHARED` lifetime of ranked index scans was not shortened.
 Readers and inserts continue during the long build phase, but fair admission
 can briefly gate new shared acquirers while publication waits. Inline
 compaction is still foreground work: the write transaction that triggers it
-waits for selection, build, validation, and publication to complete.
+waits for one selection, build, validation, and publication pass to complete.
+Output and tombstone pages are WAL-logged before the later reachability record;
+WAL insertion order provides durability without `FlushRelationBuffers()`.
 
 ## Managed Background Compaction
 
@@ -235,6 +245,10 @@ advance the reclaim horizon past it. Restamping scales with the number of
 tombstone containers but does not extend runtime reader exclusion. Selected
 source pages are never returned directly to the FSM.
 
+Metapage V8 already contains `pending_free_head`; compaction preserves that
+existing chain when upgrading and publishing. Only older metapage versions
+synthesize an empty pending-free head.
+
 VACUUM segment replacement likewise assigns its current full transaction ID
 before building replacement tombstones. That transaction remains in progress
 through the replacement `GenericXLog` publication, preventing a later standby
@@ -264,10 +278,17 @@ chain.
 
 VACUUM acquires the per-index maintenance lock before identifying segment
 document IDs and retains it through alive-bit mutation, legacy segment
-replacement, corpus-statistic adjustment, and any segment unlink. It then
-takes per-index and buffer locks in the normal order.
+replacement, corpus-statistic adjustment, and any segment unlink. The
+per-index LWLock is held only for the root snapshot and brief validated
+publication; document identification and bitmap work remain unlocked from
+readers and inserts.
 
 If VACUUM is admitted first, compaction waits and later builds from the updated
 alive bits. If compaction is admitted first, VACUUM waits and then discovers
 the published output before applying deaths. This prevents both resurrection
 of deleted documents and mutation through stale source document IDs.
+
+Parallel VACUUM can persist a zero-alive bitmap but cannot assign the reclaim
+XID needed to unlink it. A later serial VACUUM or ordinary compaction therefore
+prioritizes removal of zero-alive segments even below the normal compaction
+threshold, including maintenance rounds with no newly reported dead TIDs.

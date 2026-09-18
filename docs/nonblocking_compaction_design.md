@@ -220,8 +220,10 @@ Its caller releases the per-index lock before applying policy:
 - `background`: record the existing transaction-local compaction request;
 - `manual` or `off`, depending on the branch version: do nothing.
 
-Build-private compaction during `CREATE INDEX` may retain its current direct
-path because the index is not visible to concurrent sessions.
+Build-private compaction during `CREATE INDEX` may drain all reducible debt
+while retaining its direct path because the index is not visible to concurrent
+sessions. Every visible automatic or fallback invocation performs at most one
+bounded pass.
 
 This boundary is required to avoid a lock inversion where compaction holds
 the maintenance lock and waits to publish while another spill holds the
@@ -248,7 +250,8 @@ before selection. It must not wrap the step in a coarse per-index LWLock;
 
 With the maintenance lock held, compaction briefly acquires the per-index lock
 in `LW_SHARED` only long enough to copy the metapage. It then releases the lock
-before traversing the snapshot's immutable source chains.
+before traversing the maintenance-protected source graph and recording its
+roots in the immutable plan.
 
 The unlocked planning phase builds an immutable plan containing:
 
@@ -339,7 +342,7 @@ the prepared identity. If another spill won the race, compaction releases the
 lock and repeats prefix preparation. It never walks an unbounded concurrent
 prefix while holding `LW_EXCLUSIVE`.
 
-The final constant-time validation requires:
+Shared preparation validates:
 
 - every selected source root still exists, is contiguous, and appears in the
   expected order;
@@ -348,8 +351,9 @@ The final constant-time validation requires:
 - destination chains remain compatible with the prepared output.
 
 Complete prepared-output validation already ran before XID assignment,
-restamping, and reader exclusion. Publication retains only constant-time
-detached-tail checks before attachment.
+restamping, and reader exclusion. After exclusive acquisition, publication
+only compares fixed-size metapage identity fields and the prepared predecessor
+link, then performs constant-time detached-tail checks before attachment.
 
 Concurrent memtable head/tail changes and a changed deferred-free head are
 expected and do not invalidate the plan. Current metapage values, not the
@@ -385,7 +389,8 @@ and reacquires maintenance before reselecting.
 
 ## Reader graph snapshots and reclaim behavior
 
-Every chain-reading path uses one common segment-graph snapshot helper:
+Query, debug, and maintenance root enumerators use one common segment-graph
+snapshot helper:
 
 1. lock the metapage buffer in share mode;
 2. copy corpus metadata, level heads, and level counts;
@@ -396,8 +401,10 @@ Every chain-reading path uses one common segment-graph snapshot helper:
 
 This helper is used by ranked BMW scans, standalone scoring, Boolean scans,
 debug/summary functions, and maintenance code that needs a stable root list.
-The counts frame and validate the snapshot; the copied root block numbers are
-the logical graph.
+The counts only frame and validate discovery; the copied root block numbers,
+not the counts alone, are the logical graph. Consumers traverse the explicit
+root arrays and never rediscover published roots through later
+`next_segment` reads.
 
 A primary scan that starts before publication also holds `LW_SHARED`, so
 exclusive publication waits for it. A standby scan has no extension lock, but
