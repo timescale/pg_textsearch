@@ -84,9 +84,6 @@ typedef struct TpPreparedSpill
 	uint64			 len_delta;
 } TpPreparedSpill;
 
-extern int tp_debug_index_lock_exclusive_waiter_gate;
-extern int tp_debug_spill_before_finalize_gate;
-
 static void
 tp_debug_gate_spill_before_finalize(Relation index)
 {

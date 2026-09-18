@@ -48,9 +48,6 @@
 #include "segment/merge.h"
 #include "segment/segment.h"
 
-extern int tp_debug_index_lock_pause_exclusive_waiter_ms;
-extern int tp_debug_index_lock_exclusive_waiter_gate;
-
 /* Cache of local index states */
 static HTAB *local_state_cache			   = NULL;
 static Oid	 tp_debug_index_lock_order_oid = InvalidOid;

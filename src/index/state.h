@@ -26,6 +26,9 @@ struct TpMemtable;
 typedef struct TpIndexMetaPageData *TpIndexMetaPage;
 typedef struct RelationData		   *Relation;
 
+extern int tp_debug_index_lock_pause_exclusive_waiter_ms;
+extern int tp_debug_index_lock_exclusive_waiter_gate;
+
 /*
  * Header of the DSM segment for each index
  * Contains metadata and space for the DSA area
