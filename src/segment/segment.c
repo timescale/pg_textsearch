@@ -120,7 +120,7 @@ tp_segment_read_next(Relation index, BlockNumber root, BlockNumber *next)
 	{
 		UnlockReleaseBuffer(buffer);
 		ereport(ERROR,
-				(errcode(ERRCODE_DATA_CORRUPTED),
+				(errcode(ERRCODE_INDEX_CORRUPTED),
 				 errmsg("invalid segment header at block %u", root)));
 	}
 

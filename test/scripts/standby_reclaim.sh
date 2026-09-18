@@ -27,6 +27,7 @@ READER_BACKEND_PID=
 READER_OPEN=false
 HELD_FEEDBACK_XMIN=
 COMPACTOR_PID=
+SNAPSHOT_READER_PID=
 
 wait_for_child_exit() {
     local pid=$1
@@ -75,6 +76,11 @@ cleanup() {
     local status=$?
 
     set +e
+    if [ -n "${SNAPSHOT_READER_PID}" ] &&
+       kill -0 "${SNAPSHOT_READER_PID}" 2>/dev/null; then
+        kill -TERM "${SNAPSHOT_READER_PID}" 2>/dev/null || true
+        wait_for_child_exit "${SNAPSHOT_READER_PID}" 50 || true
+    fi
     if [ -n "${COMPACTOR_PID}" ] &&
        kill -0 "${COMPACTOR_PID}" 2>/dev/null; then
         kill -TERM "${COMPACTOR_PID}" 2>/dev/null || true
@@ -91,11 +97,13 @@ cleanup() {
 trap cleanup EXIT INT TERM
 
 wait_for_compaction_pause() {
+    local index_oid=$1
     local marker="pg_textsearch compaction pause at after-restamp"
     local logfile="${PRIMARY_DIR}/log/postgres.log"
 
     for _ in $(seq 1 300); do
-        if grep -Fq "${marker}" "${logfile}" 2>/dev/null; then
+        if grep -Fq "${marker} for index ${index_oid}" \
+            "${logfile}" 2>/dev/null; then
             log "Compaction reached the pre-publication pause"
             return 0
         fi
@@ -107,6 +115,30 @@ $(cat "${PRIMARY_DIR}/compactor.out" 2>/dev/null || echo no output)"
     done
 
     error "Timed out 30s waiting for pre-publication pause"
+}
+
+wait_for_snapshot_pause() {
+    local index_oid=$1
+    local output=$2
+    local marker="pg_textsearch segment graph snapshot pause for index \
+${index_oid}"
+    local logfile="${STANDBY_DIR}/log/postgres.log"
+
+    for _ in $(seq 1 300); do
+        if grep -Fq "${marker}" "${logfile}" 2>/dev/null; then
+            log "Standby query copied its complete segment-root snapshot"
+            return 0
+        fi
+        if ! kill -0 "${SNAPSHOT_READER_PID}" 2>/dev/null; then
+            wait "${SNAPSHOT_READER_PID}" 2>/dev/null || true
+            SNAPSHOT_READER_PID=
+            error "Standby snapshot reader exited before its pause: \
+$(cat "${output}" 2>/dev/null || echo no output)"
+        fi
+        sleep 0.1
+    done
+
+    error "Timed out 30s waiting for standby segment-root snapshot pause"
 }
 
 wait_for_compactor() {
@@ -123,6 +155,25 @@ $(cat "${PRIMARY_DIR}/compactor.out" 2>/dev/null || echo no output)"
     done
 
     error "Timed out 40s waiting for compactor PID ${COMPACTOR_PID}"
+}
+
+wait_for_snapshot_reader() {
+    local output=$1
+
+    for _ in $(seq 1 700); do
+        if ! kill -0 "${SNAPSHOT_READER_PID}" 2>/dev/null; then
+            if wait "${SNAPSHOT_READER_PID}"; then
+                SNAPSHOT_READER_PID=
+                return 0
+            fi
+            error "Standby snapshot reader failed: \
+$(cat "${output}" 2>/dev/null || echo no output)"
+        fi
+        sleep 0.1
+    done
+
+    error "Timed out 70s waiting for standby snapshot reader PID \
+${SNAPSHOT_READER_PID}"
 }
 
 reader_open() {
@@ -345,6 +396,110 @@ EOF
     log "PASS: stock WAL replay canceled the disconnected old-graph reader"
 }
 
+test_atomic_segment_graph_snapshot() {
+    local actual_count actual_rows expected expected_rows graph index_oid
+    local output="${STANDBY_DIR}/segment_snapshot_reader.out"
+    local result spilled
+
+    log "Case: standby scoring uses one atomic segment-root snapshot..."
+    primary_sql "
+        CREATE TABLE snapshot_rec (
+            id integer PRIMARY KEY,
+            body text NOT NULL
+        ) WITH (autovacuum_enabled = false);
+        INSERT INTO snapshot_rec
+        SELECT g, 'atomic snapshot alpha document ' || g
+          FROM generate_series(1, 1000) g;
+        CREATE INDEX snapshot_idx ON snapshot_rec USING bm25(body)
+            WITH (text_config = 'english', compaction = 'off');" >/dev/null
+
+    for batch in $(seq 1 7); do
+        primary_sql "
+            INSERT INTO snapshot_rec
+            SELECT g, 'atomic snapshot alpha document ' || g
+              FROM generate_series(
+                  ${batch} * 1000 + 1,
+                  (${batch} + 1) * 1000) g;" >/dev/null
+        spilled=$(primary_sql_quiet \
+            "SELECT bm25_spill_index('snapshot_idx') > 0;")
+        [ "${spilled}" = "t" ] ||
+            error "Snapshot case batch ${batch} did not spill"
+    done
+    graph=$(primary_sql_quiet \
+        "SELECT bm25_level_counts('snapshot_idx'::regclass)::text;")
+    [ "${graph}" = "{8,0,0,0,0,0,0,0}" ] ||
+        error "Expected eight-L0 snapshot graph, got ${graph}"
+    primary_sql "CREATE TABLE snapshot_flush_before (id integer);" >/dev/null
+    wait_for_standby_catchup 30 ||
+        error "Standby did not catch up before snapshot compaction"
+
+    index_oid=$(primary_sql_quiet \
+        "SELECT 'snapshot_idx'::regclass::oid;")
+    primary_sql "
+        SET pg_textsearch.debug_compaction_pause_after_restamp_ms = 30000;
+        SELECT bm25_force_merge('snapshot_idx');" \
+        >"${PRIMARY_DIR}/snapshot_compactor.out" 2>&1 &
+    COMPACTOR_PID=$!
+    wait_for_compaction_pause "${index_oid}"
+
+    primary_sql "
+        INSERT INTO snapshot_rec
+        SELECT g, 'atomic snapshot alpha document ' || g
+          FROM generate_series(8001, 9000) g;" >/dev/null
+    spilled=$(primary_sql_quiet \
+        "SELECT bm25_spill_index('snapshot_idx') > 0;")
+    [ "${spilled}" = "t" ] ||
+        error "Snapshot case did not prepend the ninth L0 segment"
+    graph=$(primary_sql_quiet \
+        "SELECT bm25_level_counts('snapshot_idx'::regclass)::text;")
+    [ "${graph}" = "{9,0,0,0,0,0,0,0}" ] ||
+        error "Expected ninth prepended L0 segment, got ${graph}"
+    primary_sql "CREATE TABLE snapshot_flush_after (id integer);" >/dev/null
+    wait_for_standby_catchup 30 ||
+        error "Standby did not catch up to the nine-L0 graph"
+
+    rm -f "${output}"
+    psql -X -tAq -v ON_ERROR_STOP=1 -p "${STANDBY_PORT}" \
+        -d "${TEST_DB}" >"${output}" 2>&1 <<'SQL' &
+SET enable_seqscan = off;
+SET pg_textsearch.debug_segment_graph_snapshot_pause_ms = 45000;
+SELECT id
+  FROM snapshot_rec
+ ORDER BY body <@> to_bm25query('alpha', 'snapshot_idx')
+ LIMIT 9000;
+SQL
+    SNAPSHOT_READER_PID=$!
+    wait_for_snapshot_pause "${index_oid}" "${output}"
+    kill -0 "${COMPACTOR_PID}" 2>/dev/null ||
+        error "Compactor published before the standby snapshot pause"
+
+    wait_for_compactor
+    primary_sql "CREATE TABLE snapshot_flush_publish (id integer);" >/dev/null
+    wait_for_standby_catchup 30 ||
+        error "Standby did not replay publication during snapshot scoring"
+    kill -0 "${SNAPSHOT_READER_PID}" 2>/dev/null ||
+        error "Standby snapshot reader resumed before publication replay"
+    wait_for_snapshot_reader "${output}"
+
+    result=$(cat "${output}")
+    if grep -Ev '^[0-9]+$' <<<"${result}" >/dev/null; then
+        error "Standby mixed graph returned a non-numeric document ID"
+    fi
+    expected=$(primary_sql_quiet \
+        "SELECT id FROM snapshot_rec ORDER BY id;")
+    expected_rows="$(printf '%s\n' "${expected}" | wc -l | tr -d ' ')"
+    actual_count="$(printf '%s\n' "${result}" | sort -n | uniq | wc -l)"
+    actual_rows="$(printf '%s\n' "${result}" | wc -l)"
+    [ "${actual_rows}" = "${expected_rows}" ] ||
+        error "standby mixed graph returned ${actual_rows}/${expected_rows} rows"
+    [ "${actual_count}" = "${expected_rows}" ] ||
+        error "standby mixed graph returned duplicate document IDs"
+    [ "$(printf '%s\n' "${result}" | sort -n)" = "${expected}" ] ||
+        error "standby mixed graph IDs differ from the heap-derived set"
+
+    log "PASS: standby scoring returned all ${expected_rows} IDs exactly once"
+}
+
 main() {
     local spilled graph feedback_setting plan first_id remaining
     local parked_before_vacuum parked_after_vacuum drained
@@ -396,7 +551,8 @@ EOF
         SELECT bm25_force_merge('rec_idx');" \
         >"${PRIMARY_DIR}/compactor.out" 2>&1 &
     COMPACTOR_PID=$!
-    wait_for_compaction_pause
+    wait_for_compaction_pause \
+        "$(primary_sql_quiet "SELECT 'rec_idx'::regclass::oid;")"
 
     # Advance the primary and standby XID horizons while the old graph is
     # still published.  The cursor opened below must therefore be protected
@@ -528,6 +684,7 @@ SELECT coalesce(backend_xmin::text, '') FROM pg_stat_replication LIMIT 1;")"
     log "PASS: VACUUM reclaimed ${parked_before_vacuum} pages only after \
 the standby cursor ended"
     test_disconnected_standby_conflict
+    test_atomic_segment_graph_snapshot
     log "All standby reclaim overlap checks passed"
 }
 

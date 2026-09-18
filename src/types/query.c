@@ -43,6 +43,7 @@
 #include "planner/hooks.h"
 #include "scoring/bm25.h"
 #include "segment/fieldnorm.h"
+#include "segment/graph_snapshot.h"
 #include "segment/io.h"
 #include "segment/segment.h"
 #include "types/array.h"
@@ -678,34 +679,31 @@ bm25_text_bm25query_score(PG_FUNCTION_ARGS)
 	char	*query_text = get_tpquery_text(query);
 	Oid		 index_oid;
 
-	Relation		   index_rel = NULL;
-	TpIndexMetaPage	   metap	 = NULL;
-	Oid				   text_config_oid;
-	char			 **doc_terms	   = NULL;
-	int32			  *doc_frequencies = NULL;
-	int				   doc_term_count  = 0;
-	int				   raw_doc_length;
-	Datum			   query_tsvector_datum;
-	TSVector		   query_tsvector;
-	WordEntry		  *query_entries;
-	char			  *query_lexemes_start;
-	TpLocalIndexState *index_state;
-	TpDataSource	  *memtable_src = NULL;
-	float4			   avg_doc_len;
-	int32			   total_docs;
-	int64			   total_len;
-	float8			   result = 0.0;
-	int				   q_i;
-	float4			   doc_length;
-	int				   query_term_count;
-	QueryScoreCache	  *cache;
-	BlockNumber		   first_segment;
-	BlockNumber		   level_heads[TP_MAX_LEVELS];
-	bool			   is_partitioned;
-	char			  *indexed_colname = NULL;
-	bool			   acquired_lock   = false;
-	bool			   segments_locked = false;
-	TpLocalIndexState *locked_state	   = NULL;
+	Relation				index_rel		 = NULL;
+	TpIndexMetaPage			metap			 = NULL;
+	TpSegmentGraphSnapshot *segment_snapshot = NULL;
+	Oid						text_config_oid;
+	char				  **doc_terms		= NULL;
+	int32				   *doc_frequencies = NULL;
+	int						doc_term_count	= 0;
+	int						raw_doc_length;
+	Datum					query_tsvector_datum;
+	TSVector				query_tsvector;
+	WordEntry			   *query_entries;
+	char				   *query_lexemes_start;
+	TpLocalIndexState	   *index_state;
+	TpDataSource		   *memtable_src = NULL;
+	float4					avg_doc_len;
+	int32					total_docs;
+	int64					total_len;
+	float8					result = 0.0;
+	int						q_i;
+	float4					doc_length;
+	int						query_term_count;
+	QueryScoreCache		   *cache;
+	BlockNumber				first_segment;
+	bool					is_partitioned;
+	char				   *indexed_colname = NULL;
 
 	/* Get index OID from query */
 	index_oid = get_tpquery_index_oid(query);
@@ -756,12 +754,10 @@ bm25_text_bm25query_score(PG_FUNCTION_ARGS)
 		 */
 		tp_warn_if_pending_docid(index_rel);
 
-		/* Get the metapage to extract text_config_oid */
-		metap			= tp_get_metapage(index_rel);
-		text_config_oid = metap->text_config_oid;
-		first_segment	= metap->level_heads[0];
-		for (int i = 0; i < TP_MAX_LEVELS; i++)
-			level_heads[i] = metap->level_heads[i];
+		segment_snapshot = tp_segment_graph_snapshot_create(index_rel);
+		metap			 = &segment_snapshot->metapage;
+		text_config_oid	 = metap->text_config_oid;
+		first_segment	 = metap->level_heads[0];
 
 		/*
 		 * Get corpus statistics. For partitioned indexes or inheritance
@@ -838,8 +834,9 @@ bm25_text_bm25query_score(PG_FUNCTION_ARGS)
 							first_child_idx);
 					if (child_state && child_state->shared)
 					{
-						Relation		child_rel;
-						TpIndexMetaPage child_metap;
+						Relation				child_rel;
+						TpIndexMetaPage			child_metap;
+						TpSegmentGraphSnapshot *child_snapshot;
 
 						index_state = child_state;
 
@@ -850,13 +847,14 @@ bm25_text_bm25query_score(PG_FUNCTION_ARGS)
 						 */
 						child_rel =
 								index_open(first_child_idx, AccessShareLock);
-						child_metap	  = tp_get_metapage(child_rel);
-						first_segment = child_metap->level_heads[0];
-						for (int i = 0; i < TP_MAX_LEVELS; i++)
-							level_heads[i] = child_metap->level_heads[i];
+						child_snapshot = tp_segment_graph_snapshot_create(
+								child_rel);
+						tp_segment_graph_snapshot_free(segment_snapshot);
+						segment_snapshot = child_snapshot;
+						child_metap		 = &segment_snapshot->metapage;
+						first_segment	 = child_metap->level_heads[0];
 
 						/* Close parent and switch to child relation */
-						pfree(metap);
 						metap = child_metap;
 						index_close(index_rel, AccessShareLock);
 						index_rel = child_rel;
@@ -877,13 +875,6 @@ bm25_text_bm25query_score(PG_FUNCTION_ARGS)
 				}
 			}
 		}
-
-		/*
-		 * Issue #404: the lock + level_heads re-read that protect the
-		 * segment reads are taken lazily in the cache-miss branch below.
-		 * total_docs / total_len / first_segment are scalar stats (not
-		 * block numbers), so the unlocked snapshot above is fine here.
-		 */
 
 		/*
 		 * Phase 4 of issue #374: add the active memtable's contribution
@@ -1026,48 +1017,11 @@ bm25_text_bm25query_score(PG_FUNCTION_ARGS)
 						}
 					}
 
-					/*
-					 * Issue #404: opening segment pages by block number
-					 * races a concurrent spill/merge that frees and
-					 * recycles those blocks ("invalid segment header").
-					 * Hold the per-index lock SHARED and re-read
-					 * level_heads under it, like the index-scan path. Done
-					 * lazily on first cache miss so cache-hit rows pay
-					 * nothing; the chain source may already hold the lock
-					 * (ownership-aware).
-					 */
-					if (!segments_locked)
-					{
-						if (index_state != NULL && !index_state->lock_held)
-						{
-							tp_acquire_index_lock(index_state, LW_SHARED);
-							acquired_lock = true;
-							locked_state  = index_state;
-						}
-						Assert(index_state == NULL || index_state->lock_held);
-
-						if (index_state != NULL)
-						{
-							TpIndexMetaPage fresh = tp_get_metapage(index_rel);
-
-							for (int i = 0; i < TP_MAX_LEVELS; i++)
-								level_heads[i] = fresh->level_heads[i];
-							pfree(fresh);
-						}
-						segments_locked = true;
-					}
-
-					/* Get doc_freq from all segment levels */
-					for (int level = 0; level < TP_MAX_LEVELS; level++)
-					{
-						if (level_heads[level] != InvalidBlockNumber)
-						{
-							segment_doc_freq += tp_segment_get_doc_freq(
-									index_rel,
-									level_heads[level],
-									query_lexeme);
-						}
-					}
+					segment_doc_freq = tp_segment_roots_get_doc_freq(
+							index_rel,
+							segment_snapshot->roots,
+							segment_snapshot->root_count,
+							query_lexeme);
 
 					unified_doc_freq = memtable_doc_freq + segment_doc_freq;
 					if (unified_doc_freq == 0)
@@ -1105,14 +1059,9 @@ bm25_text_bm25query_score(PG_FUNCTION_ARGS)
 			tp_source_close(memtable_src);
 			memtable_src = NULL;
 		}
-		/* Release the per-index lock only if we acquired it (issue #404). */
-		if (acquired_lock)
-		{
-			tp_release_index_lock(locked_state);
-			acquired_lock = false;
-		}
-		pfree(metap);
-		metap = NULL;
+		tp_segment_graph_snapshot_free(segment_snapshot);
+		segment_snapshot = NULL;
+		metap			 = NULL;
 		index_close(index_rel, AccessShareLock);
 		index_rel = NULL;
 	}
@@ -1120,10 +1069,8 @@ bm25_text_bm25query_score(PG_FUNCTION_ARGS)
 	{
 		if (memtable_src)
 			tp_source_close(memtable_src);
-		if (acquired_lock)
-			tp_release_index_lock(locked_state);
-		if (metap)
-			pfree(metap);
+		if (segment_snapshot)
+			tp_segment_graph_snapshot_free(segment_snapshot);
 		if (index_rel)
 			index_close(index_rel, AccessShareLock);
 		PG_RE_THROW();

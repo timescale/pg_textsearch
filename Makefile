@@ -48,6 +48,7 @@ OBJS = \
 	src/memtable/scan.o \
 	src/memtable/stringtable.o \
 	src/segment/segment.o \
+	src/segment/graph_snapshot.o \
 	src/segment/dictionary.o \
 	src/segment/scan.o \
 	src/segment/merge.o \

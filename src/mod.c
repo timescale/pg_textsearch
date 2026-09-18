@@ -66,6 +66,7 @@
 #include "planner/hooks.h"
 #include "scoring/bm25.h"
 #include "segment/compaction.h"
+#include "segment/graph_snapshot.h"
 
 #if PG_VERSION_NUM >= 180000
 PG_MODULE_MAGIC_EXT(.name = "pg_textsearch", .version = "1.5.0-dev");
@@ -789,6 +790,21 @@ _PG_init(void)
 			"Testing-only interruptible pause after assigning the reclaim "
 			"horizon and before publishing the replacement graph.",
 			&tp_debug_compaction_pause_after_restamp_ms,
+			0,
+			0,
+			60000,
+			PGC_SUSET,
+			0,
+			NULL,
+			NULL,
+			NULL);
+
+	DefineCustomIntVariable(
+			"pg_textsearch.debug_segment_graph_snapshot_pause_ms",
+			"Pause after copying a complete segment-root graph.",
+			"Testing-only interruptible pause after releasing the metapage "
+			"buffer lock and before consuming the copied segment roots.",
+			&tp_debug_segment_graph_snapshot_pause_ms,
 			0,
 			0,
 			60000,

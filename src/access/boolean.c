@@ -17,6 +17,7 @@
 #include "access/boolean.h"
 #include "memtable/chain_walker.h"
 #include "segment/alive_bitset.h"
+#include "segment/graph_snapshot.h"
 #include "segment/io.h"
 #include "types/vector.h"
 
@@ -115,13 +116,6 @@ typedef struct TpBooleanSegmentEval
 	TpBooleanTermCursor *cursors;
 	uint32				 doc_id;
 } TpBooleanSegmentEval;
-
-typedef struct TpBooleanSegmentSnapshot
-{
-	BlockNumber *roots;
-	uint32		 count;
-	uint32		 capacity;
-} TpBooleanSegmentSnapshot;
 
 static List *tp_boolean_incomplete_warning_seen = NIL;
 
@@ -260,47 +254,6 @@ tp_boolean_query_exact_operand_count(TSQuery query)
 	}
 
 	return count;
-}
-
-static TpBooleanSegmentSnapshot
-tp_boolean_segment_snapshot_create(Relation index, const TpIndexMetaPage metap)
-{
-	TpBooleanSegmentSnapshot snapshot = {0};
-	BlockNumber				 nblocks  = RelationGetNumberOfBlocks(index);
-
-	for (int level = 0; level < TP_MAX_LEVELS; level++)
-	{
-		BlockNumber segment = metap->level_heads[level];
-
-		while (segment != InvalidBlockNumber)
-		{
-			if (snapshot.count >= nblocks)
-				ereport(ERROR,
-						(errcode(ERRCODE_INDEX_CORRUPTED),
-						 errmsg("BM25 segment chain contains a cycle")));
-			if (snapshot.count == snapshot.capacity)
-			{
-				snapshot.capacity = snapshot.capacity == 0
-										  ? 16
-										  : snapshot.capacity * 2;
-				snapshot.roots =
-						snapshot.roots == NULL
-								? palloc_array(BlockNumber, snapshot.capacity)
-								: repalloc(
-										  snapshot.roots,
-										  snapshot.capacity *
-												  sizeof(BlockNumber));
-			}
-
-			snapshot.roots[snapshot.count++] = segment;
-			if (!tp_segment_read_next(index, segment, &segment))
-				ereport(ERROR,
-						(errcode(ERRCODE_INDEX_CORRUPTED),
-						 errmsg("could not open BM25 segment %u", segment)));
-		}
-	}
-
-	return snapshot;
 }
 
 typedef struct TpBooleanResultWriter
@@ -901,8 +854,8 @@ tp_boolean_execute(IndexScanDesc scan, TpLocalIndexState *index_state)
 			.head_blkno = InvalidBlockNumber,
 			.tail_blkno = InvalidBlockNumber,
 	};
-	TpBooleanSegmentSnapshot segments;
-	TpBooleanResultWriter	 writer;
+	TpSegmentGraphSnapshot *snapshot;
+	TpBooleanResultWriter	writer;
 
 	if (so->boolean_query == NULL || so->boolean_query->size == 0)
 		return false;
@@ -927,16 +880,14 @@ tp_boolean_execute(IndexScanDesc scan, TpLocalIndexState *index_state)
 	so->boolean_recheck = state.requires_recheck;
 
 	tp_acquire_index_lock(index_state, LW_SHARED);
-	metap = tp_get_metapage(scan->indexRelation);
+	snapshot = tp_segment_graph_snapshot_create(scan->indexRelation);
+	metap	 = &snapshot->metapage;
 	tp_boolean_check_config(scan->indexRelation, metap);
 	tp_memtable_chain_snapshot_capture(
 			scan->indexRelation,
 			metap->memtable_head_blkno,
 			metap->memtable_tail_blkno,
 			&memtable_snapshot);
-	segments = tp_boolean_segment_snapshot_create(scan->indexRelation, metap);
-
-	pfree(metap);
 
 	/*
 	 * Spill or compaction can replace the captured chain and segment roots
@@ -953,21 +904,27 @@ tp_boolean_execute(IndexScanDesc scan, TpLocalIndexState *index_state)
 	tp_boolean_write_memtable_snapshot(
 			scan->indexRelation, &memtable_snapshot, &writer);
 
-	for (uint32 i = 0; i < segments.count; i++)
+	for (uint32 level = 0; level < TP_MAX_LEVELS; level++)
 	{
-		TpSegmentReader *reader = tp_segment_open_ex(
-				scan->indexRelation, segments.roots[i], false);
+		uint32			   root_count;
+		const BlockNumber *roots =
+				tp_segment_graph_snapshot_level(snapshot, level, &root_count);
 
-		if (reader == NULL)
-			ereport(ERROR,
-					(errcode(ERRCODE_INDEX_CORRUPTED),
-					 errmsg("could not open BM25 segment %u",
-							segments.roots[i])));
-		tp_boolean_write_segment(reader, &writer);
-		tp_segment_close(reader);
+		for (uint32 root_idx = 0; root_idx < root_count; root_idx++)
+		{
+			TpSegmentReader *reader = tp_segment_open_ex(
+					scan->indexRelation, roots[root_idx], false);
+
+			if (reader == NULL)
+				ereport(ERROR,
+						(errcode(ERRCODE_INDEX_CORRUPTED),
+						 errmsg("could not open BM25 segment %u",
+								roots[root_idx])));
+			tp_boolean_write_segment(reader, &writer);
+			tp_segment_close(reader);
+		}
 	}
-	if (segments.roots != NULL)
-		pfree(segments.roots);
+	tp_segment_graph_snapshot_free(snapshot);
 
 	so->boolean_results = writer.file;
 	so->result_count	= writer.count;

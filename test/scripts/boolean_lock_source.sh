@@ -30,7 +30,7 @@ if grep -Fq "tp_acquire_index_lock" <<<"${gettuple_body}"; then
 fi
 
 if ! grep -Fq "tp_memtable_chain_snapshot_capture" <<<"${execute_body}" ||
-    ! grep -Fq "tp_boolean_segment_snapshot_create" <<<"${execute_body}" ||
+    ! grep -Fq "tp_segment_graph_snapshot_create" <<<"${execute_body}" ||
     ! grep -Fq "tp_release_index_lock(index_state)" <<<"${execute_body}"; then
     echo "Boolean execution does not snapshot mutable sources before unlocking" >&2
     exit 1
@@ -59,16 +59,16 @@ acquire_line="$(unique_line "tp_acquire_index_lock(index_state, LW_SHARED)")"
 memtable_snapshot_line="$(
     unique_line "tp_memtable_chain_snapshot_capture"
 )"
-snapshot_line="$(unique_line "tp_boolean_segment_snapshot_create")"
+snapshot_line="$(unique_line "tp_segment_graph_snapshot_create")"
 release_line="$(unique_line "tp_release_index_lock(index_state)")"
 memtable_write_line="$(
     unique_line "tp_boolean_write_memtable_snapshot"
 )"
 segment_write_line="$(unique_line "tp_boolean_write_segment")"
 
-if [[ "${acquire_line}" -ge "${memtable_snapshot_line}" ||
-      "${memtable_snapshot_line}" -ge "${snapshot_line}" ||
-      "${snapshot_line}" -ge "${release_line}" ||
+if [[ "${acquire_line}" -ge "${snapshot_line}" ||
+      "${snapshot_line}" -ge "${memtable_snapshot_line}" ||
+      "${memtable_snapshot_line}" -ge "${release_line}" ||
       "${release_line}" -ge "${memtable_write_line}" ||
       "${release_line}" -ge "${segment_write_line}" ]]; then
     echo "Boolean candidate evaluation still runs under the per-index LWLock" >&2
