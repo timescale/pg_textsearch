@@ -41,7 +41,7 @@
 #include <storage/itemptr.h>
 #include <utils/rel.h>
 
-extern int tp_debug_memtable_pause_before_extend_ms;
+extern int tp_debug_memtable_extend_gate;
 
 /*
  * Append one document record to the on-disk memtable chain.

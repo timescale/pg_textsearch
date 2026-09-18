@@ -21,6 +21,8 @@ REPL_SOCKET_DIR=
 
 # shellcheck source=replication_lib.sh
 source "${SCRIPT_DIR}/replication_lib.sh"
+# shellcheck source=standby_conflict_output.sh
+source "${SCRIPT_DIR}/standby_conflict_output.sh"
 
 READER_PID=
 READER_BACKEND_PID=
@@ -225,11 +227,8 @@ wait_for_snapshot_reader_conflict() {
     SNAPSHOT_READER_PID=
     [ "${status}" -ne 0 ] ||
         error "Old-memtable reader completed without a recovery conflict"
-    if ! grep -Eq 'conflict with recovery|recovery conflict' "${output}" &&
-       ! grep -Eq 'conflict with recovery|recovery conflict' \
-           "${STANDBY_DIR}/log/postgres.log"; then
-        error "Old-memtable reader failed without recovery-conflict evidence"
-    fi
+    snapshot_reader_conflict_output_is_valid "${output}" ||
+        error "Old-memtable reader lacks scoped conflict proof or reported corruption"
 }
 
 reader_open() {

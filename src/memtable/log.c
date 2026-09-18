@@ -39,6 +39,7 @@
 #include <storage/bufmgr.h>
 #include <storage/bufpage.h>
 #include <storage/itemptr.h>
+#include <storage/lock.h>
 #include <storage/lwlock.h>
 #include <utils/builtins.h>
 #include <utils/lsyscache.h>
@@ -103,30 +104,25 @@ tp_memtable_alloc_page(Relation rel)
 }
 
 static void
-tp_debug_memtable_pause_before_extend(Relation rel)
+tp_debug_gate_memtable_extend(Relation rel)
 {
-	int remaining_ms = tp_debug_memtable_pause_before_extend_ms;
+	LOCKTAG gate_tag;
+	int		gate_key = tp_debug_memtable_extend_gate;
 
-	if (remaining_ms <= 0)
+	if (gate_key <= 0)
 		return;
-	tp_debug_memtable_pause_before_extend_ms = 0;
 
+	SET_LOCKTAG_ADVISORY(gate_tag, MyDatabaseId, gate_key, 0, 2);
 	ereport(LOG,
-			(errmsg("pg_textsearch memtable append pause before tail "
-					"extension for index %u backend %d",
+			(errmsg("pg_textsearch memtable append tail-extension gate for "
+					"index %u backend %d",
 					RelationGetRelid(rel),
 					MyProcPid)));
-	while (remaining_ms > 0)
-	{
-		int sleep_ms = Min(remaining_ms, 10);
-
-		CHECK_FOR_INTERRUPTS();
-		pg_usleep((long)sleep_ms * 1000L);
-		remaining_ms -= sleep_ms;
-	}
+	(void)LockAcquire(&gate_tag, ShareLock, true, false);
+	(void)LockRelease(&gate_tag, ShareLock, true);
 	ereport(LOG,
-			(errmsg("pg_textsearch memtable append resume before tail "
-					"extension for index %u backend %d",
+			(errmsg("pg_textsearch memtable append passed tail-extension gate "
+					"for index %u backend %d",
 					RelationGetRelid(rel),
 					MyProcPid)));
 }
@@ -239,7 +235,7 @@ memtable_extend_and_append(
 	TpIndexMetaPage	  metap;
 	GenericXLogState *xlog_state;
 
-	tp_debug_memtable_pause_before_extend(rel);
+	tp_debug_gate_memtable_extend(rel);
 	newbuf = tp_memtable_alloc_page(rel);
 	newblk = BufferGetBlockNumber(newbuf);
 

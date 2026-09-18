@@ -9,6 +9,9 @@
 - Independent-review fixes:
   - `149de820` — writer-compatible snapshots, memtable reuse conflict WAL,
     promotion pinning, deterministic tests, and corrected contracts
+- Test-validity follow-up:
+  - this commit — condition-controlled tail-extension gate and reader-scoped
+    recovery-conflict assertions
 - All confirmed blockers are fixed and verified on PostgreSQL 18.6.
 
 ## RED evidence
@@ -42,6 +45,18 @@ Tests were added before each production fix.
      replayed spill, then was promoted during the post-snapshot pause.
      The late `RecoveryInProgress()` check selected the primary path and
      returned only `1000/1500` rows.
+
+### Test-validity follow-up
+
+1. The original ABBA regression used a fixed three-second writer pause and did
+   not prove the reader had reached the expected buffer-content wait before
+   release.
+2. The original memtable reuse assertion accepted a recovery-conflict string
+   from the entire standby log, which already contained an earlier segment
+   conflict.
+
+The new assertion self-test rejects both stale unrelated conflict output and
+output that combines the expected cancellation with an invalid-magic error.
 
 ## Final ownership, locking, and WAL contracts
 
@@ -79,6 +94,22 @@ force-merge truncation. Concurrent spill may make the reachable set
 conservative; live/new pages are not DEAD, page locks serialize inspection,
 and `dead_fxid` plus conflict WAL cover connected and disconnected readers.
 
+### Deterministic test controls
+
+The append hook now uses one advisory-lock gate GUC instead of a timed pause.
+The test session holds the gate before starting the writer. After the writer's
+old-tail EXCLUSIVE marker, the test starts a PID-identified reader and proves:
+
+- the writer is waiting on the advisory gate;
+- the reader is active on the exact ranked query and waiting on
+  `LWLock/BufferContent`;
+- both clients remain alive before release.
+
+Only then does the test explicitly unlock the advisory gate and assert exact
+results. The recovery-conflict validator reads only the redirected output of
+the memtable reader, requires PostgreSQL's exact cancellation text, and rejects
+invalid page/magic/index-corruption messages.
+
 ## GREEN evidence
 
 PostgreSQL 18 environment:
@@ -89,18 +120,20 @@ PG_CONFIG=/home/azureuser/.copilot/session-state/8bf506c4-245d-4e44-88e9-46c7473
 
 - Format, build, install, shell syntax, diff checks, and all source guards:
   passed.
-- New append/snapshot lock-order case: writer and exact ranked reader
-  completed without deadlock.
+- Condition-gated append/snapshot lock-order case: the reader was observed on
+  `LWLock/BufferContent` while the writer waited on the advisory gate; after
+  explicit unlock, writer and exact ranked reader completed without deadlock.
 - `standby_reclaim.sh`: passed all cases.
   - WAL contained 23 per-page memtable reuse conflict records.
   - The disconnected old-chain reader was canceled before 23 reclaimed pages
-    were reused.
+    were reused, with cancellation proven from that reader's output only.
   - Promotion race returned IDs 1..1500 exactly once.
   - Existing ranked, standalone, segment-reclaim, and recovery-conflict cases
     remained green.
 - `vacuum_concurrent_merge.sh`: three consecutive final full-scale runs
-  passed. Each included the lock-order case, paused reclaim proof, maintenance
-  serialization, and full stress phase. The former 120-second
+  passed after the gate change. Each included the condition-proven lock-order
+  case, paused reclaim proof, maintenance serialization, and full stress
+  phase. The former 120-second
   BufferContent-wait timeout did not reproduce in any of the three runs.
 - Targeted ranked/standalone/Boolean/VACUUM SQL suite: 22/22 passed.
 - `nonblocking_compaction.sh`: all deterministic cases passed.
@@ -118,8 +151,10 @@ PG_CONFIG=/home/azureuser/.copilot/session-state/8bf506c4-245d-4e44-88e9-46c7473
 - Tests/guards:
   `test/scripts/vacuum_concurrent_merge.sh`,
   `test/scripts/standby_reclaim.sh`,
+  `test/scripts/standby_conflict_output.sh`,
   `test/scripts/graph_snapshot_source.sh`,
   `test/scripts/reclaim_conflict_source.sh`,
+  `test/scripts/review_test_validity_source.sh`,
   `test/scripts/compaction_ownercheck_source.sh`, `Makefile`.
 - Contracts:
   `ARCHITECTURE.md`, `docs/nonblocking_compaction_design.md`, `CLAUDE.md`.
@@ -132,6 +167,8 @@ PG_CONFIG=/home/azureuser/.copilot/session-state/8bf506c4-245d-4e44-88e9-46c7473
 - Segment-root enumeration remains in one helper; retry/lock-order logic stays
   isolated in snapshot creation.
 - One shared conflict-WAL helper serves segment tombstones and memtable pages.
+- One advisory gate replaces the superseded timer; no extra debug GUC was
+  added.
 - No unresolved correctness concerns. The conflict test intentionally pauses
-  the reader so replay ordering is observable; cancellation occurs before the
-  bounded walker can consume reused pages.
+  the reader so replay ordering is observable; its own output proves
+  cancellation before the bounded walker can consume reused pages.

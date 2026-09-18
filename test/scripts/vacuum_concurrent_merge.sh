@@ -45,6 +45,7 @@ TEST_SIZE_MULTIPLIER=${TEST_SIZE_MULTIPLIER:-1.0}
 PAUSE_MS=5000
 RECLAIM_PAUSE_MS=15000
 STRESS_TIMEOUT_SECONDS=120
+SNAPSHOT_GATE_KEY=47221
 
 # Scale a loop count by TEST_SIZE_MULTIPLIER (minimum 1).
 scaled_count() {
@@ -346,10 +347,30 @@ wait_for_reclaim_marker() {
 wait_for_memtable_extend_marker() {
     local oid=$1
     local backend=$2
-    local marker="pg_textsearch memtable append pause before tail extension for index ${oid} backend ${backend}"
+    local marker="pg_textsearch memtable append tail-extension gate for index ${oid} backend ${backend}"
 
     wait_for_log_marker "${marker}" \
         "Observed memtable tail-extension marker for index ${oid}, backend ${backend}"
+}
+
+gate_session_query() {
+    local statement=$1
+    local sentinel="__snapshot_gate_$$_${RANDOM}__"
+    local result=""
+    local line
+
+    printf '%s\n' "${statement}" >&9
+    printf "SELECT '%s';\n" "${sentinel}" >&9
+    while true; do
+        if ! IFS= read -r -t 10 line <&8; then
+            error "Timed out waiting for snapshot gate session"
+        fi
+        [ "${line}" = "${sentinel}" ] && break
+        if [ -n "${line}" ]; then
+            result="${result}${result:+$'\n'}${line}"
+        fi
+    done
+    printf '%s' "${result}"
 }
 
 wait_for_exclusive_waiter_marker() {
@@ -459,15 +480,30 @@ assert_no_segment_errors() {
 }
 
 test_memtable_snapshot_lock_order() {
+    local gate_dir="${DATA_DIR}/snapshot_lock_gate"
+    local gate_output="${ERR_DIR}/snapshot_lock_gate.log"
     local writer_output="${ERR_DIR}/snapshot_lock_writer.log"
     local reader_output="${ERR_DIR}/snapshot_lock_reader.log"
-    local writer_pid reader_pid writer_backend oid result expected
+    local gate_pid writer_pid reader_pid writer_backend reader_backend
+    local oid result expected state_proof=f deadline
 
     log "Case: read snapshot acquires memtable tail before metapage..."
     oid=$(sql -c "SELECT 'snapshot_lock_bm25'::regclass::oid;")
 
+    rm -rf "${gate_dir}"
+    mkdir -p "${gate_dir}"
+    mkfifo "${gate_dir}/in" "${gate_dir}/out"
+    psql -X -tAq -v ON_ERROR_STOP=1 -h "${SOCKET_DIR}" \
+        -p "${TEST_PORT}" -d "${TEST_DB}" \
+        <"${gate_dir}/in" >"${gate_dir}/out" 2>"${gate_output}" &
+    gate_pid=$!
+    exec 9>"${gate_dir}/in"
+    exec 8<"${gate_dir}/out"
+    gate_session_query \
+        "SELECT pg_advisory_lock(${SNAPSHOT_GATE_KEY}, 0);" >/dev/null
+
     PGAPPNAME=pgts-snapshot-lock-writer \
-        PGOPTIONS="-c statement_timeout=30000 -c lock_timeout=15000 -c pg_textsearch.debug_memtable_pause_before_extend_ms=3000" \
+        PGOPTIONS="-c statement_timeout=30000 -c lock_timeout=15000 -c pg_textsearch.debug_memtable_extend_gate=${SNAPSHOT_GATE_KEY}" \
         psql -h "${SOCKET_DIR}" -p "${TEST_PORT}" -d "${TEST_DB}" \
         -qAt -v ON_ERROR_STOP=1 \
         -c "SELECT pg_backend_pid();" \
@@ -481,9 +517,11 @@ test_memtable_snapshot_lock_order() {
     wait_for_memtable_extend_marker "${oid}" "${writer_backend}"
 
     PGAPPNAME=pgts-snapshot-lock-reader \
-        PGOPTIONS="-c statement_timeout=8000 -c lock_timeout=7000" \
-        sql -c "
-            SET enable_seqscan = off;
+        PGOPTIONS="-c statement_timeout=15000 -c lock_timeout=14000" \
+        psql -h "${SOCKET_DIR}" -p "${TEST_PORT}" -d "${TEST_DB}" \
+        -qAt -v ON_ERROR_STOP=1 \
+        -c "SELECT pg_backend_pid();" \
+        -c "SET enable_seqscan = off;
             SELECT string_agg(id::text, ',' ORDER BY id)
               FROM (
                     SELECT id
@@ -494,6 +532,45 @@ test_memtable_snapshot_lock_order() {
                    ) ranked;" \
         >"${reader_output}" 2>&1 &
     reader_pid=$!
+    reader_backend=$(client_backend_pid \
+        "${reader_output}" "snapshot lock-order reader")
+
+    deadline=$((SECONDS + 5))
+    while ((SECONDS < deadline)); do
+        state_proof=$(sql -c "
+            SELECT EXISTS (
+                SELECT 1
+                  FROM pg_stat_activity reader
+                 WHERE reader.pid = ${reader_backend}
+                   AND reader.state = 'active'
+                   AND reader.wait_event_type = 'LWLock'
+                   AND reader.wait_event = 'BufferContent'
+                   AND reader.query LIKE '%snapshot_lock_docs%'
+            )
+            AND EXISTS (
+                SELECT 1
+                  FROM pg_stat_activity writer
+                 WHERE writer.pid = ${writer_backend}
+                   AND writer.state = 'active'
+                   AND writer.wait_event_type = 'Lock'
+                   AND writer.wait_event = 'advisory'
+            );" 2>/dev/null || true)
+        [ "${state_proof}" = "t" ] && break
+        sleep 0.05
+    done
+    [ "${state_proof}" = "t" ] ||
+        error "reader did not wait on BufferContent while writer held old tail"
+    kill -0 "${reader_pid}" 2>/dev/null ||
+        error "snapshot reader exited before the explicit gate release"
+    kill -0 "${writer_pid}" 2>/dev/null ||
+        error "tail-extension writer exited before the explicit gate release"
+
+    [ "$(gate_session_query \
+        "SELECT pg_advisory_unlock(${SNAPSHOT_GATE_KEY}, 0);")" = "t" ] ||
+        error "snapshot gate advisory unlock failed"
+    exec 9>&-
+    exec 8<&-
+    wait_success "${gate_pid}" 5 "snapshot gate session" "${gate_output}"
 
     wait_success "${reader_pid}" 10 "snapshot lock-order reader" \
         "${reader_output}"
