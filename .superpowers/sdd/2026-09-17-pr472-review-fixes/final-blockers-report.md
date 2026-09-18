@@ -3,57 +3,81 @@
 ## Status and commits
 
 - Base: `07166697900433b3e9b70099044706330ba10fe3`
-- Implementation: `c94c2fd3` (`Complete standby snapshots and VACUUM reclaim locking`)
-- Both final blockers are implemented and verified on PostgreSQL 18.6.
+- Initial implementation:
+  - `c94c2fd3` — common standby generation and unlocked VACUUM reclaim
+  - `e1042428` — initial verification report
+- Independent-review fixes:
+  - `149de820` — writer-compatible snapshots, memtable reuse conflict WAL,
+    promotion pinning, deterministic tests, and corrected contracts
+- All confirmed blockers are fixed and verified on PostgreSQL 18.6.
 
 ## RED evidence
 
-Tests were added before the corresponding fixes.
+Tests were added before each production fix.
 
-1. Atomic standby generation:
-   - `graph_snapshot_source.sh` failed because the common snapshot did not
-     capture a memtable endpoint and recovery scoring had no bounded source.
-   - `boolean_lock_source.sh` failed because Boolean execution recaptured the
-     endpoint separately.
-   - `standby_reclaim.sh` deterministically paused ranked scoring after the
-     segment snapshot unlock, replayed spill WAL, and returned only
-     `1000/1500` rows. This reproduced omission of the spilled memtable
-     generation on `07166697`.
-2. VACUUM full-fork reclaim:
-   - `vacuum_reclaim_source.sh` failed because cleanup released maintenance
-     before reclaim and acquired the per-index shared lock around the scan.
-   - With only the reclaim pause hook added, `vacuum_concurrent_merge.sh`
-     paused cleanup in the fork scan. The exclusive spill remained on
-     `tapir_index_lock`, the later reader remained queued by writer
-     preference, and the spill failed the five-second completion assertion.
+### Initial blockers
 
-## Implemented ownership and locking
+- Standby ranked scoring replayed a spill after root snapshot unlock and
+  returned `1000/1500` rows.
+- VACUUM reclaim held `tapir_index_lock`; an exclusive spill and the later
+  writer-preference-gated reader remained blocked during the deterministic
+  reclaim pause.
 
-### Standby read generation
+### Independent-review blockers
 
-`TpSegmentGraphSnapshot` is now the common read snapshot. While the metapage
-buffer remains `BUFFER_LOCK_SHARE`, it copies every segment root and captures
-`TpMemtableChainSnapshot` from the copied head/tail, including the tail free
-offset. Generic WAL replay therefore cannot publish a spill between those two
-components.
+1. **Metapage/tail ABBA**
+   - The source guard rejected the old metapage -> tail nesting.
+   - With only the one-shot append pause hook added, the writer held old-tail
+     EXCLUSIVE before requesting metapage EXCLUSIVE. The overlapping ranked
+     snapshot held metapage SHARE and waited for tail SHARE. The reader failed
+     its ten-second completion assertion.
+2. **Missing memtable reuse conflict**
+   - The source guard found no shared conflict-WAL helper and no per-page
+     `dead_fxid` conflict before free stamping.
+   - With feedback disabled and replication disconnected, a bounded old-chain
+     reader survived spill, horizon advance, VACUUM reclaim, and reclaimed
+     page reuse; it was not canceled by conflict WAL.
+3. **Promotion race**
+   - After the conflict fix, ranked scoring captured a recovery snapshot,
+     replayed spill, then was promoted during the post-snapshot pause.
+     The late `RecoveryInProgress()` check selected the primary path and
+     returned only `1000/1500` rows.
 
-Recovery ranked and standalone scoring use
-`tp_memtable_chain_source_create_bounded()`. It shares the existing chain
-source constructor and ingestion code, consumes only the supplied endpoint,
-does not reread the metapage, and does not rely on the extension LWLock.
-Primary ranked scoring retains the cache chooser. Primary standalone scoring
-retains source-before-root admission and cache semantics. Boolean execution
-uses the common snapshot endpoint instead of recapturing it.
+## Final ownership, locking, and WAL contracts
+
+### Common read snapshot
+
+The snapshot first reads and releases a candidate memtable head/tail. For a
+nonempty chain it locks candidate tail SHARE, then metapage SHARE, validates
+that head/tail are still current, and retries on mismatch. With tail then
+metapage held it captures the tail free offset and every segment root.
+Metapage is never held while acquiring tail, matching new-tail append's
+tail -> new page -> metapage order and removing the ABBA cycle.
+
+`tp_memtable_chain_snapshot_capture_locked()` consumes the already-locked tail
+without acquiring another buffer lock. Empty head/tail is validated without a
+tail lock. Ranked recovery mode is pinned before snapshot acquisition and used
+through source selection. Standalone decides its branch before snapshot
+creation; Boolean consumes the same bounded endpoint. Primary cache behavior
+and standalone source-before-root admission remain unchanged.
+
+### Reclaimed-page standby conflicts
+
+`index/freepage.c` owns the shared `tp_log_page_reuse_conflict()` helper, which
+emits stock `XLOG_BTREE_REUSE_PAGE` conflict-only WAL. Tombstone drain uses it
+for displaced segment batches. DEAD-memtable reclaim captures each page's
+`dead_fxid`, releases the page SHARE lock, emits conflict WAL, then writes the
+recyclable free-page stamp and enters the page in the FSM. WAL ordering
+therefore cancels disconnected/no-feedback standby snapshots before later WAL
+can overwrite a retired chain page.
 
 ### VACUUM reclaim
 
-`tp_vacuumcleanup()` retains the per-index maintenance object lock through
-`tp_reclaim_dead_memtable_pages()` and holds no per-index LWLock during that
-O(index-pages) work. Maintenance excludes force-merge/compaction truncation.
-A racing spill can only make the reachable-chain set conservative; live/new
-pages are not DEAD, page buffer locks serialize inspection, and `dead_fxid`
-prevents reuse while an old primary or feedback-protected standby snapshot
-can reference a retired chain.
+`tp_vacuumcleanup()` still retains maintenance through the O(index-pages)
+DEAD-memtable scan and holds no per-index LWLock there. Maintenance excludes
+force-merge truncation. Concurrent spill may make the reachable set
+conservative; live/new pages are not DEAD, page locks serialize inspection,
+and `dead_fxid` plus conflict WAL cover connected and disconnected readers.
 
 ## GREEN evidence
 
@@ -63,43 +87,51 @@ PostgreSQL 18 environment:
 PG_CONFIG=/home/azureuser/.copilot/session-state/8bf506c4-245d-4e44-88e9-46c74737c1eb/files/pg18-benchmark/bin/pg_config
 ```
 
-- Format, build, install, and all source guards: passed.
-- Targeted ranked/standalone/Boolean/VACUUM SQL suite: 22/22 passed.
-- `standby_reclaim.sh`: passed; ranked race returned IDs 1..1500 exactly
-  once, standalone race preserved exact score `-1.28048980`, and existing
-  reclaim/recovery-conflict cases passed.
-- `vacuum_concurrent_merge.sh`: passed at full scale; spill and later ranked
-  reader completed while reclaim remained paused, force merge was blocked by
-  maintenance, and the stress phase passed.
-- `nonblocking_compaction.sh`: all deterministic cases passed.
-- `compaction_recovery.sh`: all crash/recovery and standby rejection cases
+- Format, build, install, shell syntax, diff checks, and all source guards:
   passed.
+- New append/snapshot lock-order case: writer and exact ranked reader
+  completed without deadlock.
+- `standby_reclaim.sh`: passed all cases.
+  - WAL contained 23 per-page memtable reuse conflict records.
+  - The disconnected old-chain reader was canceled before 23 reclaimed pages
+    were reused.
+  - Promotion race returned IDs 1..1500 exactly once.
+  - Existing ranked, standalone, segment-reclaim, and recovery-conflict cases
+    remained green.
+- `vacuum_concurrent_merge.sh`: three consecutive final full-scale runs
+  passed. Each included the lock-order case, paused reclaim proof, maintenance
+  serialization, and full stress phase. The former 120-second
+  BufferContent-wait timeout did not reproduce in any of the three runs.
+- Targeted ranked/standalone/Boolean/VACUUM SQL suite: 22/22 passed.
+- `nonblocking_compaction.sh`: all deterministic cases passed.
+- `compaction_recovery.sh`: all crash/recovery cases passed.
 - Final `make test-local`: 79/79 passed; `test/regression.diffs` absent.
 
 ## Files
 
-- Snapshot/source/scoring:
-  `src/segment/graph_snapshot.{c,h}`,
-  `src/memtable/chain_source.{c,h}`, `src/scoring/bm25.c`,
-  `src/types/query.c`, `src/access/boolean.c`, `src/mod.c`.
-- Reclaim/locking: `src/access/vacuum.c`, `src/access/am.h`, `src/mod.c`.
-- Tests/guards: `test/scripts/standby_reclaim.sh`,
+- Snapshot/append/promotion:
+  `src/segment/graph_snapshot.c`, `src/memtable/chain_walker.{c,h}`,
+  `src/memtable/log.{c,h}`, `src/scoring/bm25.c`, `src/mod.c`.
+- Reuse conflict:
+  `src/index/freepage.{c,h}`, `src/access/vacuum.c`,
+  `src/segment/tombstone.c`.
+- Tests/guards:
   `test/scripts/vacuum_concurrent_merge.sh`,
-  `test/scripts/vacuum_reclaim_source.sh`,
+  `test/scripts/standby_reclaim.sh`,
   `test/scripts/graph_snapshot_source.sh`,
-  `test/scripts/boolean_lock_source.sh`, `Makefile`.
-- Contracts: `ARCHITECTURE.md`, `docs/nonblocking_compaction_design.md`,
-  `CLAUDE.md`.
+  `test/scripts/reclaim_conflict_source.sh`,
+  `test/scripts/compaction_ownercheck_source.sh`, `Makefile`.
+- Contracts:
+  `ARCHITECTURE.md`, `docs/nonblocking_compaction_design.md`, `CLAUDE.md`.
 
-## Simplification pass and concerns
+## Simplification and concerns
 
-- One common snapshot owns roots plus the bounded memtable endpoint.
-- One shared chain-source constructor/ingestion path serves ordinary and
-  bounded sources.
-- Superseded Boolean endpoint capture and standalone duplicate acquisition
-  ordering were removed.
-- Concern: the first full-scale VACUUM stress run reached its 120-second
-  harness timeout while backends were making progress under buffer-content
-  contention; no storage error or crash occurred. Investigation runs at
-  0.1x, 0.5x, and two subsequent full-scale runs all passed, including the
-  final recorded run.
+- One common snapshot owns segment roots and the bounded memtable endpoint.
+- One locked-tail capture helper performs endpoint validation without lock
+  reacquisition.
+- Segment-root enumeration remains in one helper; retry/lock-order logic stays
+  isolated in snapshot creation.
+- One shared conflict-WAL helper serves segment tombstones and memtable pages.
+- No unresolved correctness concerns. The conflict test intentionally pauses
+  the reader so replay ordering is observable; cancellation occurs before the
+  bounded walker can consume reused pages.
