@@ -1,6 +1,6 @@
 # Fair spill admission and non-blocking compaction
 
-Status: implemented design for #495
+Status: revised implementation design for #495
 
 ## Summary
 
@@ -25,6 +25,9 @@ The implemented design addresses the two problems independently:
 5. Preserved L0 segments published by concurrent spills and attached displaced
    source pages to the existing standby-safe deferred-free chain in the same
    WAL-logged publication.
+6. Snapshot every segment root block while holding the metapage buffer lock, so
+   primary and standby readers use one complete old or new graph even when WAL
+   replay changes a segment link.
 
 The managed background compaction implementation from #478 decides *when*
 background compaction runs. This implementation changes *how* every invocation
@@ -67,6 +70,8 @@ reader lock lifetime and relies on fair admission to bound exclusive waits.
 - Preserve alive-bit correctness across VACUUM and compaction.
 - Preserve stock PostgreSQL physical replication without a custom resource
   manager.
+- Prevent standby readers from combining an old metapage with a link changed by
+  later Generic WAL replay.
 - Preserve standby-safe deferred reclaim from #380.
 - Keep the compaction engine compatible with inline, manual, callback-driven,
   and #478 managed-background invocation.
@@ -177,20 +182,27 @@ background compaction policy.
 | ranked scan | none | `LW_SHARED`, existing lifetime |
 | normal insert | none | `LW_SHARED` during append |
 | spill | none | `LW_EXCLUSIVE` through L0 publication |
-| compaction selection | per-index maintenance object lock | `LW_SHARED` |
+| compaction metapage snapshot | per-index maintenance object lock | brief `LW_SHARED` |
+| compaction planning | per-index maintenance object lock | none |
 | compaction build | per-index maintenance object lock | none |
 | compaction publication | per-index maintenance object lock | `LW_EXCLUSIVE` |
-| VACUUM segment mutation | per-index maintenance object lock | existing shared/exclusive sections |
+| VACUUM metapage snapshot | per-index maintenance object lock | brief `LW_SHARED` |
+| VACUUM identify / bitmap mutation | per-index maintenance object lock | none |
+| VACUUM graph publication | per-index maintenance object lock | brief `LW_EXCLUSIVE` |
 | tombstone drain | none | `LW_EXCLUSIVE` |
 | force merge | per-index maintenance object lock | phase-specific; exclusive for truncate |
 
 Publication remains exclusive even though it is short. A concurrent L0 spill
 can prepend segments while compaction builds. Preserving that prefix requires
-changing the `next_segment` pointer of its last segment. Current scans capture
-level heads but traverse segment links lazily; allowing publication under a
-shared lock could make one scan observe an old metapage head and a new
-predecessor link, omitting documents. Brief exclusive publication avoids this
-mixed graph.
+changing the `next_segment` pointer of its last segment.
+
+Primary scans retain `LW_SHARED`, so exclusive publication cannot overlap
+their root snapshot. Recovery does not acquire that extension lock. Every
+reader therefore also holds the metapage buffer in share mode while copying
+all segment root block numbers. Generic WAL replay locks the metapage
+exclusively before changing either it or a predecessor page, so root discovery
+sees the complete old graph or the complete new graph. Scoring uses the copied
+roots directly and never follows a possibly newer `next_segment` link.
 
 ## Spill and compaction policy
 
@@ -235,7 +247,10 @@ before selection. It must not wrap the step in a coarse per-index LWLock;
 ### Phase 1: select
 
 With the maintenance lock held, compaction briefly acquires the per-index lock
-in `LW_SHARED` and builds an immutable plan containing:
+in `LW_SHARED` only long enough to copy the metapage. It then releases the lock
+before traversing the snapshot's immutable source chains.
+
+The unlocked planning phase builds an immutable plan containing:
 
 - every selected source root, level, and chain position;
 - each selected contiguous run's first root and remainder root;
@@ -243,11 +258,10 @@ in `LW_SHARED` and builds an immutable plan containing:
 - output batches and destination levels;
 - source statistics needed to calculate dead-document shrinkage.
 
-Selection releases the per-index lock before collecting complete page lists
-or reading postings.
-
-`LW_SHARED` excludes spill publication while the snapshot is taken but remains
-compatible with scans and ordinary inserts.
+It may load complete page maps and read every source dictionary entry without
+holding the per-index lock. The maintenance lock prevents VACUUM or another
+compaction from changing those sources. A spill may prepend L0 segments, but it
+does not mutate the old head copied from the metapage snapshot.
 
 ### Phase 2: build
 
@@ -260,8 +274,7 @@ Compaction holds only the heavyweight maintenance lock while it:
 4. collects all displaced source pages;
 5. builds a detached tombstone batch whose tail initially points to
    `InvalidBlockNumber` and whose reclaim stamp is provisionally invalid;
-6. flushes output WAL and dirty relation buffers needed before publication;
-7. validates every prepared output segment and detached tombstone link while
+6. validates every prepared output segment and detached tombstone link while
    the structures remain unreachable.
 
 The maintenance lock prevents VACUUM or another compaction from changing the
@@ -270,6 +283,12 @@ append to the memtable. A concurrent spill may prepend new L0 segments.
 
 The build phase contains regular interrupt checks and holds no LWLock across
 CPU or I/O work.
+
+It does not call `FlushRelationBuffers()`. Each output page is WAL-logged before
+the later publication record can make it reachable. WAL ordering guarantees
+that recovery can reconstruct every referenced page; synchronously scanning
+and flushing every dirty buffer for the relation would only couple compaction
+to unrelated foreground writes.
 
 ### Allocation and output ownership
 
@@ -307,13 +326,20 @@ Runtime restamping holds the per-index maintenance lock but no per-index
 LWLock. Its work scales with the number of tombstone containers without
 turning that work into reader exclusion.
 
-### Phase 4: validate
+### Phase 4: prepare and validate publication
 
-Compaction requests the fair per-index lock in `LW_EXCLUSIVE`. Once acquired,
-no primary reader, insert, spill, drain, or truncation operation can observe a
-partially modified graph.
+Compaction first takes `LW_SHARED`, reads the current metapage, and discovers
+any L0 prefix prepended since phase 1. It traverses and validates that prefix
+outside reader exclusion, recording the exact predecessor page and current
+graph identity. It then releases the shared lock and requests fair
+`LW_EXCLUSIVE`.
 
-Validation reads the current metapage and level chains. It requires:
+After exclusive acquisition, validation compares the current metapage against
+the prepared identity. If another spill won the race, compaction releases the
+lock and repeats prefix preparation. It never walks an unbounded concurrent
+prefix while holding `LW_EXCLUSIVE`.
+
+The final constant-time validation requires:
 
 - every selected source root still exists, is contiguous, and appears in the
   expected order;
@@ -333,6 +359,10 @@ With the maintenance lock held, validation failure indicates corruption, an
 implementation error, or an operation not yet participating in the
 maintenance protocol. It fails closed without changing the published graph.
 
+Read-compatible metapage V8 is valid input. Publication preserves
+`pending_free_head` for V8 and every later version where that field exists;
+only versions older than V8 synthesize an invalid pending-free head.
+
 ### Phase 5: publish
 
 One final `GenericXLog` publication:
@@ -345,19 +375,35 @@ One final `GenericXLog` publication:
 6. links the detached tombstone tail to the current `pending_free_head`;
 7. makes the detached tombstone batch the new pending-free head.
 
-The final record includes the metapage, the optional L0 predecessor page, and
-the detached tombstone tail. Output root links are finalized and WAL-logged
-while the output is still unreachable.
+The final record includes the metapage, the optional prepared L0 predecessor
+page, and the detached tombstone tail. Output root links are finalized and
+WAL-logged while the output is still unreachable.
 
-The per-index lock is released immediately after publication. The maintenance
-lock is then released or retained for the caller's next explicitly bounded
-step.
+The per-index and maintenance locks are released immediately after
+publication. A caller that intentionally runs another pass checks interrupts
+and reacquires maintenance before reselecting.
 
-## Reader and reclaim behavior
+## Reader graph snapshots and reclaim behavior
 
-A primary scan that starts before publication holds `LW_SHARED`, so exclusive
-publication waits for it to finish traversing the old graph. A scan that
-starts afterward sees the new graph. No primary scan observes both layouts.
+Every chain-reading path uses one common segment-graph snapshot helper:
+
+1. lock the metapage buffer in share mode;
+2. copy corpus metadata, level heads, and level counts;
+3. while retaining that buffer lock, follow each chain for exactly its
+   recorded count and copy every segment root block number;
+4. reject short, long, cyclic, or unreadable chains as corruption;
+5. release the metapage buffer and consume only the copied root array.
+
+This helper is used by ranked BMW scans, standalone scoring, Boolean scans,
+debug/summary functions, and maintenance code that needs a stable root list.
+The counts frame and validate the snapshot; the copied root block numbers are
+the logical graph.
+
+A primary scan that starts before publication also holds `LW_SHARED`, so
+exclusive publication waits for it. A standby scan has no extension lock, but
+its metapage buffer lock blocks Generic WAL replay until the complete root list
+has been copied. In both cases the reader sees one old or new graph and never
+follows links lazily after publication.
 
 Displaced source pages are still parked rather than immediately returned to
 the FSM. This remains necessary for:
@@ -379,8 +425,8 @@ without adding a pg_textsearch resource manager.
 ## VACUUM
 
 Segments are immutable except for their alive bitmaps and chain metadata.
-VACUUM must acquire the per-index maintenance lock before identifying segment
-document IDs and retain it through:
+VACUUM acquires the per-index maintenance lock before identifying segment
+document IDs and retains it through:
 
 - alive-bit mutation;
 - legacy segment replacement;
@@ -409,6 +455,19 @@ compaction is likewise deferred. An affected legacy segment cannot represent
 deletions without replacement, so parallel VACUUM fails closed with a request
 to retry using `VACUUM (PARALLEL 0)`.
 
+VACUUM holds the per-index shared lock only while copying the metapage. It
+identifies dead document IDs and mutates V5 alive bitmaps without that lock;
+the maintenance lock keeps compaction and another VACUUM away, while spills
+only prepend immutable L0 segments. Graph replacement and metapage-statistic
+changes use short, validated exclusive publication sections.
+
+An all-dead V5 segment may remain linked during parallel VACUUM because that
+context cannot assign the reclaim XID. Later serial VACUUM and ordinary
+compaction inspect `alive_count` independently of newly reported dead TIDs.
+They prioritize a cleanup plan even below the normal level threshold, unlink
+the empty segment, correct corpus totals, and park its pages for standby-safe
+reclaim. The `total_dead == 0` fast path cannot bypass this cleanup.
+
 Pure counting that does not retain source document IDs may remain outside the
 maintenance lock. Spill invoked by VACUUM follows the normal lock order.
 
@@ -424,6 +483,12 @@ releasing it. The maintenance lock ensures no unreachable compaction output
 is being constructed concurrently.
 
 Normal compaction never truncates the relation.
+
+Automatic inline and fallback compaction performs one bounded pass per
+invocation. APIs that intentionally run multiple passes release the maintenance
+lock after each pass, check interrupts, and reacquire it before reselecting.
+This lets queued VACUUM or other same-index maintenance run between passes and
+prevents one moving-target completion loop from monopolizing maintenance.
 
 ## Background compaction compatibility
 
@@ -526,6 +591,14 @@ Required cases:
 7. VACUUM waits behind a paused merge and applies deletions to the published
    output.
 8. Force merge and truncation wait for an active ordinary compaction.
+9. A standby scan snapshots an old graph with a concurrent L0 prefix and
+   returns every document exactly once after publication replay.
+10. Expensive source estimation and VACUUM identification do not hold the
+    per-index lock or gate later scans behind a queued spill.
+11. A serial VACUUM removes a zero-alive singleton left by parallel VACUUM,
+    even when the serial callback reports no newly dead TIDs.
+12. Once an exclusive spill is queued, a deterministically paused later reader
+    cannot overtake it.
 
 ### Failure and recovery tests
 
@@ -541,6 +614,14 @@ Required cases:
 5. Disconnect a standby while an old-graph cursor is open, reclaim on the
    primary, reconnect, and verify stock WAL replay cancels the cursor before
    replay can expose page reuse.
+6. Upgrade a V8 index with an existing pending-free chain, compact it without
+   an intervening spill, and verify the chain remains reachable.
+7. Crash after output WAL but before and after publication without a
+   relation-wide buffer flush; recovery still yields the complete old or new
+   graph.
+8. Cancel after partial output allocation, before output completion, and after
+   detached-tombstone construction; owned pages are returned without touching
+   source pages.
 
 ### Performance tests
 
@@ -569,6 +650,8 @@ The implementation PR includes:
 6. VACUUM and force-merge integration;
 7. deterministic concurrency, recovery, and benchmark coverage;
 8. architecture and operator documentation.
+9. complete CI execution of the repository's concurrency target rather than a
+   manually maintained subset.
 
 With #478 now on the base branch, `compaction = 'background'` has both desired
 properties: foreground writers do not perform merges, and background merges
@@ -580,8 +663,16 @@ do not stall foreground readers or memtable inserts.
 - No per-index LWLock is held while merged output is constructed or flushed.
 - A scan and insert finish while a merge is paused indefinitely in build.
 - A concurrent L0 spill remains reachable after compaction publication.
-- Publication blocks readers only for its bounded exclusive section.
+- Primary and standby readers snapshot every segment root from one graph.
+- Publication blocks readers only for its constant-time exclusive section.
 - VACUUM cannot mutate selected source alive bits during a merge.
+- VACUUM and source planning hold no per-index lock across O(documents),
+  O(pages), or O(terms) work.
+- Empty segments left by parallel VACUUM are removed by later serial
+  maintenance even below normal compaction thresholds.
+- V8 compaction preserves the existing deferred-free chain.
+- Compaction performs no relation-wide buffer flush.
+- Multi-pass compaction yields same-index maintenance admission between passes.
 - Same-index maintenance serializes; different indexes can overlap.
 - Publication and deferred reclaim remain crash-safe and standby-safe.
 - Inline, manual, callback-driven, and #478 managed compaction use the same
