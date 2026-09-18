@@ -43,6 +43,7 @@ ERR_DIR="${DATA_DIR}/client_logs"
 KEEP_DIR="${SCRIPT_DIR}/../tmp_vacuum_concurrent_merge_logs"
 TEST_SIZE_MULTIPLIER=${TEST_SIZE_MULTIPLIER:-1.0}
 PAUSE_MS=5000
+RECLAIM_PAUSE_MS=15000
 STRESS_TIMEOUT_SECONDS=120
 
 # Scale a loop count by TEST_SIZE_MULTIPLIER (minimum 1).
@@ -87,12 +88,14 @@ diagnose() {
                 AND relation IN ('docs_bm25'::regclass,
                                  'coord_bm25'::regclass,
                                  'identify_bm25'::regclass,
+                                 'reclaim_bm25'::regclass,
                                  'yield_bm25'::regclass))
             OR (locktype = 'object'
                 AND classid = 'pg_am'::regclass
                 AND objid IN ('docs_bm25'::regclass,
                               'coord_bm25'::regclass,
                               'identify_bm25'::regclass,
+                              'reclaim_bm25'::regclass,
                               'yield_bm25'::regclass))
          ORDER BY pid, locktype, mode;" 2>&1 || true
     warn "server log tail:"
@@ -232,6 +235,19 @@ INSERT INTO yield_docs(body)
 SELECT 'yieldcase batch4 document ' || gs FROM generate_series(1, 8) gs;
 SELECT bm25_spill_index('yield_bm25');
 DELETE FROM yield_docs WHERE id <= 4;
+
+CREATE TABLE reclaim_docs (
+    id bigserial PRIMARY KEY,
+    body text NOT NULL
+);
+CREATE INDEX reclaim_bm25 ON reclaim_docs USING bm25(body)
+    WITH (text_config='english', compaction='off');
+ALTER TABLE reclaim_docs SET (autovacuum_enabled=false);
+INSERT INTO reclaim_docs(body)
+SELECT 'retired reclaim document ' || gs || ' ' || repeat(md5(gs::text), 8)
+FROM generate_series(1, 6000) gs;
+SELECT bm25_spill_index('reclaim_bm25');
+INSERT INTO reclaim_docs(body) VALUES ('reclaimrace live memtable document');
 SQL
 }
 
@@ -307,6 +323,15 @@ wait_for_vacuum_marker() {
         "Observed VACUUM identification marker for index ${oid}, backend ${backend}"
 }
 
+wait_for_reclaim_marker() {
+    local oid=$1
+    local backend=$2
+    local marker="pg_textsearch VACUUM pause during dead-memtable reclaim scan for index ${oid} backend ${backend}"
+
+    wait_for_log_marker "${marker}" \
+        "Observed dead-memtable reclaim marker for index ${oid}, backend ${backend}"
+}
+
 wait_for_exclusive_waiter_marker() {
     local oid=$1
     local backend=$2
@@ -338,6 +363,30 @@ assert_vacuum_identification_paused() {
         );")
     [ "${active}" = "t" ] ||
         error "VACUUM backend ${backend} is no longer paused in identification"
+}
+
+assert_vacuum_reclaim_paused() {
+    local oid=$1
+    local backend=$2
+    local client_pid=$3
+    local marker="pg_textsearch VACUUM resume after dead-memtable reclaim scan for index ${oid} backend ${backend}"
+    local active
+
+    if grep -Fq "${marker}" "${LOGFILE}" 2>/dev/null; then
+        error "VACUUM reclaim resumed before the overlap proof completed"
+    fi
+    kill -0 "${client_pid}" 2>/dev/null ||
+        error "VACUUM reclaim client exited before the overlap proof completed"
+    active=$(sql -c "
+        SELECT EXISTS (
+            SELECT 1
+              FROM pg_stat_activity
+             WHERE pid = ${backend}
+               AND state = 'active'
+               AND query = 'VACUUM reclaim_docs;'
+        );")
+    [ "${active}" = "t" ] ||
+        error "VACUUM backend ${backend} is no longer paused in reclaim"
 }
 
 assert_still_paused() {
@@ -387,6 +436,110 @@ assert_no_segment_errors() {
             "${ERR_DIR}" "${LOGFILE}" | sed -n '1,5p'
         error "TEST FAILED: concurrent maintenance reported an index storage error"
     fi
+}
+
+test_vacuum_reclaim_does_not_gate_readers() {
+    local vacuum_output="${ERR_DIR}/reclaim_vacuum.log"
+    local spill_output="${ERR_DIR}/reclaim_spill.log"
+    local reader_output="${ERR_DIR}/reclaim_reader.log"
+    local compactor_output="${ERR_DIR}/reclaim_compactor.log"
+    local vacuum_pid spill_pid reader_pid compactor_pid
+    local vacuum_backend spill_backend compactor_backend
+    local oid reader_result lock_proof=f deadline
+
+    log "Case: full-fork VACUUM reclaim does not hold the per-index lock..."
+    oid=$(sql -c "SELECT 'reclaim_bm25'::regclass::oid;")
+    for _ in $(seq 1 32); do
+        sql -c "SELECT txid_current();" >/dev/null
+    done
+
+    PGAPPNAME=pgts-reclaim-vacuum \
+        PGOPTIONS="-c statement_timeout=90000 -c lock_timeout=30000 -c pg_textsearch.debug_vacuum_pause_memtable_reclaim_ms=${RECLAIM_PAUSE_MS}" \
+        psql -h "${SOCKET_DIR}" -p "${TEST_PORT}" -d "${TEST_DB}" \
+        -qAt -v ON_ERROR_STOP=1 \
+        -c "SELECT pg_backend_pid();" -c "VACUUM reclaim_docs;" \
+        >"${vacuum_output}" 2>&1 &
+    vacuum_pid=$!
+    vacuum_backend=$(client_backend_pid "${vacuum_output}" "reclaim VACUUM")
+    wait_for_reclaim_marker "${oid}" "${vacuum_backend}"
+
+    PGAPPNAME=pgts-reclaim-spill \
+        PGOPTIONS="-c statement_timeout=90000 -c lock_timeout=30000 -c pg_textsearch.debug_index_lock_pause_exclusive_waiter_ms=1000" \
+        psql -h "${SOCKET_DIR}" -p "${TEST_PORT}" -d "${TEST_DB}" \
+        -qAt -v ON_ERROR_STOP=1 \
+        -c "SELECT pg_backend_pid();" \
+        -c "SELECT bm25_spill_index('reclaim_bm25');" \
+        >"${spill_output}" 2>&1 &
+    spill_pid=$!
+    spill_backend=$(client_backend_pid "${spill_output}" "reclaim spill")
+    wait_for_exclusive_waiter_marker "${oid}" "${spill_backend}"
+
+    PGAPPNAME=pgts-reclaim-reader \
+        PGOPTIONS="-c statement_timeout=5000 -c lock_timeout=4000" \
+        sql -c "
+            SELECT count(*)
+              FROM (
+                    SELECT id
+                      FROM reclaim_docs
+                     ORDER BY body <@> to_bm25query(
+                                  'reclaimrace', 'reclaim_bm25')
+                     LIMIT 10
+                   ) ranked;" \
+        >"${reader_output}" 2>&1 &
+    reader_pid=$!
+
+    wait_success "${spill_pid}" 5 "exclusive spill during reclaim" \
+        "${spill_output}"
+    wait_success "${reader_pid}" 5 "later ranked reader during reclaim" \
+        "${reader_output}"
+    reader_result=$(tail -n 1 "${reader_output}")
+    [ "${reader_result}" = "1" ] ||
+        error "later reclaim reader returned ${reader_result}"
+    assert_vacuum_reclaim_paused \
+        "${oid}" "${vacuum_backend}" "${vacuum_pid}"
+
+    PGAPPNAME=pgts-reclaim-compactor \
+        PGOPTIONS="-c statement_timeout=90000 -c lock_timeout=30000" \
+        psql -h "${SOCKET_DIR}" -p "${TEST_PORT}" -d "${TEST_DB}" \
+        -qAt -v ON_ERROR_STOP=1 \
+        -c "SELECT pg_backend_pid();" \
+        -c "SELECT bm25_force_merge('reclaim_bm25');" \
+        >"${compactor_output}" 2>&1 &
+    compactor_pid=$!
+    compactor_backend=$(client_backend_pid \
+        "${compactor_output}" "reclaim force merge")
+
+    deadline=$((SECONDS + 3))
+    while ((SECONDS < deadline)); do
+        lock_proof=$(sql -c "
+            SELECT EXISTS (
+                SELECT 1
+                  FROM pg_stat_activity activity
+                  JOIN pg_locks pending
+                    ON pending.pid = activity.pid
+                 WHERE activity.pid = ${compactor_backend}
+                   AND activity.state = 'active'
+                   AND ${vacuum_backend} =
+                       ANY (pg_blocking_pids(activity.pid))
+                   AND pending.locktype = 'object'
+                   AND pending.classid = 'pg_am'::regclass
+                   AND pending.objid = ${oid}
+                   AND pending.objsubid = 3
+                   AND pending.mode = 'ExclusiveLock'
+                   AND NOT pending.granted
+            );" 2>/dev/null || true)
+        [ "${lock_proof}" = "t" ] && break
+        sleep 0.05
+    done
+    [ "${lock_proof}" = "t" ] ||
+        error "force merge was not serialized by reclaim maintenance"
+    assert_vacuum_reclaim_paused \
+        "${oid}" "${vacuum_backend}" "${vacuum_pid}"
+
+    wait_success "${vacuum_pid}" 20 "reclaim VACUUM" "${vacuum_output}"
+    wait_success "${compactor_pid}" 15 "post-reclaim force merge" \
+        "${compactor_output}"
+    log "Exclusive spill and ranked reader completed while reclaim stayed paused"
 }
 
 test_vacuum_identification_does_not_gate_readers() {
@@ -796,6 +949,7 @@ run_test() {
 # Main
 setup_test_db
 seed_data
+test_vacuum_reclaim_does_not_gate_readers
 test_vacuum_identification_does_not_gate_readers
 test_vacuum_waits_for_force_merge
 test_compact_yields_to_vacuum

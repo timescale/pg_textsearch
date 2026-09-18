@@ -160,6 +160,7 @@ int tp_debug_compaction_pause_after_select_ms	  = 0;
 int tp_debug_compaction_pause_source_estimate_ms  = 0;
 int tp_debug_compaction_pause_before_publish_ms	  = 0;
 int tp_debug_compaction_pause_after_restamp_ms	  = 0;
+int tp_debug_vacuum_pause_memtable_reclaim_ms	  = 0;
 int tp_debug_index_lock_pause_exclusive_waiter_ms = 0;
 int tp_debug_index_lock_exclusive_waiter_gate	  = 0;
 int tp_debug_compaction_pause_after_allocation =
@@ -833,6 +834,21 @@ _PG_init(void)
 			NULL);
 
 	DefineCustomIntVariable(
+			"pg_textsearch.debug_vacuum_pause_memtable_reclaim_ms",
+			"Pause VACUUM during the dead-memtable full-fork scan.",
+			"Testing-only interruptible pause after entering the index fork "
+			"page loop and before locking its first page.",
+			&tp_debug_vacuum_pause_memtable_reclaim_ms,
+			0,
+			0,
+			60000,
+			PGC_SUSET,
+			0,
+			NULL,
+			NULL,
+			NULL);
+
+	DefineCustomIntVariable(
 			"pg_textsearch.debug_index_lock_pause_exclusive_waiter_ms",
 			"Pause after registering an exclusive per-index lock waiter.",
 			"Testing-only interruptible pause after incrementing the "
@@ -877,11 +893,27 @@ _PG_init(void)
 			NULL);
 
 	DefineCustomIntVariable(
+			"pg_textsearch.debug_segment_graph_snapshot_pause_before_lock_ms",
+			"Pause before capturing a segment and memtable graph.",
+			"Testing-only interruptible pause before acquiring the metapage "
+			"buffer share lock for a common read snapshot.",
+			&tp_debug_segment_graph_snapshot_pause_before_lock_ms,
+			0,
+			0,
+			60000,
+			PGC_SUSET,
+			0,
+			NULL,
+			NULL,
+			NULL);
+
+	DefineCustomIntVariable(
 			"pg_textsearch."
 			"debug_segment_graph_snapshot_pause_before_unlock_ms",
-			"Pause before releasing a completed segment-root graph.",
+			"Pause before releasing a completed index read snapshot.",
 			"Testing-only interruptible pause after copying every segment "
-			"root while retaining the metapage buffer share lock.",
+			"root and the bounded memtable endpoint while retaining the "
+			"metapage buffer share lock.",
 			&tp_debug_segment_graph_snapshot_pause_before_unlock_ms,
 			0,
 			0,
@@ -894,9 +926,10 @@ _PG_init(void)
 
 	DefineCustomIntVariable(
 			"pg_textsearch.debug_segment_graph_snapshot_pause_ms",
-			"Pause after copying a complete segment-root graph.",
+			"Pause after copying a complete index read snapshot.",
 			"Testing-only interruptible pause after releasing the metapage "
-			"buffer lock and before consuming the copied segment roots.",
+			"buffer lock and before consuming the copied segment roots or "
+			"bounded memtable endpoint.",
 			&tp_debug_segment_graph_snapshot_pause_ms,
 			0,
 			0,

@@ -2,7 +2,7 @@
  * Copyright (c) 2025-2026 Tiger Data, Inc.
  * Licensed under the PostgreSQL License. See LICENSE for details.
  *
- * graph_snapshot.h - Atomic segment-root graph snapshots
+ * graph_snapshot.h - Atomic segment-root and memtable read snapshots
  */
 #pragma once
 
@@ -12,15 +12,18 @@
 #include <utils/rel.h>
 
 #include "index/metapage.h"
+#include "memtable/chain_walker.h"
 
 typedef struct TpSegmentGraphSnapshot
 {
-	TpIndexMetaPageData metapage;
-	BlockNumber		   *roots;
-	uint32				level_offsets[TP_MAX_LEVELS + 1];
-	uint32				root_count;
+	TpIndexMetaPageData		metapage;
+	TpMemtableChainSnapshot memtable;
+	BlockNumber			   *roots;
+	uint32					level_offsets[TP_MAX_LEVELS + 1];
+	uint32					root_count;
 } TpSegmentGraphSnapshot;
 
+extern int tp_debug_segment_graph_snapshot_pause_before_lock_ms;
 extern int tp_debug_segment_graph_snapshot_pause_before_unlock_ms;
 extern int tp_debug_segment_graph_snapshot_pause_ms;
 

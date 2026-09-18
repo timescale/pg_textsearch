@@ -7,6 +7,7 @@
 #include <postgres.h>
 
 #include <math.h>
+#include <miscadmin.h>
 #include <storage/itemptr.h>
 #include <utils/memutils.h>
 
@@ -154,11 +155,18 @@ tp_score_documents(
 	k1			 = snapshot->metapage.k1;
 	b			 = snapshot->metapage.b;
 
-	memtable_src = tp_memtable_source_create_for_read(
-			local_state,
-			index_relation,
-			(const char *const *)query_terms,
-			query_term_count);
+	if (RecoveryInProgress())
+		memtable_src = tp_memtable_chain_source_create_bounded(
+				index_relation,
+				&snapshot->memtable,
+				(const char *const *)query_terms,
+				query_term_count);
+	else
+		memtable_src = tp_memtable_source_create_for_read(
+				local_state,
+				index_relation,
+				(const char *const *)query_terms,
+				query_term_count);
 	if (memtable_src != NULL)
 	{
 		total_docs64 += memtable_src->total_docs;

@@ -189,6 +189,7 @@ background compaction policy.
 | VACUUM graph/root snapshot | per-index maintenance object lock | bounded `LW_SHARED` |
 | VACUUM identify / bitmap mutation | per-index maintenance object lock | none |
 | VACUUM graph publication | per-index maintenance object lock | brief `LW_EXCLUSIVE` |
+| VACUUM dead-memtable fork reclaim | per-index maintenance object lock | none |
 | tombstone drain | none | `LW_EXCLUSIVE` |
 | force merge | per-index maintenance object lock | phase-specific; exclusive for truncate |
 
@@ -197,12 +198,15 @@ can prepend segments while compaction builds. Preserving that prefix requires
 changing the `next_segment` pointer of its last segment.
 
 Primary scans retain `LW_SHARED`, so exclusive publication cannot overlap
-their root snapshot. Recovery does not acquire that extension lock. Every
+their read snapshot. Recovery does not acquire that extension lock. Every
 reader therefore also holds the metapage buffer in share mode while copying
-all segment root block numbers. Generic WAL replay locks the metapage
-exclusively before changing either it or a predecessor page, so root discovery
-sees the complete old graph or the complete new graph. Scoring uses the copied
-roots directly and never follows a possibly newer `next_segment` link.
+all segment root block numbers and the memtable head/tail, then captures the
+tail free offset before releasing the metapage. Generic WAL replay locks the
+metapage exclusively for spill or graph publication, so recovery scoring sees
+the complete old generation or the complete new generation. It uses the
+copied roots and bounded memtable endpoint directly and never rereads the
+metapage or follows a possibly newer `next_segment` link. Primary cache
+selection and standalone admission ordering are unchanged.
 
 ## Spill and compaction policy
 
@@ -389,28 +393,32 @@ and reacquires maintenance before reselecting.
 
 ## Reader graph snapshots and reclaim behavior
 
-Query, debug, and maintenance root enumerators use one common segment-graph
+Query, debug, and maintenance root enumerators use one common index read
 snapshot helper:
 
 1. lock the metapage buffer in share mode;
 2. copy corpus metadata, level heads, and level counts;
 3. while retaining that buffer lock, follow each chain for exactly its
    recorded count and copy every segment root block number;
-4. reject short, long, cyclic, or unreadable chains as corruption;
-5. release the metapage buffer and consume only the copied root array.
+4. capture a bounded memtable endpoint from the copied head and tail, including
+   the tail page's free offset;
+5. reject short, long, cyclic, or unreadable chains as corruption;
+6. release the metapage buffer and consume only the copied roots and endpoint.
 
 This helper is used by ranked BMW scans, standalone scoring, Boolean scans,
 debug/summary functions, and maintenance code that needs a stable root list.
-The counts only frame and validate discovery; the copied root block numbers,
-not the counts alone, are the logical graph. Consumers traverse the explicit
-root arrays and never rediscover published roots through later
-`next_segment` reads.
+The counts only frame and validate discovery; the copied root block numbers
+and bounded memtable endpoint form the read generation. Consumers traverse the
+explicit root arrays and never rediscover published roots through later
+`next_segment` reads. On recovery, ranked and standalone scoring build their
+chain source from that endpoint without rereading the metapage. Boolean
+execution consumes the same endpoint directly.
 
 A primary scan that starts before publication also holds `LW_SHARED`, so
 exclusive publication waits for it. A standby scan has no extension lock, but
-its metapage buffer lock blocks Generic WAL replay until the complete root list
-has been copied. In both cases the reader sees one old or new graph and never
-follows links lazily after publication.
+its metapage buffer lock blocks Generic WAL replay until both the root list and
+memtable endpoint have been copied. In both cases the reader sees one old or
+new generation and never follows links lazily after publication.
 
 Displaced source pages are still parked rather than immediately returned to
 the FSM. This remains necessary for:
@@ -462,12 +470,17 @@ compaction is likewise deferred. An affected legacy segment cannot represent
 deletions without replacement, so parallel VACUUM fails closed with a request
 to retry using `VACUUM (PARALLEL 0)`.
 
-VACUUM holds the per-index shared lock while copying the metapage and every
-published segment root in the bounded graph snapshot. It identifies dead
-document IDs and mutates V5 alive bitmaps without that lock; the maintenance
-lock keeps compaction and another VACUUM away, while spills only prepend
-immutable L0 segments. Graph replacement and metapage-statistic changes use
-short, validated exclusive publication sections.
+VACUUM holds the per-index shared lock while copying the metapage, every
+published segment root, and the memtable endpoint in the bounded read
+snapshot. It identifies dead document IDs and mutates V5 alive bitmaps without
+that lock. Cleanup retains the maintenance lock through the O(index-pages)
+DEAD-memtable fork scan, preventing force-merge truncation, but holds no
+per-index LWLock during that scan. A racing spill can make the captured
+reachable-chain set conservative, so pages are retained until a later VACUUM;
+live/new pages are not DEAD, page buffer locks serialize inspection, and
+`dead_fxid` prevents reuse while an old snapshot can reference a retired
+chain. Graph replacement and metapage-statistic changes use short, validated
+exclusive publication sections.
 
 An all-dead V5 segment may remain linked during parallel VACUUM because that
 context cannot assign the reclaim XID. Later serial VACUUM and ordinary
@@ -599,14 +612,18 @@ Required cases:
 7. VACUUM waits behind a paused merge and applies deletions to the published
    output.
 8. Force merge and truncation wait for an active ordinary compaction.
-9. A standby scan snapshots an old graph with a concurrent L0 prefix and
-   returns every document exactly once after publication replay.
+9. Standby ranked and standalone scoring keep segment roots and the bounded
+   memtable endpoint in one generation when spill replay occurs after snapshot
+   unlock; ranked IDs remain exact and standalone scores remain consistent.
 10. Expensive source estimation and VACUUM identification do not hold the
     per-index lock or gate later scans behind a queued spill.
 11. A serial VACUUM removes a zero-alive singleton left by parallel VACUUM,
     even when the serial callback reports no newly dead TIDs.
 12. Once an exclusive spill is queued, a deterministically paused later reader
     cannot overtake it.
+13. A paused full-fork DEAD-memtable reclaim allows an exclusive spill and a
+    later ranked reader to finish while force merge remains serialized by
+    maintenance.
 
 ### Failure and recovery tests
 
@@ -671,11 +688,12 @@ do not stall foreground readers or memtable inserts.
 - No per-index LWLock is held while merged output is constructed or flushed.
 - A scan and insert finish while a merge is paused indefinitely in build.
 - A concurrent L0 spill remains reachable after compaction publication.
-- Primary and standby readers snapshot every segment root from one graph.
+- Primary and standby readers snapshot segment roots and the memtable endpoint
+  from one generation.
 - Publication blocks readers only for its constant-time exclusive section.
 - VACUUM cannot mutate selected source alive bits during a merge.
 - VACUUM and source planning hold no per-index lock across O(documents),
-  O(pages), or O(terms) work.
+  O(index-pages), or O(terms) work.
 - Empty segments left by parallel VACUUM are removed by later serial
   maintenance even below normal compaction thresholds.
 - V8 compaction preserves the existing deferred-free chain.

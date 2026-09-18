@@ -21,6 +21,7 @@
 #include <fmgr.h>
 #include <lib/stringinfo.h>
 #include <libpq/pqformat.h>
+#include <miscadmin.h>
 #include <nodes/pg_list.h>
 #include <nodes/value.h>
 #include <tsearch/ts_type.h>
@@ -664,6 +665,36 @@ calculate_term_score(
 	return term_score;
 }
 
+static void
+tp_standalone_sources_open(
+		TpLocalIndexState		*index_state,
+		Relation				 index_rel,
+		TpDataSource		   **memtable_src,
+		TpSegmentGraphSnapshot **segment_snapshot)
+{
+	Assert(index_state != NULL);
+	Assert(memtable_src != NULL && *memtable_src == NULL);
+	Assert(segment_snapshot != NULL && *segment_snapshot == NULL);
+
+	if (RecoveryInProgress())
+	{
+		*segment_snapshot = tp_segment_graph_snapshot_create(index_rel);
+		*memtable_src	  = tp_memtable_chain_source_create_bounded(
+				index_rel, &(*segment_snapshot)->memtable, NULL, 0);
+	}
+	else
+	{
+		/*
+		 * Preserve primary admission and cache semantics: the source owns
+		 * LW_SHARED before roots are copied, excluding spill publication
+		 * across the pair.
+		 */
+		*memtable_src = tp_memtable_source_create_for_read(
+				index_state, index_rel, NULL, 0);
+		*segment_snapshot = tp_segment_graph_snapshot_create(index_rel);
+	}
+}
+
 /*
  * BM25 scoring function for text <@> bm25query operations
  *
@@ -765,19 +796,13 @@ bm25_text_bm25query_score(PG_FUNCTION_ARGS)
 					 errmsg("could not get index state for index OID %u",
 							RelationGetRelid(index_rel))));
 
-		/*
-		 * The source owns per-index LW_SHARED for its lifetime. Open it
-		 * before copying segment roots so spill cannot publish between the
-		 * memtable and segment snapshots.
-		 */
-		memtable_src = tp_memtable_source_create_for_read(
-				index_state, index_rel, NULL, 0);
-		segment_snapshot = tp_segment_graph_snapshot_create(index_rel);
-		metap			 = &segment_snapshot->metapage;
-		text_config_oid	 = metap->text_config_oid;
-		first_segment	 = metap->level_heads[0];
-		total_docs		 = metap->total_docs;
-		total_len		 = metap->total_len;
+		tp_standalone_sources_open(
+				index_state, index_rel, &memtable_src, &segment_snapshot);
+		metap			= &segment_snapshot->metapage;
+		text_config_oid = metap->text_config_oid;
+		first_segment	= metap->level_heads[0];
+		total_docs		= metap->total_docs;
+		total_len		= metap->total_len;
 
 		/*
 		 * If a storage-less inheritance parent was selected, switch to its
@@ -816,10 +841,11 @@ bm25_text_bm25query_score(PG_FUNCTION_ARGS)
 					index_close(old_rel, AccessShareLock);
 					index_state = child_state;
 
-					memtable_src = tp_memtable_source_create_for_read(
-							index_state, index_rel, NULL, 0);
-					segment_snapshot = tp_segment_graph_snapshot_create(
-							index_rel);
+					tp_standalone_sources_open(
+							index_state,
+							index_rel,
+							&memtable_src,
+							&segment_snapshot);
 					metap			= &segment_snapshot->metapage;
 					text_config_oid = metap->text_config_oid;
 					first_segment	= metap->level_heads[0];

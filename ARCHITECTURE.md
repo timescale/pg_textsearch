@@ -41,11 +41,15 @@ live heap TID occurs in at most one published segment. Segment-local numeric
 scoring paths to avoid cross-segment document deduplication.
 
 Published-graph consumers hold the metapage buffer in share mode while copying
-every segment root for every level. Level counts bound and validate discovery,
-but the copied roots—not the counts alone—are the logical graph snapshot.
-Query, debug, and maintenance work then use those explicit root arrays rather
-than lazily following published `next_segment` links. This also gives standby
-readers one complete old or new graph while Generic WAL replay changes links.
+every segment root for every level and a bounded memtable endpoint (head, tail,
+and the tail free offset). Level counts bound and validate root discovery.
+Query, debug, and maintenance work then use the explicit root arrays rather
+than lazily following published `next_segment` links. On recovery, ranked,
+standalone, and Boolean scoring consume the bounded chain endpoint instead of
+rereading the metapage. Segment and memtable inputs therefore come from one
+complete old or new generation while Generic WAL replay changes publication.
+Primary ranked and standalone paths retain their existing cache and per-index
+lock admission semantics.
 
 ## Memtable Cache
 
@@ -278,10 +282,19 @@ chain.
 
 VACUUM acquires the per-index maintenance lock before identifying segment
 document IDs and retains it through alive-bit mutation, legacy segment
-replacement, corpus-statistic adjustment, and any segment unlink. The
-per-index LWLock is held only for the root snapshot and brief validated
-publication; document identification and bitmap work remain unlocked from
-readers and inserts.
+replacement, corpus-statistic adjustment, any segment unlink, and the
+full-fork scan that reclaims DEAD memtable pages. The maintenance lock excludes
+force-merge truncation during that scan. The per-index LWLock is held only for
+the root snapshot and brief validated publication; document identification,
+bitmap work, and dead-memtable reclaim remain unlocked from readers, inserts,
+and spills.
+
+Dead-memtable reclaim first records the currently reachable chain, then
+inspects pages under their buffer locks. A racing spill can only make that
+reachable set conservative, retaining pages until a later VACUUM. Live and
+newly allocated pages are not marked DEAD, while `dead_fxid` prevents a
+retired page from entering the FSM before old primary or feedback-protected
+standby snapshots are safe.
 
 If VACUUM is admitted first, compaction waits and later builds from the updated
 alive bits. If compaction is admitted first, VACUUM waits and then discovers

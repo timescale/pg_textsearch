@@ -850,10 +850,6 @@ tp_boolean_execute(IndexScanDesc scan, TpLocalIndexState *index_state)
 	MemoryContext			old_context;
 	TpBooleanEvalState		state;
 	TpIndexMetaPage			metap;
-	TpMemtableChainSnapshot memtable_snapshot = {
-			.head_blkno = InvalidBlockNumber,
-			.tail_blkno = InvalidBlockNumber,
-	};
 	TpSegmentGraphSnapshot *snapshot;
 	TpBooleanResultWriter	writer;
 
@@ -883,11 +879,6 @@ tp_boolean_execute(IndexScanDesc scan, TpLocalIndexState *index_state)
 	snapshot = tp_segment_graph_snapshot_create(scan->indexRelation);
 	metap	 = &snapshot->metapage;
 	tp_boolean_check_config(scan->indexRelation, metap);
-	tp_memtable_chain_snapshot_capture(
-			scan->indexRelation,
-			metap->memtable_head_blkno,
-			metap->memtable_tail_blkno,
-			&memtable_snapshot);
 
 	/*
 	 * Spill or compaction can replace the captured chain and segment roots
@@ -902,7 +893,7 @@ tp_boolean_execute(IndexScanDesc scan, TpLocalIndexState *index_state)
 	writer.count = 0;
 
 	tp_boolean_write_memtable_snapshot(
-			scan->indexRelation, &memtable_snapshot, &writer);
+			scan->indexRelation, &snapshot->memtable, &writer);
 
 	for (uint32 level = 0; level < TP_MAX_LEVELS; level++)
 	{

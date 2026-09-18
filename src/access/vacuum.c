@@ -91,6 +91,35 @@ tp_debug_vacuum_pause_during_identification(Relation index)
 					MyProcPid)));
 }
 
+static void
+tp_debug_vacuum_pause_during_memtable_reclaim(Relation index)
+{
+	TimestampTz deadline;
+
+	if (tp_debug_vacuum_pause_memtable_reclaim_ms <= 0)
+		return;
+
+	ereport(LOG,
+			(errmsg("pg_textsearch VACUUM pause during dead-memtable reclaim "
+					"scan for index %u backend %d",
+					RelationGetRelid(index),
+					MyProcPid)));
+	deadline = TimestampTzPlusMilliseconds(
+			GetCurrentTimestamp(), tp_debug_vacuum_pause_memtable_reclaim_ms);
+	for (;;)
+	{
+		CHECK_FOR_INTERRUPTS();
+		if (GetCurrentTimestamp() >= deadline)
+			break;
+		pg_usleep(10000L);
+	}
+	ereport(LOG,
+			(errmsg("pg_textsearch VACUUM resume after dead-memtable reclaim "
+					"scan for index %u backend %d",
+					RelationGetRelid(index),
+					MyProcPid)));
+}
+
 /*
  * Convert a 32-bit xid (known to be in the allowable range when
  * nextFullXid was current) into a FullTransactionId.
@@ -1012,23 +1041,18 @@ tp_vacuumcleanup(IndexVacuumInfo *info, IndexBulkDeleteResult *stats)
 		stats->num_index_tuples = (double)
 				tp_count_live_docs(info->index, segment_snapshot);
 		tp_segment_graph_snapshot_free(segment_snapshot);
-		tp_compaction_unlock(info->index);
-		maintenance_locked = false;
 
 		/*
 		 * Return DEAD memtable orphan blocks to the index FSM once
 		 * their dead_fxid is older than the global visibility horizon.
-		 * LW_SHARED is enough: only already-unlinked DEAD pages are
-		 * touched; live inserts/scans hold the same lock and mutate
-		 * the metapage chain, not these blocks.  Spill (LW_EXCLUSIVE)
-		 * waits until this scan finishes.
+		 * Maintenance remains held so force-merge truncation cannot race
+		 * the captured fork size or page inspection.  No per-index lock is
+		 * held: concurrent inserts and spill publication remain available.
 		 */
-		tp_acquire_index_lock(index_state, LW_SHARED);
-		index_lock_held = true;
 		freed_pages =
 				tp_reclaim_dead_memtable_pages(info->index, info->heaprel);
-		tp_release_index_lock(index_state);
-		index_lock_held = false;
+		tp_compaction_unlock(info->index);
+		maintenance_locked = false;
 
 		if (stats->pages_deleted == 0 && stats->tuples_removed == 0 &&
 			freed_pages == 0)
@@ -1080,14 +1104,23 @@ tp_vacuumcleanup(IndexVacuumInfo *info, IndexBulkDeleteResult *stats)
  * and recycle blocks whose dead_fxid is older than the visibility
  * horizon for `heaprel` (FullTransactionId compare).  Does not
  * WAL-log page bodies or clear DEAD flags; reuse overwrites via
- * tp_memtable_alloc_page.  Caller holds per-index LW_SHARED (or
- * stronger); excludes spill via LW_EXCLUSIVE incompatibility.
+ * tp_memtable_alloc_page.  Caller holds the per-index maintenance
+ * object lock to exclude compaction/force-merge truncation, but does
+ * not hold the per-index LWLock across this O(index-pages) scan.
  *
  * Crash-safety guard: we build a set of blocks reachable from the
  * current memtable chain and skip freeing any page in that set.
  * This prevents corruption if a crash between tp_spill_finalize and
  * tp_memtable_mark_chain_dead left pages stamped DEAD but still
  * reachable via metap.head.  See tp_collect_reachable_chain_blocks.
+ *
+ * A concurrent spill can make the reachable snapshot conservative:
+ * pages reachable before publication remain in the set and are
+ * retained for a later VACUUM.  Live and newly allocated pages are
+ * never DEAD, and each inspection is serialized by the page buffer
+ * lock.  If the snapshot observes the post-spill head, dead_fxid still
+ * prevents reuse while an older primary or feedback-protected standby
+ * snapshot can reference the retired chain.
  */
 int
 tp_reclaim_dead_memtable_pages(Relation indexrel, Relation heaprel)
@@ -1098,6 +1131,7 @@ tp_reclaim_dead_memtable_pages(Relation indexrel, Relation heaprel)
 	TransactionId	  oldest;
 	FullTransactionId oldest_fxid;
 	HTAB			 *reachable;
+	bool			  reclaim_paused = false;
 
 	oldest = GetOldestNonRemovableTransactionId(heaprel);
 	oldest_fxid =
@@ -1116,6 +1150,11 @@ tp_reclaim_dead_memtable_pages(Relation indexrel, Relation heaprel)
 		TpMemtablePageHeader *hdr;
 
 		CHECK_FOR_INTERRUPTS();
+		if (!reclaim_paused)
+		{
+			tp_debug_vacuum_pause_during_memtable_reclaim(indexrel);
+			reclaim_paused = true;
+		}
 
 		buf = ReadBuffer(indexrel, blk);
 		LockBuffer(buf, BUFFER_LOCK_SHARE);

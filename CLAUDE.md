@@ -39,7 +39,9 @@ consider a dedicated `pg_textsearch` schema for cleaner namespace management.
   conflict-only record before displaced segment pages enter the FSM. There is
   no custom resource manager; pg_textsearch does not register an rmgr. Stock
   PostgreSQL replay reconstructs every page and resolves old standby
-  snapshots without loading `pg_textsearch.so`.
+  snapshots without loading `pg_textsearch.so`. Recovery scoring captures
+  segment roots and a bounded memtable endpoint under one metapage buffer
+  share lock, so spill replay cannot mix generations.
   **Read [ARCHITECTURE.md](ARCHITECTURE.md#storage-and-wal) before
   changing the write/read/spill flow.** Closes #345, #349, #350,
   #374.
@@ -239,6 +241,11 @@ VACUUM uses per-segment alive bitsets (1 bit per doc) to mark dead
 documents instead of rebuilding segments. This is O(dead_docs) instead
 of O(all_docs). Dead docs are filtered during BMW scoring and
 physically removed during segment merge.
+
+The serial cleanup pass holds the maintenance object lock, but not the
+per-index LWLock, while scanning the full index fork for reclaimable DEAD
+memtable pages. This serializes force-merge truncation without blocking
+spills or later readers behind an O(index-pages) shared lock.
 
 **Stale statistics after VACUUM**: After VACUUM marks docs dead, the
 segment's `total_docs`, `total_tokens`, and per-term `doc_freq` are

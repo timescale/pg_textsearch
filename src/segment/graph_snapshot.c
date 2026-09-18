@@ -2,7 +2,7 @@
  * Copyright (c) 2025-2026 Tiger Data, Inc.
  * Licensed under the PostgreSQL License. See LICENSE for details.
  *
- * graph_snapshot.c - Atomic segment-root graph snapshots
+ * graph_snapshot.c - Atomic segment-root and memtable read snapshots
  */
 #include <postgres.h>
 
@@ -13,10 +13,12 @@
 #include <utils/timestamp.h>
 
 #include "index/metapage.h"
+#include "memtable/chain_walker.h"
 #include "segment/graph_snapshot.h"
 #include "segment/io.h"
 #include "segment/segment.h"
 
+int tp_debug_segment_graph_snapshot_pause_before_lock_ms   = 0;
 int tp_debug_segment_graph_snapshot_pause_before_unlock_ms = 0;
 int tp_debug_segment_graph_snapshot_pause_ms			   = 0;
 
@@ -64,6 +66,10 @@ tp_segment_graph_snapshot_create(Relation index)
 		elog(ERROR,
 			 "invalid relation passed to tp_segment_graph_snapshot_create");
 
+	tp_debug_segment_graph_snapshot_pause(
+			index,
+			tp_debug_segment_graph_snapshot_pause_before_lock_ms,
+			"before-lock");
 	buffer = ReadBuffer(index, TP_METAPAGE_BLKNO);
 	if (!BufferIsValid(buffer))
 		elog(ERROR,
@@ -130,6 +136,11 @@ tp_segment_graph_snapshot_create(Relation index)
 	snapshot->level_offsets[TP_MAX_LEVELS] = snapshot->root_count;
 	Assert(snapshot->root_count == expected_roots);
 
+	tp_memtable_chain_snapshot_capture(
+			index,
+			snapshot->metapage.memtable_head_blkno,
+			snapshot->metapage.memtable_tail_blkno,
+			&snapshot->memtable);
 	tp_debug_segment_graph_snapshot_pause(
 			index,
 			tp_debug_segment_graph_snapshot_pause_before_unlock_ms,

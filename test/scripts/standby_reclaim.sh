@@ -538,6 +538,155 @@ SQL
     log "PASS: standby scoring returned all ${expected_rows} IDs exactly once"
 }
 
+test_atomic_ranked_memtable_generation() {
+    local actual_count actual_rows expected index_oid output result spilled
+
+    log "Case: standby ranked scoring uses one segment+memtable generation..."
+    primary_sql "
+        CREATE TABLE ranked_generation_rec (
+            id integer PRIMARY KEY,
+            body text NOT NULL
+        ) WITH (autovacuum_enabled = false);
+        INSERT INTO ranked_generation_rec
+        SELECT g, 'ranked generation alpha base ' || g
+          FROM generate_series(1, 1000) g;
+        CREATE INDEX ranked_generation_idx
+            ON ranked_generation_rec USING bm25(body)
+            WITH (text_config = 'english', compaction = 'off');
+        INSERT INTO ranked_generation_rec
+        SELECT g, 'ranked generation alpha memtable ' || g
+          FROM generate_series(1001, 1500) g;
+        CREATE TABLE ranked_generation_flush_before (id integer);" >/dev/null
+    wait_for_standby_catchup 30 ||
+        error "Standby did not catch up before ranked generation race"
+
+    index_oid=$(primary_sql_quiet \
+        "SELECT 'ranked_generation_idx'::regclass::oid;")
+    output="${STANDBY_DIR}/ranked_generation_reader.out"
+    rm -f "${output}"
+    psql -X -tAq -v ON_ERROR_STOP=1 -p "${STANDBY_PORT}" \
+        -d "${TEST_DB}" >"${output}" 2>&1 <<'SQL' &
+SET enable_seqscan = off;
+SET pg_textsearch.debug_segment_graph_snapshot_pause_ms = 15000;
+SELECT id
+  FROM ranked_generation_rec
+ ORDER BY body <@> to_bm25query('alpha', 'ranked_generation_idx')
+ LIMIT 1500;
+SQL
+    SNAPSHOT_READER_PID=$!
+    wait_for_snapshot_pause after-unlock "${index_oid}" "${output}"
+
+    spilled=$(primary_sql_quiet \
+        "SELECT bm25_spill_index('ranked_generation_idx') > 0;")
+    [ "${spilled}" = "t" ] ||
+        error "Ranked generation case did not spill the captured memtable"
+    primary_sql "CREATE TABLE ranked_generation_flush_after (id integer);" \
+        >/dev/null
+    wait_for_standby_catchup 30 ||
+        error "Standby did not replay ranked generation spill"
+    kill -0 "${SNAPSHOT_READER_PID}" 2>/dev/null ||
+        error "Ranked generation reader resumed before spill replay"
+    wait_for_snapshot_reader "${output}"
+
+    result=$(cat "${output}")
+    if grep -Ev '^[0-9]+$' <<<"${result}" >/dev/null; then
+        error "Ranked generation race returned a non-numeric document ID"
+    fi
+    expected=$(seq 1 1500)
+    actual_rows="$(printf '%s\n' "${result}" | wc -l | tr -d ' ')"
+    actual_count="$(printf '%s\n' "${result}" | sort -n | uniq | wc -l)"
+    [ "${actual_rows}" = "1500" ] ||
+        error "Ranked generation race returned ${actual_rows}/1500 rows"
+    [ "${actual_count}" = "1500" ] ||
+        error "Ranked generation race returned duplicate document IDs"
+    [ "$(printf '%s\n' "${result}" | sort -n)" = "${expected}" ] ||
+        error "Ranked generation race omitted or invented document IDs"
+    log "PASS: ranked standby race returned IDs 1..1500 exactly once"
+}
+
+test_atomic_standalone_memtable_generation() {
+    local baseline index_oid output result spilled
+
+    log "Case: standby standalone scoring uses one segment+memtable generation..."
+    primary_sql "
+        CREATE TABLE standalone_generation_rec (
+            id integer PRIMARY KEY,
+            body text NOT NULL
+        ) WITH (autovacuum_enabled = false);
+        INSERT INTO standalone_generation_rec
+        SELECT g, 'standalone generation base ' || g
+          FROM generate_series(1, 1000) g;
+        CREATE INDEX standalone_generation_idx
+            ON standalone_generation_rec USING bm25(body)
+            WITH (text_config = 'english', compaction = 'off');
+        INSERT INTO standalone_generation_rec
+        SELECT g, 'raceword standalone memtable ' || g
+          FROM generate_series(1001, 1500) g;
+        CREATE TABLE standalone_generation_flush_before (id integer);" \
+        >/dev/null
+    wait_for_standby_catchup 30 ||
+        error "Standby did not catch up before standalone generation race"
+
+    index_oid=$(primary_sql_quiet \
+        "SELECT 'standalone_generation_idx'::regclass::oid;")
+    output="${STANDBY_DIR}/standalone_generation_reader.out"
+    rm -f "${output}"
+    psql -X -tAq -v ON_ERROR_STOP=1 -p "${STANDBY_PORT}" \
+        -d "${TEST_DB}" >"${output}" 2>&1 <<'SQL' &
+SET pg_textsearch.debug_segment_graph_snapshot_pause_before_lock_ms = 15000;
+SET pg_textsearch.debug_segment_graph_snapshot_pause_ms = 15000;
+SELECT round((
+           body <@> to_bm25query(
+               'raceword', 'standalone_generation_idx')
+       )::numeric, 8)
+  FROM standalone_generation_rec
+ WHERE id = 1001;
+SQL
+    SNAPSHOT_READER_PID=$!
+    wait_for_snapshot_pause before-lock "${index_oid}" "${output}"
+
+    spilled=$(primary_sql_quiet \
+        "SELECT bm25_spill_index('standalone_generation_idx') > 0;")
+    [ "${spilled}" = "t" ] ||
+        error "Standalone generation case did not spill the first memtable"
+    primary_sql "
+        INSERT INTO standalone_generation_rec
+        SELECT g, 'laterword replacement memtable ' || g
+          FROM generate_series(1501, 1800) g;
+        CREATE TABLE standalone_generation_flush_middle (id integer);" \
+        >/dev/null
+    wait_for_standby_catchup 30 ||
+        error "Standby did not replay the first standalone spill"
+
+    baseline=$(standby_sql_quiet "
+        SELECT round((
+                   body <@> to_bm25query(
+                       'raceword', 'standalone_generation_idx')
+               )::numeric, 8)
+          FROM standalone_generation_rec
+         WHERE id = 1001;")
+    [ -n "${baseline}" ] && [ "${baseline}" != "0.00000000" ] ||
+        error "Standalone generation baseline score is ${baseline:-empty}"
+
+    wait_for_snapshot_pause after-unlock "${index_oid}" "${output}"
+    spilled=$(primary_sql_quiet \
+        "SELECT bm25_spill_index('standalone_generation_idx') > 0;")
+    [ "${spilled}" = "t" ] ||
+        error "Standalone generation case did not spill the captured endpoint"
+    primary_sql "CREATE TABLE standalone_generation_flush_after (id integer);" \
+        >/dev/null
+    wait_for_standby_catchup 30 ||
+        error "Standby did not replay the second standalone spill"
+    kill -0 "${SNAPSHOT_READER_PID}" 2>/dev/null ||
+        error "Standalone generation reader resumed before spill replay"
+    wait_for_snapshot_reader "${output}"
+
+    result=$(cat "${output}")
+    [ "${result}" = "${baseline}" ] ||
+        error "Standalone generation score ${result}, expected ${baseline}"
+    log "PASS: standalone standby race preserved score ${baseline}"
+}
+
 main() {
     local spilled graph feedback_setting plan first_id remaining
     local parked_before_vacuum parked_after_vacuum drained
@@ -725,6 +874,8 @@ SELECT coalesce(backend_xmin::text, '') FROM pg_stat_replication LIMIT 1;")"
 the standby cursor ended"
     test_disconnected_standby_conflict
     test_atomic_segment_graph_snapshot
+    test_atomic_ranked_memtable_generation
+    test_atomic_standalone_memtable_generation
     log "All standby reclaim overlap checks passed"
 }
 

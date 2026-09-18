@@ -234,3 +234,4 @@ extern relopt_kind tp_relopt_kind;
 extern bool tp_debug_panic_after_spill_finalize;
 extern bool tp_debug_panic_before_compaction_publish;
 extern bool tp_debug_panic_after_compaction_publish;
+extern int	tp_debug_vacuum_pause_memtable_reclaim_ms;
