@@ -79,6 +79,31 @@ run_sql_value() {
     psql -h "${DATA_DIR}" -p "${TEST_PORT}" -d "${TEST_DB}" -tAc "$1" 2>/dev/null
 }
 
+assert_count_file() {
+    local label="$1"
+    local output="$2"
+    local expected_reads="$3"
+    local minimum="$4"
+    local maximum="$5"
+    local reads=0
+    local count
+
+    while IFS= read -r count; do
+        reads=$((reads + 1))
+        if [[ ! "${count}" =~ ^[0-9]+$ ]]; then
+            error "${label}: read ${reads} returned non-numeric output: ${count}"
+        fi
+        if [ "${count}" -lt "${minimum}" ] ||
+           [ "${count}" -gt "${maximum}" ]; then
+            error "${label}: read ${reads} returned ${count}, expected ${minimum}-${maximum}"
+        fi
+    done < "${output}"
+
+    if [ "${reads}" -ne "${expected_reads}" ]; then
+        error "${label}: completed ${reads}/${expected_reads} reads"
+    fi
+}
+
 #
 # Test 1: Multiple backends reading from segment after spill
 #
@@ -106,7 +131,12 @@ test_concurrent_segment_reads() {
         {
             for q in $(seq 1 20); do
                 psql -h "${DATA_DIR}" -p "${TEST_PORT}" -d "${TEST_DB}" -tAc \
-                    "SELECT COUNT(*) FROM seg_docs WHERE content <@> to_bm25query('alpha', 'seg_idx') < -0.01;"
+                    "SELECT COUNT(*) FROM (
+                         SELECT 1
+                           FROM seg_docs
+                          ORDER BY content <@>
+                                   to_bm25query('alpha', 'seg_idx')
+                     ) ranked;"
             done
         } > "$output" 2>&1 &
         pids+=($!)
@@ -119,6 +149,9 @@ test_concurrent_segment_reads() {
         if ! wait "${pids[$i]}" 2>/dev/null; then
             warn "Reader $reader_id failed"
             failures=$((failures + 1))
+        else
+            assert_count_file "Test 1 reader ${reader_id}" \
+                "/tmp/seg_reader_${reader_id}.out" 20 50 50
         fi
         rm -f "/tmp/seg_reader_${reader_id}.out"
     done
@@ -166,24 +199,37 @@ test_concurrent_memtable_write_segment_read() {
     {
         for q in $(seq 1 30); do
             psql -h "${DATA_DIR}" -p "${TEST_PORT}" -d "${TEST_DB}" -tAc \
-                "SELECT COUNT(*) FROM mixed_docs WHERE content <@> to_bm25query('delta', 'mixed_idx') < -0.01;"
+                "SELECT COUNT(*) FROM (
+                     SELECT 1
+                       FROM mixed_docs
+                      ORDER BY content <@>
+                               to_bm25query('delta', 'mixed_idx')
+                 ) ranked;"
             sleep 0.02
         done
     } > "$reader_output" 2>&1 &
     local reader_pid=$!
 
     # Wait for both
-    wait $writer_pid 2>/dev/null || warn "Writer had issues"
+    if ! wait $writer_pid 2>/dev/null; then
+        cat "$writer_output" >&2
+        error "Writer failed during Test 2"
+    fi
     wait $reader_pid 2>/dev/null || error "Reader crashed"
+    assert_count_file "Test 2 reader" "$reader_output" 30 30 80
 
     # Verify final count is correct
-    local final_count=$(run_sql_value "SELECT COUNT(*) FROM mixed_docs WHERE content <@> to_bm25query('delta', 'mixed_idx') < -0.01;")
+    local final_count=$(run_sql_value "SELECT COUNT(*) FROM (
+        SELECT 1
+          FROM mixed_docs
+         ORDER BY content <@> to_bm25query('delta', 'mixed_idx')
+    ) ranked;")
     info "Final count: $final_count"
 
-    if [ "$final_count" -ge 30 ]; then
+    if [ "$final_count" -eq 80 ]; then
         log "✅ Test 2 passed: Reader and writer completed ($final_count docs with 'delta')"
     else
-        warn "Final count lower than expected: $final_count"
+        error "❌ Test 2 failed: Expected 80 final matches, got $final_count"
     fi
 
     rm -f "$writer_output" "$reader_output"
@@ -215,7 +261,12 @@ test_multiple_spills_concurrent_reads() {
         {
             for q in $(seq 1 15); do
                 psql -h "${DATA_DIR}" -p "${TEST_PORT}" -d "${TEST_DB}" -tAc \
-                    "SELECT COUNT(*) FROM multi_spill WHERE content <@> to_bm25query('zeta', 'multi_idx') < -0.01;"
+                    "SELECT COUNT(*) FROM (
+                         SELECT 1
+                           FROM multi_spill
+                          ORDER BY content <@>
+                                   to_bm25query('zeta', 'multi_idx')
+                     ) ranked;"
                 sleep 0.03
             done
         } > "$output" 2>&1 &
@@ -234,17 +285,26 @@ test_multiple_spills_concurrent_reads() {
     for i in "${!pids[@]}"; do
         if ! wait "${pids[$i]}" 2>/dev/null; then
             failures=$((failures + 1))
+        else
+            assert_count_file "Test 3 reader $((i + 1))" \
+                "/tmp/multi_reader_$((i + 1)).out" 15 60 80
         fi
         rm -f "/tmp/multi_reader_$((i+1)).out"
     done
 
     # Final count should be 80 (use simple COUNT first to verify data)
     local table_count=$(run_sql_value "SELECT COUNT(*) FROM multi_spill;")
-    local final_count=$(run_sql_value "SELECT COUNT(*) FROM multi_spill WHERE content <@> to_bm25query('zeta', 'multi_idx') < -0.01;")
+    local final_count=$(run_sql_value "SELECT COUNT(*) FROM (
+        SELECT 1
+          FROM multi_spill
+         ORDER BY content <@> to_bm25query('zeta', 'multi_idx')
+    ) ranked;")
 
     info "Table has $table_count rows, query found $final_count"
 
-    if [ "$failures" -eq 0 ] && [ "$table_count" -eq 80 ]; then
+    if [ "$failures" -eq 0 ] &&
+       [ "$table_count" -eq 80 ] &&
+       [ "$final_count" -eq 80 ]; then
         log "✅ Test 3 passed: Multiple spills handled correctly ($table_count docs)"
     else
         error "❌ Test 3 failed: failures=$failures table_count=$table_count final_count=$final_count"
@@ -344,7 +404,8 @@ test_doc_length_lookup() {
     run_sql_quiet "INSERT INTO doclen_test (content) VALUES ('another short one');"
     run_sql_quiet "INSERT INTO doclen_test (content) VALUES ('and a longer one with more words to test');"
 
-    # Query should use document lengths from both segment and memtable
+    # Explicitly exercise standalone scoring and document-length lookup across
+    # both the segment and memtable sources.
     local results=$(run_sql_value "SELECT COUNT(*) FROM doclen_test WHERE content <@> to_bm25query('document', 'doclen_idx') < -0.01;")
 
     # Should find 2 documents containing 'document'
@@ -377,7 +438,12 @@ test_read_during_spill() {
     {
         for q in $(seq 1 50); do
             psql -h "${DATA_DIR}" -p "${TEST_PORT}" -d "${TEST_DB}" -tAc \
-                "SELECT COUNT(*) FROM spill_race WHERE content <@> to_bm25query('theta', 'spill_idx') < -0.01;"
+                "SELECT COUNT(*) FROM (
+                     SELECT 1
+                       FROM spill_race
+                      ORDER BY content <@>
+                               to_bm25query('theta', 'spill_idx')
+                 ) ranked;"
             sleep 0.01
         done
     } > "$reader_output" 2>&1 &
@@ -389,16 +455,8 @@ test_read_during_spill() {
     info "Spill triggered during reads"
 
     wait $reader_pid 2>/dev/null || error "Reader crashed during spill"
-
-    # All reads should return 200
-    local bad_reads=$(cat "$reader_output" | grep -v "200" | grep -E '^[0-9]+$' | wc -l)
-
-    if [ "$bad_reads" -eq 0 ]; then
-        log "✅ Test 6 passed: All reads returned correct count during spill"
-    else
-        warn "Test 6: $bad_reads reads returned unexpected counts"
-        log "✅ Test 6 passed (with warnings)"
-    fi
+    assert_count_file "Test 6 reader" "$reader_output" 50 200 200
+    log "✅ Test 6 passed: All reads returned correct count during spill"
 
     rm -f "$reader_output"
     run_sql_quiet "DROP TABLE spill_race CASCADE;"

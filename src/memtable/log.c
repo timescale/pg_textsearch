@@ -39,6 +39,7 @@
 #include <storage/bufmgr.h>
 #include <storage/bufpage.h>
 #include <storage/itemptr.h>
+#include <storage/lock.h>
 #include <storage/lwlock.h>
 #include <utils/builtins.h>
 #include <utils/lsyscache.h>
@@ -100,6 +101,30 @@ tp_memtable_alloc_page(Relation rel)
 		return buf;
 
 	return ExtendBufferedRel(BMR_REL(rel), MAIN_FORKNUM, NULL, EB_LOCK_FIRST);
+}
+
+static void
+tp_debug_gate_memtable_extend(Relation rel)
+{
+	LOCKTAG gate_tag;
+	int		gate_key = tp_debug_memtable_extend_gate;
+
+	if (gate_key <= 0)
+		return;
+
+	SET_LOCKTAG_ADVISORY(gate_tag, MyDatabaseId, gate_key, 0, 2);
+	ereport(LOG,
+			(errmsg("pg_textsearch memtable append tail-extension gate for "
+					"index %u backend %d",
+					RelationGetRelid(rel),
+					MyProcPid)));
+	(void)LockAcquire(&gate_tag, ShareLock, true, false);
+	(void)LockRelease(&gate_tag, ShareLock, true);
+	ereport(LOG,
+			(errmsg("pg_textsearch memtable append passed tail-extension gate "
+					"for index %u backend %d",
+					RelationGetRelid(rel),
+					MyProcPid)));
 }
 
 /*
@@ -210,6 +235,7 @@ memtable_extend_and_append(
 	TpIndexMetaPage	  metap;
 	GenericXLogState *xlog_state;
 
+	tp_debug_gate_memtable_extend(rel);
 	newbuf = tp_memtable_alloc_page(rel);
 	newblk = BufferGetBlockNumber(newbuf);
 
@@ -668,9 +694,8 @@ tp_memtable_append(
  *
  * Updates the metapage to point at the new segment, resets the
  * memtable chain head/tail, and bumps total_docs/total_len, all
- * inside a single GenericXLog record.  Unlinked chain pages must
- * already carry TP_MEMTABLE_PAGE_FLAG_DEAD from
- * tp_memtable_mark_chain_dead (called in tp_do_spill first).
+ * inside a single GenericXLog record.  The caller WAL-stamps the unlinked
+ * chain pages DEAD only after this publication record is inserted.
  *
  * Caller must hold the per-index LWLock in EXCLUSIVE mode.
  *

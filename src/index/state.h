@@ -10,6 +10,7 @@
 
 #include <lib/dshash.h>
 #include <port/atomics.h>
+#include <storage/condition_variable.h>
 #include <storage/lwlock.h>
 #include <utils/dsa.h>
 
@@ -24,6 +25,9 @@
 struct TpMemtable;
 typedef struct TpIndexMetaPageData *TpIndexMetaPage;
 typedef struct RelationData		   *Relation;
+
+extern int tp_debug_index_lock_pause_exclusive_waiter_ms;
+extern int tp_debug_index_lock_exclusive_waiter_gate;
 
 /*
  * Header of the DSM segment for each index
@@ -182,7 +186,9 @@ typedef struct TpSharedIndexState
 	 * This ensures memory consistency on NUMA systems and proper
 	 * transaction isolation.
 	 */
-	LWLock lock; /* Per-index lock for this index */
+	LWLock			  lock; /* Per-index lock for this index */
+	pg_atomic_uint32  exclusive_waiters;
+	ConditionVariable exclusive_waiters_cv;
 
 	/*
 	 * Spill generation counter.  Bumped by tp_spill_finalize()

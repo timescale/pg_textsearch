@@ -48,6 +48,7 @@ OBJS = \
 	src/memtable/scan.o \
 	src/memtable/stringtable.o \
 	src/segment/segment.o \
+	src/segment/graph_snapshot.o \
 	src/segment/dictionary.o \
 	src/segment/scan.o \
 	src/segment/merge.o \
@@ -101,7 +102,9 @@ include $(PGXS)
 # SQL regression tests
 test: test-compaction-ownercheck test-compaction-request-source \
 	test-segment-io-limits test-boolean-lock test-boolean-memory \
-	test-boolean-rescan test-mixed-update-query-benchmark
+	test-boolean-rescan test-graph-snapshot-source test-published-graph-source \
+	test-vacuum-reclaim-source test-reclaim-conflict-source \
+	test-review-test-validity-source test-mixed-update-query-benchmark
 	@echo "Running SQL regression tests..."
 	@$(pg_regress_installcheck) $(REGRESS_OPTS) $(REGRESS)
 
@@ -119,6 +122,21 @@ test-boolean-memory:
 
 test-boolean-rescan:
 	@./test/scripts/boolean_rescan_source.sh
+
+test-graph-snapshot-source:
+	@./test/scripts/graph_snapshot_source.sh
+
+test-published-graph-source:
+	@./test/scripts/published_graph_source.sh
+
+test-vacuum-reclaim-source:
+	@./test/scripts/vacuum_reclaim_source.sh
+
+test-reclaim-conflict-source:
+	@./test/scripts/reclaim_conflict_source.sh
+
+test-review-test-validity-source:
+	@./test/scripts/review_test_validity_source.sh
 
 test-segment-io-limits:
 	@set -e; tmp_dir="$$(mktemp -d)"; \
@@ -141,10 +159,14 @@ test-durable:
 # Run source-level guards with every regression entry point.
 installcheck: test-compaction-ownercheck test-compaction-request-source \
 	test-segment-io-limits test-boolean-lock test-boolean-memory \
-	test-boolean-rescan test-mixed-update-query-benchmark
+	test-boolean-rescan test-graph-snapshot-source test-published-graph-source \
+	test-vacuum-reclaim-source test-reclaim-conflict-source \
+	test-review-test-validity-source test-mixed-update-query-benchmark
 test-local: test-compaction-ownercheck test-compaction-request-source \
 	test-segment-io-limits test-boolean-lock test-boolean-memory \
-	test-boolean-rescan test-mixed-update-query-benchmark
+	test-boolean-rescan test-graph-snapshot-source test-published-graph-source \
+	test-vacuum-reclaim-source test-reclaim-conflict-source \
+	test-review-test-validity-source test-mixed-update-query-benchmark
 
 # Custom local test target with dedicated PostgreSQL instance
 test-local: install
@@ -176,8 +198,14 @@ test-rls-locking:
 	@echo "Running RLS DDL locking tests..."
 	@cd test/scripts && ./rls_ddl_locking.sh
 
+test-nonblocking-compaction:
+	@cd test/scripts && ./nonblocking_compaction.sh
+
 test-concurrency: test-rls-locking
 	@echo "Running concurrency tests..."
+	@cd test/scripts && ./nonblocking_compaction.sh
+	@cd test/scripts && ./index_lock_fairness.sh
+	@cd test/scripts && ./parallel_vacuum.sh
 	@cd test/scripts && ./concurrency.sh
 	@cd test/scripts && ./boolean_concurrent_merge.sh
 	@cd test/scripts && ./partial_concurrent_read.sh
@@ -188,7 +216,6 @@ test-recovery:
 	@echo "Running crash recovery tests..."
 	@cd test/scripts && ./recovery.sh
 	@cd test/scripts && ./shutdown_spill.sh
-	@cd test/scripts && ./standby_reclaim.sh
 	@cd test/scripts && ./compaction_recovery.sh
 
 test-segment:
@@ -214,7 +241,9 @@ test-chinese:
 # Replication tests (not in test-shell: each spawns two Postgres instances)
 test-replication:
 	@echo "Running physical replication tests..."
-	@cd test/scripts && ./replication.sh
+	@cd test/scripts && TMPDIR=.. REPL_HOST=127.0.0.1 \
+	    REPL_SOCKET_DIR= ./replication.sh
+	@cd test/scripts && ./standby_reclaim.sh
 
 test-logical-replication:
 	@echo "Running logical replication tests..."
@@ -234,6 +263,7 @@ test-replication-extended:
 	    replication_spill_paths.sh \
 	    replication_memtable_dead_reclaim.sh \
 	    replication_segment_reclaim.sh \
+	    standby_reclaim.sh \
 	    wal_audit.sh"; \
 	failed=""; \
 	for s in $$scripts; do \
@@ -403,6 +433,7 @@ help:
 	@echo "  make test-local   - Run tests with dedicated PostgreSQL instance"
 	@echo "  make test-all     - Run all tests (SQL regression + shell scripts)"
 	@echo "  make test-shell   - Run shell-based tests (all shell scripts)"
+	@echo "  make test-nonblocking-compaction - Run deterministic compaction overlap tests"
 	@echo "  make test-concurrency - Run concurrency tests"
 	@echo "  make test-recovery    - Run crash recovery tests"
 	@echo "  make test-segment     - Run multi-backend segment tests"
@@ -437,9 +468,11 @@ help:
 .PHONY: \
 	test test-compaction-ownercheck test-compaction-request-source \
 	test-segment-io-limits test-boolean-lock test-boolean-memory \
-	test-boolean-rescan test-mixed-update-query-benchmark test-durable \
-	clean-test-dirs installcheck test-rls-locking test-concurrency \
-	test-recovery test-segment test-stress test-cic test-chinese \
+	test-boolean-rescan test-published-graph-source \
+	test-mixed-update-query-benchmark test-durable \
+	clean-test-dirs installcheck test-rls-locking \
+	test-nonblocking-compaction test-concurrency test-recovery \
+	test-segment test-stress test-cic test-chinese \
 	test-replication test-replication-extended \
 	test-logical-replication test-multi-index test-reindex \
 	test-shell test-all expected lint-format format format-check \

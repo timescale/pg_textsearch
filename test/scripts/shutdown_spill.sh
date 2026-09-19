@@ -19,26 +19,69 @@ set -e
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 TEST_PORT=55441
 TEST_DB=shutdown_spill_test
+TEST_HOST=127.0.0.1
 DATA_DIR="${SCRIPT_DIR}/../tmp_shutdown_spill_test"
 LOGFILE="${DATA_DIR}/postgres.log"
+SLEEPER_PID=
 
 PGBINDIR="$(pg_config --bindir)"
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
 NC='\033[0m'
 
 log()   { echo -e "${GREEN}[$(date '+%H:%M:%S')] $1${NC}"; }
+warn()  { echo -e "${YELLOW}[$(date '+%H:%M:%S')] WARNING: $1${NC}"; }
 error() { echo -e "${RED}[$(date '+%H:%M:%S')] ERROR: $1${NC}"; exit 1; }
+
+wait_for_child_exit() {
+    local pid=$1
+    local attempts=$2
+
+    for _ in $(seq 1 "${attempts}"); do
+        if ! kill -0 "${pid}" 2>/dev/null; then
+            # The bounded poll established that the child exited; this wait
+            # only reaps its already-available status.
+            wait "${pid}" 2>/dev/null || true
+            return 0
+        fi
+        sleep 0.1
+    done
+    return 1
+}
+
+stop_sleeper() {
+    if [ -z "${SLEEPER_PID}" ]; then
+        return
+    fi
+
+    if ! wait_for_child_exit "${SLEEPER_PID}" 50; then
+        warn "Sleeper PID ${SLEEPER_PID} did not exit in 5s; sending SIGTERM"
+        kill -TERM "${SLEEPER_PID}" 2>/dev/null || true
+        if ! wait_for_child_exit "${SLEEPER_PID}" 50; then
+            warn "Sleeper PID ${SLEEPER_PID} ignored SIGTERM for 5s; \
+sending SIGKILL (state: $(ps -o pid=,stat=,cmd= -p "${SLEEPER_PID}" \
+2>/dev/null || echo unavailable))"
+            kill -9 "${SLEEPER_PID}" 2>/dev/null || true
+            if ! wait_for_child_exit "${SLEEPER_PID}" 50; then
+                warn "Sleeper PID ${SLEEPER_PID} still exists 5s after \
+SIGKILL (state: $(ps -o pid=,stat=,cmd= -p "${SLEEPER_PID}" \
+2>/dev/null || echo unavailable)); continuing bounded cleanup"
+            fi
+        fi
+    fi
+    SLEEPER_PID=
+}
 
 cleanup() {
     local exit_code=$?
     log "Cleaning up (exit code: $exit_code)..."
-    jobs -p | xargs -r kill 2>/dev/null || true
+    stop_sleeper
     if [ -f "${DATA_DIR}/postmaster.pid" ]; then
-        "${PGBINDIR}/pg_ctl" stop -D "${DATA_DIR}" -m fast \
+        "${PGBINDIR}/pg_ctl" stop -D "${DATA_DIR}" -m fast -w -t 30 \
             >/dev/null 2>&1 || \
-            "${PGBINDIR}/pg_ctl" stop -D "${DATA_DIR}" -m immediate \
+            "${PGBINDIR}/pg_ctl" stop -D "${DATA_DIR}" -m immediate -w -t 30 \
                 >/dev/null 2>&1 || true
     fi
     rm -rf "${DATA_DIR}"
@@ -58,24 +101,25 @@ port = ${TEST_PORT}
 shared_buffers = 128MB
 max_connections = 20
 shared_preload_libraries = 'pg_textsearch'
-unix_socket_directories = '${DATA_DIR}'
+listen_addresses = '${TEST_HOST}'
+unix_socket_directories = ''
 EOF
 
     "${PGBINDIR}/pg_ctl" start -D "${DATA_DIR}" -l "${LOGFILE}" -w \
         >/dev/null
-    "${PGBINDIR}/createdb" -h "${DATA_DIR}" -p "${TEST_PORT}" "${TEST_DB}"
-    "${PGBINDIR}/psql" -h "${DATA_DIR}" -p "${TEST_PORT}" \
+    "${PGBINDIR}/createdb" -h "${TEST_HOST}" -p "${TEST_PORT}" "${TEST_DB}"
+    "${PGBINDIR}/psql" -h "${TEST_HOST}" -p "${TEST_PORT}" \
         -d "${TEST_DB}" \
         -c "CREATE EXTENSION pg_textsearch;" >/dev/null
 }
 
 sql() {
-    "${PGBINDIR}/psql" -h "${DATA_DIR}" -p "${TEST_PORT}" \
+    "${PGBINDIR}/psql" -h "${TEST_HOST}" -p "${TEST_PORT}" \
         -d "${TEST_DB}" -tA -c "$1" 2>/dev/null
 }
 
 sql_quiet() {
-    "${PGBINDIR}/psql" -h "${DATA_DIR}" -p "${TEST_PORT}" \
+    "${PGBINDIR}/psql" -h "${TEST_HOST}" -p "${TEST_PORT}" \
         -d "${TEST_DB}" -c "$1" >/dev/null 2>&1
 }
 
@@ -108,7 +152,7 @@ main() {
             echo "INSERT INTO extras (body) VALUES ('extra ${i} "\
 "alpha beta gamma delta epsilon zeta');"
         done
-    } | "${PGBINDIR}/psql" -h "${DATA_DIR}" -p "${TEST_PORT}" \
+    } | "${PGBINDIR}/psql" -h "${TEST_HOST}" -p "${TEST_PORT}" \
         -d "${TEST_DB}" >/dev/null 2>&1
 
     for idx in docs_idx extras_idx; do
@@ -126,7 +170,7 @@ main() {
     # appear in local_state_cache and the shutdown hook's hash-loop
     # has more than one entry to iterate over.  pg_sleep keeps the
     # backend alive until pg_ctl stop SIGTERMs it.
-    "${PGBINDIR}/psql" -h "${DATA_DIR}" -p "${TEST_PORT}" \
+    "${PGBINDIR}/psql" -h "${TEST_HOST}" -p "${TEST_PORT}" \
         -d "${TEST_DB}" -c "
             SELECT count(*) FROM (
                 SELECT 1 FROM docs
@@ -150,7 +194,7 @@ main() {
     log "Clean-shutting down postgres (hook should fire on the live backend)..."
     "${PGBINDIR}/pg_ctl" stop -D "${DATA_DIR}" -m fast -w \
         >/dev/null
-    wait "${SLEEPER_PID}" 2>/dev/null || true
+    stop_sleeper
 
     # Restart.
     "${PGBINDIR}/pg_ctl" start -D "${DATA_DIR}" -l "${LOGFILE}" \

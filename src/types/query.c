@@ -21,6 +21,7 @@
 #include <fmgr.h>
 #include <lib/stringinfo.h>
 #include <libpq/pqformat.h>
+#include <miscadmin.h>
 #include <nodes/pg_list.h>
 #include <nodes/value.h>
 #include <tsearch/ts_type.h>
@@ -43,6 +44,7 @@
 #include "planner/hooks.h"
 #include "scoring/bm25.h"
 #include "segment/fieldnorm.h"
+#include "segment/graph_snapshot.h"
 #include "segment/io.h"
 #include "segment/segment.h"
 #include "types/array.h"
@@ -663,6 +665,36 @@ calculate_term_score(
 	return term_score;
 }
 
+static void
+tp_standalone_sources_open(
+		TpLocalIndexState		*index_state,
+		Relation				 index_rel,
+		TpDataSource		   **memtable_src,
+		TpSegmentGraphSnapshot **segment_snapshot)
+{
+	Assert(index_state != NULL);
+	Assert(memtable_src != NULL && *memtable_src == NULL);
+	Assert(segment_snapshot != NULL && *segment_snapshot == NULL);
+
+	if (RecoveryInProgress())
+	{
+		*segment_snapshot = tp_segment_graph_snapshot_create(index_rel);
+		*memtable_src	  = tp_memtable_chain_source_create_bounded(
+				index_rel, &(*segment_snapshot)->memtable, NULL, 0);
+	}
+	else
+	{
+		/*
+		 * Preserve primary admission and cache semantics: the source owns
+		 * LW_SHARED before roots are copied, excluding spill publication
+		 * across the pair.
+		 */
+		*memtable_src = tp_memtable_source_create_for_read(
+				index_state, index_rel, NULL, 0);
+		*segment_snapshot = tp_segment_graph_snapshot_create(index_rel);
+	}
+}
+
 /*
  * BM25 scoring function for text <@> bm25query operations
  *
@@ -678,34 +710,31 @@ bm25_text_bm25query_score(PG_FUNCTION_ARGS)
 	char	*query_text = get_tpquery_text(query);
 	Oid		 index_oid;
 
-	Relation		   index_rel = NULL;
-	TpIndexMetaPage	   metap	 = NULL;
-	Oid				   text_config_oid;
-	char			 **doc_terms	   = NULL;
-	int32			  *doc_frequencies = NULL;
-	int				   doc_term_count  = 0;
-	int				   raw_doc_length;
-	Datum			   query_tsvector_datum;
-	TSVector		   query_tsvector;
-	WordEntry		  *query_entries;
-	char			  *query_lexemes_start;
-	TpLocalIndexState *index_state;
-	TpDataSource	  *memtable_src = NULL;
-	float4			   avg_doc_len;
-	int32			   total_docs;
-	int64			   total_len;
-	float8			   result = 0.0;
-	int				   q_i;
-	float4			   doc_length;
-	int				   query_term_count;
-	QueryScoreCache	  *cache;
-	BlockNumber		   first_segment;
-	BlockNumber		   level_heads[TP_MAX_LEVELS];
-	bool			   is_partitioned;
-	char			  *indexed_colname = NULL;
-	bool			   acquired_lock   = false;
-	bool			   segments_locked = false;
-	TpLocalIndexState *locked_state	   = NULL;
+	Relation				index_rel		 = NULL;
+	TpIndexMetaPage			metap			 = NULL;
+	TpSegmentGraphSnapshot *segment_snapshot = NULL;
+	Oid						text_config_oid;
+	char				  **doc_terms		= NULL;
+	int32				   *doc_frequencies = NULL;
+	int						doc_term_count	= 0;
+	int						raw_doc_length;
+	Datum					query_tsvector_datum;
+	TSVector				query_tsvector;
+	WordEntry			   *query_entries;
+	char				   *query_lexemes_start;
+	TpLocalIndexState	   *index_state;
+	TpDataSource		   *memtable_src = NULL;
+	float4					avg_doc_len;
+	int32					total_docs;
+	int64					total_len;
+	float8					result = 0.0;
+	int						q_i;
+	float4					doc_length;
+	int						query_term_count;
+	QueryScoreCache		   *cache;
+	BlockNumber				first_segment;
+	bool					is_partitioned;
+	char				   *indexed_colname = NULL;
 
 	/* Get index OID from query */
 	index_oid = get_tpquery_index_oid(query);
@@ -756,145 +785,81 @@ bm25_text_bm25query_score(PG_FUNCTION_ARGS)
 		 */
 		tp_warn_if_pending_docid(index_rel);
 
-		/* Get the metapage to extract text_config_oid */
-		metap			= tp_get_metapage(index_rel);
+		if (is_partitioned)
+			index_state = tp_get_local_index_state(
+					RelationGetRelid(index_rel));
+		else
+			index_state = tp_get_local_index_state(index_oid);
+		if (!index_state)
+			ereport(ERROR,
+					(errcode(ERRCODE_INTERNAL_ERROR),
+					 errmsg("could not get index state for index OID %u",
+							RelationGetRelid(index_rel))));
+
+		tp_standalone_sources_open(
+				index_state, index_rel, &memtable_src, &segment_snapshot);
+		metap			= &segment_snapshot->metapage;
 		text_config_oid = metap->text_config_oid;
 		first_segment	= metap->level_heads[0];
-		for (int i = 0; i < TP_MAX_LEVELS; i++)
-			level_heads[i] = metap->level_heads[i];
+		total_docs		= metap->total_docs;
+		total_len		= metap->total_len;
 
 		/*
-		 * Get corpus statistics. For partitioned indexes or inheritance
-		 * parents, use the first child's stats as an approximation.
+		 * If a storage-less inheritance parent was selected, switch to its
+		 * first physical child and acquire that child's source before its
+		 * segment snapshot.
 		 */
-		if (is_partitioned)
+		if (!is_partitioned && total_docs == 0 &&
+			(memtable_src == NULL || memtable_src->total_docs == 0) &&
+			indexed_colname != NULL)
 		{
-			Oid child_index_oid = RelationGetRelid(index_rel);
+			Oid first_child_idx =
+					find_first_child_bm25_index(index_oid, indexed_colname);
 
-			/*
-			 * Partitioned indexes have no storage. Use the first child's
-			 * stats as an approximation. The child index is the one we
-			 * already opened for text config access.
-			 */
-			index_state = tp_get_local_index_state(child_index_oid);
-			if (!index_state)
+			if (OidIsValid(first_child_idx))
 			{
-				ereport(ERROR,
-						(errcode(ERRCODE_INTERNAL_ERROR),
-						 errmsg("could not get index state for partition "
-								"index OID %u",
-								child_index_oid)));
-			}
+				TpLocalIndexState *child_state = tp_get_local_index_state(
+						first_child_idx);
 
-			/*
-			 * Phase 4 of issue #374: totals come from `metap` (persisted
-			 * segments only) plus the chain source (active memtable on
-			 * disk).  The shmem atomic is still bumped by inserts on the
-			 * primary for vacuum's shrinkage protocol but is not
-			 * authoritative for queries (it drifts on standbys and
-			 * freshly-opened backends).
-			 */
-			total_docs = metap->total_docs;
-			total_len  = metap->total_len;
-		}
-		else
-		{
-			/* Get index state for corpus statistics */
-			index_state = tp_get_local_index_state(index_oid);
-			if (!index_state)
-			{
-				ereport(ERROR,
-						(errcode(ERRCODE_INTERNAL_ERROR),
-						 errmsg("could not get index state for index OID %u",
-								index_oid)));
-			}
-
-			/* See partitioned-index branch above for the totals rule. */
-			total_docs = metap->total_docs;
-			total_len  = metap->total_len;
-
-			/*
-			 * If the index has no segment storage of its own, check if
-			 * this is an inheritance parent (e.g., hypertable) and use
-			 * the first child's stats and segments for scoring.
-			 *
-			 * Phase 4: empty means no segments AND nothing in the chain.
-			 * We open the chain source for the current relation up front
-			 * so we can include its docs in the "is empty?" decision.
-			 */
-			memtable_src = tp_memtable_source_create_for_read(
-					index_state, index_rel, NULL, 0);
-
-			if (total_docs == 0 &&
-				(memtable_src == NULL || memtable_src->total_docs == 0) &&
-				indexed_colname != NULL)
-			{
-				Oid first_child_idx = find_first_child_bm25_index(
-						index_oid, indexed_colname);
-
-				if (OidIsValid(first_child_idx))
+				if (child_state && child_state->shared)
 				{
-					TpLocalIndexState *child_state = tp_get_local_index_state(
-							first_child_idx);
-					if (child_state && child_state->shared)
+					Relation old_rel = index_rel;
+
+					if (segment_snapshot != NULL)
 					{
-						Relation		child_rel;
-						TpIndexMetaPage child_metap;
-
-						index_state = child_state;
-
-						/*
-						 * Switch to the child index for segment access and
-						 * for the chain source.  The parent index has no
-						 * segments, so IDF lookup would fail without this.
-						 */
-						child_rel =
-								index_open(first_child_idx, AccessShareLock);
-						child_metap	  = tp_get_metapage(child_rel);
-						first_segment = child_metap->level_heads[0];
-						for (int i = 0; i < TP_MAX_LEVELS; i++)
-							level_heads[i] = child_metap->level_heads[i];
-
-						/* Close parent and switch to child relation */
-						pfree(metap);
-						metap = child_metap;
-						index_close(index_rel, AccessShareLock);
-						index_rel = child_rel;
-
-						total_docs = metap->total_docs;
-						total_len  = metap->total_len;
-
-						/*
-						 * Rebuild the chain source against the child
-						 * relation: the parent source (likely NULL) is
-						 * stale for the new lock target.
-						 */
-						if (memtable_src != NULL)
-							tp_source_close(memtable_src);
-						memtable_src = tp_memtable_source_create_for_read(
-								index_state, index_rel, NULL, 0);
+						tp_segment_graph_snapshot_free(segment_snapshot);
+						segment_snapshot = NULL;
+						metap			 = NULL;
 					}
+					if (memtable_src != NULL)
+					{
+						tp_source_close(memtable_src);
+						memtable_src = NULL;
+					}
+
+					index_rel = index_open(first_child_idx, AccessShareLock);
+					index_close(old_rel, AccessShareLock);
+					index_state = child_state;
+
+					tp_standalone_sources_open(
+							index_state,
+							index_rel,
+							&memtable_src,
+							&segment_snapshot);
+					metap			= &segment_snapshot->metapage;
+					text_config_oid = metap->text_config_oid;
+					first_segment	= metap->level_heads[0];
+					total_docs		= metap->total_docs;
+					total_len		= metap->total_len;
 				}
 			}
 		}
 
 		/*
-		 * Issue #404: the lock + level_heads re-read that protect the
-		 * segment reads are taken lazily in the cache-miss branch below.
-		 * total_docs / total_len / first_segment are scalar stats (not
-		 * block numbers), so the unlocked snapshot above is fine here.
-		 */
-
-		/*
 		 * Phase 4 of issue #374: add the active memtable's contribution
-		 * on top of the persisted-segment totals from the metapage.  In
-		 * the partitioned branch above we haven't opened a chain source
-		 * yet; do it now.
+		 * on top of the persisted-segment totals from the same locked
+		 * source/snapshot interval.
 		 */
-		if (memtable_src == NULL)
-			memtable_src = tp_memtable_source_create_for_read(
-					index_state, index_rel, NULL, 0);
-
 		if (memtable_src != NULL)
 		{
 			int64 chain_docs = memtable_src->total_docs;
@@ -1026,48 +991,11 @@ bm25_text_bm25query_score(PG_FUNCTION_ARGS)
 						}
 					}
 
-					/*
-					 * Issue #404: opening segment pages by block number
-					 * races a concurrent spill/merge that frees and
-					 * recycles those blocks ("invalid segment header").
-					 * Hold the per-index lock SHARED and re-read
-					 * level_heads under it, like the index-scan path. Done
-					 * lazily on first cache miss so cache-hit rows pay
-					 * nothing; the chain source may already hold the lock
-					 * (ownership-aware).
-					 */
-					if (!segments_locked)
-					{
-						if (index_state != NULL && !index_state->lock_held)
-						{
-							tp_acquire_index_lock(index_state, LW_SHARED);
-							acquired_lock = true;
-							locked_state  = index_state;
-						}
-						Assert(index_state == NULL || index_state->lock_held);
-
-						if (index_state != NULL)
-						{
-							TpIndexMetaPage fresh = tp_get_metapage(index_rel);
-
-							for (int i = 0; i < TP_MAX_LEVELS; i++)
-								level_heads[i] = fresh->level_heads[i];
-							pfree(fresh);
-						}
-						segments_locked = true;
-					}
-
-					/* Get doc_freq from all segment levels */
-					for (int level = 0; level < TP_MAX_LEVELS; level++)
-					{
-						if (level_heads[level] != InvalidBlockNumber)
-						{
-							segment_doc_freq += tp_segment_get_doc_freq(
-									index_rel,
-									level_heads[level],
-									query_lexeme);
-						}
-					}
+					segment_doc_freq = tp_segment_roots_get_doc_freq(
+							index_rel,
+							segment_snapshot->roots,
+							segment_snapshot->root_count,
+							query_lexeme);
 
 					unified_doc_freq = memtable_doc_freq + segment_doc_freq;
 					if (unified_doc_freq == 0)
@@ -1100,30 +1028,23 @@ bm25_text_bm25query_score(PG_FUNCTION_ARGS)
 		}
 
 		/* Clean up */
+		tp_segment_graph_snapshot_free(segment_snapshot);
+		segment_snapshot = NULL;
+		metap			 = NULL;
 		if (memtable_src)
 		{
 			tp_source_close(memtable_src);
 			memtable_src = NULL;
 		}
-		/* Release the per-index lock only if we acquired it (issue #404). */
-		if (acquired_lock)
-		{
-			tp_release_index_lock(locked_state);
-			acquired_lock = false;
-		}
-		pfree(metap);
-		metap = NULL;
 		index_close(index_rel, AccessShareLock);
 		index_rel = NULL;
 	}
 	PG_CATCH();
 	{
+		if (segment_snapshot)
+			tp_segment_graph_snapshot_free(segment_snapshot);
 		if (memtable_src)
 			tp_source_close(memtable_src);
-		if (acquired_lock)
-			tp_release_index_lock(locked_state);
-		if (metap)
-			pfree(metap);
 		if (index_rel)
 			index_close(index_rel, AccessShareLock);
 		PG_RE_THROW();

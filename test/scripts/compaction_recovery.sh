@@ -1,7 +1,6 @@
 #!/bin/bash
 #
-# Verify that per-index compaction mutators reject execution on a
-# physical standby before opening or changing the index.
+# Verify compaction publication crash recovery and standby mutator guards.
 
 set -euo pipefail
 
@@ -20,6 +19,253 @@ REPL_SOCKET_DIR=
 source "${SCRIPT_DIR}/replication_lib.sh"
 
 trap repl_cleanup EXIT INT TERM
+
+primary_value() {
+    primary_sql_quiet "$1"
+}
+
+primary_ranked_value() {
+    PGOPTIONS="-c enable_seqscan=off" primary_sql_quiet "$1"
+}
+
+wait_for_postmaster_exit() {
+    local pid=$1
+    local label=$2
+    local deadline=$((SECONDS + 10))
+
+    while kill -0 "${pid}" 2>/dev/null; do
+        ((SECONDS < deadline)) ||
+            error "${label} postmaster ${pid} did not exit"
+        sleep 0.05
+    done
+}
+
+restart_primary() {
+    rm -f "${PRIMARY_DIR}/postmaster.pid"
+    pg_ctl start -D "${PRIMARY_DIR}" \
+        -l "${PRIMARY_DIR}/postgres.log" -w
+    primary_value "SELECT 1;" >/dev/null
+}
+
+log_contains() {
+    local marker=$1
+
+    grep -Fq "${marker}" "${PRIMARY_DIR}/postgres.log" \
+        "${PRIMARY_DIR}/log/postgres.log" 2>/dev/null
+}
+
+wait_for_backend() {
+    local app_name=$1
+    local deadline=$((SECONDS + 10))
+    local pid
+
+    while ((SECONDS < deadline)); do
+        pid=$(primary_value "
+            SELECT pid
+              FROM pg_stat_activity
+             WHERE application_name = '${app_name}'
+             ORDER BY backend_start DESC
+             LIMIT 1;")
+        if [[ "${pid}" =~ ^[0-9]+$ ]]; then
+            echo "${pid}"
+            return
+        fi
+        sleep 0.05
+    done
+    error "backend ${app_name} did not appear"
+}
+
+wait_for_pause_marker() {
+    local phase=$1
+    local index_oid=$2
+    local backend=$3
+    local deadline=$((SECONDS + 10))
+    local marker="pg_textsearch compaction pause at ${phase} for index ${index_oid} backend ${backend}"
+
+    while ((SECONDS < deadline)); do
+        if log_contains "${marker}"; then
+            log "Observed ${phase} marker for index ${index_oid}"
+            return
+        fi
+        sleep 0.05
+    done
+    error "did not observe log marker: ${marker}"
+}
+
+create_crash_fixture() {
+    local prefix=$1
+    local spilled
+    local graph
+
+    primary_sql "
+        CREATE TABLE ${prefix}_docs (
+            id integer PRIMARY KEY,
+            body text NOT NULL
+        ) WITH (autovacuum_enabled = false);
+        INSERT INTO ${prefix}_docs
+        SELECT g, 'crashmarker recovery document ' || g
+          FROM generate_series(1, 300) g;
+        CREATE INDEX ${prefix}_idx
+            ON ${prefix}_docs USING bm25(body)
+            WITH (text_config = 'english', compaction = 'off');
+        INSERT INTO ${prefix}_docs
+        SELECT g, 'crashmarker recovery document ' || g
+          FROM generate_series(301, 600) g;
+    " >/dev/null
+
+    spilled=$(primary_value \
+        "SELECT bm25_spill_index('${prefix}_idx') > 0;")
+    [ "${spilled}" = "t" ] ||
+        error "${prefix}: second segment was not spilled"
+    graph=$(primary_value \
+        "SELECT bm25_level_counts('${prefix}_idx'::regclass)::text;")
+    [ "${graph}" = "{2,0,0,0,0,0,0,0}" ] ||
+        error "${prefix}: fixture graph is ${graph}"
+    primary_sql "CHECKPOINT;" >/dev/null
+}
+
+crash_after_detached_wal() {
+    local prefix=$1
+    local app_name="pgts-${prefix}"
+    local output="${PRIMARY_DIR}/${prefix}.out"
+    local client_pid
+    local backend
+    local index_oid
+    local postmaster_pid
+
+    index_oid=$(primary_value "SELECT '${prefix}_idx'::regclass::oid;")
+    PGAPPNAME="${app_name}" \
+        psql -X -v ON_ERROR_STOP=1 -p "${PRIMARY_PORT}" -d "${TEST_DB}" \
+        -c "
+            SET pg_textsearch.debug_compaction_pause_after_restamp_ms = 60000;
+            SELECT bm25_compact_step('${prefix}_idx'::regclass);
+        " >"${output}" 2>&1 &
+    client_pid=$!
+    backend=$(wait_for_backend "${app_name}")
+    wait_for_pause_marker after-restamp "${index_oid}" "${backend}"
+
+    postmaster_pid=$(head -1 "${PRIMARY_DIR}/postmaster.pid")
+    pg_ctl stop -D "${PRIMARY_DIR}" -m immediate -w >/dev/null
+    wait_for_postmaster_exit "${postmaster_pid}" "${prefix}"
+    wait "${client_pid}" 2>/dev/null || true
+    restart_primary
+}
+
+trigger_publication_panic() {
+    local prefix=$1
+    local guc=$2
+    local panic_text=$3
+    local postmaster_pid
+    local output
+    local rc
+
+    postmaster_pid=$(head -1 "${PRIMARY_DIR}/postmaster.pid")
+    set +e
+    output=$(timeout 30s psql -X -v ON_ERROR_STOP=1 \
+        -p "${PRIMARY_PORT}" -d "${TEST_DB}" -c "
+            SET ${guc} = on;
+            SELECT bm25_compact_step('${prefix}_idx'::regclass);
+        " 2>&1)
+    rc=$?
+    set -e
+
+    [ "${rc}" -ne 0 ] ||
+        error "${prefix}: compaction survived ${guc}"
+    [ "${rc}" -ne 124 ] ||
+        error "${prefix}: timed out waiting for PANIC: ${output}"
+    wait_for_postmaster_exit "${postmaster_pid}" "${prefix}"
+    log_contains "${panic_text}" ||
+        error "${prefix}: missing PANIC marker: ${panic_text}"
+    restart_primary
+}
+
+assert_crash_recovery() {
+    local prefix=$1
+    local expected_graph=$2
+    local expected_segments=$3
+    local expect_parked=$4
+    local plan
+    local expected_ids
+    local actual_ids
+    local graph
+    local summary
+    local parked
+
+    plan=$(primary_ranked_value "
+        EXPLAIN (COSTS off)
+        SELECT id
+          FROM ${prefix}_docs
+         ORDER BY body <@> to_bm25query(
+                      'crashmarker', '${prefix}_idx')
+         LIMIT 600;")
+    grep -Fq \
+        "Index Scan using ${prefix}_idx on ${prefix}_docs" <<<"${plan}" ||
+        error "${prefix}: recovery assertion did not use BM25 index: ${plan}"
+
+    expected_ids=$(primary_value "
+        SELECT string_agg(id::text, ',' ORDER BY id)
+          FROM ${prefix}_docs;")
+    actual_ids=$(primary_ranked_value "
+        SELECT string_agg(id::text, ',' ORDER BY id)
+          FROM (
+                SELECT id
+                  FROM ${prefix}_docs
+                 ORDER BY body <@> to_bm25query(
+                              'crashmarker', '${prefix}_idx')
+                 LIMIT 600
+               ) ranked;")
+    [ "${actual_ids}" = "${expected_ids}" ] ||
+        error "${prefix}: recovered ranked IDs differ from heap IDs ($(tr ',' '\n' <<<"${actual_ids}" | wc -l)/$(tr ',' '\n' <<<"${expected_ids}" | wc -l))"
+
+    graph=$(primary_value \
+        "SELECT bm25_level_counts('${prefix}_idx'::regclass)::text;")
+    summary=$(primary_value \
+        "SELECT bm25_summarize_index('${prefix}_idx');")
+    [ "${graph}" = "${expected_graph}" ] ||
+        error "${prefix}: graph is ${graph}, expected ${expected_graph}; ${summary}"
+    [[ "${summary}" == *"Total: ${expected_segments} segments"* ]] ||
+        error "${prefix}: invalid graph summary: ${summary}"
+
+    parked=$(primary_value \
+        "SELECT bm25_pending_free_pages('${prefix}_idx');")
+    case "${parked}" in
+        ''|*[!0-9]*) error "${prefix}: invalid pending count '${parked}'" ;;
+    esac
+    if [ "${expect_parked}" = "yes" ]; then
+        [ "${parked}" -gt 0 ] ||
+            error "${prefix}: published graph has no pending-free chain"
+    else
+        [ "${parked}" = "0" ] ||
+            error "${prefix}: unpublished tombstones became reachable"
+    fi
+
+    log "PASS: ${prefix} recovered IDs, graph ${graph}, pending ${parked}"
+}
+
+test_publication_crash_recovery() {
+    log "Testing compaction publication crash recovery..."
+
+    create_crash_fixture detached_wal
+    crash_after_detached_wal detached_wal
+    assert_crash_recovery \
+        detached_wal "{2,0,0,0,0,0,0,0}" 2 no
+
+    create_crash_fixture before_publish
+    trigger_publication_panic \
+        before_publish \
+        pg_textsearch.debug_panic_before_compaction_publish \
+        "debug crash before compaction publication"
+    assert_crash_recovery \
+        before_publish "{2,0,0,0,0,0,0,0}" 2 no
+
+    create_crash_fixture after_publish
+    trigger_publication_panic \
+        after_publish \
+        pg_textsearch.debug_panic_after_compaction_publish \
+        "debug crash after compaction publication"
+    assert_crash_recovery \
+        after_publish "{0,1,0,0,0,0,0,0}" 1 yes
+}
 
 expect_recovery_rejection() {
     local function_name=$1
@@ -41,11 +287,7 @@ expect_recovery_rejection() {
     log "PASS: ${function_name} rejected execution during recovery"
 }
 
-main() {
-    log "Starting per-index compaction recovery-guard test..."
-    check_required_tools
-    setup_primary
-
+test_standby_guards() {
     primary_sql "
         CREATE TABLE compaction_recovery (
             id integer PRIMARY KEY,
@@ -60,11 +302,25 @@ main() {
 
     setup_standby
     wait_for_standby_catchup
-
     expect_recovery_rejection bm25_compact
     expect_recovery_rejection bm25_compact_step
+}
 
-    log "Per-index compaction recovery-guard test PASSED"
+main() {
+    log "Starting compaction recovery tests..."
+    check_required_tools
+    setup_primary
+    cat >>"${PRIMARY_DIR}/postgresql.conf" <<EOF
+restart_after_crash = off
+log_min_messages = log
+pg_textsearch.segments_per_level = 2
+EOF
+    pg_ctl restart -D "${PRIMARY_DIR}" \
+        -l "${PRIMARY_DIR}/postgres.log" -m fast -w
+
+    test_publication_crash_recovery
+    test_standby_guards
+    log "Compaction recovery tests PASSED"
 }
 
 main "$@"

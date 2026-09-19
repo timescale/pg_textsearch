@@ -26,12 +26,14 @@
 #include <storage/dsm.h>
 #include <storage/dsm_registry.h>
 #include <storage/ipc.h>
+#include <storage/lock.h>
 #include <utils/builtins.h>
 #include <utils/dsa.h>
 #include <utils/hsearch.h>
 #include <utils/memutils.h>
 #include <utils/rel.h>
 #include <utils/snapmgr.h>
+#include <utils/wait_event.h>
 
 #include "access/am.h"
 #include "constants.h"
@@ -47,7 +49,8 @@
 #include "segment/segment.h"
 
 /* Cache of local index states */
-static HTAB *local_state_cache = NULL;
+static HTAB *local_state_cache			   = NULL;
+static Oid	 tp_debug_index_lock_order_oid = InvalidOid;
 
 typedef struct LocalStateCacheEntry
 {
@@ -87,7 +90,8 @@ tp_shutdown_spill_one(LocalStateCacheEntry *entry)
 	PG_CATCH();
 	{
 		/* Don't leak the per-index LWLock to racing shutdown hooks */
-		tp_release_index_lock(entry->local_state);
+		if (entry->local_state->lock_held)
+			tp_release_index_lock(entry->local_state);
 		FlushErrorState();
 		if (index_rel != NULL)
 			index_close(index_rel, RowExclusiveLock);
@@ -384,6 +388,8 @@ tp_create_shared_index_state(Oid index_oid, Oid heap_oid, bool reuse_if_exists)
 	 */
 	LWLockInitialize(
 			&shared_state->lock, tp_tranche_id(TP_TRANCHE_INDEX_LOCK));
+	pg_atomic_init_u32(&shared_state->exclusive_waiters, 0);
+	ConditionVariableInit(&shared_state->exclusive_waiters_cv);
 	pg_atomic_init_u64(&shared_state->spill_generation, 0);
 	memtable_dp = dsa_allocate(dsa, sizeof(TpMemtable));
 	if (!DsaPointerIsValid(memtable_dp))
@@ -528,6 +534,8 @@ tp_create_build_index_state(Oid index_oid, Oid heap_oid)
 	 */
 	LWLockInitialize(
 			&shared_state->lock, tp_tranche_id(TP_TRANCHE_INDEX_LOCK));
+	pg_atomic_init_u32(&shared_state->exclusive_waiters, 0);
+	ConditionVariableInit(&shared_state->exclusive_waiters_cv);
 	pg_atomic_init_u64(&shared_state->spill_generation, 0);
 
 	/* Check if index already registered (rebuild case) */
@@ -1199,6 +1207,48 @@ get_memtable(TpLocalIndexState *local_state)
 			local_state->dsa, local_state->shared->memtable_dp);
 }
 
+static void
+tp_debug_pause_exclusive_waiter(TpLocalIndexState *local_state)
+{
+	int remaining_ms = tp_debug_index_lock_pause_exclusive_waiter_ms;
+
+	if (remaining_ms <= 0)
+		return;
+
+	ereport(LOG,
+			(errmsg("pg_textsearch index lock exclusive waiter registered "
+					"for index %u backend %d",
+					local_state->shared->index_oid,
+					MyProcPid)));
+	while (remaining_ms > 0)
+	{
+		int sleep_ms = Min(remaining_ms, 10);
+
+		CHECK_FOR_INTERRUPTS();
+		pg_usleep(sleep_ms * 1000L);
+		remaining_ms -= sleep_ms;
+	}
+}
+
+static void
+tp_debug_gate_exclusive_waiter(TpLocalIndexState *local_state)
+{
+	LOCKTAG gate_tag;
+	int		gate_key = tp_debug_index_lock_exclusive_waiter_gate;
+
+	if (gate_key <= 0)
+		return;
+
+	SET_LOCKTAG_ADVISORY(gate_tag, MyDatabaseId, gate_key, 0, 2);
+	ereport(LOG,
+			(errmsg("pg_textsearch index lock exclusive waiter registered "
+					"for index %u backend %d",
+					local_state->shared->index_oid,
+					MyProcPid)));
+	(void)LockAcquire(&gate_tag, ShareLock, true, false);
+	(void)LockRelease(&gate_tag, ShareLock, true);
+}
+
 /*
  * Acquire the per-index lock if not already held by this backend.
  * Ensures memory consistency on NUMA systems through LWLock's
@@ -1239,10 +1289,52 @@ tp_acquire_index_lock(TpLocalIndexState *local_state, LWLockMode mode)
 		local_state->lock_held = false;
 	}
 
-	/* Acquire the lock */
-	LWLockAcquire(&local_state->shared->lock, mode);
+	if (mode == LW_SHARED)
+	{
+		ConditionVariablePrepareToSleep(
+				&local_state->shared->exclusive_waiters_cv);
+		while (pg_atomic_read_u32(&local_state->shared->exclusive_waiters) !=
+			   0)
+			ConditionVariableSleep(
+					&local_state->shared->exclusive_waiters_cv,
+					PG_WAIT_EXTENSION);
+		ConditionVariableCancelSleep();
+	}
+	else
+	{
+		pg_atomic_fetch_add_u32(&local_state->shared->exclusive_waiters, 1);
+	}
+
+	PG_TRY();
+	{
+		if (mode == LW_EXCLUSIVE)
+		{
+			tp_debug_pause_exclusive_waiter(local_state);
+			tp_debug_gate_exclusive_waiter(local_state);
+		}
+		LWLockAcquire(&local_state->shared->lock, mode);
+		if (mode == LW_EXCLUSIVE &&
+			tp_debug_index_lock_exclusive_waiter_gate > 0)
+			tp_debug_index_lock_order_oid = local_state->shared->index_oid;
+	}
+	PG_FINALLY();
+	{
+		if (mode == LW_EXCLUSIVE &&
+			pg_atomic_sub_fetch_u32(
+					&local_state->shared->exclusive_waiters, 1) == 0)
+			ConditionVariableBroadcast(
+					&local_state->shared->exclusive_waiters_cv);
+	}
+	PG_END_TRY();
+
 	local_state->lock_held = true;
 	local_state->lock_mode = mode;
+	if (mode == LW_SHARED && tp_debug_index_lock_exclusive_waiter_gate > 0)
+		ereport(LOG,
+				(errmsg("pg_textsearch index lock shared acquired for "
+						"index %u backend %d",
+						local_state->shared->index_oid,
+						MyProcPid)));
 
 	/*
 	 * The LWLockAcquire provides acquire semantics (memory barrier),
@@ -1256,6 +1348,8 @@ tp_acquire_index_lock(TpLocalIndexState *local_state, LWLockMode mode)
 void
 tp_release_index_lock(TpLocalIndexState *local_state)
 {
+	LWLockMode released_mode;
+
 	if (!local_state || !local_state->lock_held)
 		return;
 
@@ -1278,6 +1372,21 @@ tp_release_index_lock(TpLocalIndexState *local_state)
 	if (InterruptHoldoffCount == 0)
 		HOLD_INTERRUPTS();
 
+	released_mode = local_state->lock_mode;
+	if (released_mode == LW_EXCLUSIVE &&
+		tp_debug_index_lock_order_oid == local_state->shared->index_oid)
+	{
+		/*
+		 * Log while still holding exclusive so a later shared acquirer
+		 * cannot publish its marker before this release transition.
+		 */
+		ereport(LOG,
+				(errmsg("pg_textsearch index lock exclusive release for "
+						"index %u backend %d",
+						local_state->shared->index_oid,
+						MyProcPid)));
+	}
+
 	/*
 	 * The LWLockRelease provides release semantics (memory barrier),
 	 * ensuring our writes are visible to the next lock acquirer.
@@ -1285,6 +1394,9 @@ tp_release_index_lock(TpLocalIndexState *local_state)
 	LWLockRelease(&local_state->shared->lock);
 	local_state->lock_held = false;
 	local_state->lock_mode = 0;
+	if (released_mode == LW_EXCLUSIVE &&
+		tp_debug_index_lock_order_oid == local_state->shared->index_oid)
+		tp_debug_index_lock_order_oid = InvalidOid;
 }
 
 /*
@@ -1350,22 +1462,17 @@ tp_bulk_load_spill_check(void)
 			continue;
 
 		/*
-		 * Open the relation before taking the per-index LWLock: relation
-		 * and catalog access can block, and must stay outside the
-		 * per-index lock ordering domain.  No per-index lock is held on
-		 * entry because per-operation locking releases after each insert.
+		 * Open the relation before the spill helper takes either the
+		 * maintenance lock or the per-index LWLock.  No per-index lock is
+		 * held on entry because per-operation locking releases after each
+		 * insert.
 		 */
 		index_rel = try_index_open(
 				local_state->shared->index_oid, RowExclusiveLock);
 		if (index_rel == NULL)
 			continue;
 
-		tp_acquire_index_lock(local_state, LW_EXCLUSIVE);
-
-		/* Unified spill path. */
-		(void)tp_do_spill(local_state, index_rel, NULL);
-
-		tp_release_index_lock(local_state);
+		tp_spill_memtable_if_needed(index_rel, local_state, 0);
 		index_close(index_rel, RowExclusiveLock);
 	}
 }

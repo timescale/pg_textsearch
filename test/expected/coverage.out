@@ -44,7 +44,9 @@ SELECT bm25_spill_index('coverage_idx');
 
 -- Test bm25_summarize_index with segment data
 -- This exercises tp_summarize_index_to_output with segments
-SELECT bm25_summarize_index('coverage_idx') IS NOT NULL AS summarize_segment;
+SELECT bm25_summarize_index('coverage_idx')
+           ~ E'L0 Segment 1:.*\n  Total: 1 segments'
+    AS summarize_segment;
  summarize_segment 
 -------------------
  t
@@ -110,8 +112,12 @@ SELECT bm25_spill_index('coverage_idx');
                 5
 (1 row)
 
--- Dump with multiple segments
-SELECT length(bm25_dump_index('coverage_idx')) > 0 AS dump_multi_segment;
+-- Both debug readers must enumerate every root recorded by the metapage.
+SELECT bm25_summarize_index('coverage_idx') ~ E'Total: 2 segments'
+       AND regexp_count(
+               bm25_dump_index('coverage_idx'),
+               '========== Segment at block ') = 2
+    AS dump_multi_segment;
  dump_multi_segment 
 --------------------
  t
@@ -139,6 +145,7 @@ SET pg_textsearch.log_scores = false;
 -- Test 8: BMW stats logging (exercises score.c bmw_stats path)
 -- =============================================================================
 SET pg_textsearch.log_bmw_stats = true;
+SET enable_seqscan = off;
 -- Single-term query
 SELECT count(*) FROM (
     SELECT 1 FROM coverage_docs
@@ -146,7 +153,7 @@ SELECT count(*) FROM (
 ) sub;
  count 
 -------
-   105
+     1
 (1 row)
 
 -- Multi-term query
@@ -156,9 +163,10 @@ SELECT count(*) FROM (
 ) sub;
  count 
 -------
-   105
+     1
 (1 row)
 
+SET enable_seqscan = on;
 SET pg_textsearch.log_bmw_stats = false;
 -- =============================================================================
 -- Test 9: AM handler property callbacks (exercises handler.c tp_property)

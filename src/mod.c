@@ -63,8 +63,11 @@
 #include "index/metapage.h"
 #include "index/registry.h"
 #include "index/state.h"
+#include "memtable/log.h"
 #include "planner/hooks.h"
 #include "scoring/bm25.h"
+#include "segment/compaction.h"
+#include "segment/graph_snapshot.h"
 
 #if PG_VERSION_NUM >= 180000
 PG_MODULE_MAGIC_EXT(.name = "pg_textsearch", .version = "1.5.0-dev");
@@ -148,6 +151,36 @@ bool tp_log_cache_state = false;
 
 /* Debug: trigger PANIC after spill finalize for crash-safety testing */
 bool tp_debug_panic_after_spill_finalize = false;
+int	 tp_debug_spill_before_finalize_gate = 0;
+
+/* Debug: trigger PANIC around compaction publication. */
+bool tp_debug_panic_before_compaction_publish = false;
+bool tp_debug_panic_after_compaction_publish  = false;
+
+/* Debug: deterministic runtime maintenance pauses for concurrency tests. */
+int tp_debug_compaction_pause_after_select_ms	  = 0;
+int tp_debug_compaction_pause_source_estimate_ms  = 0;
+int tp_debug_compaction_pause_before_publish_ms	  = 0;
+int tp_debug_compaction_pause_after_restamp_ms	  = 0;
+int tp_debug_vacuum_pause_memtable_reclaim_ms	  = 0;
+int tp_debug_memtable_extend_gate				  = 0;
+int tp_debug_index_lock_pause_exclusive_waiter_ms = 0;
+int tp_debug_index_lock_exclusive_waiter_gate	  = 0;
+int tp_debug_compaction_pause_after_allocation =
+		TP_COMPACTION_ALLOCATION_PAUSE_NONE;
+
+static const struct config_enum_entry
+		tp_debug_compaction_allocation_pause_options[] = {
+				{"none", TP_COMPACTION_ALLOCATION_PAUSE_NONE, false},
+				{"output-data",
+				 TP_COMPACTION_ALLOCATION_PAUSE_OUTPUT_DATA,
+				 false},
+				{"page-index",
+				 TP_COMPACTION_ALLOCATION_PAUSE_PAGE_INDEX,
+				 false},
+				{"tombstone", TP_COMPACTION_ALLOCATION_PAUSE_TOMBSTONE, false},
+				{NULL, 0, false},
+};
 
 /* Per-level segment capacity; the debug GUC may lower it in tests. */
 int tp_max_segments_per_level = PG_UINT16_MAX;
@@ -712,6 +745,229 @@ _PG_init(void)
 			false,
 			PGC_SUSET, /* superuser-only: forces a server-wide PANIC,
 						* so unprivileged roles must not reach it */
+			0,
+			NULL,
+			NULL,
+			NULL);
+
+	DefineCustomIntVariable(
+			"pg_textsearch.debug_spill_before_finalize_gate",
+			"Gate a spill before publishing its replacement segment.",
+			"Testing-only advisory lock key used after identifying the old "
+			"memtable chain and before tp_spill_finalize.",
+			&tp_debug_spill_before_finalize_gate,
+			0,
+			0,
+			INT_MAX,
+			PGC_SUSET,
+			0,
+			NULL,
+			NULL,
+			NULL);
+
+	DefineCustomBoolVariable(
+			"pg_textsearch.debug_panic_before_compaction_publish",
+			"Trigger PANIC before compaction publication.",
+			"Testing-only crash immediately before the GenericXLog "
+			"publication record begins.",
+			&tp_debug_panic_before_compaction_publish,
+			false,
+			PGC_SUSET,
+			0,
+			NULL,
+			NULL,
+			NULL);
+
+	DefineCustomBoolVariable(
+			"pg_textsearch.debug_panic_after_compaction_publish",
+			"Trigger PANIC after compaction publication.",
+			"Testing-only crash immediately after the GenericXLog "
+			"publication record is durably flushed.",
+			&tp_debug_panic_after_compaction_publish,
+			false,
+			PGC_SUSET,
+			0,
+			NULL,
+			NULL,
+			NULL);
+
+	DefineCustomIntVariable(
+			"pg_textsearch.debug_compaction_pause_after_select_ms",
+			"Pause runtime compaction after source selection.",
+			"Testing-only interruptible pause after releasing the shared "
+			"per-index lock and before building compaction output.",
+			&tp_debug_compaction_pause_after_select_ms,
+			0,
+			0,
+			60000,
+			PGC_SUSET,
+			0,
+			NULL,
+			NULL,
+			NULL);
+
+	DefineCustomIntVariable(
+			"pg_textsearch.debug_compaction_pause_source_estimate_ms",
+			"Pause runtime maintenance during source identification.",
+			"Testing-only interruptible pause after scanning the first "
+			"compaction source dictionary or VACUUM CTID batch.",
+			&tp_debug_compaction_pause_source_estimate_ms,
+			0,
+			0,
+			60000,
+			PGC_SUSET,
+			0,
+			NULL,
+			NULL,
+			NULL);
+
+	DefineCustomIntVariable(
+			"pg_textsearch.debug_compaction_pause_before_publish_ms",
+			"Pause runtime compaction before publication.",
+			"Testing-only interruptible pause after publication identity "
+			"preparation and before requesting the exclusive per-index lock.",
+			&tp_debug_compaction_pause_before_publish_ms,
+			0,
+			0,
+			60000,
+			PGC_SUSET,
+			0,
+			NULL,
+			NULL,
+			NULL);
+
+	DefineCustomIntVariable(
+			"pg_textsearch.debug_compaction_pause_after_restamp_ms",
+			"Pause runtime compaction after reclaim restamping.",
+			"Testing-only interruptible pause after assigning the reclaim "
+			"horizon and before publishing the replacement graph.",
+			&tp_debug_compaction_pause_after_restamp_ms,
+			0,
+			0,
+			60000,
+			PGC_SUSET,
+			0,
+			NULL,
+			NULL,
+			NULL);
+
+	DefineCustomIntVariable(
+			"pg_textsearch.debug_vacuum_pause_memtable_reclaim_ms",
+			"Pause VACUUM during the dead-memtable full-fork scan.",
+			"Testing-only interruptible pause after entering the index fork "
+			"page loop and before locking its first page.",
+			&tp_debug_vacuum_pause_memtable_reclaim_ms,
+			0,
+			0,
+			60000,
+			PGC_SUSET,
+			0,
+			NULL,
+			NULL,
+			NULL);
+
+	DefineCustomIntVariable(
+			"pg_textsearch.debug_memtable_extend_gate",
+			"Gate a memtable append before extending its tail.",
+			"Testing-only advisory lock key used after locking the old tail "
+			"exclusively and before locking the metapage.",
+			&tp_debug_memtable_extend_gate,
+			0,
+			0,
+			INT_MAX,
+			PGC_SUSET,
+			0,
+			NULL,
+			NULL,
+			NULL);
+
+	DefineCustomIntVariable(
+			"pg_textsearch.debug_index_lock_pause_exclusive_waiter_ms",
+			"Pause after registering an exclusive per-index lock waiter.",
+			"Testing-only interruptible pause after incrementing the "
+			"writer-preference waiter count and before LWLock acquisition.",
+			&tp_debug_index_lock_pause_exclusive_waiter_ms,
+			0,
+			0,
+			60000,
+			PGC_SUSET,
+			0,
+			NULL,
+			NULL,
+			NULL);
+
+	DefineCustomIntVariable(
+			"pg_textsearch.debug_index_lock_exclusive_waiter_gate",
+			"Gate an exclusive per-index lock waiter on an advisory lock.",
+			"Testing-only advisory lock key used after writer registration "
+			"and before LWLock acquisition.",
+			&tp_debug_index_lock_exclusive_waiter_gate,
+			0,
+			0,
+			INT_MAX,
+			PGC_SUSET,
+			0,
+			NULL,
+			NULL,
+			NULL);
+
+	DefineCustomEnumVariable(
+			"pg_textsearch.debug_compaction_pause_after_allocation",
+			"Pause compaction after its first selected allocation.",
+			"Testing-only selector for the first output data page, page-index "
+			"page, or detached tombstone container allocation.",
+			&tp_debug_compaction_pause_after_allocation,
+			TP_COMPACTION_ALLOCATION_PAUSE_NONE,
+			tp_debug_compaction_allocation_pause_options,
+			PGC_SUSET,
+			0,
+			NULL,
+			NULL,
+			NULL);
+
+	DefineCustomIntVariable(
+			"pg_textsearch.debug_segment_graph_snapshot_pause_before_lock_ms",
+			"Pause before capturing a segment and memtable graph.",
+			"Testing-only interruptible pause before acquiring the metapage "
+			"buffer share lock for a common read snapshot.",
+			&tp_debug_segment_graph_snapshot_pause_before_lock_ms,
+			0,
+			0,
+			60000,
+			PGC_SUSET,
+			0,
+			NULL,
+			NULL,
+			NULL);
+
+	DefineCustomIntVariable(
+			"pg_textsearch."
+			"debug_segment_graph_snapshot_pause_before_unlock_ms",
+			"Pause before releasing a completed index read snapshot.",
+			"Testing-only interruptible pause after copying every segment "
+			"root and the bounded memtable endpoint while retaining the "
+			"metapage buffer share lock.",
+			&tp_debug_segment_graph_snapshot_pause_before_unlock_ms,
+			0,
+			0,
+			60000,
+			PGC_SUSET,
+			0,
+			NULL,
+			NULL,
+			NULL);
+
+	DefineCustomIntVariable(
+			"pg_textsearch.debug_segment_graph_snapshot_pause_ms",
+			"Pause after copying a complete index read snapshot.",
+			"Testing-only interruptible pause after releasing the metapage "
+			"buffer lock and before consuming the copied segment roots or "
+			"bounded memtable endpoint.",
+			&tp_debug_segment_graph_snapshot_pause_ms,
+			0,
+			0,
+			60000,
+			PGC_SUSET,
 			0,
 			NULL,
 			NULL,

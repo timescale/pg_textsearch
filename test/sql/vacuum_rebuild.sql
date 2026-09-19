@@ -164,6 +164,43 @@ LIMIT 1;
 
 DROP TABLE vacuum_noop;
 
+-- ================================================================
+-- Test 5: inflated legacy token totals clamp during replacement
+-- ================================================================
+
+CREATE TABLE vacuum_legacy_stats (
+    id serial PRIMARY KEY,
+    content text
+);
+INSERT INTO vacuum_legacy_stats (content)
+SELECT 'legacy inflated token document ' || i
+FROM generate_series(1, 10) AS i;
+CREATE INDEX vacuum_legacy_stats_idx
+    ON vacuum_legacy_stats USING bm25(content)
+    WITH (text_config = 'english');
+
+\pset format unaligned
+SELECT bm25_test_make_legacy_segment(
+           'vacuum_legacy_stats_idx'::regclass, 1000000) > 0
+    AS legacy_header_inflated;
+
+DELETE FROM vacuum_legacy_stats WHERE id <= 5;
+VACUUM vacuum_legacy_stats;
+
+SELECT bm25_level_counts('vacuum_legacy_stats_idx'::regclass)
+    AS levels_after_legacy_vacuum;
+SELECT bm25_summarize_index('vacuum_legacy_stats_idx')
+           ~ E'total_docs: 5\n'
+       AND bm25_summarize_index('vacuum_legacy_stats_idx')
+           ~ E'total_len: 0\n'
+    AS legacy_totals_clamped;
+SELECT bm25_dump_index('vacuum_legacy_stats_idx')
+           LIKE '%Alive: 5 / 5 docs%'
+    AS legacy_replacement_published;
+\pset format aligned
+
+DROP TABLE vacuum_legacy_stats;
+
 RESET enable_seqscan;
 
 DROP EXTENSION pg_textsearch CASCADE;

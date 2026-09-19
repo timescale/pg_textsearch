@@ -100,7 +100,7 @@ PGDLLEXPORT Datum tp_handler(PG_FUNCTION_ARGS);
 /* Link a segment as the new L0 chain head in the metapage */
 void tp_link_l0_chain_head(Relation index, BlockNumber segment_root);
 
-/* Truncate dead pages by walking segment chains for max used block */
+/* Truncate a contiguous EOF suffix already stamped recyclable */
 void tp_truncate_dead_pages(Relation index);
 
 /*
@@ -181,8 +181,9 @@ struct IndexBulkDeleteResult *tp_vacuumcleanup(
 char *tp_buildphasename(int64 phase);
 
 /*
- * Spill a memtable to an L0 segment.  Skips when
- * chain_page_count < min_pages.  Acquires LW_EXCLUSIVE internally.
+ * Spill a memtable to an L0 segment.  Skips when chain_page_count <
+ * min_pages.  Acquires LW_EXCLUSIVE for spill durability, releases it,
+ * then applies the index's compaction policy.
  */
 void tp_spill_memtable_if_needed(
 		Relation index, TpLocalIndexState *index_state, uint32 min_pages);
@@ -231,3 +232,7 @@ extern relopt_kind tp_relopt_kind;
 
 /* Debug GUC: trigger PANIC after spill finalize for crash-safety testing */
 extern bool tp_debug_panic_after_spill_finalize;
+extern int	tp_debug_spill_before_finalize_gate;
+extern bool tp_debug_panic_before_compaction_publish;
+extern bool tp_debug_panic_after_compaction_publish;
+extern int	tp_debug_vacuum_pause_memtable_reclaim_ms;

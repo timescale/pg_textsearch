@@ -35,12 +35,15 @@ consider a dedicated `pg_textsearch` schema for cleaner namespace management.
 
 - **Physical replication**: In-place and publication mutations are WAL-logged
   via `GenericXLog`; newly written segment pages use `log_newpage_buffer()`
-  when WAL is required. There is no custom resource manager; pg_textsearch
-  does not register an rmgr. Stock PostgreSQL replay reconstructs every page
-  on a streaming standby or during crash recovery — including the on-disk
-  memtable chain pages, segment pages, and the metapage. This is what lets
-  PostgreSQL's single-page WAL-redo helper (and any other no-extension-load
-  replay context) work without loading `pg_textsearch.so`.
+  when WAL is required. Reclaim emits the stock btree page-reuse
+  conflict-only record before displaced segment pages enter the FSM. There is
+  no custom resource manager; pg_textsearch does not register an rmgr. Stock
+  PostgreSQL replay reconstructs every page and resolves old standby
+  snapshots without loading `pg_textsearch.so`. Recovery scoring reads a
+  candidate memtable tail, then locks tail-before-metapage and validates it
+  while capturing segment roots and the bounded endpoint, so spill replay
+  cannot mix generations or deadlock tail extension. Ranked scoring pins
+  recovery mode before this snapshot so promotion cannot switch source paths.
   **Read [ARCHITECTURE.md](ARCHITECTURE.md#storage-and-wal) before
   changing the write/read/spill flow.** Closes #345, #349, #350,
   #374.
@@ -48,16 +51,18 @@ consider a dedicated `pg_textsearch` schema for cleaner namespace management.
 - **Standby-safe segment reclaim (#380)**: A segment merge does not
   free the displaced source pages to the FSM immediately. Doing so is
   safe on the primary but unsafe for in-flight hot-standby queries,
-  because there is no custom rmgr to resolve recovery conflicts during
-  replay. Instead, displaced pages are *parked* in a WAL-logged
+  so displaced pages are *parked* in a WAL-logged
   (`GenericXLog`) tombstone chain off the metapage (`pending_free_head`),
   stamped with the merge's `FullTransactionId`. They return to the FSM
   only once a later VACUUM (or the next merge) observes that the stamp
   precedes `GetOldestNonRemovableTransactionId` — the standby-safe
   reclaim horizon. **`hot_standby_feedback = on` is required** on hot
   standbys serving queries, so their oldest snapshot holds the
-  primary's horizon back until they finish reading the pages. Observe
-  the parked count with `bm25_pending_free_pages(index_name)`.
+  primary's horizon back until they finish reading the pages. At reclaim,
+  a stock PostgreSQL page-reuse conflict record also cancels old snapshots
+  that survived a standby disconnect before later WAL can reuse either
+  displaced segment pages or DEAD memtable pages.
+  Observe the parked count with `bm25_pending_free_pages(index_name)`.
 
 ## Core Architecture
 
@@ -240,6 +245,11 @@ documents instead of rebuilding segments. This is O(dead_docs) instead
 of O(all_docs). Dead docs are filtered during BMW scoring and
 physically removed during segment merge.
 
+The serial cleanup pass holds the maintenance object lock, but not the
+per-index LWLock, while scanning the full index fork for reclaimable DEAD
+memtable pages. This serializes force-merge truncation without blocking
+spills or later readers behind an O(index-pages) shared lock.
+
 **Stale statistics after VACUUM**: After VACUUM marks docs dead, the
 segment's `total_docs`, `total_tokens`, and per-term `doc_freq` are
 not updated. This means BM25 IDF calculations use slightly stale
@@ -305,9 +315,10 @@ See [RELEASING.md](RELEASING.md) for release instructions.
   segments all exceed `max_segment_size` cannot be reduced but still
   counts as full, so this must not be used on its own as a loop
   condition. Drive loops from `bm25_compact_step()`'s return value.
-- `bm25_compact(idx regclass)` - Run compaction passes to completion
-  under one per-index exclusive lock. Requires index ownership. A
-  published pass is a physical change and is **not** undone by ROLLBACK.
+- `bm25_compact(idx regclass)` - Run compaction passes to completion,
+  releasing same-index maintenance admission between passes. Requires index
+  ownership. A published pass is a physical change and is **not** undone by
+  ROLLBACK.
 - `bm25_compact_step(idx regclass)` - Run at most one pass and report
   whether one ran, letting a caller spread a cascade over several
   transactions. Requires index ownership.

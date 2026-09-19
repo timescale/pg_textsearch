@@ -272,7 +272,7 @@ AS 'MODULE_PATHNAME', 'tp_compact_index'
 LANGUAGE C VOLATILE STRICT;
 
 COMMENT ON FUNCTION @extschema@.bm25_compact(regclass) IS
-    'Run threshold compaction to completion under one per-index exclusive lock. Passes already published are not undone by ROLLBACK, so a cascade that errors partway leaves its earlier passes applied.';
+    'Run threshold compaction to completion, yielding per-index maintenance admission between passes. Published passes are not undone by ROLLBACK, so a cascade that errors partway leaves its earlier passes applied.';
 
 CREATE FUNCTION @extschema@.bm25_compact_step(idx regclass)
 RETURNS boolean
@@ -354,6 +354,14 @@ CREATE FUNCTION @extschema@.bm25_test_corrupt_tombstone_head(
     AS 'MODULE_PATHNAME', 'tp_test_corrupt_tombstone_head'
     LANGUAGE C VOLATILE STRICT;
 
+-- INTERNAL-ONLY test scaffold: rewrite a singleton V5 segment header as V4
+-- with a caller-supplied historical token total. Superuser-only.
+CREATE FUNCTION @extschema@.bm25_test_make_legacy_segment(
+    idx regclass, total_tokens bigint)
+    RETURNS bigint
+    AS 'MODULE_PATHNAME', 'tp_test_make_legacy_segment'
+    LANGUAGE C VOLATILE STRICT;
+
 -- Revoke public execute on debug functions (superuser-only).
 REVOKE EXECUTE ON FUNCTION @extschema@.bm25_dump_index(text) FROM PUBLIC;
 REVOKE EXECUTE ON FUNCTION @extschema@.bm25_summarize_index(text) FROM PUBLIC;
@@ -363,6 +371,8 @@ REVOKE EXECUTE ON FUNCTION
     @extschema@.bm25_test_recycle_tombstone_head(text) FROM PUBLIC;
 REVOKE EXECUTE ON FUNCTION
     @extschema@.bm25_test_corrupt_tombstone_head(text) FROM PUBLIC;
+REVOKE EXECUTE ON FUNCTION
+    @extschema@.bm25_test_make_legacy_segment(regclass, bigint) FROM PUBLIC;
 
 -- The bm25_test_memtable_page / bm25_test_memtable_append /
 -- bm25_test_chain_source / bm25_memtable_chain /

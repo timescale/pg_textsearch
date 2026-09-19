@@ -9,6 +9,9 @@
 #include <postgres.h>
 
 #include <access/generic_xlog.h>
+#include <access/nbtxlog.h>
+#include <access/xlog.h>
+#include <access/xloginsert.h>
 #include <miscadmin.h>
 #include <storage/bufmgr.h>
 #include <storage/indexfsm.h>
@@ -22,6 +25,25 @@ tp_page_is_recyclable(Page page)
 	TpFreePageData *f = (TpFreePageData *)PageGetContents(page);
 
 	return f->magic == TP_FREE_PAGE_MAGIC;
+}
+
+void
+tp_log_page_reuse_conflict(
+		Relation index, BlockNumber block, FullTransactionId horizon)
+{
+	xl_btree_reuse_page xlrec;
+
+	if (!RelationNeedsWAL(index) || !XLogStandbyInfoActive())
+		return;
+
+	xlrec.locator				  = index->rd_locator;
+	xlrec.block					  = block;
+	xlrec.snapshotConflictHorizon = horizon;
+	xlrec.isCatalogRel			  = false;
+
+	XLogBeginInsert();
+	XLogRegisterData((char *)&xlrec, SizeOfBtreeReusePage);
+	XLogInsert(RM_BTREE_ID, XLOG_BTREE_REUSE_PAGE);
 }
 
 void
@@ -170,12 +192,15 @@ tp_fsm_claim_or_extend_block(Relation index)
 		return block;
 
 	/*
-	 * FSM has no reusable page: extend the relation.  RBM_ZERO_AND_LOCK
-	 * gives a zero-filled page; the first content writer overwrites the
-	 * header and body before logging it.
+	 * FSM has no reusable page: extend through the same bulk-extension
+	 * API used by the memtable allocator.  Mixing ReadBufferExtended(P_NEW)
+	 * with ExtendBufferedRel lets concurrent unlocked compaction and
+	 * memtable growth reserve the same block on PostgreSQL 17.
+	 * EB_LOCK_FIRST returns the zero-filled page pinned and exclusively
+	 * locked; the first content writer overwrites it before logging it.
 	 */
-	buffer = ReadBufferExtended(
-			index, MAIN_FORKNUM, P_NEW, RBM_ZERO_AND_LOCK, NULL);
+	buffer = ExtendBufferedRel(
+			BMR_REL(index), MAIN_FORKNUM, NULL, EB_LOCK_FIRST);
 	block = BufferGetBlockNumber(buffer);
 	UnlockReleaseBuffer(buffer);
 	return block;

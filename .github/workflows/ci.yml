@@ -114,39 +114,13 @@ jobs:
         rm -rf tmp_check_shared
 
     - name: Run shell-based tests
-      timeout-minutes: 25
+      timeout-minutes: 35
       run: |
         export PATH="/usr/lib/postgresql/${{ matrix.pg_version }}/bin:$PATH"
 
-        # concurrency.sh and segment.sh manage their own PostgreSQL instances
-        echo "Running concurrency tests..."
-        if (cd test/scripts && ./concurrency.sh); then
-          echo "✓ Concurrency tests passed"
-        else
-          echo "✗ Concurrency tests failed"
-          exit 1
-        fi
-        echo "Running Boolean spill and merge concurrency tests..."
-        if (cd test/scripts && ./boolean_concurrent_merge.sh); then
-          echo "✓ Boolean spill and merge concurrency tests passed"
-        else
-          echo "✗ Boolean spill and merge concurrency tests failed"
-          exit 1
-        fi
-        echo "Running VACUUM concurrency tests..."
-        if (cd test/scripts && ./vacuum_concurrent_merge.sh); then
-          echo "✓ VACUUM concurrency tests passed"
-        else
-          echo "✗ VACUUM concurrency tests failed"
-          exit 1
-        fi
-        echo "Running concurrent duplicate-read tests..."
-        if (cd test/scripts && ./concurrent_duplicate_read.sh); then
-          echo "✓ Concurrent duplicate-read tests passed"
-        else
-          echo "✗ Concurrent duplicate-read tests failed"
-          exit 1
-        fi
+        # Keep the Makefile target authoritative as concurrency coverage grows.
+        make test-concurrency
+
         echo "Running segment tests..."
         if (cd test/scripts && ./segment.sh); then
           echo "✓ Segment tests passed"

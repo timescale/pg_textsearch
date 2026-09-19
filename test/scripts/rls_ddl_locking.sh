@@ -9,6 +9,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 TEST_PORT="${TEST_PORT:-55463}"
 TEST_DB=pg_textsearch_rls_locking_test
 DATA_DIR="${SCRIPT_DIR}/../tmp_rls_locking_${TEST_PORT}_$$"
+SOCKET_DIR="${TMPDIR:-/tmp}/pgts-rls-${TEST_PORT}-$$"
 LOGFILE="${DATA_DIR}/postgres.log"
 SESSION_A_INPUT="${DATA_DIR}/session_a.in"
 SESSION_A_OUTPUT="${DATA_DIR}/session_a.out"
@@ -43,13 +44,14 @@ cleanup() {
             true
     fi
     rm -rf "${DATA_DIR}"
+    rm -rf "${SOCKET_DIR}"
     exit "${exit_code}"
 }
 
 trap cleanup EXIT INT TERM
 
 run_value() {
-    psql -X -h "${DATA_DIR}" -p "${TEST_PORT}" -d "${TEST_DB}" \
+    psql -X -h "${SOCKET_DIR}" -p "${TEST_PORT}" -d "${TEST_DB}" \
         -tAc "$1"
 }
 
@@ -75,7 +77,7 @@ start_rls_holder() {
     rm -f "${SESSION_A_INPUT}" "${SESSION_A_OUTPUT}"
     mkfifo "${SESSION_A_INPUT}"
     PGAPPNAME=rls-lock-session-a \
-        psql -X -h "${DATA_DIR}" -p "${TEST_PORT}" -d "${TEST_DB}" \
+        psql -X -h "${SOCKET_DIR}" -p "${TEST_PORT}" -d "${TEST_DB}" \
         -v ON_ERROR_STOP=1 < "${SESSION_A_INPUT}" \
         > "${SESSION_A_OUTPUT}" 2>&1 &
     SESSION_A_PID=$!
@@ -108,7 +110,7 @@ release_session_a() {
     SESSION_A_PID=
 }
 
-mkdir -p "${DATA_DIR}"
+mkdir -p "${DATA_DIR}" "${SOCKET_DIR}"
 initdb -D "${DATA_DIR}" --auth-local=trust --auth-host=trust \
     >/dev/null 2>&1
 
@@ -116,15 +118,15 @@ cat >> "${DATA_DIR}/postgresql.conf" << EOF
 port = ${TEST_PORT}
 max_connections = 20
 shared_buffers = 128MB
-unix_socket_directories = '${DATA_DIR}'
+unix_socket_directories = '${SOCKET_DIR}'
 listen_addresses = ''
 log_min_messages = warning
 shared_preload_libraries = 'pg_textsearch'
 EOF
 
 pg_ctl start -D "${DATA_DIR}" -l "${LOGFILE}" -w >/dev/null
-createdb -h "${DATA_DIR}" -p "${TEST_PORT}" "${TEST_DB}"
-psql -X -h "${DATA_DIR}" -p "${TEST_PORT}" -d "${TEST_DB}" \
+createdb -h "${SOCKET_DIR}" -p "${TEST_PORT}" "${TEST_DB}"
+psql -X -h "${SOCKET_DIR}" -p "${TEST_PORT}" -d "${TEST_DB}" \
     -v ON_ERROR_STOP=1 >/dev/null << 'SQL'
 CREATE EXTENSION pg_textsearch;
 CREATE TABLE lock_parent (id integer, content text);
@@ -140,7 +142,7 @@ SQL
 rm -f "${SESSION_A_INPUT}" "${SESSION_A_OUTPUT}"
 mkfifo "${SESSION_A_INPUT}"
 PGAPPNAME=rls-extension-replace-session-a \
-    psql -X -h "${DATA_DIR}" -p "${TEST_PORT}" -d "${TEST_DB}" \
+    psql -X -h "${SOCKET_DIR}" -p "${TEST_PORT}" -d "${TEST_DB}" \
     -v ON_ERROR_STOP=1 < "${SESSION_A_INPUT}" \
     > "${SESSION_A_OUTPUT}" 2>&1 &
 SESSION_A_PID=$!
@@ -157,7 +159,7 @@ wait_for_true "
 " "session A to replace the extension"
 
 PGAPPNAME=rls-extension-replace-session-b \
-    psql -X -h "${DATA_DIR}" -p "${TEST_PORT}" -d "${TEST_DB}" \
+    psql -X -h "${SOCKET_DIR}" -p "${TEST_PORT}" -d "${TEST_DB}" \
     -v ON_ERROR_STOP=1 \
     -c "SET pg_textsearch.allow_rls = off;
         BEGIN;
@@ -182,7 +184,7 @@ wait_for_true "
 " "session B to finish RLS enablement"
 
 PGAPPNAME=rls-extension-replace-session-c \
-    psql -X -h "${DATA_DIR}" -p "${TEST_PORT}" -d "${TEST_DB}" \
+    psql -X -h "${SOCKET_DIR}" -p "${TEST_PORT}" -d "${TEST_DB}" \
     -v ON_ERROR_STOP=1 \
     -c "SET pg_textsearch.allow_rls = off;
         CREATE INDEX extension_replace_child_idx
@@ -230,7 +232,7 @@ fi
 rm -f "${SESSION_A_INPUT}" "${SESSION_A_OUTPUT}"
 mkfifo "${SESSION_A_INPUT}"
 PGAPPNAME=rls-noop-session \
-    psql -X -h "${DATA_DIR}" -p "${TEST_PORT}" -d "${TEST_DB}" \
+    psql -X -h "${SOCKET_DIR}" -p "${TEST_PORT}" -d "${TEST_DB}" \
     -v ON_ERROR_STOP=1 < "${SESSION_A_INPUT}" \
     > "${SESSION_A_OUTPUT}" 2>&1 &
 SESSION_A_PID=$!
@@ -267,7 +269,7 @@ release_session_a
 
 PGAPPNAME=rls-multireindex-session \
 PGOPTIONS="-c pg_textsearch.allow_rls=off" \
-    psql -X -h "${DATA_DIR}" -p "${TEST_PORT}" -d "${TEST_DB}" \
+    psql -X -h "${SOCKET_DIR}" -p "${TEST_PORT}" -d "${TEST_DB}" \
     -v ON_ERROR_STOP=1 \
     -c "REINDEX DATABASE ${TEST_DB};" \
     > "${SESSION_A_OUTPUT}" 2>&1
@@ -278,7 +280,7 @@ if grep -q "you don't own a lock" "${SESSION_A_OUTPUT}"; then
     exit 1
 fi
 
-psql -X -h "${DATA_DIR}" -p "${TEST_PORT}" -d "${TEST_DB}" \
+psql -X -h "${SOCKET_DIR}" -p "${TEST_PORT}" -d "${TEST_DB}" \
     -v ON_ERROR_STOP=1 >/dev/null << 'SQL'
 CREATE TABLE upgrade_outer_a (id integer);
 CREATE TABLE upgrade_outer_b (id integer);
@@ -312,7 +314,7 @@ EXECUTE FUNCTION test_nested_policy_upgrade();
 SQL
 
 PGAPPNAME=rls-upgrade-session-a \
-    psql -X -h "${DATA_DIR}" -p "${TEST_PORT}" -d "${TEST_DB}" \
+    psql -X -h "${SOCKET_DIR}" -p "${TEST_PORT}" -d "${TEST_DB}" \
     -v ON_ERROR_STOP=1 \
     -c "SET pg_textsearch.allow_rls = on;
         SET rls_upgrade_test.action = 'outer';
@@ -338,7 +340,7 @@ wait_for_true "
 " "session A to hold the policy lock"
 
 PGAPPNAME=rls-upgrade-session-b \
-    psql -X -h "${DATA_DIR}" -p "${TEST_PORT}" -d "${TEST_DB}" \
+    psql -X -h "${SOCKET_DIR}" -p "${TEST_PORT}" -d "${TEST_DB}" \
     -v ON_ERROR_STOP=1 \
     -c "SET pg_textsearch.allow_rls = on;
         SET rls_upgrade_test.action = 'outer';
@@ -374,13 +376,13 @@ if ! grep -q "could not acquire the pg_textsearch RLS DDL lock" \
     exit 1
 fi
 
-psql -X -h "${DATA_DIR}" -p "${TEST_PORT}" -d "${TEST_DB}" \
+psql -X -h "${SOCKET_DIR}" -p "${TEST_PORT}" -d "${TEST_DB}" \
     -v ON_ERROR_STOP=1 >/dev/null << 'SQL'
 DROP EVENT TRIGGER test_nested_policy_upgrade_trigger;
 DROP FUNCTION test_nested_policy_upgrade();
 SQL
 
-psql -X -h "${DATA_DIR}" -p "${TEST_PORT}" -d "${TEST_DB}" \
+psql -X -h "${SOCKET_DIR}" -p "${TEST_PORT}" -d "${TEST_DB}" \
     -v ON_ERROR_STOP=1 >/dev/null << 'SQL'
 CREATE TABLE end_trigger_outer (id integer);
 CREATE TABLE end_trigger_nested (id integer);
@@ -407,7 +409,7 @@ EXECUTE FUNCTION test_end_trigger_nested_ddl();
 SQL
 
 PGAPPNAME=rls-end-trigger-session-a \
-    psql -X -h "${DATA_DIR}" -p "${TEST_PORT}" -d "${TEST_DB}" \
+    psql -X -h "${SOCKET_DIR}" -p "${TEST_PORT}" -d "${TEST_DB}" \
     -v ON_ERROR_STOP=1 \
     -c "SET pg_textsearch.allow_rls = on;
         SET rls_end_test.action = 'outer';
@@ -430,7 +432,7 @@ wait_for_true "
 " "session A to hold the outer relation lock"
 
 PGAPPNAME=rls-end-trigger-session-b \
-    psql -X -h "${DATA_DIR}" -p "${TEST_PORT}" -d "${TEST_DB}" \
+    psql -X -h "${SOCKET_DIR}" -p "${TEST_PORT}" -d "${TEST_DB}" \
     -v ON_ERROR_STOP=1 \
     -c "SET pg_textsearch.allow_rls = off;
         ALTER TABLE end_trigger_outer ENABLE ROW LEVEL SECURITY;" \
@@ -482,7 +484,7 @@ if ! grep -q "could not acquire the pg_textsearch RLS DDL lock" \
     exit 1
 fi
 
-psql -X -h "${DATA_DIR}" -p "${TEST_PORT}" -d "${TEST_DB}" \
+psql -X -h "${SOCKET_DIR}" -p "${TEST_PORT}" -d "${TEST_DB}" \
     -v ON_ERROR_STOP=1 >/dev/null << 'SQL'
 DROP EVENT TRIGGER test_end_trigger_nested_ddl_trigger;
 DROP FUNCTION test_end_trigger_nested_ddl();
@@ -491,7 +493,7 @@ SQL
 start_rls_holder lock_parent
 
 PGAPPNAME=rls-lock-session-b \
-    psql -X -h "${DATA_DIR}" -p "${TEST_PORT}" -d "${TEST_DB}" \
+    psql -X -h "${SOCKET_DIR}" -p "${TEST_PORT}" -d "${TEST_DB}" \
     -v ON_ERROR_STOP=1 \
     -c "SET pg_textsearch.allow_rls = off;
         CREATE INDEX lock_child_idx ON lock_child USING bm25(content)
@@ -552,7 +554,7 @@ if ! grep -q "BM25 indexes are not allowed on row-level security" \
     exit 1
 fi
 
-psql -X -h "${DATA_DIR}" -p "${TEST_PORT}" -d "${TEST_DB}" \
+psql -X -h "${SOCKET_DIR}" -p "${TEST_PORT}" -d "${TEST_DB}" \
     -v ON_ERROR_STOP=1 >/dev/null << 'SQL'
 CREATE TABLE create_lock_gate (id integer);
 CREATE TABLE partition_parent (id integer, content text)
@@ -565,7 +567,7 @@ SQL
 start_rls_holder create_lock_gate
 
 PGAPPNAME=rls-lock-session-b \
-    psql -X -h "${DATA_DIR}" -p "${TEST_PORT}" -d "${TEST_DB}" \
+    psql -X -h "${SOCKET_DIR}" -p "${TEST_PORT}" -d "${TEST_DB}" \
     -v ON_ERROR_STOP=1 \
     -c "SET pg_textsearch.allow_rls = off;
         CREATE TABLE partition_child PARTITION OF partition_parent
@@ -605,7 +607,7 @@ release_session_a
 wait "${SESSION_B_PID}"
 SESSION_B_PID=
 
-psql -X -h "${DATA_DIR}" -p "${TEST_PORT}" -d "${TEST_DB}" \
+psql -X -h "${SOCKET_DIR}" -p "${TEST_PORT}" -d "${TEST_DB}" \
     -v ON_ERROR_STOP=1 >/dev/null << 'SQL'
 CREATE TABLE cic_lock_docs (id integer, content text);
 INSERT INTO cic_lock_docs
@@ -616,7 +618,7 @@ SQL
 rm -f "${SESSION_A_INPUT}" "${SESSION_A_OUTPUT}"
 mkfifo "${SESSION_A_INPUT}"
 PGAPPNAME=rls-lock-session-a \
-    psql -X -h "${DATA_DIR}" -p "${TEST_PORT}" -d "${TEST_DB}" \
+    psql -X -h "${SOCKET_DIR}" -p "${TEST_PORT}" -d "${TEST_DB}" \
     -v ON_ERROR_STOP=1 < "${SESSION_A_INPUT}" \
     > "${SESSION_A_OUTPUT}" 2>&1 &
 SESSION_A_PID=$!
@@ -640,7 +642,7 @@ wait_for_true "
 " "session A to hold an old writer lock"
 
 PGAPPNAME=rls-lock-session-b \
-    psql -X -h "${DATA_DIR}" -p "${TEST_PORT}" -d "${TEST_DB}" \
+    psql -X -h "${SOCKET_DIR}" -p "${TEST_PORT}" -d "${TEST_DB}" \
     -v ON_ERROR_STOP=1 > "${SESSION_B_OUTPUT}" 2>&1 << 'SQL' &
 SET pg_textsearch.allow_rls = off;
 CREATE INDEX CONCURRENTLY cic_lock_idx
@@ -679,7 +681,7 @@ release_session_a
 wait "${SESSION_B_PID}"
 SESSION_B_PID=
 
-psql -X -h "${DATA_DIR}" -p "${TEST_PORT}" -d "${TEST_DB}" \
+psql -X -h "${SOCKET_DIR}" -p "${TEST_PORT}" -d "${TEST_DB}" \
     -v ON_ERROR_STOP=1 >/dev/null << 'SQL'
 CREATE TABLE policy_pin_parent (id integer, content text);
 CREATE TABLE policy_pin_child () INHERITS (policy_pin_parent);
@@ -729,7 +731,7 @@ SQL
 rm -f "${SESSION_A_INPUT}" "${SESSION_A_OUTPUT}"
 mkfifo "${SESSION_A_INPUT}"
 PGAPPNAME=rls-policy-pin-session-a \
-    psql -X -h "${DATA_DIR}" -p "${TEST_PORT}" -d "${TEST_DB}" \
+    psql -X -h "${SOCKET_DIR}" -p "${TEST_PORT}" -d "${TEST_DB}" \
     -v ON_ERROR_STOP=1 < "${SESSION_A_INPUT}" \
     > "${SESSION_A_OUTPUT}" 2>&1 &
 SESSION_A_PID=$!
@@ -756,7 +758,7 @@ wait_for_true "
 " "session A to finish RLS enablement with its pinned policy lock"
 
 PGAPPNAME=rls-policy-pin-session-b \
-    psql -X -h "${DATA_DIR}" -p "${TEST_PORT}" -d "${TEST_DB}" \
+    psql -X -h "${SOCKET_DIR}" -p "${TEST_PORT}" -d "${TEST_DB}" \
     -v ON_ERROR_STOP=1 \
     -c "SET pg_textsearch.allow_rls = off;
         SET rls_pin_test.action = 'flip';

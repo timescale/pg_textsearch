@@ -6,10 +6,18 @@
 
 #include <access/generic_xlog.h>
 #include <access/transam.h>
+#include <access/xact.h>
+#include <access/xlog.h>
+#include <catalog/pg_am_d.h>
 #include <common/int.h>
+#include <miscadmin.h>
 #include <storage/bufmgr.h>
 #include <storage/indexfsm.h>
+#include <storage/lmgr.h>
+#include <storage/lock.h>
 #include <storage/lwlock.h>
+#include <utils/hsearch.h>
+#include <utils/timestamp.h>
 
 #include "access/am.h"
 #include "constants.h"
@@ -17,10 +25,15 @@
 #include "index/state.h"
 #include "segment/alive_bitset.h"
 #include "segment/compaction.h"
+#include "segment/format.h"
+#include "segment/graph_snapshot.h"
 #include "segment/io.h"
 #include "segment/merge.h"
 #include "segment/pagemapper.h"
 #include "segment/tombstone.h"
+
+#define TP_COMPACTION_MAINTENANCE_LOCK_SUBID 3
+#define TP_COMPACTION_PUBLICATION_LOCK_SUBID 4
 
 typedef struct TpSegmentEstimate
 {
@@ -38,6 +51,8 @@ typedef struct TpCompactionSource
 	BlockNumber		  root;
 	uint32			  source_level;
 	uint32			  chain_position;
+	bool			  has_dead_docs;
+	uint64			  total_tokens;
 	TpSegmentEstimate estimate;
 } TpCompactionSource;
 
@@ -58,19 +73,195 @@ typedef struct TpCompactionPlan
 	TpCompactionBatch  *batches;
 	uint32				num_batches;
 	uint32				output_capacity;
+	uint16				prefix_counts[TP_MAX_LEVELS];
+	BlockNumber			selected_heads[TP_MAX_LEVELS];
+	uint16				selected_counts[TP_MAX_LEVELS];
 	BlockNumber			retained_heads[TP_MAX_LEVELS];
 	uint16				retained_counts[TP_MAX_LEVELS];
 } TpCompactionPlan;
 
-static void
-tp_require_compaction_lock(TpLocalIndexState *index_state)
+typedef struct TpCompactionOutput
 {
-	if (index_state == NULL || index_state->shared == NULL ||
-		!index_state->lock_held || index_state->lock_mode != LW_EXCLUSIVE ||
-		!LWLockHeldByMe(&index_state->shared->lock))
+	BlockNumber				 output_heads[TP_MAX_LEVELS];
+	uint16					 output_counts[TP_MAX_LEVELS];
+	BlockNumber				*owned_output_roots;
+	uint32					 owned_output_count;
+	uint32					 owned_output_capacity;
+	uint64					 removed_docs;
+	uint64					 removed_tokens;
+	TpDetachedTombstoneBatch tombstones;
+	bool					 publication_started;
+} TpCompactionOutput;
+
+typedef struct TpCompactionPublication
+{
+	TpIndexMetaPageData metapage;
+	BlockNumber			predecessor;
+	uint32				predecessor_level;
+	BlockNumber			l0_head;
+	uint16				l0_count;
+} TpCompactionPublication;
+
+typedef enum TpStatsRebasePolicy
+{
+	TP_STATS_REBASE_STRICT,
+	TP_STATS_REBASE_CLAMP_LEGACY_VACUUM
+} TpStatsRebasePolicy;
+
+static bool tp_debug_compaction_build_active = false;
+
+static void tp_free_compaction_plan(TpCompactionPlan *plan);
+
+static void
+tp_debug_compaction_pause(int pause_ms, const char *phase, Oid index_oid)
+{
+	TimestampTz deadline;
+
+	if (pause_ms <= 0)
+		return;
+
+	ereport(LOG,
+			(errmsg("pg_textsearch compaction pause at %s for index %u "
+					"backend %d",
+					phase,
+					index_oid,
+					MyProcPid)));
+	deadline = TimestampTzPlusMilliseconds(GetCurrentTimestamp(), pause_ms);
+	for (;;)
+	{
+		CHECK_FOR_INTERRUPTS();
+		if (GetCurrentTimestamp() >= deadline)
+			break;
+		pg_usleep(10000L);
+	}
+	ereport(LOG,
+			(errmsg("pg_textsearch compaction resume after %s for index %u "
+					"backend %d",
+					phase,
+					index_oid,
+					MyProcPid)));
+}
+
+void
+tp_debug_compaction_allocation_pause(
+		Relation index, TpCompactionAllocationPause phase)
+{
+	const char *phase_name;
+
+	if (!tp_debug_compaction_build_active ||
+		tp_debug_compaction_pause_after_allocation != (int)phase)
+		return;
+
+	switch (phase)
+	{
+	case TP_COMPACTION_ALLOCATION_PAUSE_OUTPUT_DATA:
+		phase_name = "output-data";
+		break;
+	case TP_COMPACTION_ALLOCATION_PAUSE_PAGE_INDEX:
+		phase_name = "page-index";
+		break;
+	case TP_COMPACTION_ALLOCATION_PAUSE_TOMBSTONE:
+		phase_name = "tombstone";
+		break;
+	case TP_COMPACTION_ALLOCATION_PAUSE_NONE:
+	default:
+		return;
+	}
+
+	tp_debug_compaction_pause_after_allocation =
+			TP_COMPACTION_ALLOCATION_PAUSE_NONE;
+	tp_debug_compaction_pause(60000, phase_name, RelationGetRelid(index));
+}
+
+void
+tp_compaction_lock(Relation index)
+{
+	/*
+	 * Use pg_am's otherwise-unused object-subid space, matching managed
+	 * compaction's private lock namespace but with a distinct discriminator.
+	 * A relation ShareUpdateExclusiveLock cannot be used here because the
+	 * pre-commit dispatcher intentionally holds that mode while signaling a
+	 * worker that may compact before the writer commits.
+	 */
+	LockDatabaseObject(
+			AccessMethodRelationId,
+			RelationGetRelid(index),
+			TP_COMPACTION_MAINTENANCE_LOCK_SUBID,
+			ExclusiveLock);
+}
+
+void
+tp_compaction_unlock(Relation index)
+{
+	UnlockDatabaseObject(
+			AccessMethodRelationId,
+			RelationGetRelid(index),
+			TP_COMPACTION_MAINTENANCE_LOCK_SUBID,
+			ExclusiveLock);
+}
+
+void
+tp_compaction_publication_lock(Relation index, LOCKMODE mode)
+{
+	Assert(mode == ShareLock || mode == ExclusiveLock);
+	LockDatabaseObject(
+			AccessMethodRelationId,
+			RelationGetRelid(index),
+			TP_COMPACTION_PUBLICATION_LOCK_SUBID,
+			mode);
+}
+
+void
+tp_compaction_publication_unlock(Relation index, LOCKMODE mode)
+{
+	Assert(mode == ShareLock || mode == ExclusiveLock);
+	UnlockDatabaseObject(
+			AccessMethodRelationId,
+			RelationGetRelid(index),
+			TP_COMPACTION_PUBLICATION_LOCK_SUBID,
+			mode);
+}
+
+static bool
+tp_compaction_maintenance_lock_held(Relation index)
+{
+	LOCKTAG tag;
+
+	SET_LOCKTAG_OBJECT(
+			tag,
+			MyDatabaseId,
+			AccessMethodRelationId,
+			RelationGetRelid(index),
+			TP_COMPACTION_MAINTENANCE_LOCK_SUBID);
+	return LockHeldByMe(&tag, ExclusiveLock, true);
+}
+
+static bool
+tp_compaction_is_private(TpLocalIndexState *index_state, Relation index)
+{
+	if (index_state == NULL || index_state->shared == NULL)
 		ereport(ERROR,
 				(errcode(ERRCODE_INTERNAL_ERROR),
-				 errmsg("compaction requires the per-index exclusive lock")));
+				 errmsg("compaction requires a valid per-index state")));
+
+	if (index_state->lock_held)
+	{
+		if (index_state->lock_mode != LW_EXCLUSIVE ||
+			!LWLockHeldByMeInMode(&index_state->shared->lock, LW_EXCLUSIVE))
+			ereport(ERROR,
+					(errcode(ERRCODE_INTERNAL_ERROR),
+					 errmsg("private compaction requires the per-index "
+							"exclusive lock")));
+		return true;
+	}
+
+	if (!tp_compaction_maintenance_lock_held(index))
+		ereport(ERROR,
+				(errcode(ERRCODE_INTERNAL_ERROR),
+				 errmsg("runtime compaction requires the per-index "
+						"maintenance lock")));
+
+	return false;
 }
 
 uint64
@@ -182,7 +373,11 @@ tp_estimate_physical_bytes(TpSegmentEstimate *estimate, bool *representable)
 }
 
 static void
-tp_collect_source_estimate(TpCompactionSource *source, TpSegmentReader *reader)
+tp_collect_source_estimate(
+		TpCompactionSource *source,
+		TpSegmentReader	   *reader,
+		bool				pause_source_estimate,
+		Oid					index_oid)
 {
 	TpSegmentHeader *header = reader->header;
 	bool			 representable;
@@ -226,6 +421,12 @@ tp_collect_source_estimate(TpCompactionSource *source, TpSegmentReader *reader)
 					 errmsg("segment skip entry count overflow at block %u",
 							source->root)));
 	}
+
+	if (pause_source_estimate)
+		tp_debug_compaction_pause(
+				tp_debug_compaction_pause_source_estimate_ms,
+				"source-estimate",
+				index_oid);
 
 	if (!tp_estimate_physical_bytes(&source->estimate, &representable))
 		ereport(ERROR,
@@ -285,8 +486,17 @@ tp_collect_source(
 						level)));
 	}
 
-	tp_collect_source_estimate(source, reader);
-	next = reader->header->next_segment;
+	tp_collect_source_estimate(
+			source,
+			reader,
+			plan->num_sources == 1 &&
+					tp_compaction_maintenance_lock_held(index),
+			RelationGetRelid(index));
+	source->has_dead_docs = reader->header->alive_bitset_offset > 0 &&
+							reader->header->alive_count <
+									reader->header->num_docs;
+	source->total_tokens = reader->header->total_tokens;
+	next				 = reader->header->next_segment;
 	tp_segment_close(reader);
 	return next;
 }
@@ -320,27 +530,9 @@ tp_estimate_add(
 }
 
 static bool
-tp_metapage_matches_snapshot(Page page, const TpIndexMetaPage snapshot)
+tp_metapage_segment_graph_matches(Page page, const TpIndexMetaPage snapshot)
 {
 	TpIndexMetaPage current = (TpIndexMetaPage)PageGetContents(page);
-	BlockNumber		memtable_head;
-	BlockNumber		memtable_tail;
-	BlockNumber		pending_free_head;
-
-	if (current->version == TP_METAPAGE_VERSION_V6)
-	{
-		memtable_head = InvalidBlockNumber;
-		memtable_tail = InvalidBlockNumber;
-	}
-	else
-	{
-		memtable_head = current->memtable_head_blkno;
-		memtable_tail = current->memtable_tail_blkno;
-	}
-
-	pending_free_head = current->version < TP_METAPAGE_VERSION_V8
-							  ? InvalidBlockNumber
-							  : current->pending_free_head;
 
 	return current->magic == snapshot->magic &&
 		   current->text_config_oid == snapshot->text_config_oid &&
@@ -357,9 +549,6 @@ tp_metapage_matches_snapshot(Page page, const TpIndexMetaPage snapshot)
 		   memcmp(current->level_counts,
 				  snapshot->level_counts,
 				  sizeof(current->level_counts)) == 0 &&
-		   memtable_head == snapshot->memtable_head_blkno &&
-		   memtable_tail == snapshot->memtable_tail_blkno &&
-		   pending_free_head == snapshot->pending_free_head &&
 		   (current->version < TP_METAPAGE_VERSION
 					? snapshot->capabilities == 0
 					: current->capabilities == snapshot->capabilities);
@@ -382,7 +571,9 @@ tp_collect_force_sources(
 					(errcode(ERRCODE_DATA_CORRUPTED),
 					 errmsg("segment count overflow in index \"%s\"",
 							RelationGetRelationName(index))));
-		plan->retained_heads[level] = InvalidBlockNumber;
+		plan->selected_heads[level]	 = snapshot->level_heads[level];
+		plan->selected_counts[level] = snapshot->level_counts[level];
+		plan->retained_heads[level]	 = InvalidBlockNumber;
 	}
 
 	if (total_sources == 0)
@@ -615,189 +806,1430 @@ tp_plan_is_noop(
 			return false;
 	}
 
+	/*
+	 * A structural singleton rewrite is still useful when its alive bitmap
+	 * contains dead documents: merge rewrites only survivors and corrects
+	 * corpus statistics.  In particular, an all-zero singleton disappears.
+	 */
+	for (uint32 i = 0; i < plan->num_sources; i++)
+	{
+		if (plan->sources[i].has_dead_docs)
+			return false;
+	}
+
 	buf = ReadBuffer(index, TP_METAPAGE_BLKNO);
 	LockBuffer(buf, BUFFER_LOCK_SHARE);
 	page	= BufferGetPage(buf);
-	matches = tp_metapage_matches_snapshot(page, snapshot);
+	matches = tp_metapage_segment_graph_matches(page, snapshot);
 	UnlockReleaseBuffer(buf);
 	return matches && tp_plan_chains_match(index, plan);
 }
 
 static void
-tp_publish_plan(
-		Relation			  index,
-		const TpIndexMetaPage snapshot,
-		const BlockNumber	  output_heads[TP_MAX_LEVELS],
-		const uint16		  output_counts[TP_MAX_LEVELS],
-		BlockNumber			  pending_free_head,
-		uint64				  output_docs,
-		uint64				  output_tokens)
+tp_initialize_compaction_output(
+		const TpCompactionPlan *plan, TpCompactionOutput *output)
 {
-	Buffer			  metabuf;
-	Page			  current_page;
-	GenericXLogState *xlog_state;
-	Page			  meta_copy;
-	TpIndexMetaPage	  meta;
-
-	metabuf = ReadBuffer(index, TP_METAPAGE_BLKNO);
-	LockBuffer(metabuf, BUFFER_LOCK_EXCLUSIVE);
-	current_page = BufferGetPage(metabuf);
-
-	if (!tp_metapage_matches_snapshot(current_page, snapshot))
-	{
-		UnlockReleaseBuffer(metabuf);
-		ereport(ERROR,
-				(errcode(ERRCODE_INTERNAL_ERROR),
-				 errmsg("metapage changed during compaction of "
-						"index \"%s\"",
-						RelationGetRelationName(index))));
-	}
-
-	xlog_state = GenericXLogStart(index);
-	meta_copy  = GenericXLogRegisterBuffer(xlog_state, metabuf, 0);
-	tp_metapage_upgrade_to_current(index, meta_copy);
-	meta = (TpIndexMetaPage)PageGetContents(meta_copy);
-
-	for (uint32 level = 0; level < TP_MAX_LEVELS; level++)
-	{
-		meta->level_heads[level]  = output_heads[level];
-		meta->level_counts[level] = output_counts[level];
-	}
-	meta->pending_free_head = pending_free_head;
-	meta->total_docs		= output_docs;
-	meta->total_len			= output_tokens;
-
-	GenericXLogFinish(xlog_state);
-	UnlockReleaseBuffer(metabuf);
+	memset(output, 0, sizeof(*output));
+	memcpy(output->output_heads,
+		   plan->retained_heads,
+		   sizeof(output->output_heads));
+	if (plan->num_batches > 0)
+		output->owned_output_roots = palloc(
+				sizeof(BlockNumber) * plan->num_batches);
+	output->owned_output_capacity = plan->num_batches;
+	output->tombstones.head		  = InvalidBlockNumber;
+	output->tombstones.tail		  = InvalidBlockNumber;
 }
 
 static void
-tp_execute_plan(
-		Relation index, const TpIndexMetaPage snapshot, TpCompactionPlan *plan)
+tp_discard_compaction_output(Relation index, TpCompactionOutput *output)
 {
-	BlockNumber		  output_heads[TP_MAX_LEVELS];
-	uint16			  output_counts[TP_MAX_LEVELS];
-	uint64			  selected_docs	  = 0;
-	uint64			  selected_tokens = 0;
-	uint64			  output_docs	  = 0;
-	uint64			  output_tokens	  = 0;
-	uint64			  removed_docs;
-	uint64			  removed_tokens;
-	uint64			  final_docs;
-	uint64			  final_tokens;
-	BlockNumber		  pending_free_head = snapshot->pending_free_head;
-	FullTransactionId merged_fxid		= ReadNextFullTransactionId();
+	TpDetachedTombstoneBatch tombstones = output->tombstones;
 
-	memcpy(output_heads, plan->retained_heads, sizeof(output_heads));
-	memcpy(output_counts, plan->retained_counts, sizeof(output_counts));
+	output->tombstones.head			   = InvalidBlockNumber;
+	output->tombstones.tail			   = InvalidBlockNumber;
+	output->tombstones.container_pages = 0;
+	output->tombstones.owned_pages	   = NULL;
+	output->tombstones.owned_count	   = 0;
+	output->tombstones.owned_capacity  = 0;
+
+	for (uint32 i = 0; i < output->owned_output_count; i++)
+		tp_discard_unpublished_segment(index, output->owned_output_roots[i]);
+	if (output->owned_output_roots != NULL)
+		pfree(output->owned_output_roots);
+	output->owned_output_roots	  = NULL;
+	output->owned_output_count	  = 0;
+	output->owned_output_capacity = 0;
+
+	for (uint32 level = 0; level < TP_MAX_LEVELS; level++)
+	{
+		output->output_heads[level]	 = InvalidBlockNumber;
+		output->output_counts[level] = 0;
+	}
+
+	if (tombstones.owned_pages != NULL)
+		tp_tombstone_discard_detached(index, tombstones);
+}
+
+static bool
+tp_segment_page_link(Page page, uint32 *level, BlockNumber *next)
+{
+	char  *contents = PageGetContents(page);
+	uint32 magic;
+	uint32 version;
+
+	memcpy(&magic, contents, sizeof(magic));
+	memcpy(&version, contents + sizeof(magic), sizeof(version));
+	if (magic != TP_SEGMENT_MAGIC)
+		return false;
+
+	if (version <= TP_SEGMENT_FORMAT_VERSION_3)
+	{
+		TpSegmentHeaderV3 *header = (TpSegmentHeaderV3 *)contents;
+
+		*level = header->level;
+		*next  = header->next_segment;
+	}
+	else if (version <= TP_SEGMENT_FORMAT_VERSION_4)
+	{
+		TpSegmentHeaderV4 *header = (TpSegmentHeaderV4 *)contents;
+
+		*level = header->level;
+		*next  = header->next_segment;
+	}
+	else if (version <= TP_SEGMENT_FORMAT_VERSION)
+	{
+		TpSegmentHeader *header = (TpSegmentHeader *)contents;
+
+		*level = header->level;
+		*next  = header->next_segment;
+	}
+	else
+		return false;
+
+	return true;
+}
+
+static bool
+tp_read_segment_link(
+		Relation	 index,
+		BlockNumber	 root,
+		uint32		 expected_level,
+		BlockNumber *next)
+{
+	Buffer		buf;
+	Page		page;
+	uint32		level;
+	BlockNumber next_segment;
+	bool		decoded;
+
+	if (!BlockNumberIsValid(root))
+		return false;
+
+	buf = ReadBuffer(index, root);
+	LockBuffer(buf, BUFFER_LOCK_SHARE);
+	page	= BufferGetPage(buf);
+	decoded = tp_segment_page_link(page, &level, &next_segment);
+	UnlockReleaseBuffer(buf);
+
+	if (!decoded || level != expected_level)
+		return false;
+	*next = next_segment;
+	return true;
+}
+
+static void
+tp_segment_page_set_link(Page page, BlockNumber next)
+{
+	char  *contents = PageGetContents(page);
+	uint32 version	= ((TpSegmentHeader *)contents)->version;
+
+	if (version <= TP_SEGMENT_FORMAT_VERSION_3)
+		((TpSegmentHeaderV3 *)contents)->next_segment = next;
+	else
+		((TpSegmentHeader *)contents)->next_segment = next;
+}
+
+static bool
+tp_metapage_identity_matches(
+		const TpIndexMetaPageData *current,
+		const TpIndexMetaPageData *snapshot)
+{
+	if (current->version != TP_METAPAGE_VERSION &&
+		current->version != TP_METAPAGE_VERSION_V8 &&
+		current->version != TP_METAPAGE_VERSION_V7 &&
+		current->version != TP_METAPAGE_VERSION_V6)
+		return false;
+
+	return current->magic == snapshot->magic &&
+		   current->text_config_oid == snapshot->text_config_oid &&
+		   current->_unused_total_terms == snapshot->_unused_total_terms &&
+		   current->k1 == snapshot->k1 && current->b == snapshot->b &&
+		   current->root_blkno == snapshot->root_blkno &&
+		   current->term_stats_root == snapshot->term_stats_root &&
+		   current->_unused_docid_page == snapshot->_unused_docid_page;
+}
+
+static BlockNumber
+tp_metapage_pending_free_head(const TpIndexMetaPage metap)
+{
+	return metap->version < TP_METAPAGE_VERSION_V8 ? InvalidBlockNumber
+												   : metap->pending_free_head;
+}
+
+static bool
+tp_validate_selected_runs(
+		Relation			  index,
+		const TpIndexMetaPage snapshot,
+		TpIndexMetaPage		  current_meta,
+		TpCompactionPlan	 *plan,
+		BlockNumber			 *predecessor,
+		uint32				 *predecessor_level)
+{
+	HASHCTL ctl;
+	HTAB   *visited;
+	uint32	source_index = 0;
+	bool	valid		 = false;
+
+	*predecessor	   = InvalidBlockNumber;
+	*predecessor_level = TP_MAX_LEVELS;
+	if (!tp_metapage_identity_matches(current_meta, snapshot))
+		return false;
+
+	memset(&ctl, 0, sizeof(ctl));
+	ctl.keysize	  = sizeof(BlockNumber);
+	ctl.entrysize = sizeof(BlockNumber);
+	visited		  = hash_create(
+			  "compaction validation roots",
+			  Max((long)plan->num_sources, 16L),
+			  &ctl,
+			  HASH_ELEM | HASH_BLOBS);
 
 	for (uint32 i = 0; i < plan->num_sources; i++)
 	{
-		TpSegmentReader *reader;
+		bool found;
 
-		reader = tp_segment_open(index, plan->sources[i].root);
-		if (reader == NULL)
-			ereport(ERROR,
-					(errcode(ERRCODE_DATA_CORRUPTED),
-					 errmsg("could not open segment at block %u",
-							plan->sources[i].root)));
-
-		if (!tp_u64_add(
-					selected_docs,
-					(uint64)reader->header->num_docs,
-					&selected_docs) ||
-			!tp_u64_add(
-					selected_tokens,
-					reader->header->total_tokens,
-					&selected_tokens))
-		{
-			tp_segment_close(reader);
-			ereport(ERROR,
-					(errcode(ERRCODE_DATA_CORRUPTED),
-					 errmsg("source segment statistics overflow")));
-		}
-		tp_segment_close(reader);
+		(void)hash_search(visited, &plan->sources[i].root, HASH_ENTER, &found);
+		if (found)
+			goto done;
 	}
 
-	for (uint32 reverse = plan->num_batches; reverse > 0; reverse--)
+	for (uint32 level = 0; level < TP_MAX_LEVELS; level++)
 	{
-		TpCompactionBatch	 *batch = &plan->batches[reverse - 1];
-		BlockNumber			 *roots;
-		TpMergedSegmentResult result;
+		BlockNumber current;
+		BlockNumber level_predecessor = InvalidBlockNumber;
 
-		roots = palloc(sizeof(BlockNumber) * batch->source_count);
-		for (uint32 i = 0; i < batch->source_count; i++)
-			roots[i] = plan->sources[batch->first_source + i].root;
+		if ((uint32)plan->prefix_counts[level] +
+					(uint32)plan->selected_counts[level] +
+					(uint32)plan->retained_counts[level] !=
+			(uint32)snapshot->level_counts[level])
+			goto done;
 
-		if (tp_merge_segment_batch(
-					index,
-					roots,
-					batch->source_count,
-					batch->output_level,
-					output_heads[batch->output_level],
-					&result))
+		if (level == 0)
 		{
-			if (output_counts[batch->output_level] >= plan->output_capacity)
-				ereport(ERROR,
-						(errcode(ERRCODE_INTERNAL_ERROR),
-						 errmsg("compaction output exceeded level %u "
-								"capacity",
-								batch->output_level)));
+			uint32 prefix_count;
 
-			output_heads[batch->output_level] = result.root;
-			output_counts[batch->output_level]++;
+			if (current_meta->level_counts[level] <
+				snapshot->level_counts[level])
+				goto done;
+			prefix_count = (uint32)current_meta->level_counts[level] -
+						   (uint32)snapshot->level_counts[level];
+			current = current_meta->level_heads[level];
+			for (uint32 i = 0; i < prefix_count; i++)
+			{
+				BlockNumber next;
+				bool		found;
+
+				if (current == snapshot->level_heads[level])
+					goto done;
+				(void)hash_search(visited, &current, HASH_ENTER, &found);
+				if (found)
+					goto done;
+				if (!tp_read_segment_link(index, current, level, &next))
+					goto done;
+				level_predecessor = current;
+				current			  = next;
+			}
+			if (current != snapshot->level_heads[level])
+				goto done;
+		}
+		else
+		{
+			if (current_meta->level_counts[level] !=
+						snapshot->level_counts[level] ||
+				current_meta->level_heads[level] !=
+						snapshot->level_heads[level])
+				goto done;
+			current = current_meta->level_heads[level];
+		}
+
+		if (plan->selected_counts[level] == 0)
+		{
+			if (plan->prefix_counts[level] != 0 ||
+				plan->selected_heads[level] != InvalidBlockNumber)
+				goto done;
+			continue;
+		}
+
+		for (uint16 i = 0; i < plan->prefix_counts[level]; i++)
+		{
+			BlockNumber next;
+			bool		found;
+
+			if (!BlockNumberIsValid(current))
+				goto done;
+			(void)hash_search(visited, &current, HASH_ENTER, &found);
+			if (found || !tp_read_segment_link(index, current, level, &next))
+				goto done;
+			level_predecessor = current;
+			current			  = next;
+		}
+
+		if (plan->selected_heads[level] != current)
+			goto done;
+		if (BlockNumberIsValid(level_predecessor))
+		{
+			if (BlockNumberIsValid(*predecessor))
+				goto done;
+			*predecessor	   = level_predecessor;
+			*predecessor_level = level;
+		}
+
+		for (uint16 i = 0; i < plan->selected_counts[level]; i++)
+		{
+			BlockNumber next;
+
+			if (source_index >= plan->num_sources ||
+				plan->sources[source_index].source_level != level ||
+				plan->sources[source_index].root != current ||
+				!tp_read_segment_link(index, current, level, &next))
+				goto done;
+			current = next;
+			source_index++;
+		}
+		if (current != plan->retained_heads[level])
+			goto done;
+		if (BlockNumberIsValid(current))
+		{
+			bool found;
+
+			(void)hash_search(visited, &current, HASH_FIND, &found);
+			if (found)
+				goto done;
+		}
+	}
+
+	valid = source_index == plan->num_sources;
+
+done:
+	hash_destroy(visited);
+	return valid;
+}
+
+static bool
+tp_publication_identity_matches(
+		const TpIndexMetaPage		   current,
+		const TpCompactionPublication *publication)
+{
+	if (!tp_metapage_identity_matches(current, &publication->metapage))
+		return false;
+
+	if (current->level_heads[0] != publication->l0_head ||
+		current->level_counts[0] != publication->l0_count)
+		return false;
+
+	for (uint32 level = 1; level < TP_MAX_LEVELS; level++)
+	{
+		if (current->level_heads[level] !=
+					publication->metapage.level_heads[level] ||
+			current->level_counts[level] !=
+					publication->metapage.level_counts[level])
+			return false;
+	}
+
+	return true;
+}
+
+static void
+tp_prepare_compaction_publication(
+		TpLocalIndexState		*index_state,
+		Relation				 index,
+		const TpIndexMetaPage	 snapshot,
+		TpCompactionPlan		*plan,
+		TpCompactionPublication *publication)
+{
+	volatile bool	acquired_here = false;
+	TpIndexMetaPage current_meta;
+	BlockNumber		predecessor;
+	uint32			predecessor_level;
+	bool			valid;
+
+	PG_TRY();
+	{
+		if (!index_state->lock_held)
+		{
+			tp_acquire_index_lock(index_state, LW_SHARED);
+			acquired_here = true;
+		}
+		else if (
+				index_state->lock_mode != LW_EXCLUSIVE ||
+				!LWLockHeldByMeInMode(
+						&index_state->shared->lock, LW_EXCLUSIVE))
+			ereport(ERROR,
+					(errcode(ERRCODE_INTERNAL_ERROR),
+					 errmsg("private compaction preparation requires the "
+							"per-index exclusive lock")));
+
+		current_meta = tp_get_metapage(index);
+		valid		 = tp_validate_selected_runs(
+				   index,
+				   snapshot,
+				   current_meta,
+				   plan,
+				   &predecessor,
+				   &predecessor_level);
+		if (valid)
+		{
+			memcpy(&publication->metapage,
+				   current_meta,
+				   sizeof(publication->metapage));
+			publication->predecessor	   = predecessor;
+			publication->predecessor_level = predecessor_level;
+			publication->l0_head		   = current_meta->level_heads[0];
+			publication->l0_count		   = current_meta->level_counts[0];
+		}
+		pfree(current_meta);
+
+		if (acquired_here)
+		{
+			tp_release_index_lock(index_state);
+			acquired_here = false;
+		}
+	}
+	PG_FINALLY();
+	{
+		if (acquired_here && index_state->lock_held)
+			tp_release_index_lock(index_state);
+	}
+	PG_END_TRY();
+
+	if (!valid)
+		ereport(ERROR,
+				(errcode(ERRCODE_INTERNAL_ERROR),
+				 errmsg("compaction graph changed before publication "
+						"preparation for index \"%s\"",
+						RelationGetRelationName(index))));
+}
+
+static bool
+tp_validate_compaction_output(
+		Relation index, TpCompactionPlan *plan, TpCompactionOutput *output)
+{
+	for (uint32 level = 0; level < TP_MAX_LEVELS; level++)
+	{
+		BlockNumber current = output->output_heads[level];
+
+		for (uint16 i = 0; i < output->output_counts[level]; i++)
+		{
+			BlockNumber next;
+
+			if (!tp_read_segment_link(index, current, level, &next))
+				return false;
+			current = next;
+		}
+		if (current != plan->retained_heads[level])
+			return false;
+	}
+
+	if (output->tombstones.container_pages == 0)
+		return output->tombstones.head == InvalidBlockNumber &&
+			   output->tombstones.tail == InvalidBlockNumber;
+
+	{
+		BlockNumber current = output->tombstones.head;
+
+		for (uint32 i = 0; i < output->tombstones.container_pages; i++)
+		{
+			Buffer			buf;
+			Page			page;
+			TpTombstonePage tombstone;
+			BlockNumber		next;
+
+			if (!BlockNumberIsValid(current))
+				return false;
+			buf = ReadBuffer(index, current);
+			LockBuffer(buf, BUFFER_LOCK_SHARE);
+			page = BufferGetPage(buf);
+			if (!tp_tombstone_page_is_valid(page))
+			{
+				UnlockReleaseBuffer(buf);
+				return false;
+			}
+			tombstone = tp_tombstone_page(page);
+			next	  = tombstone->next_page;
+			UnlockReleaseBuffer(buf);
+
+			if (i + 1 == output->tombstones.container_pages)
+			{
+				if (current != output->tombstones.tail ||
+					next != InvalidBlockNumber)
+					return false;
+			}
+			current = next;
+		}
+		return current == InvalidBlockNumber;
+	}
+}
+
+static void
+tp_build_compaction_output(
+		Relation			  index,
+		const TpIndexMetaPage snapshot,
+		TpCompactionPlan	 *plan,
+		TpCompactionOutput	 *output)
+{
+	uint64		 selected_docs	 = 0;
+	uint64		 selected_tokens = 0;
+	uint64		 output_docs	 = 0;
+	uint64		 output_tokens	 = 0;
+	BlockNumber *displaced_pages = NULL;
+	uint32		 displaced_count = 0;
+
+	tp_initialize_compaction_output(plan, output);
+	tp_debug_compaction_build_active = true;
+	PG_TRY();
+	{
+		for (uint32 i = 0; i < plan->num_sources; i++)
+		{
 			if (!tp_u64_add(
-						output_docs, (uint64)result.num_docs, &output_docs) ||
+						selected_docs,
+						plan->sources[i].estimate.docs,
+						&selected_docs) ||
 				!tp_u64_add(
-						output_tokens, result.total_tokens, &output_tokens))
+						selected_tokens,
+						plan->sources[i].total_tokens,
+						&selected_tokens))
+				ereport(ERROR,
+						(errcode(ERRCODE_DATA_CORRUPTED),
+						 errmsg("source segment statistics overflow")));
+		}
+
+		for (uint32 reverse = plan->num_batches; reverse > 0; reverse--)
+		{
+			TpCompactionBatch	 *batch = &plan->batches[reverse - 1];
+			BlockNumber			 *roots;
+			TpMergedSegmentResult result;
+			uint32				  output_level = batch->output_level;
+
+			roots = palloc(sizeof(BlockNumber) * batch->source_count);
+			for (uint32 i = 0; i < batch->source_count; i++)
+				roots[i] = plan->sources[batch->first_source + i].root;
+
+			if (tp_merge_segment_batch(
+						index,
+						roots,
+						batch->source_count,
+						output_level,
+						output->output_heads[output_level],
+						&result))
+			{
+				if (output->owned_output_count >=
+					output->owned_output_capacity)
+				{
+					tp_discard_unpublished_segment(index, result.root);
+					ereport(ERROR,
+							(errcode(ERRCODE_INTERNAL_ERROR),
+							 errmsg("compaction output ownership overflow")));
+				}
+				output->owned_output_roots[output->owned_output_count++] =
+						result.root;
+				if (output->output_counts[output_level] == PG_UINT16_MAX)
+					ereport(ERROR,
+							(errcode(ERRCODE_INTERNAL_ERROR),
+							 errmsg("compaction output count overflow at "
+									"level %u",
+									output_level)));
+				output->output_heads[output_level] = result.root;
+				output->output_counts[output_level]++;
+				if ((uint32)plan->retained_counts[output_level] +
+							(uint32)output->output_counts[output_level] >
+					plan->output_capacity)
+					ereport(ERROR,
+							(errcode(ERRCODE_INTERNAL_ERROR),
+							 errmsg("compaction output exceeded level %u "
+									"capacity",
+									output_level)));
+				if (!tp_u64_add(
+							output_docs,
+							(uint64)result.num_docs,
+							&output_docs) ||
+					!tp_u64_add(
+							output_tokens,
+							result.total_tokens,
+							&output_tokens))
+					ereport(ERROR,
+							(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
+							 errmsg("compaction output statistics "
+									"overflow")));
+			}
+
+			pfree(roots);
+		}
+
+		if (output_docs > selected_docs || output_tokens > selected_tokens)
+			ereport(ERROR,
+					(errcode(ERRCODE_DATA_CORRUPTED),
+					 errmsg("compaction output statistics exceed source "
+							"statistics")));
+
+		output->removed_docs   = selected_docs - output_docs;
+		output->removed_tokens = selected_tokens - output_tokens;
+		if (snapshot->total_docs < output->removed_docs ||
+			snapshot->total_len < output->removed_tokens)
+			ereport(ERROR,
+					(errcode(ERRCODE_DATA_CORRUPTED),
+					 errmsg("compaction source statistics exceed index "
+							"statistics")));
+
+		for (uint32 i = 0; i < plan->num_sources; i++)
+		{
+			BlockNumber *pages;
+			uint32		 num_pages;
+			uint32		 new_count;
+
+			num_pages = tp_segment_collect_pages(
+					index, plan->sources[i].root, &pages);
+			if (num_pages > UINT32_MAX - displaced_count)
 				ereport(ERROR,
 						(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
-						 errmsg("compaction output statistics overflow")));
+						 errmsg("compaction displaced-page count overflow")));
+			new_count = displaced_count + num_pages;
+			if (num_pages > 0)
+			{
+				if (displaced_pages == NULL)
+					displaced_pages = palloc(sizeof(BlockNumber) * new_count);
+				else
+					displaced_pages = repalloc(
+							displaced_pages, sizeof(BlockNumber) * new_count);
+				memcpy(displaced_pages + displaced_count,
+					   pages,
+					   sizeof(BlockNumber) * num_pages);
+			}
+			displaced_count = new_count;
+			if (pages != NULL)
+				pfree(pages);
+		}
+		tp_tombstone_build_detached(
+				index,
+				displaced_pages,
+				displaced_count,
+				InvalidFullTransactionId,
+				&output->tombstones);
+		if (displaced_pages != NULL)
+		{
+			pfree(displaced_pages);
+			displaced_pages = NULL;
 		}
 
-		pfree(roots);
+		/*
+		 * Output and detached tombstone pages have their own WAL records,
+		 * but remain unreachable.  A backend crash before publication can
+		 * leak an incomplete allocation until REINDEX; handled errors
+		 * discard every complete object recorded in output.
+		 */
+	}
+	PG_CATCH();
+	{
+		tp_debug_compaction_build_active = false;
+		tp_discard_compaction_output(index, output);
+		PG_RE_THROW();
+	}
+	PG_END_TRY();
+	tp_debug_compaction_build_active = false;
+}
+
+static bool
+tp_publish_compaction_output(
+		TpLocalIndexState			  *index_state,
+		Relation					   index,
+		TpCompactionPlan			  *plan,
+		TpCompactionOutput			  *output,
+		const TpCompactionPublication *publication,
+		TpStatsRebasePolicy			   stats_policy)
+{
+	volatile Buffer metabuf						 = InvalidBuffer;
+	volatile Buffer predecessor_buf				 = InvalidBuffer;
+	volatile Buffer tailbuf						 = InvalidBuffer;
+	GenericXLogState *volatile publication_state = NULL;
+	volatile bool acquired_here					 = false;
+	BlockNumber	  predecessor					 = publication->predecessor;
+	uint32		  predecessor_level = publication->predecessor_level;
+	bool		  published			= false;
+
+	PG_TRY();
+	{
+		Page			current_page;
+		TpIndexMetaPage current_meta;
+		uint16			current_counts[TP_MAX_LEVELS];
+		uint64			current_docs;
+		uint64			current_tokens;
+		BlockNumber		current_pending;
+		XLogRecPtr		publication_lsn;
+		Page			meta_copy;
+		TpIndexMetaPage meta;
+
+		if (!index_state->lock_held)
+		{
+			tp_acquire_index_lock(index_state, LW_EXCLUSIVE);
+			acquired_here = true;
+		}
+		else if (
+				index_state->lock_mode != LW_EXCLUSIVE ||
+				!LWLockHeldByMeInMode(
+						&index_state->shared->lock, LW_EXCLUSIVE))
+			ereport(ERROR,
+					(errcode(ERRCODE_INTERNAL_ERROR),
+					 errmsg("compaction publication requires the per-index "
+							"exclusive lock")));
+
+		metabuf = ReadBuffer(index, TP_METAPAGE_BLKNO);
+		LockBuffer(metabuf, BUFFER_LOCK_EXCLUSIVE);
+		current_page = BufferGetPage(metabuf);
+		current_meta = (TpIndexMetaPage)PageGetContents(current_page);
+		if (!tp_publication_identity_matches(current_meta, publication))
+		{
+			UnlockReleaseBuffer(metabuf);
+			metabuf = InvalidBuffer;
+			if (acquired_here)
+			{
+				tp_release_index_lock(index_state);
+				acquired_here = false;
+			}
+			goto publication_done;
+		}
+
+		memcpy(current_counts,
+			   current_meta->level_counts,
+			   sizeof(current_counts));
+		current_docs	= current_meta->total_docs;
+		current_tokens	= current_meta->total_len;
+		current_pending = tp_metapage_pending_free_head(current_meta);
+		if (stats_policy != TP_STATS_REBASE_STRICT &&
+			stats_policy != TP_STATS_REBASE_CLAMP_LEGACY_VACUUM)
+			ereport(ERROR,
+					(errcode(ERRCODE_INTERNAL_ERROR),
+					 errmsg("invalid compaction statistic rebase policy")));
+
+		for (uint32 level = 0; level < TP_MAX_LEVELS; level++)
+		{
+			uint32 new_count;
+
+			if (current_counts[level] < plan->selected_counts[level])
+				ereport(ERROR,
+						(errcode(ERRCODE_INTERNAL_ERROR),
+						 errmsg("compaction source count changed at level "
+								"%u",
+								level)));
+			new_count = (uint32)current_counts[level] -
+						(uint32)plan->selected_counts[level] +
+						(uint32)output->output_counts[level];
+			if (new_count > plan->output_capacity)
+				ereport(ERROR,
+						(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
+						 errmsg("bm25 segment count limit reached at "
+								"level "
+								"%u",
+								level)));
+		}
+		if (stats_policy == TP_STATS_REBASE_STRICT &&
+			(current_docs < output->removed_docs ||
+			 current_tokens < output->removed_tokens))
+			ereport(ERROR,
+					(errcode(ERRCODE_DATA_CORRUPTED),
+					 errmsg("compaction shrinkage exceeds current index "
+							"statistics")));
+
+		if (BlockNumberIsValid(predecessor))
+		{
+			Page		predecessor_page;
+			uint32		recorded_level;
+			BlockNumber recorded_next;
+
+			if (predecessor_level >= TP_MAX_LEVELS)
+				ereport(ERROR,
+						(errcode(ERRCODE_INTERNAL_ERROR),
+						 errmsg("invalid compaction predecessor level")));
+
+			predecessor_buf = ReadBuffer(index, predecessor);
+			LockBuffer(predecessor_buf, BUFFER_LOCK_EXCLUSIVE);
+			predecessor_page = BufferGetPage(predecessor_buf);
+			if (!tp_segment_page_link(
+						predecessor_page, &recorded_level, &recorded_next) ||
+				recorded_level != predecessor_level ||
+				recorded_next != plan->selected_heads[predecessor_level])
+				ereport(ERROR,
+						(errcode(ERRCODE_INTERNAL_ERROR),
+						 errmsg("compaction predecessor changed before "
+								"publication")));
+		}
+
+		if (tp_debug_panic_before_compaction_publish)
+			elog(PANIC,
+				 "pg_textsearch: debug crash before compaction "
+				 "publication");
+
+		/*
+		 * Every output and detached tombstone page has already been
+		 * WAL-logged.  WAL insertion order places this reachability record
+		 * after those page records, without a relation-wide buffer flush.
+		 */
+		publication_state = GenericXLogStart(index);
+		meta_copy		  = GenericXLogRegisterBuffer(
+				(GenericXLogState *)publication_state, metabuf, 0);
+
+		if (BufferIsValid(predecessor_buf))
+		{
+			Page predecessor_copy;
+
+			predecessor_copy = GenericXLogRegisterBuffer(
+					(GenericXLogState *)publication_state, predecessor_buf, 0);
+			((PageHeader)predecessor_copy)->pd_lower = BLCKSZ;
+			tp_segment_page_set_link(
+					predecessor_copy, output->output_heads[predecessor_level]);
+		}
+
+		tailbuf = tp_tombstone_attach_detached(
+				(GenericXLogState *)publication_state,
+				index,
+				output->tombstones,
+				current_pending);
+		tp_metapage_upgrade_to_current(index, meta_copy);
+		meta = (TpIndexMetaPage)PageGetContents(meta_copy);
+
+		for (uint32 level = 0; level < TP_MAX_LEVELS; level++)
+		{
+			bool level_changes = plan->selected_counts[level] > 0 ||
+								 output->output_counts[level] > 0;
+
+			if (!level_changes)
+				continue;
+			if (!BlockNumberIsValid(predecessor) || level != predecessor_level)
+				meta->level_heads[level] = output->output_heads[level];
+			meta->level_counts[level] =
+					(uint16)((uint32)current_counts[level] -
+							 (uint32)plan->selected_counts[level] +
+							 (uint32)output->output_counts[level]);
+		}
+		if (output->tombstones.container_pages > 0)
+			meta->pending_free_head = output->tombstones.head;
+		if (stats_policy == TP_STATS_REBASE_CLAMP_LEGACY_VACUUM)
+		{
+			meta->total_docs = current_docs >= output->removed_docs
+									 ? current_docs - output->removed_docs
+									 : 0;
+			meta->total_len	 = current_tokens >= output->removed_tokens
+									 ? current_tokens - output->removed_tokens
+									 : 0;
+		}
+		else
+		{
+			meta->total_docs = current_docs - output->removed_docs;
+			meta->total_len	 = current_tokens - output->removed_tokens;
+		}
+
+		publication_lsn = GenericXLogFinish(
+				(GenericXLogState *)publication_state);
+		publication_state			= NULL;
+		output->publication_started = true;
+		if (tp_debug_panic_after_compaction_publish)
+		{
+			if (RelationNeedsWAL(index))
+				XLogFlush(publication_lsn);
+			elog(PANIC,
+				 "pg_textsearch: debug crash after compaction "
+				 "publication");
+		}
+		if (BufferIsValid(tailbuf))
+		{
+			UnlockReleaseBuffer(tailbuf);
+			tailbuf = InvalidBuffer;
+		}
+		if (BufferIsValid(predecessor_buf))
+		{
+			UnlockReleaseBuffer(predecessor_buf);
+			predecessor_buf = InvalidBuffer;
+		}
+		UnlockReleaseBuffer(metabuf);
+		metabuf = InvalidBuffer;
+		if (acquired_here)
+		{
+			tp_release_index_lock(index_state);
+			acquired_here = false;
+		}
+
+		for (uint32 level = 0; level < TP_MAX_LEVELS; level++)
+		{
+			output->output_heads[level]	 = InvalidBlockNumber;
+			output->output_counts[level] = 0;
+		}
+		output->tombstones.head			   = InvalidBlockNumber;
+		output->tombstones.tail			   = InvalidBlockNumber;
+		output->tombstones.container_pages = 0;
+		if (output->tombstones.owned_pages != NULL)
+			pfree(output->tombstones.owned_pages);
+		output->tombstones.owned_pages	  = NULL;
+		output->tombstones.owned_count	  = 0;
+		output->tombstones.owned_capacity = 0;
+		if (output->owned_output_roots != NULL)
+			pfree(output->owned_output_roots);
+		output->owned_output_roots	  = NULL;
+		output->owned_output_count	  = 0;
+		output->owned_output_capacity = 0;
+		published					  = true;
+
+	publication_done:
+		Assert(!published || output->publication_started);
+	}
+	PG_CATCH();
+	{
+		if (!output->publication_started)
+		{
+			if (publication_state != NULL)
+				GenericXLogAbort((GenericXLogState *)publication_state);
+			if (BufferIsValid(tailbuf))
+			{
+				if (InterruptHoldoffCount == 0)
+					HOLD_INTERRUPTS();
+				UnlockReleaseBuffer(tailbuf);
+			}
+			if (BufferIsValid(predecessor_buf))
+			{
+				if (InterruptHoldoffCount == 0)
+					HOLD_INTERRUPTS();
+				UnlockReleaseBuffer(predecessor_buf);
+			}
+			if (BufferIsValid(metabuf))
+			{
+				if (InterruptHoldoffCount == 0)
+					HOLD_INTERRUPTS();
+				UnlockReleaseBuffer(metabuf);
+			}
+			if (acquired_here && index_state->lock_held)
+				tp_release_index_lock(index_state);
+		}
+		PG_RE_THROW();
+	}
+	PG_END_TRY();
+
+	return published;
+}
+
+static void
+tp_publish_detached_tombstones(
+		TpLocalIndexState		 *index_state,
+		Relation				  index,
+		TpDetachedTombstoneBatch *batch)
+{
+	volatile Buffer metabuf						 = InvalidBuffer;
+	volatile Buffer tailbuf						 = InvalidBuffer;
+	GenericXLogState *volatile publication_state = NULL;
+	volatile bool acquired_here					 = false;
+	volatile bool published						 = false;
+
+	PG_TRY();
+	{
+		Page			current_page;
+		TpIndexMetaPage current_meta;
+		BlockNumber		current_pending;
+		Page			meta_copy;
+		TpIndexMetaPage meta;
+
+		if (!index_state->lock_held)
+		{
+			tp_acquire_index_lock(index_state, LW_EXCLUSIVE);
+			acquired_here = true;
+		}
+		else if (
+				index_state->lock_mode != LW_EXCLUSIVE ||
+				!LWLockHeldByMeInMode(
+						&index_state->shared->lock, LW_EXCLUSIVE))
+			ereport(ERROR,
+					(errcode(ERRCODE_INTERNAL_ERROR),
+					 errmsg("tombstone publication requires the per-index "
+							"exclusive lock")));
+
+		metabuf = ReadBuffer(index, TP_METAPAGE_BLKNO);
+		LockBuffer(metabuf, BUFFER_LOCK_EXCLUSIVE);
+		current_page	= BufferGetPage(metabuf);
+		current_meta	= (TpIndexMetaPage)PageGetContents(current_page);
+		current_pending = tp_metapage_pending_free_head(current_meta);
+
+		publication_state = GenericXLogStart(index);
+		meta_copy		  = GenericXLogRegisterBuffer(
+				(GenericXLogState *)publication_state, metabuf, 0);
+		tailbuf = tp_tombstone_attach_detached(
+				(GenericXLogState *)publication_state,
+				index,
+				*batch,
+				current_pending);
+		tp_metapage_upgrade_to_current(index, meta_copy);
+		meta					= (TpIndexMetaPage)PageGetContents(meta_copy);
+		meta->pending_free_head = batch->head;
+
+		GenericXLogFinish((GenericXLogState *)publication_state);
+		publication_state = NULL;
+		published		  = true;
+
+		if (BufferIsValid(tailbuf))
+		{
+			UnlockReleaseBuffer(tailbuf);
+			tailbuf = InvalidBuffer;
+		}
+		UnlockReleaseBuffer(metabuf);
+		metabuf = InvalidBuffer;
+		if (acquired_here)
+		{
+			tp_release_index_lock(index_state);
+			acquired_here = false;
+		}
+
+		pfree(batch->owned_pages);
+		batch->head			   = InvalidBlockNumber;
+		batch->tail			   = InvalidBlockNumber;
+		batch->container_pages = 0;
+		batch->owned_pages	   = NULL;
+		batch->owned_count	   = 0;
+		batch->owned_capacity  = 0;
+	}
+	PG_CATCH();
+	{
+		if (!published && publication_state != NULL)
+			GenericXLogAbort((GenericXLogState *)publication_state);
+		if (BufferIsValid(tailbuf))
+		{
+			if (InterruptHoldoffCount == 0)
+				HOLD_INTERRUPTS();
+			UnlockReleaseBuffer(tailbuf);
+		}
+		if (BufferIsValid(metabuf))
+		{
+			if (InterruptHoldoffCount == 0)
+				HOLD_INTERRUPTS();
+			UnlockReleaseBuffer(metabuf);
+		}
+		if (acquired_here && index_state->lock_held)
+			tp_release_index_lock(index_state);
+		if (published)
+		{
+			if (batch->owned_pages != NULL)
+				pfree(batch->owned_pages);
+			batch->head			   = InvalidBlockNumber;
+			batch->tail			   = InvalidBlockNumber;
+			batch->container_pages = 0;
+			batch->owned_pages	   = NULL;
+			batch->owned_count	   = 0;
+			batch->owned_capacity  = 0;
+		}
+		PG_RE_THROW();
+	}
+	PG_END_TRY();
+}
+
+static void
+tp_complete_compaction_publication(
+		TpLocalIndexState	 *index_state,
+		Relation			  index,
+		const TpIndexMetaPage snapshot,
+		TpCompactionPlan	 *plan,
+		TpCompactionOutput	 *output,
+		FullTransactionId	  reclaim_fxid,
+		bool				  defer_reclaim,
+		TpStatsRebasePolicy	  stats_policy)
+{
+	FullTransactionId		merged_fxid;
+	TpCompactionPublication publication;
+	volatile bool			publication_locked = false;
+
+	output->publication_started = false;
+	PG_TRY();
+	{
+		/*
+		 * The prepared segment and tombstone chains are unreachable and
+		 * immutable.  Validate them completely before any publication lock.
+		 */
+		if (!tp_validate_compaction_output(index, plan, output))
+			ereport(ERROR,
+					(errcode(ERRCODE_DATA_CORRUPTED),
+					 errmsg("invalid prepared compaction output for index "
+							"\"%s\"",
+							RelationGetRelationName(index))));
+
+		/*
+		 * Ordinary compaction assigns and restamps here.  An atomic prepared
+		 * replacement arrives with a VACUUM-assigned XID and tombstones
+		 * already stamped during construction.  A split replacement
+		 * publishes without reclaim work and samples its horizon afterward.
+		 */
+		if (defer_reclaim)
+		{
+			Assert(!FullTransactionIdIsValid(reclaim_fxid));
+			Assert(output->tombstones.container_pages == 0);
+		}
+		else if (!FullTransactionIdIsValid(reclaim_fxid))
+		{
+			merged_fxid = GetCurrentFullTransactionId();
+			tp_tombstone_restamp_detached(
+					index, output->tombstones, merged_fxid);
+			if (!index_state->lock_held)
+				tp_debug_compaction_pause(
+						tp_debug_compaction_pause_after_restamp_ms,
+						"after-restamp",
+						RelationGetRelid(index));
+		}
+
+		if (!index_state->lock_held)
+		{
+			/* Stabilize the spill-prepended prefix through publication. */
+			tp_compaction_publication_lock(index, ExclusiveLock);
+			publication_locked = true;
+		}
+
+		tp_prepare_compaction_publication(
+				index_state, index, snapshot, plan, &publication);
+		if (!index_state->lock_held)
+			tp_debug_compaction_pause(
+					tp_debug_compaction_pause_before_publish_ms,
+					"before-publish",
+					RelationGetRelid(index));
+
+		if (!tp_publish_compaction_output(
+					index_state,
+					index,
+					plan,
+					output,
+					&publication,
+					stats_policy))
+			ereport(ERROR,
+					(errcode(ERRCODE_INTERNAL_ERROR),
+					 errmsg("compaction graph changed while publication was "
+							"serialized for index \"%s\"",
+							RelationGetRelationName(index))));
+
+		if (publication_locked)
+		{
+			tp_compaction_publication_unlock(index, ExclusiveLock);
+			publication_locked = false;
+		}
+	}
+	PG_CATCH();
+	{
+		if (publication_locked)
+			tp_compaction_publication_unlock(index, ExclusiveLock);
+		if (!output->publication_started)
+			tp_discard_compaction_output(index, output);
+		PG_RE_THROW();
+	}
+	PG_END_TRY();
+}
+
+static TpIndexMetaPage
+tp_prepare_single_replacement_plan(
+		TpLocalIndexState *index_state,
+		Relation		   index,
+		uint32			   level,
+		BlockNumber		   source_root,
+		TpCompactionPlan  *plan)
+{
+	volatile bool			acquired_here = false;
+	TpSegmentGraphSnapshot *graph;
+	TpIndexMetaPage			snapshot;
+	const BlockNumber	   *roots;
+	uint32					root_count;
+	uint32					position;
+	bool					found = false;
+	bool					private_compaction;
+
+	if (level >= TP_MAX_LEVELS)
+		ereport(ERROR,
+				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+				 errmsg("invalid replacement segment level %u", level)));
+
+	memset(plan, 0, sizeof(*plan));
+	private_compaction = tp_compaction_is_private(index_state, index);
+	PG_TRY();
+	{
+		if (!private_compaction)
+		{
+			tp_acquire_index_lock(index_state, LW_SHARED);
+			acquired_here = true;
+		}
+
+		graph = tp_segment_graph_snapshot_create(index);
+		if (acquired_here)
+		{
+			tp_release_index_lock(index_state);
+			acquired_here = false;
+		}
+	}
+	PG_FINALLY();
+	{
+		if (acquired_here && index_state->lock_held)
+			tp_release_index_lock(index_state);
+	}
+	PG_END_TRY();
+
+	roots = tp_segment_graph_snapshot_level(graph, level, &root_count);
+	for (position = 0; position < root_count; position++)
+	{
+		if (roots[position] == source_root)
+		{
+			found = true;
+			break;
+		}
+	}
+	if (!found)
+	{
+		tp_segment_graph_snapshot_free(graph);
+		ereport(ERROR,
+				(errcode(ERRCODE_INTERNAL_ERROR),
+				 errmsg("prepared replacement source %u is no longer "
+						"published at level %u",
+						source_root,
+						level)));
 	}
 
-	if (output_docs > selected_docs || output_tokens > selected_tokens)
-		ereport(ERROR,
-				(errcode(ERRCODE_DATA_CORRUPTED),
-				 errmsg("compaction output statistics exceed source "
-						"statistics")));
+	snapshot  = palloc(sizeof(*snapshot));
+	*snapshot = graph->metapage;
 
-	removed_docs   = selected_docs - output_docs;
-	removed_tokens = selected_tokens - output_tokens;
-	if (snapshot->total_docs < removed_docs ||
-		snapshot->total_len < removed_tokens)
-		ereport(ERROR,
-				(errcode(ERRCODE_DATA_CORRUPTED),
-				 errmsg("compaction source statistics exceed index "
-						"statistics")));
+	for (uint32 current_level = 0; current_level < TP_MAX_LEVELS;
+		 current_level++)
+	{
+		plan->selected_heads[current_level] = InvalidBlockNumber;
+		plan->retained_heads[current_level] =
+				snapshot->level_heads[current_level];
+		plan->retained_counts[current_level] =
+				snapshot->level_counts[current_level];
+	}
 
-	final_docs	 = snapshot->total_docs - removed_docs;
-	final_tokens = snapshot->total_len - removed_tokens;
+	plan->source_capacity			= 1;
+	plan->output_capacity			= PG_UINT16_MAX;
+	plan->sources					= palloc0(sizeof(TpCompactionSource));
+	plan->sources[0].root			= source_root;
+	plan->sources[0].source_level	= level;
+	plan->sources[0].chain_position = position;
+	plan->num_sources				= 1;
+	plan->prefix_counts[level]		= (uint16)position;
+	plan->selected_heads[level]		= source_root;
+	plan->selected_counts[level]	= 1;
+	plan->retained_heads[level]		= (position + 1 < root_count)
+											? roots[position + 1]
+											: InvalidBlockNumber;
+	plan->retained_counts[level]	= (uint16)(root_count - position - 1);
 
-	for (uint32 i = 0; i < plan->num_sources; i++)
+	tp_segment_graph_snapshot_free(graph);
+	return snapshot;
+}
+
+static void
+tp_prepare_single_replacement_root(
+		Relation	index,
+		BlockNumber replacement_root,
+		uint32		level,
+		BlockNumber next)
+{
+	volatile Buffer buf				 = InvalidBuffer;
+	GenericXLogState *volatile state = NULL;
+
+	if (!BlockNumberIsValid(replacement_root))
+		return;
+
+	PG_TRY();
+	{
+		Page			 page;
+		Page			 copy;
+		TpSegmentHeader *header;
+
+		buf = ReadBuffer(index, replacement_root);
+		LockBuffer((Buffer)buf, BUFFER_LOCK_EXCLUSIVE);
+		page   = BufferGetPage((Buffer)buf);
+		header = (TpSegmentHeader *)PageGetContents(page);
+		if (header->magic != TP_SEGMENT_MAGIC ||
+			header->version != TP_SEGMENT_FORMAT_VERSION)
+			ereport(ERROR,
+					(errcode(ERRCODE_DATA_CORRUPTED),
+					 errmsg("invalid prepared replacement segment at "
+							"block %u",
+							replacement_root)));
+
+		state = GenericXLogStart(index);
+		copy  = GenericXLogRegisterBuffer(
+				 (GenericXLogState *)state, (Buffer)buf, 0);
+		((PageHeader)copy)->pd_lower = BLCKSZ;
+		header				 = (TpSegmentHeader *)PageGetContents(copy);
+		header->level		 = level;
+		header->next_segment = next;
+
+		GenericXLogFinish((GenericXLogState *)state);
+		state = NULL;
+		UnlockReleaseBuffer((Buffer)buf);
+		buf = InvalidBuffer;
+	}
+	PG_CATCH();
+	{
+		if (state != NULL)
+			GenericXLogAbort((GenericXLogState *)state);
+		if (BufferIsValid((Buffer)buf))
+		{
+			if (InterruptHoldoffCount == 0)
+				HOLD_INTERRUPTS();
+			UnlockReleaseBuffer((Buffer)buf);
+		}
+		PG_RE_THROW();
+	}
+	PG_END_TRY();
+}
+
+void
+tp_publish_prepared_segment_replacement(
+		TpLocalIndexState			   *index_state,
+		Relation						index,
+		uint32							level,
+		BlockNumber						source_root,
+		BlockNumber						replacement_root,
+		uint64							removed_docs,
+		uint64							removed_tokens,
+		TpSegmentReplacementReclaimMode reclaim_mode)
+{
+	TpCompactionPlan   plan;
+	TpCompactionOutput output;
+	bool			   defer_reclaim = reclaim_mode ==
+						 TP_SEGMENT_REPLACEMENT_RECLAIM_AFTER_PUBLICATION;
+	FullTransactionId reclaim_fxid = InvalidFullTransactionId;
+	TpDetachedTombstoneBatch volatile deferred_tombstones;
+	TpIndexMetaPage volatile snapshot				  = NULL;
+	BlockNumber *volatile source_pages				  = NULL;
+	volatile bool		 completion_started			  = false;
+	volatile bool		 deferred_tombstones_attached = false;
+	volatile BlockNumber unclaimed_root				  = replacement_root;
+	uint32				 source_page_count;
+
+	memset(&plan, 0, sizeof(plan));
+	memset(&output, 0, sizeof(output));
+	memset((TpDetachedTombstoneBatch *)&deferred_tombstones,
+		   0,
+		   sizeof(deferred_tombstones));
+	output.tombstones.head	 = InvalidBlockNumber;
+	output.tombstones.tail	 = InvalidBlockNumber;
+	deferred_tombstones.head = InvalidBlockNumber;
+	deferred_tombstones.tail = InvalidBlockNumber;
+
+	PG_TRY();
 	{
 		BlockNumber *pages;
-		uint32		 num_pages;
 
-		num_pages =
-				tp_segment_collect_pages(index, plan->sources[i].root, &pages);
-		pending_free_head = tp_tombstone_enqueue(
-				index, pages, num_pages, merged_fxid, pending_free_head);
-		if (pages != NULL)
-			pfree(pages);
+		if (BlockNumberIsValid((BlockNumber)unclaimed_root))
+		{
+			output.owned_output_roots	 = palloc(sizeof(BlockNumber));
+			output.owned_output_roots[0] = (BlockNumber)unclaimed_root;
+			output.owned_output_count	 = 1;
+			output.owned_output_capacity = 1;
+			unclaimed_root				 = InvalidBlockNumber;
+		}
+
+		if (reclaim_mode != TP_SEGMENT_REPLACEMENT_RECLAIM_ATOMIC &&
+			reclaim_mode != TP_SEGMENT_REPLACEMENT_RECLAIM_AFTER_PUBLICATION)
+			ereport(ERROR,
+					(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+					 errmsg("invalid prepared replacement reclaim mode")));
+
+		snapshot = tp_prepare_single_replacement_plan(
+				index_state, index, level, source_root, &plan);
+		memcpy(output.output_heads,
+			   plan.retained_heads,
+			   sizeof(output.output_heads));
+		if (BlockNumberIsValid(replacement_root))
+		{
+			tp_prepare_single_replacement_root(
+					index,
+					replacement_root,
+					level,
+					plan.retained_heads[level]);
+			output.output_heads[level]	= replacement_root;
+			output.output_counts[level] = 1;
+		}
+		output.removed_docs	  = removed_docs;
+		output.removed_tokens = removed_tokens;
+
+		source_page_count =
+				tp_segment_collect_pages(index, source_root, &pages);
+		source_pages = pages;
+		if (source_page_count == 0)
+			ereport(ERROR,
+					(errcode(ERRCODE_DATA_CORRUPTED),
+					 errmsg("prepared replacement source %u has no pages",
+							source_root)));
+		if (!defer_reclaim)
+		{
+			reclaim_fxid = GetCurrentFullTransactionId();
+			tp_tombstone_build_detached(
+					index,
+					(BlockNumber *)source_pages,
+					source_page_count,
+					reclaim_fxid,
+					&output.tombstones);
+			pfree((BlockNumber *)source_pages);
+			source_pages = NULL;
+		}
+
+		completion_started = true;
+		tp_complete_compaction_publication(
+				index_state,
+				index,
+				(TpIndexMetaPage)snapshot,
+				&plan,
+				&output,
+				reclaim_fxid,
+				defer_reclaim,
+				TP_STATS_REBASE_CLAMP_LEGACY_VACUUM);
+		if (defer_reclaim)
+		{
+			reclaim_fxid = ReadNextFullTransactionId();
+			tp_tombstone_build_detached(
+					index,
+					(BlockNumber *)source_pages,
+					source_page_count,
+					reclaim_fxid,
+					(TpDetachedTombstoneBatch *)&deferred_tombstones);
+			tp_publish_detached_tombstones(
+					index_state,
+					index,
+					(TpDetachedTombstoneBatch *)&deferred_tombstones);
+			deferred_tombstones_attached = true;
+			pfree((BlockNumber *)source_pages);
+			source_pages = NULL;
+		}
 	}
+	PG_CATCH();
+	{
+		if (BlockNumberIsValid((BlockNumber)unclaimed_root))
+			tp_discard_unpublished_segment(index, (BlockNumber)unclaimed_root);
+		else if (!completion_started && !output.publication_started)
+			tp_discard_compaction_output(index, &output);
+		if (!deferred_tombstones_attached &&
+			deferred_tombstones.owned_pages != NULL)
+			tp_tombstone_discard_detached(
+					index, *(TpDetachedTombstoneBatch *)&deferred_tombstones);
+		if (source_pages != NULL)
+			pfree((BlockNumber *)source_pages);
+		if (snapshot != NULL)
+			pfree((TpIndexMetaPage)snapshot);
+		tp_free_compaction_plan(&plan);
+		PG_RE_THROW();
+	}
+	PG_END_TRY();
 
-	FlushRelationBuffers(index);
-	tp_publish_plan(
-			index,
-			snapshot,
-			output_heads,
-			output_counts,
-			pending_free_head,
-			final_docs,
-			final_tokens);
+	pfree((TpIndexMetaPage)snapshot);
+	tp_free_compaction_plan(&plan);
 }
 
 static uint32
@@ -857,6 +2289,7 @@ tp_initialize_ordinary_plan(
 					 errmsg("segment count overflow in index \"%s\"",
 							RelationGetRelationName(index))));
 
+		plan->selected_heads[level]	 = InvalidBlockNumber;
 		plan->retained_heads[level]	 = snapshot->level_heads[level];
 		plan->retained_counts[level] = snapshot->level_counts[level];
 	}
@@ -891,11 +2324,14 @@ tp_select_level_prefix(
 	current		   = plan->retained_heads[level];
 	chain_position = (uint32)snapshot->level_counts[level] -
 					 (uint32)plan->retained_counts[level];
+	if (plan->selected_counts[level] == 0)
+		plan->selected_heads[level] = current;
 
 	for (uint32 i = 0; i < prefix_count; i++)
 		current = tp_collect_source(
 				index, plan, current, level, chain_position + i);
 
+	plan->selected_counts[level] += (uint16)prefix_count;
 	plan->retained_heads[level] = current;
 	plan->retained_counts[level] -= (uint16)prefix_count;
 	return first_source;
@@ -936,6 +2372,8 @@ tp_trim_uncombinable_tail(
 
 		plan->retained_heads[level] = plan->sources[batch->first_source].root;
 		plan->retained_counts[level]++;
+		Assert(plan->selected_counts[level] > 0);
+		plan->selected_counts[level]--;
 		plan->num_sources = batch->first_source;
 		plan->num_batches--;
 	}
@@ -980,7 +2418,87 @@ tp_assign_ordinary_batches(
 	}
 }
 
-static void tp_free_compaction_plan(TpCompactionPlan *plan);
+static bool
+tp_build_empty_plan(
+		Relation			  index,
+		const TpIndexMetaPage snapshot,
+		uint32				  first_level,
+		TpCompactionPlan	 *plan)
+{
+	for (uint32 level = first_level; level < TP_MAX_LEVELS; level++)
+	{
+		BlockNumber current = snapshot->level_heads[level];
+
+		for (uint32 position = 0;
+			 position < (uint32)snapshot->level_counts[level];
+			 position++)
+		{
+			TpSegmentReader *reader;
+			BlockNumber		 next;
+			bool			 empty;
+
+			if (!BlockNumberIsValid(current))
+				ereport(ERROR,
+						(errcode(ERRCODE_DATA_CORRUPTED),
+						 errmsg("segment chain for level %u ended before "
+								"its recorded count",
+								level)));
+
+			reader = tp_segment_open(index, current);
+			if (reader == NULL)
+				ereport(ERROR,
+						(errcode(ERRCODE_DATA_CORRUPTED),
+						 errmsg("could not open segment at block %u",
+								current)));
+			next  = reader->header->next_segment;
+			empty = reader->header->alive_bitset_offset > 0 &&
+					reader->header->alive_count == 0;
+			tp_segment_close(reader);
+
+			if (empty)
+			{
+				uint32 first_source;
+				uint32 first_batch;
+				uint32 prefix_count = position + 1;
+
+				tp_initialize_ordinary_plan(index, snapshot, plan);
+				first_source = tp_select_level_prefix(
+						index, snapshot, plan, level, prefix_count);
+				first_batch = plan->num_batches;
+				tp_append_bounded_batches(plan, first_source, prefix_count);
+
+				for (uint32 i = first_batch; i < plan->num_batches; i++)
+				{
+					TpCompactionBatch *batch = &plan->batches[i];
+
+					for (uint32 j = 0; j < batch->source_count; j++)
+					{
+						if (plan->sources[batch->first_source + j]
+									.source_level != level)
+							ereport(ERROR,
+									(errcode(ERRCODE_INTERNAL_ERROR),
+									 errmsg("empty cleanup batch crosses "
+											"levels")));
+					}
+					batch->output_level = level;
+				}
+
+				return true;
+			}
+
+			current = next;
+		}
+
+		if (BlockNumberIsValid(current))
+			ereport(ERROR,
+					(errcode(ERRCODE_DATA_CORRUPTED),
+					 errmsg("segment chain for level %u exceeds its "
+							"recorded count",
+							level)));
+	}
+
+	return false;
+}
 
 static bool
 tp_build_ordinary_plan(
@@ -1067,103 +2585,223 @@ tp_free_compaction_plan(TpCompactionPlan *plan)
 		pfree(plan->batches);
 }
 
+static bool
+tp_select_compaction_plan(
+		TpLocalIndexState *index_state,
+		Relation		   index,
+		uint32			   first_level,
+		bool			   empty_only,
+		TpIndexMetaPage	  *snapshot_out,
+		TpCompactionPlan  *plan)
+{
+	volatile bool	acquired_here = false;
+	TpIndexMetaPage snapshot;
+	bool			selected = false;
+	bool			private_compaction;
+
+	Assert(snapshot_out != NULL);
+	*snapshot_out = NULL;
+	memset(plan, 0, sizeof(*plan));
+	private_compaction = tp_compaction_is_private(index_state, index);
+
+	PG_TRY();
+	{
+		if (!private_compaction)
+		{
+			tp_acquire_index_lock(index_state, LW_SHARED);
+			acquired_here = true;
+		}
+
+		snapshot = tp_get_metapage(index);
+		if (acquired_here)
+		{
+			tp_release_index_lock(index_state);
+			acquired_here = false;
+		}
+
+		selected = tp_build_empty_plan(index, snapshot, first_level, plan);
+		if (!selected && !empty_only &&
+			tp_compaction_candidate(snapshot->level_counts, first_level) <
+					TP_MAX_LEVELS)
+			selected =
+					tp_build_ordinary_plan(index, snapshot, first_level, plan);
+	}
+	PG_FINALLY();
+	{
+		if (acquired_here && index_state->lock_held)
+			tp_release_index_lock(index_state);
+	}
+	PG_END_TRY();
+
+	if (!selected)
+	{
+		pfree(snapshot);
+		tp_free_compaction_plan(plan);
+		memset(plan, 0, sizeof(*plan));
+		return false;
+	}
+
+	*snapshot_out = snapshot;
+	return true;
+}
+
+static bool
+tp_select_force_compaction_plan(
+		TpLocalIndexState *index_state,
+		Relation		   index,
+		TpIndexMetaPage	  *snapshot_out,
+		TpCompactionPlan  *plan)
+{
+	volatile bool	acquired_here = false;
+	TpIndexMetaPage snapshot;
+	bool			selected;
+	bool			private_compaction;
+
+	Assert(snapshot_out != NULL);
+	*snapshot_out = NULL;
+	memset(plan, 0, sizeof(*plan));
+	private_compaction = tp_compaction_is_private(index_state, index);
+
+	PG_TRY();
+	{
+		if (!private_compaction)
+		{
+			tp_acquire_index_lock(index_state, LW_SHARED);
+			acquired_here = true;
+		}
+
+		snapshot = tp_get_metapage(index);
+		if (acquired_here)
+		{
+			tp_release_index_lock(index_state);
+			acquired_here = false;
+		}
+
+		tp_collect_force_sources(index, snapshot, plan);
+		tp_build_force_batches(plan);
+		selected = plan->num_sources > 0 &&
+				   !tp_plan_is_noop(index, snapshot, plan);
+	}
+	PG_FINALLY();
+	{
+		if (acquired_here && index_state->lock_held)
+			tp_release_index_lock(index_state);
+	}
+	PG_END_TRY();
+
+	if (!selected)
+	{
+		pfree(snapshot);
+		tp_free_compaction_plan(plan);
+		memset(plan, 0, sizeof(*plan));
+		return false;
+	}
+
+	*snapshot_out = snapshot;
+	return true;
+}
+
 /*
- * Plan and run a single bounded compaction pass, searching for a
- * triggered level at or above first_level.  Returns true when a plan
- * executed and false when no level at or above first_level carries
- * threshold debt this engine can reduce.
+ * Select, build, and publish one bounded compaction pass.  Runtime callers
+ * hold the per-index maintenance object lock; CREATE INDEX instead holds its
+ * private
+ * per-index lock for the whole build because the index is not yet visible.
  *
- * One pass is one publication: the plan is built in full -- including
- * any recursive compaction of a blocking destination level -- and
- * validated against the per-level segment capacity before
- * tp_execute_plan touches a page.  A caller that must bound how long it
- * holds the per-index exclusive lock can therefore run exactly one pass
- * and release, leaving the index in a consistent state.
+ * Runtime selection and publication preparation take LW_SHARED briefly,
+ * output construction holds no per-index lock, and only the final
+ * GenericXLog publication takes fair LW_EXCLUSIVE.  The maintenance lock
+ * keeps selected segment payloads immutable while a concurrent spill may
+ * prepend an L0 prefix.
  */
 static bool
 tp_compact_once(
-		TpLocalIndexState *index_state, Relation index, uint32 first_level)
+		TpLocalIndexState *index_state,
+		Relation		   index,
+		uint32			   first_level,
+		bool			   empty_only)
 {
-	TpIndexMetaPage	 snapshot;
-	TpCompactionPlan plan;
-	uint32			 drained;
+	TpIndexMetaPage	   snapshot;
+	TpCompactionPlan   plan;
+	TpCompactionOutput output;
+	uint32			   drained;
+	bool			   private_compaction;
 
-	tp_require_compaction_lock(index_state);
+	private_compaction = tp_compaction_is_private(index_state, index);
 	if (first_level >= TP_MAX_LEVELS)
 		return false;
-
-	/*
-	 * Reclaiming displaced pages is part of compacting, not part of every
-	 * write.  Leave the tombstone chain alone unless a level is actually
-	 * triggered, so an ordinary spill cannot free pages that a merge
-	 * parked for standby-safe reclaim.
-	 */
-	snapshot = tp_get_metapage(index);
-	if (tp_compaction_candidate(snapshot->level_counts, first_level) >=
-		TP_MAX_LEVELS)
-	{
-		pfree(snapshot);
+	if (!tp_select_compaction_plan(
+				index_state, index, first_level, empty_only, &snapshot, &plan))
 		return false;
-	}
-	pfree(snapshot);
+
+	if (!private_compaction)
+		tp_debug_compaction_pause(
+				tp_debug_compaction_pause_after_select_ms,
+				"after-select",
+				RelationGetRelid(index));
 
 	drained = tp_tombstone_drain(
-			index, NULL, tp_reclaim_horizon(NULL), /* own_lock */ false);
+			index,
+			private_compaction ? NULL : index_state,
+			tp_reclaim_horizon(NULL),
+			/* own_lock */ !private_compaction);
 	if (drained > 0)
 		IndexFreeSpaceMapVacuum(index);
 
-	snapshot = tp_get_metapage(index);
-	if (!tp_build_ordinary_plan(index, snapshot, first_level, &plan))
-	{
-		pfree(snapshot);
-		tp_free_compaction_plan(&plan);
-		return false;
-	}
-
-	tp_execute_plan(index, snapshot, &plan);
+	tp_build_compaction_output(index, snapshot, &plan, &output);
+	tp_complete_compaction_publication(
+			index_state,
+			index,
+			snapshot,
+			&plan,
+			&output,
+			InvalidFullTransactionId,
+			false,
+			TP_STATS_REBASE_STRICT);
 	pfree(snapshot);
 	tp_free_compaction_plan(&plan);
 	return true;
 }
 
-void
-tp_maybe_compact_level(
-		TpLocalIndexState *index_state, Relation index, uint32 first_level)
-{
-	while (tp_compact_once(index_state, index, first_level))
-		;
-}
-
 bool
 tp_compact_step(TpLocalIndexState *index_state, Relation index)
 {
-	return tp_compact_once(index_state, index, 0);
+	return tp_compact_once(index_state, index, 0, false);
+}
+
+bool
+tp_compact_empty_step(TpLocalIndexState *index_state, Relation index)
+{
+	return tp_compact_once(index_state, index, 0, true);
 }
 
 void
 tp_force_compact(TpLocalIndexState *index_state, Relation index)
 {
-	TpIndexMetaPage	 snapshot;
-	TpCompactionPlan plan;
+	TpIndexMetaPage	   snapshot;
+	TpCompactionPlan   plan;
+	TpCompactionOutput output;
+	bool			   private_compaction;
 
-	tp_require_compaction_lock(index_state);
-	snapshot = tp_get_metapage(index);
-
-	tp_collect_force_sources(index, snapshot, &plan);
-	tp_build_force_batches(&plan);
-
-	if (plan.num_sources == 0 || tp_plan_is_noop(index, snapshot, &plan))
-	{
-		pfree(snapshot);
-		if (plan.sources != NULL)
-			pfree(plan.sources);
-		if (plan.batches != NULL)
-			pfree(plan.batches);
+	private_compaction = tp_compaction_is_private(index_state, index);
+	if (!tp_select_force_compaction_plan(index_state, index, &snapshot, &plan))
 		return;
-	}
 
-	tp_execute_plan(index, snapshot, &plan);
+	if (!private_compaction)
+		tp_debug_compaction_pause(
+				tp_debug_compaction_pause_after_select_ms,
+				"after-select",
+				RelationGetRelid(index));
 
+	tp_build_compaction_output(index, snapshot, &plan, &output);
+	tp_complete_compaction_publication(
+			index_state,
+			index,
+			snapshot,
+			&plan,
+			&output,
+			InvalidFullTransactionId,
+			false,
+			TP_STATS_REBASE_STRICT);
 	pfree(snapshot);
 	tp_free_compaction_plan(&plan);
 }

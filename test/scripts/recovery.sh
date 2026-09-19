@@ -4,11 +4,12 @@
 # This script simulates actual crashes and verifies recovery functionality
 #
 
-set -e  # Exit on error
+set -eu
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 TEST_PORT=55435
 TEST_DB=crash_recovery_test
+TEST_HOST=127.0.0.1
 DATA_DIR="${SCRIPT_DIR}/../tmp_crash_test"
 LOGFILE="${DATA_DIR}/postgres.log"
 
@@ -32,13 +33,22 @@ error() {
 }
 
 cleanup() {
+    local status=$?
     log "Cleaning up test environment..."
+    if [ "${status}" -ne 0 ]; then
+        for logfile in "${LOGFILE}" "${DATA_DIR}/log/postgres.log"; do
+            if [ -f "${logfile}" ]; then
+                echo "=== ${logfile} (last 80 lines) ==="
+                tail -80 "${logfile}" 2>/dev/null || true
+            fi
+        done
+    fi
     if [ -f "${DATA_DIR}/postmaster.pid" ]; then
         pg_ctl stop -D "${DATA_DIR}" -m fast &>/dev/null ||
             pg_ctl stop -D "${DATA_DIR}" -m immediate &>/dev/null || true
     fi
     rm -rf "${DATA_DIR}"
-    exit 0
+    exit "$status"
 }
 
 # Set up cleanup trap
@@ -59,6 +69,8 @@ setup_test_db() {
     # Configure test instance
     cat >> "${DATA_DIR}/postgresql.conf" << EOF
 port = ${TEST_PORT}
+listen_addresses = '${TEST_HOST}'
+unix_socket_directories = ''
 log_statement = 'all'
 shared_buffers = 128MB
 max_connections = 20
@@ -66,6 +78,8 @@ log_min_messages = notice
 logging_collector = on
 log_filename = 'postgres.log'
 shared_preload_libraries = '${lib_name}'
+restart_after_crash = off
+pg_textsearch.segments_per_level = 2
 EOF
 
     # Start PostgreSQL
@@ -73,18 +87,31 @@ EOF
     pg_ctl start -D "${DATA_DIR}" -l "${LOGFILE}" -w
 
     # Create test database
-    createdb -p "${TEST_PORT}" "${TEST_DB}"
+    createdb -h "${TEST_HOST}" -p "${TEST_PORT}" "${TEST_DB}"
 
     # Install extension
-    psql -p "${TEST_PORT}" -d "${TEST_DB}" -c "CREATE EXTENSION pg_textsearch;" >/dev/null
+    psql -h "${TEST_HOST}" -p "${TEST_PORT}" -d "${TEST_DB}" \
+        -c "CREATE EXTENSION pg_textsearch;" >/dev/null
 }
 
 run_sql() {
-    psql -p "${TEST_PORT}" -d "${TEST_DB}" -c "$1" 2>/dev/null
+    if [ "$#" -eq 0 ]; then
+        psql -h "${TEST_HOST}" -p "${TEST_PORT}" -d "${TEST_DB}" \
+            2>/dev/null
+    else
+        psql -h "${TEST_HOST}" -p "${TEST_PORT}" -d "${TEST_DB}" \
+            -c "$1" 2>/dev/null
+    fi
+}
+
+run_sql_value() {
+    psql -X -qtA -h "${TEST_HOST}" -p "${TEST_PORT}" \
+        -d "${TEST_DB}" -c "$1" 2>/dev/null
 }
 
 run_sql_file() {
-    psql -p "${TEST_PORT}" -d "${TEST_DB}" -f "$1" 2>/dev/null
+    psql -h "${TEST_HOST}" -p "${TEST_PORT}" -d "${TEST_DB}" \
+        -f "$1" 2>/dev/null
 }
 
 simulate_crash() {
@@ -113,14 +140,208 @@ restart_postgres() {
     log "Restarting PostgreSQL after crash..."
 
     # Start PostgreSQL again
-    pg_ctl start -D "${DATA_DIR}" -l "${LOGFILE}" -w
-
-    # Wait for startup
-    sleep 2
+    pg_ctl start -D "${DATA_DIR}" -l "${LOGFILE}" -w -t 30
 
     # Verify connection works
-    psql -p "${TEST_PORT}" -d "${TEST_DB}" -c "SELECT 1;" >/dev/null
+    psql -h "${TEST_HOST}" -p "${TEST_PORT}" -d "${TEST_DB}" \
+        -c "SELECT 1;" >/dev/null
     log "PostgreSQL restarted successfully"
+}
+
+wait_for_pid_exit() {
+    local pid=$1
+    local label=$2
+
+    for _ in $(seq 1 100); do
+        if ! kill -0 "${pid}" 2>/dev/null; then
+            return 0
+        fi
+        sleep 0.1
+    done
+
+    error "Timed out waiting 10s for ${label} PID ${pid} to exit"
+}
+
+assert_compaction_guc_defaults() {
+    local before after
+
+    before=$(run_sql_value \
+        "SHOW pg_textsearch.debug_panic_before_compaction_publish;")
+    after=$(run_sql_value \
+        "SHOW pg_textsearch.debug_panic_after_compaction_publish;")
+    [ "${before}" = "off" ] ||
+        error "before-publication PANIC GUC persisted as '${before}'"
+    [ "${after}" = "off" ] ||
+        error "after-publication PANIC GUC persisted as '${after}'"
+}
+
+assert_compaction_gucs_superuser_only() {
+    local guc
+    local output
+
+    run_sql "DROP ROLE IF EXISTS compaction_panic_probe;
+             CREATE ROLE compaction_panic_probe;" >/dev/null
+    for guc in \
+        pg_textsearch.debug_panic_before_compaction_publish \
+        pg_textsearch.debug_panic_after_compaction_publish; do
+        if output=$(psql -X -v ON_ERROR_STOP=1 -h "${TEST_HOST}" \
+            -p "${TEST_PORT}" -d "${TEST_DB}" -c "
+                SET ROLE compaction_panic_probe;
+                SET ${guc} = on;
+            " 2>&1); then
+            error "non-superuser enabled ${guc}"
+        fi
+        [[ "${output}" == *"permission denied"* ]] ||
+            error "unexpected non-superuser ${guc} error: ${output}"
+    done
+    run_sql "DROP ROLE compaction_panic_probe;" >/dev/null
+}
+
+create_compaction_crash_fixture() {
+    local prefix=$1
+    local spilled graph
+
+    run_sql "
+        DROP TABLE IF EXISTS ${prefix}_docs CASCADE;
+        CREATE TABLE ${prefix}_docs (
+            id integer PRIMARY KEY,
+            body text NOT NULL
+        ) WITH (autovacuum_enabled = false);
+        INSERT INTO ${prefix}_docs
+        SELECT g, 'crashmarker recovery document ' || g
+          FROM generate_series(1, 300) g;
+        CREATE INDEX ${prefix}_idx
+            ON ${prefix}_docs USING bm25(body)
+            WITH (text_config = 'english', compaction = 'off');
+        INSERT INTO ${prefix}_docs
+        SELECT g, 'crashmarker recovery document ' || g
+          FROM generate_series(301, 600) g;
+    " >/dev/null
+
+    spilled=$(run_sql_value \
+        "SELECT bm25_spill_index('${prefix}_idx') > 0;")
+    [ "${spilled}" = "t" ] ||
+        error "${prefix}: second segment was not spilled"
+    graph=$(run_sql_value \
+        "SELECT bm25_level_counts('${prefix}_idx'::regclass)::text;")
+    [ "${graph}" = "{2,0,0,0,0,0,0,0}" ] ||
+        error "${prefix}: fixture graph is ${graph}, expected two L0 segments"
+}
+
+trigger_compaction_panic() {
+    local prefix=$1
+    local guc=$2
+    local panic_text=$3
+    local postmaster_pid output rc
+
+    postmaster_pid=$(head -1 "${DATA_DIR}/postmaster.pid")
+    log "${prefix}: triggering ${guc} (postmaster PID ${postmaster_pid})..."
+
+    set +e
+    output=$(timeout 30s psql -X -v ON_ERROR_STOP=1 -h "${TEST_HOST}" \
+        -p "${TEST_PORT}" -d "${TEST_DB}" -c "
+            SET ${guc} = on;
+            SELECT bm25_compact_step('${prefix}_idx'::regclass);
+        " 2>&1)
+    rc=$?
+    set -e
+
+    [ "${rc}" -ne 0 ] ||
+        error "${prefix}: compaction unexpectedly survived PANIC hook"
+    [ "${rc}" -ne 124 ] ||
+        error "${prefix}: timed out waiting for PANIC; output: ${output}"
+    wait_for_pid_exit "${postmaster_pid}" "${prefix} postmaster"
+
+    if ! grep -Fq "${panic_text}" "${LOGFILE}" \
+        "${DATA_DIR}/log/postgres.log" 2>/dev/null; then
+        error "${prefix}: expected PANIC was not logged; client output: ${output}"
+    fi
+
+    restart_postgres
+    assert_compaction_guc_defaults
+}
+
+assert_compaction_crash_recovery() {
+    local prefix=$1
+    local expected_graph=$2
+    local expected_segments=$3
+    local expect_parked=$4
+    local plan expected_ids actual_ids graph summary parked
+
+    plan=$(run_sql_value "
+        SET enable_seqscan = off;
+        EXPLAIN (COSTS off)
+        SELECT id
+          FROM ${prefix}_docs
+         ORDER BY body <@> to_bm25query(
+                      'crashmarker', '${prefix}_idx')
+         LIMIT 600;")
+    grep -Fq \
+        "Index Scan using ${prefix}_idx on ${prefix}_docs" <<<"${plan}" ||
+        error "${prefix}: recovery assertion did not use BM25 Index Scan: ${plan}"
+
+    expected_ids=$(run_sql_value "
+        SELECT string_agg(id::text, ',' ORDER BY id)
+          FROM ${prefix}_docs;")
+    actual_ids=$(run_sql_value "
+        SET enable_seqscan = off;
+        SELECT string_agg(id::text, ',' ORDER BY id)
+          FROM (
+                SELECT id
+                  FROM ${prefix}_docs
+                 ORDER BY body <@> to_bm25query(
+                              'crashmarker', '${prefix}_idx')
+                 LIMIT 600
+               ) ranked;")
+    [ "${actual_ids}" = "${expected_ids}" ] ||
+        error "${prefix}: recovered ranked IDs differ from exact heap IDs"
+
+    graph=$(run_sql_value \
+        "SELECT bm25_level_counts('${prefix}_idx'::regclass)::text;")
+    [ "${graph}" = "${expected_graph}" ] ||
+        error "${prefix}: recovered graph is ${graph}, expected ${expected_graph}"
+    summary=$(run_sql_value \
+        "SELECT bm25_summarize_index('${prefix}_idx');")
+    [[ "${summary}" == *"Total: ${expected_segments} segments"* ]] ||
+        error "${prefix}: invalid recovered graph summary: ${summary}"
+
+    parked=$(run_sql_value \
+        "SELECT bm25_pending_free_pages('${prefix}_idx');")
+    case "${parked}" in
+        ''|*[!0-9]*) error "${prefix}: invalid parked-page count '${parked}'" ;;
+    esac
+    if [ "${expect_parked}" = "yes" ]; then
+        [ "${parked}" -gt 0 ] ||
+            error "${prefix}: published graph has no parked source pages"
+    else
+        [ "${parked}" = "0" ] ||
+            error "${prefix}: pre-publish crash exposed tombstones (${parked})"
+    fi
+
+    log "PASS: ${prefix} recovered exact IDs and graph ${graph}"
+}
+
+test_compaction_publish_crash_recovery() {
+    log "Running compaction publication crash recovery tests..."
+
+    assert_compaction_guc_defaults
+    assert_compaction_gucs_superuser_only
+
+    create_compaction_crash_fixture compact_before
+    trigger_compaction_panic \
+        compact_before \
+        pg_textsearch.debug_panic_before_compaction_publish \
+        "debug crash before compaction publication"
+    assert_compaction_crash_recovery \
+        compact_before "{2,0,0,0,0,0,0,0}" 2 no
+
+    create_compaction_crash_fixture compact_after
+    trigger_compaction_panic \
+        compact_after \
+        pg_textsearch.debug_panic_after_compaction_publish \
+        "debug crash after compaction publication"
+    assert_compaction_crash_recovery \
+        compact_after "{0,1,0,0,0,0,0,0}" 1 yes
 }
 
 test_crash_recovery() {
@@ -294,14 +515,16 @@ test_empty_index_rebuild() {
     log "Phase 2: restart server"
     pg_ctl stop -D "${DATA_DIR}" -m fast >/dev/null 2>&1
     pg_ctl start -D "${DATA_DIR}" -l "${LOGFILE}" -w >/dev/null 2>&1
-    psql -p "${TEST_PORT}" -d "${TEST_DB}" -c "SELECT 1;" >/dev/null
+    psql -h "${TEST_HOST}" -p "${TEST_PORT}" -d "${TEST_DB}" \
+        -c "SELECT 1;" >/dev/null
 
     # Phase 3: first query against the empty index — drives
     # bootstrap. Empty-index branch should leave shared state
     # registered with total_docs=0.
     log "Phase 3: first query post-restart fires bootstrap"
     local count
-    count=$(psql -tA -p "${TEST_PORT}" -d "${TEST_DB}" -c "
+    count=$(psql -tA -h "${TEST_HOST}" -p "${TEST_PORT}" \
+        -d "${TEST_DB}" -c "
         SELECT count(*) FROM (
             SELECT id FROM empty_rebuild_test
             ORDER BY content <@> to_bm25query('alpha', 'empty_rebuild_idx')
@@ -315,9 +538,10 @@ test_empty_index_rebuild() {
     # insert should be queryable via the same backend's now-warm
     # local state.
     log "Phase 4: post-bootstrap insert + query"
-    psql -p "${TEST_PORT}" -d "${TEST_DB}" -c \
+    psql -h "${TEST_HOST}" -p "${TEST_PORT}" -d "${TEST_DB}" -c \
         "INSERT INTO empty_rebuild_test (content) VALUES ('alpha bravo charlie');" >/dev/null
-    count=$(psql -tA -p "${TEST_PORT}" -d "${TEST_DB}" -c "
+    count=$(psql -tA -h "${TEST_HOST}" -p "${TEST_PORT}" \
+        -d "${TEST_DB}" -c "
         SELECT count(*) FROM (
             SELECT id FROM empty_rebuild_test
             ORDER BY content <@> to_bm25query('alpha', 'empty_rebuild_idx')
@@ -342,6 +566,7 @@ main() {
     # Run the test
     setup_test_db
     test_empty_index_rebuild
+    test_compaction_publish_crash_recovery
     test_crash_recovery
 
     log "✅ All crash recovery tests passed!"
