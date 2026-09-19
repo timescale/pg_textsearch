@@ -33,6 +33,7 @@
 #include "segment/tombstone.h"
 
 #define TP_COMPACTION_MAINTENANCE_LOCK_SUBID 3
+#define TP_COMPACTION_PUBLICATION_LOCK_SUBID 4
 
 typedef struct TpSegmentEstimate
 {
@@ -197,6 +198,28 @@ tp_compaction_unlock(Relation index)
 			RelationGetRelid(index),
 			TP_COMPACTION_MAINTENANCE_LOCK_SUBID,
 			ExclusiveLock);
+}
+
+void
+tp_compaction_publication_lock(Relation index, LOCKMODE mode)
+{
+	Assert(mode == ShareLock || mode == ExclusiveLock);
+	LockDatabaseObject(
+			AccessMethodRelationId,
+			RelationGetRelid(index),
+			TP_COMPACTION_PUBLICATION_LOCK_SUBID,
+			mode);
+}
+
+void
+tp_compaction_publication_unlock(Relation index, LOCKMODE mode)
+{
+	Assert(mode == ShareLock || mode == ExclusiveLock);
+	UnlockDatabaseObject(
+			AccessMethodRelationId,
+			RelationGetRelid(index),
+			TP_COMPACTION_PUBLICATION_LOCK_SUBID,
+			mode);
 }
 
 static bool
@@ -1823,7 +1846,9 @@ tp_complete_compaction_publication(
 		bool				  defer_reclaim,
 		TpStatsRebasePolicy	  stats_policy)
 {
-	FullTransactionId merged_fxid;
+	FullTransactionId		merged_fxid;
+	TpCompactionPublication publication;
+	volatile bool			publication_locked = false;
 
 	output->publication_started = false;
 	PG_TRY();
@@ -1862,36 +1887,44 @@ tp_complete_compaction_publication(
 						RelationGetRelid(index));
 		}
 
-		for (;;)
+		if (!index_state->lock_held)
 		{
-			TpCompactionPublication publication;
+			/* Stabilize the spill-prepended prefix through publication. */
+			tp_compaction_publication_lock(index, ExclusiveLock);
+			publication_locked = true;
+		}
 
-			tp_prepare_compaction_publication(
-					index_state, index, snapshot, plan, &publication);
-			if (!index_state->lock_held)
-				tp_debug_compaction_pause(
-						tp_debug_compaction_pause_before_publish_ms,
-						"before-publish",
-						RelationGetRelid(index));
+		tp_prepare_compaction_publication(
+				index_state, index, snapshot, plan, &publication);
+		if (!index_state->lock_held)
+			tp_debug_compaction_pause(
+					tp_debug_compaction_pause_before_publish_ms,
+					"before-publish",
+					RelationGetRelid(index));
 
-			if (tp_publish_compaction_output(
-						index_state,
-						index,
-						plan,
-						output,
-						&publication,
-						stats_policy))
-				break;
+		if (!tp_publish_compaction_output(
+					index_state,
+					index,
+					plan,
+					output,
+					&publication,
+					stats_policy))
+			ereport(ERROR,
+					(errcode(ERRCODE_INTERNAL_ERROR),
+					 errmsg("compaction graph changed while publication was "
+							"serialized for index \"%s\"",
+							RelationGetRelationName(index))));
 
-			ereport(LOG,
-					(errmsg("pg_textsearch compaction publication retry for "
-							"index %u backend %d",
-							RelationGetRelid(index),
-							MyProcPid)));
+		if (publication_locked)
+		{
+			tp_compaction_publication_unlock(index, ExclusiveLock);
+			publication_locked = false;
 		}
 	}
 	PG_CATCH();
 	{
+		if (publication_locked)
+			tp_compaction_publication_unlock(index, ExclusiveLock);
 		if (!output->publication_started)
 			tp_discard_compaction_output(index, output);
 		PG_RE_THROW();

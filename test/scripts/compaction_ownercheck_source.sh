@@ -51,6 +51,14 @@ maintenance_unlock_body="$(
     sed -n '/^tp_compaction_unlock(Relation index)$/,/^}$/p' \
         "${COMPACTION_SOURCE}"
 )"
+publication_lock_body="$(
+    sed -n '/^tp_compaction_publication_lock(Relation index, LOCKMODE mode)$/,/^}$/p' \
+        "${COMPACTION_SOURCE}"
+)"
+publication_unlock_body="$(
+    sed -n '/^tp_compaction_publication_unlock(Relation index, LOCKMODE mode)$/,/^}$/p' \
+        "${COMPACTION_SOURCE}"
+)"
 if ! grep -Fq 'TP_COMPACTION_MAINTENANCE_LOCK_SUBID' \
         <<<"${maintenance_lock_body}" ||
    ! grep -Fq 'LockDatabaseObject' <<<"${maintenance_lock_body}" ||
@@ -59,13 +67,22 @@ if ! grep -Fq 'TP_COMPACTION_MAINTENANCE_LOCK_SUBID' \
     echo "maintenance must use its private object lock, not managed relation admission" >&2
     exit 1
 fi
+if ! grep -Fq 'TP_COMPACTION_PUBLICATION_LOCK_SUBID' \
+        <<<"${publication_lock_body}" ||
+   ! grep -Fq 'LockDatabaseObject' <<<"${publication_lock_body}" ||
+   ! grep -Fq 'UnlockDatabaseObject' <<<"${publication_unlock_body}"; then
+    echo "publication must use its private object lock" >&2
+    exit 1
+fi
 
 check_spill_policy_order() {
     local function_name="$1"
     local function_body
     local acquire_line
+    local publication_lock_line
     local spill_line
     local release_line
+    local publication_unlock_line
     local policy_line
 
     function_body="$(
@@ -73,6 +90,10 @@ check_spill_policy_order() {
     )"
     acquire_line="$(
         grep -n 'tp_acquire_index_lock(index_state, LW_EXCLUSIVE)' \
+            <<<"${function_body}" | head -1 | cut -d: -f1 || true
+    )"
+    publication_lock_line="$(
+        grep -n 'tp_compaction_publication_lock(.*ShareLock)' \
             <<<"${function_body}" | head -1 | cut -d: -f1 || true
     )"
     spill_line="$(
@@ -83,18 +104,25 @@ check_spill_policy_order() {
         grep -n 'tp_release_index_lock(index_state)' <<<"${function_body}" |
             head -1 | cut -d: -f1 || true
     )"
+    publication_unlock_line="$(
+        grep -n 'tp_compaction_publication_unlock(.*ShareLock)' \
+            <<<"${function_body}" | head -1 | cut -d: -f1 || true
+    )"
     policy_line="$(
         grep -n 'tp_apply_compaction_policy' <<<"${function_body}" |
             head -1 | cut -d: -f1 || true
     )"
 
-    if [[ -z "${acquire_line}" || -z "${spill_line}" ||
-          -z "${release_line}" || -z "${policy_line}" ||
+    if [[ -z "${publication_lock_line}" || -z "${acquire_line}" ||
+          -z "${spill_line}" || -z "${release_line}" ||
+          -z "${publication_unlock_line}" || -z "${policy_line}" ||
+          "${publication_lock_line}" -ge "${acquire_line}" ||
           "${acquire_line}" -ge "${spill_line}" ||
           "${spill_line}" -ge "${release_line}" ||
-          "${release_line}" -ge "${policy_line}" ]]; then
-        echo "${function_name} must spill under LW_EXCLUSIVE, release it, \
-then apply compaction policy" >&2
+          "${release_line}" -ge "${publication_unlock_line}" ||
+          "${publication_unlock_line}" -ge "${policy_line}" ]]; then
+        echo "${function_name} must hold publication ShareLock outside \
+LW_EXCLUSIVE, then release both before compaction policy" >&2
         exit 1
     fi
 }
@@ -171,7 +199,18 @@ inline_body="$(
     sed -n '/^tp_compact_inline(TpLocalIndexState \*index_state, Relation index_rel)$/,/^}$/p' \
         "${BUILD_SOURCE}"
 )"
-if grep -Fq 'tp_acquire_index_lock(index_state' <<<"${inline_body}"; then
+inline_maintenance_lock_line="$(
+    grep -n 'tp_compaction_lock(index_rel)' <<<"${inline_body}" |
+        head -1 | cut -d: -f1 || true
+)"
+inline_maintenance_unlock_line="$(
+    grep -n 'tp_compaction_unlock(index_rel)' <<<"${inline_body}" |
+        head -1 | cut -d: -f1 || true
+)"
+if [[ -z "${inline_maintenance_lock_line}" ||
+      -z "${inline_maintenance_unlock_line}" ||
+      "${inline_maintenance_lock_line}" -ge "${inline_maintenance_unlock_line}" ]] ||
+   grep -Fq 'tp_acquire_index_lock(index_state' <<<"${inline_body}"; then
     echo "inline compaction must leave phase-specific index locking to compaction" >&2
     exit 1
 fi
@@ -268,22 +307,34 @@ complete_publish_line="$(
     grep -n 'tp_publish_compaction_output' <<<"${complete_body}" |
         head -1 | cut -d: -f1 || true
 )"
+complete_publication_lock_line="$(
+    grep -n 'tp_compaction_publication_lock(index, ExclusiveLock)' \
+        <<<"${complete_body}" | head -1 | cut -d: -f1 || true
+)"
+complete_publication_unlock_line="$(
+    grep -n 'tp_compaction_publication_unlock(index, ExclusiveLock)' \
+        <<<"${complete_body}" | head -1 | cut -d: -f1 || true
+)"
 
 if [[ -z "${publish_output_validation_line}" ||
       -z "${publish_xid_line}" || -z "${publish_restamp_line}" ||
+      -z "${complete_publication_lock_line}" ||
       -z "${complete_prepare_line}" || -z "${complete_publish_line}" ||
+      -z "${complete_publication_unlock_line}" ||
       -z "${publish_acquire_line}" || -z "${publish_attach_line}" ||
       -z "${publish_finish_line}" || -z "${publish_started_line}" ||
       "${publish_output_validation_line}" -ge "${publish_xid_line}" ||
       "${publish_xid_line}" -ge "${publish_restamp_line}" ||
-      "${publish_restamp_line}" -ge "${complete_prepare_line}" ||
+      "${publish_restamp_line}" -ge "${complete_publication_lock_line}" ||
+      "${complete_publication_lock_line}" -ge "${complete_prepare_line}" ||
       "${complete_prepare_line}" -ge "${complete_publish_line}" ||
+      "${complete_publish_line}" -ge "${complete_publication_unlock_line}" ||
       "${publish_acquire_line}" -ge "${publish_attach_line}" ||
       "${publish_finish_line}" -ge "${publish_started_line}" ]] ||
    ! grep -Fq 'output->tombstones, merged_fxid' <<<"${complete_body}" ||
    ! grep -Fq 'tp_prepare_compaction_publication' <<<"${complete_body}" ||
    ! grep -Fq 'tp_publish_compaction_output' <<<"${complete_body}" ||
-   ! grep -Fq 'compaction publication retry' <<<"${complete_body}" ||
+   grep -Fq 'compaction publication retry' <<<"${complete_body}" ||
    ! grep -Fq 'GenericXLogAbort' <<<"${publish_body}" ||
    ! grep -Fq 'GenericXLogStart(index)' <<<"${publish_body}" ||
    ! grep -Fq 'tp_publication_identity_matches' <<<"${publish_body}" ||

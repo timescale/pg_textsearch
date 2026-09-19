@@ -65,6 +65,7 @@ PSQL=(
 "${PSQL[@]}" <<'SQL' >/dev/null
 CREATE EXTENSION pg_textsearch;
 SET pg_textsearch.memtable_pages_threshold = 0;
+SET pg_textsearch.bulk_load_threshold = 0;
 
 CREATE TABLE spill_docs (
     id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
@@ -187,6 +188,15 @@ if [ "${legacy_pending_after}" -le "${legacy_pending_before}" ]; then
     exit 1
 fi
 
+spill_memtable_before=$(
+    "${PSQL[@]}" -c \
+        "SELECT count(*) FROM bm25_memtable_chain('spill_docs_bm25');"
+)
+if [ "${spill_memtable_before}" -le 0 ]; then
+    echo "parallel spill VACUUM setup has no pending memtable pages" >&2
+    exit 1
+fi
+
 if ! spill_vacuum_output=$(
     "${PSQL[@]}" <<'SQL' 2>&1
 SET min_parallel_index_scan_size = 0;
@@ -201,6 +211,16 @@ if ! grep -q "launched 1 parallel vacuum worker" \
     <<<"${spill_vacuum_output}"; then
     echo "parallel spill VACUUM did not launch a worker" >&2
     echo "${spill_vacuum_output}" >&2
+    exit 1
+fi
+
+spill_memtable_after=$(
+    "${PSQL[@]}" -c \
+        "SELECT count(*) FROM bm25_memtable_chain('spill_docs_bm25');"
+)
+if [ "${spill_memtable_after}" -ne 0 ]; then
+    echo "parallel VACUUM did not spill ${spill_memtable_after} memtable pages" \
+        >&2
     exit 1
 fi
 
@@ -258,6 +278,15 @@ parallel_levels=$(
 )
 if [ "${parallel_levels}" != "{1,0,0,0,0,0,0,0}" ]; then
     echo "parallel VACUUM left unexpected levels ${parallel_levels}" >&2
+    exit 1
+fi
+
+parallel_summary=$(
+    "${PSQL[@]}" -c "SELECT bm25_summarize_index('docs_bm25');"
+)
+if ! grep -q "alive=0, dead=20000" <<<"${parallel_summary}"; then
+    echo "parallel VACUUM did not persist the all-dead alive bitmap" >&2
+    echo "${parallel_summary}" >&2
     exit 1
 fi
 

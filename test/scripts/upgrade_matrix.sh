@@ -407,8 +407,8 @@ run_v8_tombstone_compaction_upgrade() {
     fail "1.4.0/v8-tombstone: compaction did not publish: $(head -1 "$err_f")"
   [ "$post" = "$truth" ] ||
     fail "1.4.0/v8-tombstone: post-compaction recall $post != truth $truth"
-  [ "$after" -ge "$before" ] ||
-    fail "1.4.0/v8-tombstone: pending chain was severed ($before -> $after)"
+  [ "$after" -gt "$before" ] ||
+    fail "1.4.0/v8-tombstone: compaction did not add pending pages ($before -> $after)"
 }
 
 # ------------------------------------------------------------------ #

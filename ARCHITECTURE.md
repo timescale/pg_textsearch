@@ -280,8 +280,11 @@ that has already entered parallel mode, where assigning an XID is forbidden.
 In that context VACUUM still persists V5 alive-bit changes, including an
 all-zero bitmap, but leaves an empty segment physically linked for later
 serial compaction. A VACUUM-triggered spill remains published while its
-compaction policy is deferred. Affected legacy segments require
-`VACUUM (PARALLEL 0)` because they cannot remove dead TIDs without replacement.
+compaction policy is deferred. Affected legacy segments use split replacement:
+VACUUM first publishes the replacement without reclaiming the old pages, then
+samples the reclaim horizon after unpublication and attaches those pages to the
+pending-free chain. This avoids assigning an XID in parallel mode while
+preserving standby-safe reuse.
 
 A handled error before publication returns every explicitly tracked output and
 tombstone allocation to the FSM without freeing selected source pages. A

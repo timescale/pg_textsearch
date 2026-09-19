@@ -452,6 +452,8 @@ tp_spill_memtable_if_needed(
 		return;
 
 	tp_debug_gate_spill_threshold_check(index_state);
+	/* Keep spill publication outside compaction's prepare/publish window. */
+	tp_compaction_publication_lock(index, ShareLock);
 	tp_acquire_index_lock(index_state, LW_EXCLUSIVE);
 	PG_TRY();
 	{
@@ -463,6 +465,7 @@ tp_spill_memtable_if_needed(
 	{
 		if (index_state->lock_held)
 			tp_release_index_lock(index_state);
+		tp_compaction_publication_unlock(index, ShareLock);
 	}
 	PG_END_TRY();
 
@@ -649,6 +652,8 @@ tp_spill_memtable(PG_FUNCTION_ARGS)
 				 errmsg("could not get index state for \"%s\"", index_name)));
 	}
 
+	/* Keep spill publication outside compaction's prepare/publish window. */
+	tp_compaction_publication_lock(index_rel, ShareLock);
 	tp_acquire_index_lock(index_state, LW_EXCLUSIVE);
 	PG_TRY();
 	{
@@ -664,6 +669,7 @@ tp_spill_memtable(PG_FUNCTION_ARGS)
 	{
 		if (index_state->lock_held)
 			tp_release_index_lock(index_state);
+		tp_compaction_publication_unlock(index_rel, ShareLock);
 	}
 	PG_END_TRY();
 

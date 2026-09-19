@@ -38,6 +38,8 @@ extern uint64 tp_max_segment_size_bytes(void);
 
 extern void tp_compaction_lock(Relation index);
 extern void tp_compaction_unlock(Relation index);
+extern void tp_compaction_publication_lock(Relation index, LOCKMODE mode);
+extern void tp_compaction_publication_unlock(Relation index, LOCKMODE mode);
 
 /*
  * Report whether any level holds at least segments_per_level segments.

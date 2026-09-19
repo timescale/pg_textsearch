@@ -567,6 +567,38 @@ wait_for_spill_queue_or_completion() {
     fail "spill neither queued nor completed within 3 seconds"
 }
 
+wait_for_publication_barrier_waiter() {
+    local operation_pid=$1
+    local backend=$2
+    local oid=$3
+    local deadline=$((SECONDS + 3))
+    local blocked
+
+    while ((SECONDS < deadline)); do
+        blocked=$(sql -c "
+            SELECT EXISTS (
+                SELECT 1
+                  FROM pg_locks
+                 WHERE pid = ${backend}
+                   AND locktype = 'object'
+                   AND classid = 'pg_am'::regclass
+                   AND objid = ${oid}
+                   AND objsubid = 4
+                   AND mode = 'ShareLock'
+                   AND NOT granted
+            );" 2>/dev/null || true)
+        if [ "${blocked}" = "t" ]; then
+            log "Observed spill backend ${backend} queued on publication barrier"
+            return
+        fi
+        kill -0 "${operation_pid}" 2>/dev/null ||
+            fail "spill completed without waiting on publication barrier"
+        sleep 0.05
+    done
+
+    fail "spill did not queue on publication barrier within 3 seconds"
+}
+
 test_scan_progress() {
     local compactor_output="${CLIENT_DIR}/scan_compactor.log"
     local scan_output="${CLIENT_DIR}/scan_reader.log"
@@ -863,18 +895,19 @@ test_different_index_overlap() {
     assert_all_documents parallel_b_docs parallel_b_idx parallelbcase
 }
 
-test_publication_preparation_retry() {
+test_publication_barrier_progress() {
     local compactor_output="${CLIENT_DIR}/publication_compactor.log"
     local first_spill_output="${CLIENT_DIR}/publication_first_spill.log"
     local second_spill_output="${CLIENT_DIR}/publication_second_spill.log"
     local compactor_pid
     local spiller_pid
+    local spiller_backend
     local backend
     local oid
     local retry_marker
     local retry_count
 
-    log "Case: publication retries after a spill races prepared identity..."
+    log "Case: publication barrier prevents spill identity races..."
     oid=$(index_oid publication_idx)
     start_compaction_with_settings \
         pgts-publication-compactor publication_idx \
@@ -897,21 +930,26 @@ test_publication_preparation_retry() {
 
     wait_for_marker before-publish "${oid}" "${backend}"
     start_sql pgts-publication-second-spill "
+        SELECT pg_sleep(0.5);
         INSERT INTO publication_docs(body)
         SELECT 'common publicationcase second prefix ' || gs
           FROM generate_series(1, 7) gs;
         SELECT bm25_spill_index('publication_idx');" "${second_spill_output}"
     spiller_pid=${STARTED_PID}
-    require_completion_during_pause \
-        "${spiller_pid}" "${compactor_pid}" "second publication spill" \
-        "${second_spill_output}" before-publish "${oid}" "${backend}"
+    spiller_backend=$(backend_pid pgts-publication-second-spill)
+    wait_for_publication_barrier_waiter \
+        "${spiller_pid}" "${spiller_backend}" "${oid}"
+    assert_still_paused \
+        before-publish "${oid}" "${backend}" "publication barrier spill"
 
     wait_success "${compactor_pid}" 15 \
         "publication compactor" "${compactor_output}"
+    wait_success "${spiller_pid}" 10 \
+        "second publication spill" "${second_spill_output}"
     retry_marker="pg_textsearch compaction publication retry for index ${oid} backend ${backend}"
     retry_count=$(grep -Fc "${retry_marker}" "${LOGFILE}" || true)
-    [ "${retry_count}" = "1" ] ||
-        fail "publication retried ${retry_count} times after one identity race"
+    [ "${retry_count}" = "0" ] ||
+        fail "publication retried ${retry_count} times despite its barrier"
     assert_graph publication_idx "{2,1,0,0,0,0,0,0}"
     assert_all_documents \
         publication_docs publication_idx publicationcase
@@ -1070,7 +1108,7 @@ main() {
     test_spill_prefix_progress
     test_same_index_serialization
     test_different_index_overlap
-    test_publication_preparation_retry
+    test_publication_barrier_progress
     test_cancel_before_publish
     test_partial_allocation_cancellation
     log "All deterministic non-blocking compaction cases passed"

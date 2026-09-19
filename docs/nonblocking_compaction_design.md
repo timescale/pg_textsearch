@@ -22,10 +22,12 @@ The implemented design addresses the two problems independently:
    private per-index heavyweight object lock.
 4. Split compaction into short selection, long unlocked build, and short
    exclusive publication phases.
-5. Preserved L0 segments published by concurrent spills and attached displaced
+5. Serialized spill and compaction publication with a short private object-lock
+   barrier, avoiding optimistic publication retries under sustained spills.
+6. Preserved L0 segments published by concurrent spills and attached displaced
    source pages to the existing standby-safe deferred-free chain in the same
    WAL-logged publication.
-6. Snapshot every segment root block while holding the metapage buffer lock, so
+7. Snapshot every segment root block while holding the metapage buffer lock, so
    primary and standby readers use one complete old or new graph even when WAL
    replay changes a segment link.
 
@@ -337,16 +339,18 @@ turning that work into reader exclusion.
 
 ### Phase 4: prepare and validate publication
 
-Compaction first takes `LW_SHARED`, reads the current metapage, and discovers
-any L0 prefix prepended since phase 1. It traverses and validates that prefix
-outside reader exclusion, recording the exact predecessor page and current
-graph identity. It then releases the shared lock and requests fair
-`LW_EXCLUSIVE`.
+Spills acquire a private publication object lock in `ShareLock` before their
+per-index `LW_EXCLUSIVE` section. Compaction acquires the same object lock in
+`ExclusiveLock` after its unlocked build. Heavyweight lock admission lets
+already-running spills finish and prevents later spills from entering the
+prepare/publish gap.
 
-After exclusive acquisition, validation compares the current metapage against
-the prepared identity. If another spill won the race, compaction releases the
-lock and repeats prefix preparation. It never walks an unbounded concurrent
-prefix while holding `LW_EXCLUSIVE`.
+With the publication barrier held, compaction takes `LW_SHARED`, reads the
+current metapage, and discovers any L0 prefix prepended since phase 1. It
+traverses and validates that prefix outside reader exclusion, recording the
+exact predecessor page and current graph identity. It then releases the shared
+lock and requests fair `LW_EXCLUSIVE`. Ordinary scans and inserts do not use
+the publication barrier and continue during prefix validation.
 
 Shared preparation validates:
 
@@ -360,6 +364,9 @@ Complete prepared-output validation already ran before XID assignment,
 restamping, and reader exclusion. After exclusive acquisition, publication
 only compares fixed-size metapage identity fields and the prepared predecessor
 link, then performs constant-time detached-tail checks before attachment.
+Because no spill can publish while the barrier is held, an identity mismatch
+fails closed as an implementation error instead of entering an unbounded retry
+loop.
 
 Concurrent memtable head/tail changes and a changed deferred-free head are
 expected and do not invalidate the plan. Current metapage values, not the
@@ -389,9 +396,10 @@ The final record includes the metapage, the optional prepared L0 predecessor
 page, and the detached tombstone tail. Output root links are finalized and
 WAL-logged while the output is still unreachable.
 
-The per-index and maintenance locks are released immediately after
-publication. A caller that intentionally runs another pass checks interrupts
-and reacquires maintenance before reselecting.
+The per-index and publication locks are released immediately after
+publication. Maintenance remains held through the end of that pass. A caller
+that intentionally runs another pass checks interrupts and reacquires
+maintenance before reselecting.
 
 ## Reader graph snapshots and reclaim behavior
 

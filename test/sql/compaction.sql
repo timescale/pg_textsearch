@@ -31,6 +31,7 @@ CREATE TABLE compaction_inline (id serial PRIMARY KEY, body text);
 CREATE INDEX compaction_inline_idx ON compaction_inline
     USING bm25(body) WITH (text_config = 'english');
 SET pg_textsearch.segments_per_level = 2;
+BEGIN;
 DO $$
 DECLARE
     n integer;
@@ -56,6 +57,7 @@ SELECT NOT EXISTS (
              AND mode = 'ExclusiveLock'
              AND granted
        ) AS inline_policy_releases_maintenance_lock;
+COMMIT;
 DROP TABLE compaction_inline CASCADE;
 SET pg_textsearch.segments_per_level = 64;
 
