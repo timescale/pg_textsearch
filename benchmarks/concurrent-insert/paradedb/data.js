@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789802865313,
+  "lastUpdate": 1789889175550,
   "repoUrl": "https://github.com/timescale/pg_textsearch",
   "entries": {
     "Concurrent INSERT (ParadeDB)": [
@@ -10420,6 +10420,68 @@ window.BENCHMARK_DATA = {
           {
             "name": "ParadeDB INSERT latency (c=8)",
             "value": 0.517,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tjgreen@gmail.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "a991f24d7254c7ee2da52353521b6a9283748f86",
+          "message": "Add benchmark for mixed BM25 queries and updates (#494)\n\n## Summary\n\n- add a reusable pgbench workload with 32 continuous top-10 BM25 query\n  clients and one rate-limited indexed updater;\n- capture read-only and mixed throughput, latency, per-transaction logs,\nand\n  sampled PostgreSQL wait events;\n- make runs isolated, signal-safe, credential-safe, and covered by\nlifecycle\n  tests.\n\n## Results\n\nTested on PostgreSQL 18.6 with the locally available 8,841,823-row MS\nMARCO\npassage corpus. Absolute QPS is not comparable with PlanetScale's\n150M-document environment; the relevant result is writer progress under\ncontinuous ranked scans.\n\n| Version | Window | Read-only QPS | Mixed reader QPS | Completed\nupdates |\n|---|---:|---:|---:|---:|\n| 1.4.0 | 120 s | 2,285.70 | 2,268.98 | 1,875 |\n| 1.5.0-dev | 120 s | 2,316.42 | 2,291.53 | 1,884 |\n| 1.5.0 with #472 | 60 s | 2,292.90 | 2,137.53 | 13,211 |\n\nBoth 1.4.0 and current 1.5.0-dev fall to roughly 16 completed\nupdates/second\nbecause continuous readers can starve the exclusive spill/compaction\npath.\n#472 removes that starvation and completes about 220 updates/second in\nits\nshorter implementation run while maintaining reader throughput.\n\n## Running\n\n```bash\nPGPORT=5433 \\\nTABLE=msmarco_passages \\\nID_COLUMN=passage_id \\\nTEXT_COLUMN=passage_text \\\nINDEX=msmarco_bm25_idx \\\nQUERY_TABLE=msmarco_queries \\\nQUERY_COLUMN=query_text \\\n./benchmarks/datasets/msmarco/mixed-update-query/run.sh\n```\n\nThe writer changes indexed text by toggling a trailing token, so run the\nbenchmark against a disposable database clone.\n\n---------\n\nCo-authored-by: Todd J. Green <1738591+tjgreen42@users.noreply.github.com>",
+          "timestamp": "2026-09-17T23:05:22Z",
+          "url": "https://github.com/timescale/pg_textsearch/commit/a991f24d7254c7ee2da52353521b6a9283748f86"
+        },
+        "date": 1789889151302,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "ParadeDB INSERT TPS (c=1)",
+            "value": 2938.982353,
+            "unit": "tps"
+          },
+          {
+            "name": "ParadeDB INSERT latency (c=1)",
+            "value": 0.34,
+            "unit": "ms"
+          },
+          {
+            "name": "ParadeDB INSERT TPS (c=2)",
+            "value": 5584.901542,
+            "unit": "tps"
+          },
+          {
+            "name": "ParadeDB INSERT latency (c=2)",
+            "value": 0.358,
+            "unit": "ms"
+          },
+          {
+            "name": "ParadeDB INSERT TPS (c=4)",
+            "value": 10024.662622,
+            "unit": "tps"
+          },
+          {
+            "name": "ParadeDB INSERT latency (c=4)",
+            "value": 0.399,
+            "unit": "ms"
+          },
+          {
+            "name": "ParadeDB INSERT TPS (c=8)",
+            "value": 16483.034283,
+            "unit": "tps"
+          },
+          {
+            "name": "ParadeDB INSERT latency (c=8)",
+            "value": 0.485,
             "unit": "ms"
           }
         ]
