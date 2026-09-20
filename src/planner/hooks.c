@@ -45,6 +45,7 @@
 #include <utils/syscache.h>
 
 #include "compat.h"
+#include "index/limit.h"
 #include "planner/hooks.h"
 #include "scoring/bm25.h"
 #include "types/query.h"
@@ -619,7 +620,7 @@ create_resolved_tpquery_const(Const *original, Oid index_oid)
 			original->consttype,
 			original->consttypmod,
 			original->constcollid,
-			VARSIZE(new_tpquery),
+			-1, /* bm25query is variable-length, including private hints */
 			PointerGetDatum(new_tpquery),
 			false,
 			false);
@@ -1926,6 +1927,122 @@ validate_explicit_index_usage(Plan *plan, BM25OidCache *oids)
 #define TP_PLANNER_HOOK_PASS_EXTRA
 #endif
 
+static bool
+tp_limit_const_value(Node *node, int64 *value)
+{
+	Const *c;
+
+	if (node == NULL || !IsA(node, Const))
+		return false;
+	c = (Const *)node;
+	if (c->constisnull || c->consttype != INT8OID)
+		return false;
+	*value = DatumGetInt64(c->constvalue);
+	return true;
+}
+
+static bool
+tp_limit_k(Limit *limit, int64 *k)
+{
+	int64 count;
+	int64 offset = 0;
+
+	if (!tp_limit_const_value(limit->limitCount, &count) || count <= 0)
+		return false;
+	if (limit->limitOffset != NULL &&
+		!tp_limit_const_value(limit->limitOffset, &offset))
+		return false;
+	if (offset < 0)
+		return false;
+	if (count >= INT_MAX - offset)
+		return false;
+	*k = count + offset;
+	return true;
+}
+
+static void
+tp_attach_seed_hint(
+		IndexScan *scan, Limit *limit, List *rtable, BM25OidCache *oids)
+{
+	ListCell	  *lc;
+	int64		   k;
+	RangeTblEntry *rte;
+	Relation	   heap;
+	double		   selectivity = 0.0;
+
+	if (list_length(scan->indexorderby) != 1 || scan->indexqual != NIL ||
+		!tp_limit_k(limit, &k) || scan->scan.scanrelid <= 0)
+		return;
+	if (get_rel_relam(scan->indexid) != oids->bm25_am_oid)
+		return;
+	rte = rt_fetch(scan->scan.scanrelid, rtable);
+	if (rte == NULL || !OidIsValid(rte->relid))
+		return;
+	heap = table_open(rte->relid, AccessShareLock);
+	if (scan->scan.plan.qual != NIL && heap->rd_rel->reltuples > 0)
+		selectivity = scan->scan.plan.plan_rows / heap->rd_rel->reltuples;
+	table_close(heap, AccessShareLock);
+
+	foreach (lc, scan->indexorderby)
+	{
+		Node *expr = (Node *)lfirst(lc);
+		if (IsA(expr, OpExpr) && list_length(((OpExpr *)expr)->args) == 2)
+		{
+			Node *right = lsecond(((OpExpr *)expr)->args);
+			if (IsA(right, Const) &&
+				((Const *)right)->consttype == oids->tpquery_type_oid &&
+				!((Const *)right)->constisnull)
+			{
+				Const	*copy  = copyObject((Const *)right);
+				TpQuery *query = (TpQuery *)DatumGetPointer(copy->constvalue);
+				TpQuery *hinted =
+						tpquery_copy_with_seed_hint(query, k, selectivity);
+				/* Copy the entire variable-length datum, including the hint.
+				 */
+				copy->constlen		   = -1;
+				copy->constvalue	   = PointerGetDatum(hinted);
+				((OpExpr *)expr)->args = list_delete_last(
+						((OpExpr *)expr)->args);
+				((OpExpr *)expr)->args = lappend(((OpExpr *)expr)->args, copy);
+			}
+		}
+	}
+}
+
+static void
+tp_attach_seed_hints(Plan *plan, List *rtable, BM25OidCache *oids)
+{
+	ListCell *lc;
+	if (plan == NULL)
+		return;
+	if (IsA(plan, Limit) && plan->lefttree != NULL &&
+		IsA(plan->lefttree, IndexScan))
+		tp_attach_seed_hint(
+				(IndexScan *)plan->lefttree, (Limit *)plan, rtable, oids);
+	tp_attach_seed_hints(plan->lefttree, rtable, oids);
+	tp_attach_seed_hints(plan->righttree, rtable, oids);
+	switch (nodeTag(plan))
+	{
+	case T_Append:
+		foreach (lc, ((Append *)plan)->appendplans)
+			tp_attach_seed_hints(lfirst(lc), rtable, oids);
+		break;
+	case T_MergeAppend:
+		foreach (lc, ((MergeAppend *)plan)->mergeplans)
+			tp_attach_seed_hints(lfirst(lc), rtable, oids);
+		break;
+	case T_SubqueryScan:
+		tp_attach_seed_hints(((SubqueryScan *)plan)->subplan, rtable, oids);
+		break;
+	case T_CustomScan:
+		foreach (lc, ((CustomScan *)plan)->custom_plans)
+			tp_attach_seed_hints(lfirst(lc), rtable, oids);
+		break;
+	default:
+		break;
+	}
+}
+
 static PlannedStmt *
 tp_planner_hook(
 		Query					 *parse,
@@ -2028,6 +2145,21 @@ tp_planner_hook(
 		validate_explicit_index_usage(result->planTree, &oid_cache);
 
 		replace_scores_in_plan(result->planTree, &oid_cache);
+	}
+
+	/*
+	 * Inspect the actual plan, including separately stored SubPlans.
+	 * A saved query can be planned after another statement has reset the
+	 * post-parse flag, so that flag cannot gate hint attachment.
+	 */
+	if (result->planTree != NULL)
+	{
+		ListCell *lc;
+
+		tp_attach_seed_hints(result->planTree, result->rtable, &oid_cache);
+		foreach (lc, result->subplans)
+			tp_attach_seed_hints(
+					(Plan *)lfirst(lc), result->rtable, &oid_cache);
 	}
 
 	return result;

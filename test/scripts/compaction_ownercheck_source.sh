@@ -15,7 +15,11 @@ open_body="$(
         "${SOURCE_FILE}"
 )"
 
-mapfile -t ownercheck_lines < <(
+# macOS ships Bash 3.2, which does not provide mapfile.
+ownercheck_lines=()
+while IFS= read -r line; do
+    ownercheck_lines+=("${line}")
+done < <(
     grep -n "object_ownercheck(RelationRelationId, indexoid, GetUserId())" \
         <<<"${open_body}" |
         cut -d: -f1

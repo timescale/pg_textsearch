@@ -11,6 +11,7 @@
 #include <access/sdir.h>
 #include <access/table.h>
 #include <catalog/namespace.h>
+#include <fmgr.h>
 #include <pgstat.h>
 #include <storage/bufmgr.h>
 #include <utils/builtins.h>
@@ -44,6 +45,32 @@ float8
 tp_get_cached_score(void)
 {
 	return tp_cached_score;
+}
+
+/*
+ * Session-local count of BM25 scoring passes.
+ *
+ * Scan depth is invisible in query results -- the executor's Filter,
+ * Limit and backoff re-drives produce the exact top-k regardless of how
+ * deep the internal top-K was seeded -- so this counter is the only
+ * regression-stable signal that a scan was seeded for its own filter
+ * rather than someone else's (issue #435).  A well-seeded scan costs
+ * exactly one pass; each backoff re-drive adds another.
+ */
+static uint64 tp_scoring_passes = 0;
+
+PG_FUNCTION_INFO_V1(tp_debug_scoring_passes);
+
+Datum
+tp_debug_scoring_passes(PG_FUNCTION_ARGS)
+{
+	bool   reset  = PG_GETARG_BOOL(0);
+	uint64 result = tp_scoring_passes;
+
+	if (reset)
+		tp_scoring_passes = 0;
+
+	PG_RETURN_INT64((int64)result);
 }
 
 /* Track CTIDs already emitted by this scan. */
@@ -146,9 +173,11 @@ tp_rescan_process_orderby(
 		/* Check for <@> operator strategy */
 		if (orderby->sk_strategy == 1) /* Strategy 1: <@> operator */
 		{
-			Datum query_datum = orderby->sk_argument;
-			char *query_cstr;
-			Oid	  query_index_oid = InvalidOid;
+			Datum  query_datum = orderby->sk_argument;
+			char  *query_cstr;
+			Oid	   query_index_oid = InvalidOid;
+			int64  hint_k;
+			double hint_selectivity;
 
 			/*
 			 * Use sk_subtype to determine the argument type.
@@ -168,6 +197,9 @@ tp_rescan_process_orderby(
 
 				query_cstr		= pstrdup(get_tpquery_text(query));
 				query_index_oid = get_tpquery_index_oid(query);
+				if (tpquery_get_seed_hint(query, &hint_k, &hint_selectivity))
+					so->limit = tp_seed_limit_for_filter(
+							(int)hint_k, hint_selectivity);
 
 				/* Validate index OID if provided in query */
 				if (tpquery_has_index(query))
@@ -285,11 +317,7 @@ tp_rescan(
 	if (!so)
 		return;
 
-	/* Retrieve query LIMIT, if available */
-	{
-		int query_limit = tp_get_query_limit(scan->indexRelation);
-		so->limit		= (query_limit > 0) ? query_limit : -1;
-	}
+	so->limit = -1;
 
 	/* Reset scan state */
 	if (so)
@@ -394,6 +422,8 @@ tp_execute_scoring_query(IndexScanDesc scan)
 
 	if (!so || !so->query_text)
 		return false;
+
+	tp_scoring_passes++;
 
 	Assert(so->scan_context != NULL);
 

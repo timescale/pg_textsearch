@@ -21,6 +21,8 @@
 #include <fmgr.h>
 #include <lib/stringinfo.h>
 #include <libpq/pqformat.h>
+#include <limits.h>
+#include <math.h>
 #include <nodes/pg_list.h>
 #include <nodes/value.h>
 #include <tsearch/ts_type.h>
@@ -326,7 +328,8 @@ tpquery_send(PG_FUNCTION_ARGS)
 
 	pq_begintypsend(&buf);
 	pq_sendint8(&buf, TPQUERY_VERSION);
-	pq_sendint8(&buf, tpquery->flags);
+	/* Planner-only hints never cross the type's binary I/O boundary. */
+	pq_sendint8(&buf, tpquery->flags & TPQUERY_FLAG_EXPLICIT_INDEX);
 	pq_sendint32(&buf, tpquery->index_oid);
 	pq_sendint32(&buf, tpquery->query_text_len);
 
@@ -1269,6 +1272,49 @@ tpquery_is_explicit_index(TpQuery *tpquery)
 	if (tpquery->version < 2)
 		return false;
 	return (tpquery->flags & TPQUERY_FLAG_EXPLICIT_INDEX) != 0;
+}
+
+/*
+ * Make a private planner copy carrying scan-local LIMIT information.  The
+ * hint is an optional trailer after the existing query string, so values
+ * produced by older versions remain valid and their textual/binary form is
+ * unchanged.  It is deliberately ignored by output, equality, and scoring.
+ */
+TpQuery *
+tpquery_copy_with_seed_hint(TpQuery *tpquery, int64 k, double selectivity)
+{
+	Size			old_size = VARSIZE_ANY(tpquery);
+	Size			new_size = old_size + sizeof(TpQuerySeedHint);
+	TpQuerySeedHint hint;
+	TpQuery		   *copy = (TpQuery *)palloc(new_size);
+
+	memcpy(copy, tpquery, old_size);
+	SET_VARSIZE(copy, new_size);
+	copy->flags |= TPQUERY_FLAG_SEED_HINT;
+	hint.magic		 = TPQUERY_SEED_HINT_MAGIC;
+	hint.k			 = k;
+	hint.selectivity = selectivity;
+	memcpy((char *)copy + old_size, &hint, sizeof(hint));
+	return copy;
+}
+
+bool
+tpquery_get_seed_hint(TpQuery *tpquery, int64 *k, double *selectivity)
+{
+	Size base = offsetof(TpQuery, data) + tpquery->query_text_len + 1;
+	TpQuerySeedHint hint;
+
+	if ((tpquery->flags & TPQUERY_FLAG_SEED_HINT) == 0 ||
+		VARSIZE_ANY(tpquery) < base + sizeof(hint))
+		return false;
+
+	memcpy(&hint, (char *)tpquery + base, sizeof(hint));
+	if (hint.magic != TPQUERY_SEED_HINT_MAGIC || hint.k <= 0 ||
+		hint.k > INT_MAX || !isfinite(hint.selectivity))
+		return false;
+	*k			 = hint.k;
+	*selectivity = hint.selectivity;
+	return true;
 }
 
 /*

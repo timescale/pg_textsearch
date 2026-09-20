@@ -119,7 +119,7 @@ bool tp_compress_segments = true;
 
 /*
  * Selectivity-seeded top-K for filtered BM25 search.
- * tp_filtered_seed gates the optimization in tp_costestimate;
+ * tp_filtered_seed gates expansion when the scan reads its query hint;
  * tp_filtered_seed_margin scales the seed
  * (ceil(margin * user_limit / filter_selectivity)).
  */
