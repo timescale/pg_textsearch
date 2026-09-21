@@ -107,20 +107,12 @@ typedef struct PlanningContext
 static PlanningContext *current_planning_context = NULL;
 
 /*
- * Flag to track if the current query has any BM25 operators.
- * Set during post_parse_analyze, used in planner_hook to skip expensive
- * plan tree walks for non-BM25 queries.
- */
-static bool query_has_bm25_operators = false;
-
-/*
  * Context for query tree mutation
  */
 typedef struct ResolveIndexContext
 {
 	Query		 *query;
 	BM25OidCache *oid_cache;
-	bool		  found_bm25_operator; /* Set to true if any BM25 op found */
 } ResolveIndexContext;
 
 /*
@@ -665,8 +657,6 @@ transform_tpquery_opexpr(OpExpr *opexpr, ResolveIndexContext *context)
 		opexpr->opno != oids->textarray_tpquery_operator_oid)
 		return NULL;
 
-	/* Mark that we found a BM25 operator for later optimization */
-	context->found_bm25_operator = true;
 	if (list_length(opexpr->args) != 2)
 		return NULL;
 
@@ -807,8 +797,6 @@ transform_text_text_opexpr(OpExpr *opexpr, ResolveIndexContext *context)
 	if (opexpr->opno != oids->text_text_operator_oid && !is_text_array_op)
 		return NULL;
 
-	/* Mark that we found a BM25 operator for later optimization */
-	context->found_bm25_operator = true;
 	if (list_length(opexpr->args) != 2)
 		return NULL;
 
@@ -980,9 +968,8 @@ resolve_indexes_in_query(Query *query)
 	if (!get_bm25_oids(&oid_cache))
 		return;
 
-	context.query				= query;
-	context.oid_cache			= &oid_cache;
-	context.found_bm25_operator = false;
+	context.query	  = query;
+	context.oid_cache = &oid_cache;
 
 	/* Process target list */
 	resolve_indexes_in_targetlist(query, &context);
@@ -998,13 +985,6 @@ resolve_indexes_in_query(Query *query)
 
 	/* Process subqueries */
 	resolve_indexes_in_subqueries(query);
-
-	/*
-	 * Track if this query has BM25 operators for the planner hook.
-	 * This avoids expensive plan tree walks for non-BM25 queries.
-	 */
-	if (context.found_bm25_operator)
-		query_has_bm25_operators = true;
 }
 
 /*
@@ -1021,9 +1001,6 @@ tp_post_parse_analyze_hook(
 		Query				   *query,
 		TP_JUMBLE_STATE *jstate pg_attribute_unused())
 {
-	/* Reset flag for this query - will be set if BM25 operators found */
-	query_has_bm25_operators = false;
-
 	/*
 	 * Skip index resolution if we're not in a valid transaction state.
 	 * This happens when a statement is parsed after an error in a
@@ -1479,6 +1456,7 @@ typedef struct CollectExplicitIndexContext
 {
 	BM25OidCache *oid_cache;
 	List		 *requirements; /* List of ExplicitIndexRequirement */
+	bool		  has_bm25_operator;
 } CollectExplicitIndexContext;
 
 /*
@@ -1493,7 +1471,14 @@ collect_explicit_indexes_walker(
 
 	if (IsA(node, OpExpr))
 	{
-		OpExpr *opexpr = (OpExpr *)node;
+		OpExpr		 *opexpr = (OpExpr *)node;
+		BM25OidCache *oids	 = context->oid_cache;
+
+		if (opexpr->opno == oids->text_tpquery_operator_oid ||
+			opexpr->opno == oids->textarray_tpquery_operator_oid ||
+			opexpr->opno == oids->text_text_operator_oid ||
+			opexpr->opno == oids->textarray_text_operator_oid)
+			context->has_bm25_operator = true;
 
 		if ((opexpr->opno == context->oid_cache->text_tpquery_operator_oid ||
 			 opexpr->opno ==
@@ -1577,15 +1562,18 @@ collect_explicit_indexes_walker(
  * expressions with explicit index names, which is rare.
  */
 static List *
-collect_explicit_index_requirements(Query *parse, BM25OidCache *oid_cache)
+collect_explicit_index_requirements(
+		Query *parse, BM25OidCache *oid_cache, bool *has_bm25_operator)
 {
 	CollectExplicitIndexContext context;
 
-	context.oid_cache	 = oid_cache;
-	context.requirements = NIL;
+	context.oid_cache		  = oid_cache;
+	context.requirements	  = NIL;
+	context.has_bm25_operator = false;
 
 	/* Walk the entire query tree */
 	query_tree_walker(parse, collect_explicit_indexes_walker, &context, 0);
+	*has_bm25_operator = context.has_bm25_operator;
 
 	return context.requirements;
 }
@@ -1938,6 +1926,7 @@ tp_planner_hook(
 	PlanningContext	 planning_context;
 	PlanningContext *saved_context;
 	List			*explicit_indexes;
+	bool			 query_has_bm25_operators;
 
 	/* Get BM25 OIDs - if extension not installed, just pass through */
 	if (!get_bm25_oids(&oid_cache))
@@ -1965,7 +1954,8 @@ tp_planner_hook(
 	 * without explicit index names, this avoids any overhead in the
 	 * set_rel_pathlist_hook.
 	 */
-	explicit_indexes = collect_explicit_index_requirements(parse, &oid_cache);
+	explicit_indexes = collect_explicit_index_requirements(
+			parse, &oid_cache, &query_has_bm25_operators);
 
 	if (explicit_indexes != NIL)
 	{
@@ -2012,7 +2002,7 @@ tp_planner_hook(
 	 * Post-process the plan if it may have BM25 index scans.
 	 *
 	 * Performance optimization: Only check for BM25 IndexScans if the
-	 * post_parse_analyze hook found BM25 operators. This avoids expensive
+	 * current query contains BM25 operators. This avoids expensive
 	 * syscache lookups in plan_has_bm25_indexscan() for non-BM25 queries.
 	 */
 	if (query_has_bm25_operators && result->planTree != NULL &&
