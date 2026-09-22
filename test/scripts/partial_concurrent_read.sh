@@ -114,8 +114,22 @@ writer() {
 merger() {
     local tag=$1
     for i in $(seq 1 200); do
-        $PSQL -c "SELECT bm25_spill_index('docs_de_bm25');
-                  SELECT bm25_force_merge('docs_de_bm25')" \
+        $PSQL -c "DO \$merge\$
+                  DECLARE
+                      spilled bigint;
+                  BEGIN
+                      spilled := bm25_spill_index('docs_de_bm25');
+                      BEGIN
+                          PERFORM bm25_force_merge('docs_de_bm25');
+                          IF spilled > 0 THEN
+                              RAISE NOTICE
+                                  'concurrent spill and force merge completed';
+                          END IF;
+                      EXCEPTION WHEN lock_not_available THEN
+                          NULL;
+                      END;
+                  END
+                  \$merge\$" \
           >>"${ERR_DIR}/merger_${tag}.log" 2>&1 || return 30
     done
 }
@@ -162,6 +176,9 @@ run_test() {
         warn "Client logs:"
         tail -n 20 "${ERR_DIR}"/*.log 2>/dev/null || true
         error "TEST FAILED: a concurrent client exited with an error"
+    fi
+    if ! grep -Rq "concurrent spill and force merge completed" "${ERR_DIR}"; then
+        error "TEST FAILED: no concurrent spill and force merge completed"
     fi
 
     log "TEST PASSED: partial-index standalone reads survived concurrent spill/merge"
