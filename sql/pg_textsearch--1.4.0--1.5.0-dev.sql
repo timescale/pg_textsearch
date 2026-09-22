@@ -83,5 +83,21 @@ $$;
 COMMENT ON FUNCTION @extschema@.bm25_needs_compaction(regclass) IS
     'Report whether any level holds at least segments_per_level segments. Advisory only: a level whose segments are all over budget is reported as full even though bm25_compact_step has no way to reduce it, so this must not be used on its own as a retry condition.';
 
+CREATE FUNCTION @extschema@.bm25_test_hold_index_lock(
+    index_name text, exclusive boolean, milliseconds integer)
+    RETURNS void
+    AS 'MODULE_PATHNAME', 'tp_test_hold_index_lock'
+    LANGUAGE C VOLATILE STRICT;
+
+CREATE FUNCTION @extschema@.bm25_test_exclusive_waiters(index_name text)
+    RETURNS bigint
+    AS 'MODULE_PATHNAME', 'tp_test_exclusive_waiters'
+    LANGUAGE C VOLATILE STRICT;
+
+REVOKE EXECUTE ON FUNCTION
+    @extschema@.bm25_test_hold_index_lock(text, boolean, integer) FROM PUBLIC;
+REVOKE EXECUTE ON FUNCTION
+    @extschema@.bm25_test_exclusive_waiters(text) FROM PUBLIC;
+
 ALTER OPERATOR FAMILY @extschema@.text_bm25_ops USING bm25
     ADD OPERATOR 1 pg_catalog.@@ (text, pg_catalog.tsquery);

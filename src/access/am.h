@@ -188,6 +188,10 @@ char *tp_buildphasename(int64 phase);
 void tp_spill_memtable_if_needed(
 		Relation index, TpLocalIndexState *index_state, uint32 min_pages);
 
+/* Shutdown cleanup spills durable state without starting maintenance. */
+void tp_spill_memtable_without_compaction_if_needed(
+		Relation index, TpLocalIndexState *index_state, uint32 min_pages);
+
 /*
  * Recycle memtable pages stamped DEAD during spill: scan the index
  * main fork, tp_record_free_index_page when dead_fxid is older than

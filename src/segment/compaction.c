@@ -69,6 +69,13 @@ tp_compaction_lock(Relation index)
 	LockRelationOid(RelationGetRelid(index), ShareUpdateExclusiveLock);
 }
 
+bool
+tp_try_compaction_lock(Relation index)
+{
+	return ConditionalLockRelationOid(
+			RelationGetRelid(index), ShareUpdateExclusiveLock);
+}
+
 void
 tp_compaction_unlock(Relation index)
 {
@@ -1093,6 +1100,26 @@ tp_free_compaction_plan(TpCompactionPlan *plan)
  * holds the per-index exclusive lock can therefore run exactly one pass
  * and release, leaving the index in a consistent state.
  */
+bool
+tp_l0_compaction_reduces_count(TpLocalIndexState *index_state, Relation index)
+{
+	TpIndexMetaPage	 snapshot;
+	TpCompactionPlan plan		   = {0};
+	bool			 reduces_count = false;
+
+	tp_require_compaction_lock(index_state);
+
+	snapshot = tp_get_metapage(index);
+	if ((uint32)snapshot->level_counts[0] >= (uint32)tp_segments_per_level &&
+		tp_build_ordinary_plan(index, snapshot, 0, &plan))
+		reduces_count = plan.retained_counts[0] < snapshot->level_counts[0];
+
+	pfree(snapshot);
+	tp_free_compaction_plan(&plan);
+
+	return reduces_count;
+}
+
 static bool
 tp_compact_once(
 		TpLocalIndexState *index_state, Relation index, uint32 first_level)

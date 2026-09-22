@@ -334,6 +334,19 @@ CREATE FUNCTION @extschema@.bm25_pending_free_pages(index_name text)
     AS 'MODULE_PATHNAME', 'tp_pending_free_pages'
     LANGUAGE C STRICT STABLE;
 
+-- INTERNAL-ONLY test scaffolds for deterministic per-index lock admission
+-- tests.  Superuser-only; not supported APIs.
+CREATE FUNCTION @extschema@.bm25_test_hold_index_lock(
+    index_name text, exclusive boolean, milliseconds integer)
+    RETURNS void
+    AS 'MODULE_PATHNAME', 'tp_test_hold_index_lock'
+    LANGUAGE C VOLATILE STRICT;
+
+CREATE FUNCTION @extschema@.bm25_test_exclusive_waiters(index_name text)
+    RETURNS bigint
+    AS 'MODULE_PATHNAME', 'tp_test_exclusive_waiters'
+    LANGUAGE C VOLATILE STRICT;
+
 -- INTERNAL-ONLY test scaffold (issues #426, #427): return the live
 -- head tombstone page to the index FSM so the next allocator can pick
 -- it up, reproducing the stale-FSM / non-atomic-claim page-reuse
@@ -359,6 +372,10 @@ REVOKE EXECUTE ON FUNCTION @extschema@.bm25_dump_index(text) FROM PUBLIC;
 REVOKE EXECUTE ON FUNCTION @extschema@.bm25_summarize_index(text) FROM PUBLIC;
 REVOKE EXECUTE ON FUNCTION @extschema@.bm25_pending_free_pages(text)
     FROM PUBLIC;
+REVOKE EXECUTE ON FUNCTION
+    @extschema@.bm25_test_hold_index_lock(text, boolean, integer) FROM PUBLIC;
+REVOKE EXECUTE ON FUNCTION
+    @extschema@.bm25_test_exclusive_waiters(text) FROM PUBLIC;
 REVOKE EXECUTE ON FUNCTION
     @extschema@.bm25_test_recycle_tombstone_head(text) FROM PUBLIC;
 REVOKE EXECUTE ON FUNCTION

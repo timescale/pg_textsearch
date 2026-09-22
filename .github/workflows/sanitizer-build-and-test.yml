@@ -182,6 +182,18 @@ jobs:
         make installcheck PGHOST=$PWD/tmp_sanitizer_test PGPORT=55433
 
         # Run shell-based tests under sanitizer (more likely to find memory issues)
+        echo "Running per-index writer-admission tests under sanitizer..."
+        timeout 600s bash -c "
+          export PATH=\"$HOME/$PG_INSTALL_DIR/bin:\$PATH\"
+          cd test/scripts && ./index_lock_fairness.sh
+        "
+
+        echo "Running spill-time inline compaction locking tests under sanitizer..."
+        timeout 600s bash -c "
+          export PATH=\"$HOME/$PG_INSTALL_DIR/bin:\$PATH\"
+          cd test/scripts && ./inline_compaction_locking.sh
+        "
+
         echo "Running concurrency tests under sanitizer..."
         timeout 1200s bash -c "
           export PATH=\"$HOME/$PG_INSTALL_DIR/bin:\$PATH\"

@@ -1,9 +1,6 @@
 #!/bin/bash
 #
-# Regression test for writer starvation at the per-index LWLock.
-# PostgreSQL LWLocks allow new shared holders to bypass an already queued
-# exclusive waiter.  Continuous ranked scans therefore used to prevent an
-# automatic spill from making bounded progress.
+# Verify that a queued exclusive spill precedes later shared acquisitions.
 #
 
 set -e
@@ -16,7 +13,6 @@ SOCKET_DIR="${SCRIPT_DIR}/.fair_sock"
 LOGFILE="${DATA_DIR}/postgres.log"
 ERR_DIR="${DATA_DIR}/client_logs"
 KEEP_DIR="${SCRIPT_DIR}/../tmp_index_lock_fairness_logs"
-N_READERS=12
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -81,53 +77,30 @@ EOF
 PSQL="psql -h ${SOCKET_DIR} -p ${TEST_PORT} -d ${TEST_DB} -qAt -v ON_ERROR_STOP=1"
 
 seed_data() {
-    log "Creating BM25 index and seeding ranked-scan data..."
+    log "Creating BM25 index and seeding lock-test data..."
     $PSQL <<'SQL' >/dev/null
 CREATE TABLE docs (id bigserial PRIMARY KEY, content text NOT NULL);
 CREATE INDEX docs_bm25 ON docs USING bm25(content)
     WITH (text_config='english');
 INSERT INTO docs (content)
 SELECT 'alpha beta gamma document ' || gs || ' ' || repeat(md5(gs::text), 4)
-FROM generate_series(1, 30000) gs;
+FROM generate_series(1, 1000) gs;
 SELECT bm25_spill_index('docs_bm25');
-
-CREATE TABLE reader_control (stop boolean NOT NULL);
-INSERT INTO reader_control VALUES (false);
-CREATE PROCEDURE run_ranked_reader(tag integer) LANGUAGE plpgsql AS $$
-DECLARE
-    ranked_count integer;
-BEGIN
-    LOOP
-        SELECT count(*) INTO ranked_count FROM (
-            SELECT id FROM docs
-            ORDER BY content <@> to_bm25query('alpha beta', 'docs_bm25')
-            LIMIT 20000
-        ) ranked;
-        COMMIT;
-        EXIT WHEN (SELECT stop FROM reader_control);
-    END LOOP;
-END
-$$;
 SQL
-
-    local plan
-    plan=$($PSQL -c "EXPLAIN (COSTS off)
-        SELECT id FROM docs
-        ORDER BY content <@> to_bm25query('alpha beta', 'docs_bm25')
-        LIMIT 20000")
-    if ! echo "$plan" | grep -qi "Index Scan"; then
-        warn "Reader plan was not an Index Scan:"
-        echo "$plan"
-        fail "test setup did not exercise ranked index scans"
-    fi
 }
 
-reader() {
-    local tag=$1
+hold_reader() {
+    PGAPPNAME=pgts-fair-holder $PSQL \
+        -c "SELECT bm25_test_hold_index_lock(
+            'docs_bm25', false, 5000);" \
+        >"${ERR_DIR}/holder.log" 2>&1
+}
 
-    PGAPPNAME=pgts-fair-reader $PSQL \
-        -c "CALL run_ranked_reader(${tag});" \
-        >>"${ERR_DIR}/reader_${tag}.log" 2>&1 || return 10
+late_reader() {
+    PGAPPNAME=pgts-fair-late-reader $PSQL \
+        -c "SELECT bm25_test_hold_index_lock(
+            'docs_bm25', false, 0);" \
+        >"${ERR_DIR}/late_reader.log" 2>&1
 }
 
 writer() {
@@ -144,70 +117,109 @@ SELECT count(*) FROM updated;
 SQL
 }
 
-wait_for_readers() {
+wait_for_holder() {
     local deadline=$((SECONDS + 10))
-    local active=0
+    local active
 
     while ((SECONDS < deadline)); do
         active=$($PSQL -c "
-            SELECT count(*)
-              FROM pg_stat_activity
-             WHERE application_name = 'pgts-fair-reader'
-               AND state = 'active';")
-        if [ "${active:-0}" -ge 8 ]; then
-            log "${active} ranked readers are active"
+            SELECT count(*) FROM pg_stat_activity
+            WHERE application_name = 'pgts-fair-holder'
+              AND state = 'active';")
+        if [ "${active:-0}" -eq 1 ]; then
             return
         fi
         sleep 0.1
     done
 
-    fail "fewer than eight ranked readers became active"
+    fail "shared lock holder did not become active"
+}
+
+wait_for_writer_queue() {
+    local deadline=$((SECONDS + 10))
+    local waiters
+
+    while ((SECONDS < deadline)); do
+        waiters=$($PSQL -c "
+            SELECT bm25_test_exclusive_waiters('docs_bm25');")
+        if [ "${waiters:-0}" -ge 1 ]; then
+            log "exclusive writer is queued"
+            return
+        fi
+        sleep 0.05
+    done
+
+    fail "exclusive writer never registered as waiting"
+}
+
+wait_for_late_reader_admission() {
+    local late_reader_pid="$1"
+    local deadline=$((SECONDS + 10))
+    local waiting
+
+    while ((SECONDS < deadline)); do
+        if ! kill -0 "${late_reader_pid}" 2>/dev/null; then
+            cat "${ERR_DIR}/late_reader.log" || true
+            fail "late shared reader exited before reaching admission"
+        fi
+        waiting=$($PSQL -c "
+            SELECT count(*)
+            FROM pg_stat_activity
+            WHERE application_name = 'pgts-fair-late-reader'
+              AND state = 'active'
+              AND wait_event_type = 'Extension'
+              AND wait_event = 'Extension'
+              AND bm25_test_exclusive_waiters('docs_bm25') >= 1;")
+        if [ "${waiting:-0}" -eq 1 ]; then
+            return
+        fi
+        sleep 0.05
+    done
+
+    fail "late shared reader did not reach the admission wait"
 }
 
 run_test() {
-    local reader_pids=()
+    local holder_pid
+    local late_reader_pid
     local writer_pid
     local writer_status=0
     local update_count
     local ranked_count
 
-    log "Starting ${N_READERS} continuous ranked readers..."
-    for i in $(seq 1 "${N_READERS}"); do
-        reader "$i" &
-        reader_pids+=("$!")
-    done
-    wait_for_readers
+    log "Holding the per-index lock in shared mode..."
+    hold_reader &
+    holder_pid=$!
+    wait_for_holder
 
     log "Starting updates that trigger an exclusive automatic spill..."
     writer >"${ERR_DIR}/writer.log" 2>&1 &
     writer_pid=$!
-    deadline=$((SECONDS + 20))
-    while kill -0 "$writer_pid" 2>/dev/null && ((SECONDS < deadline)); do
-        sleep 1
-    done
-    if kill -0 "$writer_pid" 2>/dev/null; then
-        kill "$writer_pid" 2>/dev/null || true
-        fail "exclusive spill request was starved by ranked scans"
-    fi
+    wait_for_writer_queue
 
+    log "Starting a reader after the writer has queued..."
+    late_reader &
+    late_reader_pid=$!
+    wait_for_late_reader_admission "${late_reader_pid}"
+
+    wait "${holder_pid}" || {
+        cat "${ERR_DIR}/holder.log" || true
+        fail "shared lock holder exited with an error"
+    }
     wait "$writer_pid" || writer_status=$?
     if [ "$writer_status" -ne 0 ]; then
         tail -n 20 "${ERR_DIR}/writer.log" || true
         fail "writer exited with status ${writer_status}"
     fi
+    wait "${late_reader_pid}" || {
+        cat "${ERR_DIR}/late_reader.log" || true
+        fail "late shared reader exited with an error"
+    }
 
     update_count=$(grep -E '^[0-9]+$' "${ERR_DIR}/writer.log" | tail -1)
     if [ "${update_count:-0}" -le 0 ]; then
         fail "writer did not update any rows"
     fi
-
-    $PSQL -c "UPDATE reader_control SET stop = true;" >/dev/null
-    for pid in "${reader_pids[@]}"; do
-        wait "$pid" || {
-            tail -n 20 "${ERR_DIR}"/reader_*.log || true
-            fail "a ranked reader exited with an error"
-        }
-    done
 
     ranked_count=$($PSQL -c "
         SELECT count(*) FROM (
@@ -219,7 +231,7 @@ run_test() {
         fail "ranked query returned no rows after the spill"
     fi
 
-    log "TEST PASSED: exclusive spill completed after ${update_count} updates"
+    log "TEST PASSED: queued writer preceded the late reader"
 }
 
 setup_test_db

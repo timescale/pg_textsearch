@@ -311,7 +311,9 @@ tp_do_spill(
 static void
 tp_compact_inline(TpLocalIndexState *index_state, Relation index_rel)
 {
-	tp_compaction_lock(index_rel);
+	if (!tp_try_compaction_lock(index_rel))
+		return;
+
 	PG_TRY();
 	{
 		tp_acquire_index_lock(index_state, LW_EXCLUSIVE);
@@ -328,9 +330,9 @@ tp_compact_inline(TpLocalIndexState *index_state, Relation index_rel)
 
 static void
 tp_apply_compaction_policy(
-		TpLocalIndexState *index_state, Relation index_rel, bool spilled)
+		TpLocalIndexState *index_state, Relation index_rel, bool policy_needed)
 {
-	if (!spilled)
+	if (!policy_needed)
 		return;
 
 	pgstat_progress_update_param(
@@ -359,6 +361,23 @@ tp_apply_compaction_policy(
 			PROGRESS_CREATEIDX_SUBPHASE, TP_PHASE_LOADING);
 }
 
+static bool
+tp_defer_spill_for_l0_compaction(
+		TpLocalIndexState *index_state, Relation index_rel)
+{
+	TpIndexMetaPage metap;
+	bool			defer;
+
+	metap = tp_get_metapage(index_rel);
+	defer = metap->level_counts[0] >= tp_max_segments_per_level &&
+			metap->level_counts[0] >= tp_segments_per_level &&
+			tp_index_compaction_mode(index_rel) != TP_COMPACTION_MANUAL &&
+			tp_l0_compaction_reduces_count(index_state, index_rel);
+	pfree(metap);
+
+	return defer;
+}
+
 /*
  * Spill memtable to an L0 segment.  Caller passes a minimum
  * chain-page count below which the spill is a no-op — used by
@@ -367,11 +386,14 @@ tp_apply_compaction_policy(
  * a fast bailout; if it races with an insert, the worst case
  * is a harmless no-op inside tp_do_spill().
  */
-void
-tp_spill_memtable_if_needed(
-		Relation index, TpLocalIndexState *index_state, uint32 min_pages)
+static void
+tp_spill_memtable_if_needed_internal(
+		Relation		   index,
+		TpLocalIndexState *index_state,
+		uint32			   min_pages,
+		bool			   apply_compaction_policy)
 {
-	bool spilled = false;
+	bool policy_needed = false;
 
 	/* Standby is read-only; spill is primary-only. */
 	if (RecoveryInProgress())
@@ -386,7 +408,10 @@ tp_spill_memtable_if_needed(
 	tp_acquire_index_lock(index_state, LW_EXCLUSIVE);
 	PG_TRY();
 	{
-		spilled = tp_do_spill(index_state, index, NULL);
+		if (tp_defer_spill_for_l0_compaction(index_state, index))
+			policy_needed = apply_compaction_policy;
+		else
+			policy_needed = tp_do_spill(index_state, index, NULL);
 	}
 	PG_FINALLY();
 	{
@@ -395,7 +420,22 @@ tp_spill_memtable_if_needed(
 	}
 	PG_END_TRY();
 
-	tp_apply_compaction_policy(index_state, index, spilled);
+	if (apply_compaction_policy)
+		tp_apply_compaction_policy(index_state, index, policy_needed);
+}
+
+void
+tp_spill_memtable_if_needed(
+		Relation index, TpLocalIndexState *index_state, uint32 min_pages)
+{
+	tp_spill_memtable_if_needed_internal(index, index_state, min_pages, true);
+}
+
+void
+tp_spill_memtable_without_compaction_if_needed(
+		Relation index, TpLocalIndexState *index_state, uint32 min_pages)
+{
+	tp_spill_memtable_if_needed_internal(index, index_state, min_pages, false);
 }
 
 /*
@@ -413,7 +453,7 @@ static void
 tp_auto_spill_if_needed(TpLocalIndexState *index_state, Relation index_rel)
 {
 	uint32 threshold;
-	bool   spilled = false;
+	bool   apply_policy = false;
 
 	if (!index_state || !index_rel || !index_state->shared)
 		return;
@@ -438,7 +478,12 @@ tp_auto_spill_if_needed(TpLocalIndexState *index_state, Relation index_rel)
 		/* Re-check: another backend may have spilled while we waited. */
 		if (pg_atomic_read_u32(&index_state->shared->chain_page_count) >=
 			threshold)
-			spilled = tp_do_spill(index_state, index_rel, NULL);
+		{
+			if (tp_defer_spill_for_l0_compaction(index_state, index_rel))
+				apply_policy = true;
+			else
+				apply_policy = tp_do_spill(index_state, index_rel, NULL);
+		}
 	}
 	PG_FINALLY();
 	{
@@ -447,7 +492,7 @@ tp_auto_spill_if_needed(TpLocalIndexState *index_state, Relation index_rel)
 	}
 	PG_END_TRY();
 
-	tp_apply_compaction_policy(index_state, index_rel, spilled);
+	tp_apply_compaction_policy(index_state, index_rel, apply_policy);
 }
 
 /*

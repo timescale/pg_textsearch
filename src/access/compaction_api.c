@@ -303,9 +303,9 @@ tp_compact_index_step_if_current(PG_FUNCTION_ARGS)
 			.relfilenumber	= PG_GETARG_OID(3),
 			.owner_oid		= PG_GETARG_OID(4),
 	};
-	Relation		   index_rel;
-	TpLocalIndexState *index_state;
-	bool			   pass_ran;
+	Relation index_rel;
+	TpLocalIndexState *volatile index_state = NULL;
+	volatile bool pass_ran;
 
 	if (RecoveryInProgress())
 		ereport(ERROR,
@@ -319,25 +319,43 @@ tp_compact_index_step_if_current(PG_FUNCTION_ARGS)
 
 	PreventCommandIfReadOnly("bm25 index compaction");
 
-	index_state = tp_get_local_index_state(target.index_oid);
-	if (index_state == NULL)
+	if (!tp_try_compaction_lock(index_rel))
 	{
-		char *relname = pstrdup(RelationGetRelationName(index_rel));
-
 		relation_close(index_rel, RowExclusiveLock);
-		ereport(ERROR,
-				(errcode(ERRCODE_INTERNAL_ERROR),
-				 errmsg("could not get index state for \"%s\"", relname)));
+		PG_RETURN_BOOL(false);
 	}
 
-	tp_acquire_index_lock(index_state, LW_EXCLUSIVE);
 	PG_TRY();
 	{
-		pass_ran = tp_compact_step(index_state, index_rel);
+		Relation current_rel;
+
+		/*
+		 * The captured target can change while this worker waits for
+		 * same-index maintenance.  Process relcache invalidations and repeat
+		 * the complete physical-target and background-policy validation.
+		 */
+		current_rel = tp_open_current_bm25_target(&target, NoLock, true, true);
+		if (current_rel == NULL)
+			pass_ran = false;
+		else
+		{
+			relation_close(current_rel, NoLock);
+			index_state = tp_get_local_index_state(target.index_oid);
+			if (index_state == NULL)
+				ereport(ERROR,
+						(errcode(ERRCODE_INTERNAL_ERROR),
+						 errmsg("could not get index state for \"%s\"",
+								RelationGetRelationName(index_rel))));
+
+			tp_acquire_index_lock(index_state, LW_EXCLUSIVE);
+			pass_ran = tp_compact_step(index_state, index_rel);
+		}
 	}
 	PG_FINALLY();
 	{
-		tp_release_index_lock(index_state);
+		if (index_state != NULL && index_state->lock_held)
+			tp_release_index_lock(index_state);
+		tp_compaction_unlock(index_rel);
 		relation_close(index_rel, RowExclusiveLock);
 	}
 	PG_END_TRY();

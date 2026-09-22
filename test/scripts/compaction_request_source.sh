@@ -853,9 +853,32 @@ shutdown_spill_body="$(
     sed -n '/^tp_shutdown_spill_one(LocalStateCacheEntry \*entry)/,/^}/p' \
         "${STATE_SOURCE}"
 )"
-if ! grep -Fq "if (entry->local_state->lock_held)" \
-    <<<"${shutdown_spill_body}"; then
-    echo "shutdown spill cleanup releases an index lock that is not held" >&2
+if ! grep -Fq "tp_spill_memtable_without_compaction_if_needed(" \
+        <<<"${shutdown_spill_body}" ||
+   grep -Fq "tp_spill_memtable_if_needed(" <<<"${shutdown_spill_body}"; then
+    echo "shutdown spill must not run post-spill compaction policy" >&2
+    exit 1
+fi
+
+shutdown_catch="$(
+    sed -n '/PG_CATCH();/,/PG_END_TRY();/p' <<<"${shutdown_spill_body}"
+)"
+shutdown_guard_line="$(
+    grep -n "if (entry->local_state->lock_held)" <<<"${shutdown_catch}" |
+        cut -d: -f1
+)"
+shutdown_release_line="$(
+    grep -n "tp_release_index_lock(entry->local_state)" \
+        <<<"${shutdown_catch}" | cut -d: -f1
+)"
+shutdown_flush_line="$(
+    grep -n "FlushErrorState()" <<<"${shutdown_catch}" | cut -d: -f1
+)"
+if [[ -z "${shutdown_guard_line}" || -z "${shutdown_release_line}" ||
+      -z "${shutdown_flush_line}" ||
+      "${shutdown_guard_line}" -ge "${shutdown_release_line}" ||
+      "${shutdown_release_line}" -ge "${shutdown_flush_line}" ]]; then
+    echo "shutdown spill catch must guard and release the index lock" >&2
     exit 1
 fi
 
