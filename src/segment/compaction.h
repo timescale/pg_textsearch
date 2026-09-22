@@ -13,6 +13,8 @@ extern uint64 tp_max_segment_size_bytes(void);
 
 extern bool tp_try_compaction_lock(Relation index);
 extern void tp_require_compaction_admission(Relation index);
+extern void tp_require_index_lock_admission(
+		struct TpLocalIndexState *index_state, Relation index);
 extern void tp_compaction_unlock(Relation index);
 
 /*

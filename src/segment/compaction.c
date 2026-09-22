@@ -94,6 +94,20 @@ tp_require_compaction_admission(Relation index)
 }
 
 void
+tp_require_index_lock_admission(TpLocalIndexState *index_state, Relation index)
+{
+	if (tp_try_acquire_index_lock(index_state, LW_EXCLUSIVE))
+		return;
+
+	ereport(ERROR,
+			(errcode(ERRCODE_LOCK_NOT_AVAILABLE),
+			 errmsg("could not obtain exclusive access to bm25 index \"%s\"",
+					RelationGetRelationName(index)),
+			 errdetail("Another session is using or maintaining the index."),
+			 errhint("Retry once the concurrent operation completes.")));
+}
+
+void
 tp_compaction_unlock(Relation index)
 {
 	UnlockRelationOid(RelationGetRelid(index), ShareUpdateExclusiveLock);

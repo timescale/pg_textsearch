@@ -309,10 +309,9 @@ tp_do_spill(
 }
 
 /*
- * Compact level 0 when index maintenance is free, reporting whether
- * the pass ran.  Never waits: a writer that blocks here closes a
- * deadlock cycle with a REINDEX INDEX CONCURRENTLY waiting on this
- * transaction to drain.
+ * Compact level 0 when maintenance and exclusive index access are
+ * both free, reporting whether the pass ran.  Never waits: a writer
+ * that blocks here can close a lock cycle with concurrent index work.
  */
 static bool
 tp_compact_inline(TpLocalIndexState *index_state, Relation index_rel)
@@ -320,9 +319,14 @@ tp_compact_inline(TpLocalIndexState *index_state, Relation index_rel)
 	if (!tp_try_compaction_lock(index_rel))
 		return false;
 
+	if (!tp_try_acquire_index_lock(index_state, LW_EXCLUSIVE))
+	{
+		tp_compaction_unlock(index_rel);
+		return false;
+	}
+
 	PG_TRY();
 	{
-		tp_acquire_index_lock(index_state, LW_EXCLUSIVE);
 		tp_maybe_compact_level(index_state, index_rel, 0);
 	}
 	PG_FINALLY();
@@ -391,12 +395,12 @@ tp_l0_at_capacity(Relation index_rel)
  * comes too late for a spill that is blocked now; manual indexes opt
  * out of automatic maintenance and fall through to the capacity error.
  *
- * Only a denied maintenance admission leaves level 0 full without
- * knowing whether it is reducible.  The records then stay in the
- * durable chain for a later spill to drain, unless the caller requires
- * an empty chain on return.  Every other outcome falls through to the
- * spill, so a level 0 that compaction cannot reduce still fails closed
- * rather than growing the chain without bound.
+ * Only a denied maintenance or index-lock admission leaves level 0
+ * full without knowing whether it is reducible.  The records then stay
+ * in the durable chain for a later spill to drain, unless the caller
+ * requires an empty chain on return.  Every other outcome falls
+ * through to the spill, so a level 0 that compaction cannot reduce
+ * still fails closed rather than growing the chain without bound.
  */
 static bool
 tp_make_room_for_spill(
@@ -440,7 +444,8 @@ tp_spill_memtable_if_needed_internal(
 		TpLocalIndexState *index_state,
 		uint32			   min_pages,
 		bool			   apply_compaction_policy,
-		bool			   require_spill)
+		bool			   require_spill,
+		bool			   wait_for_index_lock)
 {
 	bool policy_needed = false;
 
@@ -458,7 +463,10 @@ tp_spill_memtable_if_needed_internal(
 				index, index_state, apply_compaction_policy, require_spill))
 		return;
 
-	tp_acquire_index_lock(index_state, LW_EXCLUSIVE);
+	if (wait_for_index_lock)
+		tp_acquire_index_lock(index_state, LW_EXCLUSIVE);
+	else if (!tp_try_acquire_index_lock(index_state, LW_EXCLUSIVE))
+		return;
 	PG_TRY();
 	{
 		/* Re-check: another backend may have spilled while we waited. */
@@ -482,7 +490,7 @@ tp_spill_memtable_if_needed(
 		Relation index, TpLocalIndexState *index_state, uint32 min_pages)
 {
 	tp_spill_memtable_if_needed_internal(
-			index, index_state, min_pages, true, false);
+			index, index_state, min_pages, true, false, true);
 }
 
 /*
@@ -494,7 +502,7 @@ tp_spill_memtable_required(
 		Relation index, TpLocalIndexState *index_state, uint32 min_pages)
 {
 	tp_spill_memtable_if_needed_internal(
-			index, index_state, min_pages, true, true);
+			index, index_state, min_pages, true, true, true);
 }
 
 void
@@ -502,7 +510,7 @@ tp_spill_memtable_without_compaction_if_needed(
 		Relation index, TpLocalIndexState *index_state, uint32 min_pages)
 {
 	tp_spill_memtable_if_needed_internal(
-			index, index_state, min_pages, false, false);
+			index, index_state, min_pages, false, false, false);
 }
 
 /*
@@ -850,9 +858,8 @@ tp_force_merge(PG_FUNCTION_ARGS)
 	 * Serialize same-index maintenance before taking LW_EXCLUSIVE.
 	 * Force-merge is an administrative operation with no expectation
 	 * of concurrent read throughput, so it retains the coarse per-index
-	 * lock for the complete operation.  Admission never waits: a caller
-	 * that blocks here closes a deadlock cycle with a REINDEX INDEX
-	 * CONCURRENTLY waiting on this transaction.
+	 * lock for the complete operation.  Admission never waits because
+	 * waiting here can close a lock cycle with concurrent index work.
 	 */
 	{
 		TpLocalIndexState *index_state = tp_get_local_index_state(index_oid);
@@ -869,7 +876,7 @@ tp_force_merge(PG_FUNCTION_ARGS)
 		tp_require_compaction_admission(index_rel);
 		PG_TRY();
 		{
-			tp_acquire_index_lock(index_state, LW_EXCLUSIVE);
+			tp_require_index_lock_admission(index_state, index_rel);
 			has_memtable = tp_prepare_spill(index_state, index_rel, &spill);
 			if (has_memtable)
 				tp_finish_spill(

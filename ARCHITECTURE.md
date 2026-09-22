@@ -75,10 +75,10 @@ combines adjacent immutable segments within `pg_textsearch.max_segment_size`.
 The `compaction` index option controls spill-time behavior:
 
 - `inline` compacts threshold debt during spills and index builds. It never
-  waits for index maintenance: when another session holds it -- a concurrent
-  `REINDEX INDEX CONCURRENTLY`, `VACUUM`, or explicit compaction -- the pass is
-  skipped rather than blocking the writer, and the debt is picked up by the
-  next spill or by explicit maintenance;
+  waits for maintenance admission or exclusive index access: when another
+  session is using or maintaining the index, the pass is skipped rather than
+  blocking the writer, and the debt is picked up by the next spill or by
+  explicit maintenance;
 - `background` dispatches a pre-commit request when possible. Runtime
   no-dispatch contexts such as autovacuum and callback re-entry compact
   inline. Index builds leave compaction to the managed workflow after
@@ -101,8 +101,8 @@ bound. `manual` indexes take that error directly.
 
 `bm25_compact()` drives reducible debt to completion under one per-index lock.
 `bm25_compact_step()` runs at most one pass. Both, like `bm25_force_merge()`,
-take index maintenance without waiting and raise `lock_not_available` when
-another session holds it. Drive repeated maintenance from
+take maintenance and exclusive index access without waiting, and raise
+`lock_not_available` when either is busy. Drive repeated maintenance from
 the return value of `bm25_compact_step()`, not
 `bm25_needs_compaction()`, because over-budget segments can leave a level
 permanently above its advisory threshold.

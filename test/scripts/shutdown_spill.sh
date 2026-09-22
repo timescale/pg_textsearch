@@ -35,6 +35,7 @@ error() { echo -e "${RED}[$(date '+%H:%M:%S')] ERROR: $1${NC}"; exit 1; }
 cleanup() {
     local exit_code=$?
     log "Cleaning up (exit code: $exit_code)..."
+    exec 3>&- 2>/dev/null || true
     jobs -p | xargs -r kill 2>/dev/null || true
     if [ -f "${DATA_DIR}/postmaster.pid" ]; then
         "${PGBINDIR}/pg_ctl" stop -D "${DATA_DIR}" -m fast \
@@ -192,10 +193,10 @@ ${summary}"
     done
     log "Post-restart: both indexes return all 500 rows (good)"
 
-    # A targeted backend termination must not enter blocking maintenance
-    # from before_shmem_exit.  Hold ShareUpdateExclusiveLock in another
-    # transaction, then terminate a backend whose local cache contains an
-    # index with a spillable chain.
+    # A targeted backend termination must not wait for relation or
+    # per-index locks from before_shmem_exit. Hold AccessExclusiveLock
+    # with an uncommitted DROP, then terminate a backend whose local
+    # cache contains an index with a spillable chain.
     sql_quiet "CREATE TABLE blocked_docs (
         id serial PRIMARY KEY, body text NOT NULL);"
     sql_quiet "CREATE INDEX blocked_docs_idx ON blocked_docs USING bm25(body)
@@ -215,45 +216,21 @@ ${summary}"
     [ "${blocked_pre}" = "500" ] ||
         error "termination test chain was not populated"
 
-    PGAPPNAME=pgts-shutdown-blocker \
-        "${PGBINDIR}/psql" -h "${SOCKET_DIR}" -p "${TEST_PORT}" \
-        -d "${TEST_DB}" -c "
-            BEGIN;
-            ALTER INDEX blocked_docs_idx SET (compaction='inline');
-            SELECT pg_sleep(60);
-        " >/dev/null 2>&1 &
-    BLOCKER_PID=$!
-
-    local blocker_ready=f
-    for _ in $(seq 1 100); do
-        blocker_ready=$(sql "
-            SELECT EXISTS (
-                SELECT 1
-                FROM pg_locks l
-                JOIN pg_stat_activity a USING (pid)
-                WHERE a.application_name = 'pgts-shutdown-blocker'
-                  AND l.relation = 'blocked_docs_idx'::regclass
-                  AND l.mode = 'ShareUpdateExclusiveLock'
-                  AND l.granted
-            );")
-        [ "${blocker_ready}" = "t" ] && break
-        sleep 0.1
-    done
-    [ "${blocker_ready}" = "t" ] ||
-        error "maintenance blocker did not acquire the index lock"
-
+    local target_fifo="${DATA_DIR}/shutdown_target.fifo"
+    mkfifo "${target_fifo}"
     PGAPPNAME=pgts-shutdown-target \
         "${PGBINDIR}/psql" -h "${SOCKET_DIR}" -p "${TEST_PORT}" \
-        -d "${TEST_DB}" -c "
-            SELECT count(*) FROM (
-                SELECT 1 FROM blocked_docs
-                ORDER BY body <@> to_bm25query(
-                    'alpha', 'blocked_docs_idx')
-                LIMIT 1
-            ) ranked;
-            SELECT pg_sleep(60);
-        " >/dev/null 2>&1 &
+        -d "${TEST_DB}" <"${target_fifo}" >/dev/null 2>&1 &
     TARGET_PID=$!
+    exec 3>"${target_fifo}"
+    printf '%s\n' \
+        "SELECT count(*) FROM (
+            SELECT 1 FROM blocked_docs
+            ORDER BY body <@> to_bm25query(
+                'alpha', 'blocked_docs_idx')
+            LIMIT 1
+        ) ranked;" \
+        "SELECT pg_sleep(60);" >&3
 
     local target_backend=
     for _ in $(seq 1 100); do
@@ -268,24 +245,61 @@ ${summary}"
     [ -n "${target_backend}" ] ||
         error "shutdown target did not attach to the index"
 
+    PGAPPNAME=pgts-shutdown-blocker \
+        "${PGBINDIR}/psql" -h "${SOCKET_DIR}" -p "${TEST_PORT}" \
+        -d "${TEST_DB}" -c "
+            BEGIN;
+            DROP INDEX blocked_docs_idx;
+            SELECT pg_sleep(60);
+        " >/dev/null 2>&1 &
+    BLOCKER_PID=$!
+
+    local blocker_backend=
+    for _ in $(seq 1 100); do
+        blocker_backend=$(sql "
+            SELECT a.pid
+            FROM pg_locks l
+            JOIN pg_stat_activity a USING (pid)
+            WHERE a.application_name = 'pgts-shutdown-blocker'
+              AND l.relation = 'blocked_docs_idx'::regclass
+              AND l.mode = 'AccessExclusiveLock'
+              AND l.granted;")
+        [ -n "${blocker_backend}" ] && break
+        sleep 0.1
+    done
+    if [ -z "${blocker_backend}" ]; then
+        local blocker_locks
+        blocker_locks=$(sql "
+            SELECT COALESCE(string_agg(
+                l.mode || ':' || l.granted::text, ','), 'none')
+            FROM pg_locks l
+            JOIN pg_stat_activity a USING (pid)
+            WHERE a.application_name = 'pgts-shutdown-blocker'
+              AND l.relation = 'blocked_docs_idx'::regclass;")
+        error "relation blocker did not acquire the index lock
+locks: ${blocker_locks}"
+    fi
+
     local terminated
     terminated=$(sql "
         SELECT pg_terminate_backend(${target_backend}, 3000);")
     if [ "${terminated}" != "t" ]; then
         error "terminated backend blocked in shutdown spill maintenance"
     fi
+    exec 3>&-
     wait "${TARGET_PID}" 2>/dev/null || true
+
+    sql "SELECT pg_terminate_backend(${blocker_backend}, 3000);" >/dev/null
+    wait "${BLOCKER_PID}" 2>/dev/null || true
 
     local blocked_post
     blocked_post=$(sql "
         SELECT COALESCE(sum(n_records), 0)
         FROM bm25_memtable_chain('blocked_docs_idx');")
-    [ "${blocked_post}" = "0" ] ||
-        error "terminated backend did not finish its shutdown spill"
+    [ "${blocked_post}" = "500" ] ||
+        error "blocked shutdown spill unexpectedly changed the chain"
 
-    kill "${BLOCKER_PID}" 2>/dev/null || true
-    wait "${BLOCKER_PID}" 2>/dev/null || true
-    log "Targeted backend termination completed with maintenance admission held"
+    log "Targeted backend termination skipped a blocked shutdown spill"
 
     log "=== PASSED ==="
 }

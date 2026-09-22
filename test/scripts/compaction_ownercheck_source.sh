@@ -10,6 +10,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 SOURCE_FILE="${SOURCE_FILE:-${REPO_ROOT}/src/access/compaction_api.c}"
 BUILD_SOURCE="${BUILD_SOURCE:-${REPO_ROOT}/src/access/build.c}"
+STATE_SOURCE="${STATE_SOURCE:-${REPO_ROOT}/src/index/state.c}"
+STATE_HEADER="${STATE_HEADER:-${REPO_ROOT}/src/index/state.h}"
 
 open_body="$(
     sed -n '/^tp_open_bm25_index(Oid indexoid, LOCKMODE lockmode, bool need_owner)$/,/^}$/p' \
@@ -121,8 +123,8 @@ check_compaction_lock_order() {
             <<<"${function_body}" | head -1 | cut -d: -f1 || true
     )"
     index_lock_line="$(
-        grep -n 'tp_acquire_index_lock(index_state' \
-            <<<"${function_body}" | head -1 | cut -d: -f1
+        grep -n 'tp_require_index_lock_admission(index_state' \
+            <<<"${function_body}" | head -1 | cut -d: -f1 || true
     )"
 
     if [[ -z "${maintenance_line}" || -z "${index_lock_line}" ||
@@ -155,8 +157,8 @@ current_nolock_line="$(
         cut -d: -f1
 )"
 current_index_lock_line="$(
-    grep -n 'tp_acquire_index_lock(index_state, LW_EXCLUSIVE)' \
-        <<<"${current_step_body}" | cut -d: -f1
+    grep -n 'tp_try_acquire_index_lock(index_state, LW_EXCLUSIVE)' \
+        <<<"${current_step_body}" | cut -d: -f1 || true
 )"
 if [[ -z "${current_maintenance_line}" || -z "${current_decline_line}" ||
       -z "${current_revalidate_line}" || -z "${current_nolock_line}" ||
@@ -166,6 +168,43 @@ if [[ -z "${current_maintenance_line}" || -z "${current_decline_line}" ||
       "${current_revalidate_line}" -gt "${current_nolock_line}" ||
       "${current_nolock_line}" -ge "${current_index_lock_line}" ]]; then
     echo "managed compaction must conditionally admit then revalidate" >&2
+    exit 1
+fi
+
+inline_body="$(
+    sed -n '/^tp_compact_inline(/,/^}$/p' "${BUILD_SOURCE}"
+)"
+if ! grep -Fq 'tp_try_acquire_index_lock(index_state, LW_EXCLUSIVE)' \
+        <<<"${inline_body}"; then
+    echo "inline compaction must not wait for the per-index lock" >&2
+    exit 1
+fi
+
+force_merge_body="$(
+    sed -n '/^tp_force_merge(PG_FUNCTION_ARGS)$/,/^}$/p' "${BUILD_SOURCE}"
+)"
+if ! grep -Fq 'tp_require_index_lock_admission(index_state, index_rel)' \
+        <<<"${force_merge_body}"; then
+    echo "force merge must not wait for the per-index lock" >&2
+    exit 1
+fi
+
+if ! grep -Fq 'tp_try_acquire_index_lock(' "${STATE_HEADER}"; then
+    echo "state API lacks conditional per-index lock acquisition" >&2
+    exit 1
+fi
+
+shutdown_body="$(
+    sed -n '/^tp_shutdown_spill_one(/,/^}$/p' "${STATE_SOURCE}"
+)"
+shutdown_spill_body="$(
+    sed -n \
+        '/^tp_spill_memtable_if_needed_internal(/,/^}$/p' \
+        "${BUILD_SOURCE}"
+)"
+if ! grep -Fq 'ConditionalLockRelationOid(' <<<"${shutdown_body}" ||
+   ! grep -Fq 'tp_try_acquire_index_lock(' <<<"${shutdown_spill_body}"; then
+    echo "shutdown spill must conditionally acquire relation and index locks" >&2
     exit 1
 fi
 

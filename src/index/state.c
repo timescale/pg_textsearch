@@ -26,6 +26,7 @@
 #include <storage/dsm.h>
 #include <storage/dsm_registry.h>
 #include <storage/ipc.h>
+#include <storage/lmgr.h>
 #include <utils/builtins.h>
 #include <utils/dsa.h>
 #include <utils/hsearch.h>
@@ -74,14 +75,17 @@ tp_shutdown_spill_one(LocalStateCacheEntry *entry)
 	if (entry->local_state == NULL)
 		return;
 
+	if (!ConditionalLockRelationOid(entry->index_oid, RowExclusiveLock))
+		return;
+
 	PG_TRY();
 	{
-		index_rel = try_index_open(entry->index_oid, RowExclusiveLock);
+		index_rel = try_index_open(entry->index_oid, NoLock);
 		if (index_rel != NULL)
 		{
 			tp_spill_memtable_without_compaction_if_needed(
 					index_rel, entry->local_state, TP_MIN_SPILL_PAGES);
-			index_close(index_rel, RowExclusiveLock);
+			index_close(index_rel, NoLock);
 			index_rel = NULL;
 		}
 	}
@@ -92,9 +96,11 @@ tp_shutdown_spill_one(LocalStateCacheEntry *entry)
 			tp_release_index_lock(entry->local_state);
 		FlushErrorState();
 		if (index_rel != NULL)
-			index_close(index_rel, RowExclusiveLock);
+			index_close(index_rel, NoLock);
 	}
 	PG_END_TRY();
+
+	UnlockRelationOid(entry->index_oid, RowExclusiveLock);
 }
 
 /*
@@ -1282,6 +1288,63 @@ tp_acquire_index_lock(TpLocalIndexState *local_state, LWLockMode mode)
 	 * The LWLockAcquire provides acquire semantics (memory barrier),
 	 * ensuring we see all writes from the previous lock holder.
 	 */
+}
+
+/*
+ * Conditionally acquire the per-index lock.  Exclusive attempts
+ * register as waiters for the duration of the attempt so new shared
+ * acquisitions cannot bypass them.
+ */
+bool
+tp_try_acquire_index_lock(TpLocalIndexState *local_state, LWLockMode mode)
+{
+	bool acquired = false;
+
+	Assert(local_state != NULL);
+	Assert(local_state->shared != NULL);
+	Assert(mode == LW_SHARED || mode == LW_EXCLUSIVE);
+
+	if (local_state->lock_held)
+	{
+		if (local_state->lock_mode == LW_EXCLUSIVE ||
+			(local_state->lock_mode == LW_SHARED && mode == LW_SHARED))
+			return true;
+
+		return false;
+	}
+
+	if (mode == LW_SHARED)
+	{
+		if (pg_atomic_read_u32(&local_state->shared->exclusive_waiters) != 0)
+			return false;
+
+		acquired = LWLockConditionalAcquire(&local_state->shared->lock, mode);
+	}
+	else
+	{
+		pg_atomic_fetch_add_u32(&local_state->shared->exclusive_waiters, 1);
+		PG_TRY();
+		{
+			acquired =
+					LWLockConditionalAcquire(&local_state->shared->lock, mode);
+		}
+		PG_FINALLY();
+		{
+			if (pg_atomic_sub_fetch_u32(
+						&local_state->shared->exclusive_waiters, 1) == 0)
+				ConditionVariableBroadcast(
+						&local_state->shared->exclusive_waiters_cv);
+		}
+		PG_END_TRY();
+	}
+
+	if (!acquired)
+		return false;
+
+	local_state->lock_held = true;
+	local_state->lock_mode = mode;
+
+	return true;
 }
 
 /*
