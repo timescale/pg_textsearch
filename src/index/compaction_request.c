@@ -1021,10 +1021,18 @@ tp_compaction_flush_requests(void)
 		targets = tp_prelock_requests(pending);
 		foreach (lc, targets)
 		{
-			Oid indexoid = lfirst_oid(lc);
+			Oid	 indexoid = lfirst_oid(lc);
+			bool dispatch;
 
-			if (!SearchSysCacheExists1(RELOID, ObjectIdGetDatum(indexoid)) ||
-				!tp_request_target_is_background(indexoid))
+			dispatch = SearchSysCacheExists1(
+							   RELOID, ObjectIdGetDatum(indexoid)) &&
+					   tp_request_target_is_background(indexoid);
+
+			/* Let the signaled worker compact while private admission remains.
+			 */
+			UnlockRelationOid(indexoid, ShareUpdateExclusiveLock);
+
+			if (!dispatch)
 				continue;
 			tp_run_request(indexoid);
 		}
