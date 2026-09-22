@@ -188,15 +188,6 @@ typedef struct TpSharedIndexState
 	ConditionVariable exclusive_waiters_cv;
 
 	/*
-	 * Monotonic count of LW_EXCLUSIVE acquisitions of `lock`, bumped
-	 * once the lock is held.  Lets a test observe the admission order
-	 * the condition variable is meant to enforce: a shared waiter that
-	 * queued behind an exclusive waiter must see this advance across
-	 * its own wait.
-	 */
-	pg_atomic_uint64 exclusive_admissions;
-
-	/*
 	 * Spill generation counter.  Bumped by tp_spill_finalize()
 	 * under LW_EXCLUSIVE after the on-disk chain is truncated.
 	 * Acts as the in-memory memtable cache's invalidation

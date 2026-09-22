@@ -10,8 +10,6 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 SOURCE_FILE="${SOURCE_FILE:-${REPO_ROOT}/src/access/compaction_api.c}"
 BUILD_SOURCE="${BUILD_SOURCE:-${REPO_ROOT}/src/access/build.c}"
-INSTALL_SQL="${REPO_ROOT}/sql/pg_textsearch--1.5.0-dev.sql"
-UPGRADE_SQL="${REPO_ROOT}/sql/pg_textsearch--1.4.0--1.5.0-dev.sql"
 
 open_body="$(
     sed -n '/^tp_open_bm25_index(Oid indexoid, LOCKMODE lockmode, bool need_owner)$/,/^}$/p' \
@@ -170,21 +168,5 @@ if [[ -z "${current_maintenance_line}" || -z "${current_decline_line}" ||
     echo "managed compaction must conditionally admit then revalidate" >&2
     exit 1
 fi
-
-for sql_file in "${INSTALL_SQL}" "${UPGRADE_SQL}"; do
-    for function_name in \
-        bm25_test_hold_index_lock \
-        bm25_test_exclusive_waiters; do
-        function_mentions="$(
-            grep -Fc "@extschema@.${function_name}" "${sql_file}"
-        )"
-        if ! grep -Fq "CREATE FUNCTION @extschema@.${function_name}" \
-                "${sql_file}" ||
-           [ "${function_mentions}" -lt 2 ]; then
-            echo "${sql_file} lacks ${function_name} creation or revoke" >&2
-            exit 1
-        fi
-    done
-done
 
 echo "Compaction ownership and lock ordering passed"

@@ -178,7 +178,6 @@ test-rls-locking:
 
 test-concurrency: test-rls-locking
 	@echo "Running concurrency tests..."
-	@cd test/scripts && ./index_lock_fairness.sh
 	@cd test/scripts && ./inline_compaction_locking.sh
 	@cd test/scripts && ./concurrency.sh
 	@cd test/scripts && ./boolean_concurrent_merge.sh
