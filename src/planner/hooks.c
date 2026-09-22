@@ -1469,6 +1469,11 @@ collect_explicit_indexes_walker(
 	if (node == NULL)
 		return false;
 
+	/* SubLinks, CTEs, and range-table entries contain nested Queries. */
+	if (IsA(node, Query))
+		return query_tree_walker(
+				(Query *)node, collect_explicit_indexes_walker, context, 0);
+
 	if (IsA(node, OpExpr))
 	{
 		OpExpr		 *opexpr = (OpExpr *)node;

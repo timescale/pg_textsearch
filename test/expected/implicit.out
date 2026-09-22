@@ -205,6 +205,24 @@ BEGIN
     END IF;
 END $$;
 DEALLOCATE prepared_score;
+-- The planner-time BM25 check must descend into a FROM subquery. The outer
+-- SELECT has no BM25 operator of its own.
+PREPARE prepared_subquery_score(text) AS
+SELECT id FROM (
+    SELECT id FROM implicit_docs
+    ORDER BY content <@> to_bm25query($1, 'implicit_docs_idx')
+    LIMIT 2
+) AS ranked;
+DO $$
+DECLARE plan json;
+BEGIN
+    EXECUTE 'EXPLAIN (FORMAT JSON, COSTS OFF, VERBOSE) EXECUTE prepared_subquery_score(''hello'')'
+        INTO plan;
+    IF plan::text NOT LIKE '%bm25_get_current_score()%' THEN
+        RAISE EXCEPTION 'subquery BM25 scan did not reuse the index score: %', plan;
+    END IF;
+END $$;
+DEALLOCATE prepared_subquery_score;
 RESET plan_cache_mode;
 -- Test 11: Implicit text <@> text in DELETE subquery (issue #213)
 -- The implicit form should work inside subqueries of DML statements
