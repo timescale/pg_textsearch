@@ -184,6 +184,188 @@ trigger_publication_panic() {
     restart_primary
 }
 
+create_legacy_vacuum_fixture() {
+    local prefix=$1
+    local legacy_created
+
+    primary_sql "
+        SET pg_textsearch.memtable_pages_threshold = 0;
+        SET pg_textsearch.bulk_load_threshold = 0;
+        CREATE TABLE ${prefix}_docs (
+            id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+            body text NOT NULL
+        ) WITH (autovacuum_enabled = false);
+        CREATE INDEX ${prefix}_idx
+            ON ${prefix}_docs USING bm25(body)
+            WITH (text_config = 'english', compaction = 'off');
+        INSERT INTO ${prefix}_docs (body)
+        SELECT 'legacy recovery document ' || gs || ' ' ||
+               repeat(md5(gs::text), 4)
+          FROM generate_series(1, 20000) gs;
+    " >/dev/null
+
+    primary_sql "
+        SELECT pg_textsearch_test_attach_legacy_segment(1000000);
+        SELECT bm25_spill_index('${prefix}_idx');
+        SELECT injection_points_detach(
+                   'pg-textsearch-legacy-segment');
+    " >/dev/null
+    legacy_created=$(primary_value "
+        SELECT bm25_dump_index('${prefix}_idx') LIKE '%Version: 4%';")
+    [ "${legacy_created}" = "t" ] ||
+        error "${prefix}: legacy segment was not injected"
+    primary_sql "
+        DELETE FROM ${prefix}_docs WHERE id <= 5000;
+        CHECKPOINT;
+    " >/dev/null
+}
+
+legacy_root() {
+    local prefix=$1
+
+    primary_value "SELECT bm25_summarize_index('${prefix}_idx');" |
+        sed -n 's/.*L0 Segment 1: block=\([0-9][0-9]*\).*/\1/p'
+}
+
+index_stat() {
+    local prefix=$1
+    local field=$2
+
+    primary_value "SELECT bm25_summarize_index('${prefix}_idx');" |
+        sed -n "s/^  ${field}: \\([0-9][0-9]*\\)$/\\1/p"
+}
+
+# The panic fires inside a parallel vacuum worker, so the attached
+# condition matches the leader pid through the worker's lock group.
+trigger_legacy_vacuum_panic() {
+    local prefix=$1
+    local point=$2
+    local postmaster_pid
+    local output
+    local rc
+
+    postmaster_pid=$(head -1 "${PRIMARY_DIR}/postmaster.pid")
+    set +e
+    output=$(PGOPTIONS="-c min_parallel_index_scan_size=0" \
+        timeout 30s psql -X -v ON_ERROR_STOP=1 \
+        -p "${PRIMARY_PORT}" -d "${TEST_DB}" \
+        -c "SELECT pg_textsearch_test_attach_panic('${point}');" \
+        -c "VACUUM (PARALLEL 1, VERBOSE) ${prefix}_docs;" 2>&1)
+    rc=$?
+    set -e
+
+    [ "${rc}" -ne 0 ] ||
+        error "${prefix}: legacy VACUUM survived the ${point} panic"
+    [ "${rc}" -ne 124 ] ||
+        error "${prefix}: timed out waiting for PANIC: ${output}"
+    grep -q "launched 1 parallel vacuum worker" <<<"${output}" ||
+        error "${prefix}: legacy VACUUM did not launch a parallel worker: ${output}"
+    wait_for_postmaster_exit "${postmaster_pid}" "${prefix}"
+    log_contains "panic triggered for injection point ${point}" ||
+        error "${prefix}: missing PANIC marker for ${point}"
+    restart_primary
+}
+
+assert_legacy_vacuum_recovery() {
+    local prefix=$1
+    local old_root=$2
+    local expect_replaced=$3
+    local expect_parked=$4
+    local expected_total_docs=$5
+    local expected_total_len=$6
+    local heap_count
+    local new_root
+    local parked
+    local plan
+    local remaining
+    local summary
+    local total_docs
+    local total_len
+
+    new_root=$(legacy_root "${prefix}")
+    [ -n "${new_root}" ] ||
+        error "${prefix}: recovered graph has no L0 segment root"
+    if [ "${expect_replaced}" = "yes" ]; then
+        [ "${new_root}" != "${old_root}" ] ||
+            error "${prefix}: legacy root ${old_root} was not replaced"
+    else
+        [ "${new_root}" = "${old_root}" ] ||
+            error "${prefix}: unpublished replacement changed root to ${new_root}"
+    fi
+
+    parked=$(primary_value \
+        "SELECT bm25_pending_free_pages('${prefix}_idx');")
+    if [ "${expect_parked}" = "yes" ]; then
+        [ "${parked}" -gt 0 ] ||
+            error "${prefix}: replaced legacy root has no pending-free pages"
+    else
+        [ "${parked}" = "0" ] ||
+            error "${prefix}: unpublished tombstones became reachable"
+    fi
+
+    remaining=$(primary_ranked_value "
+        SELECT count(*)
+          FROM (
+                SELECT id
+                  FROM ${prefix}_docs
+                 ORDER BY body <@> to_bm25query(
+                              'legacy recovery', '${prefix}_idx')
+               ) ranked;")
+    if [ "${remaining}" != "15000" ]; then
+        heap_count=$(primary_value "SELECT count(*) FROM ${prefix}_docs;")
+        plan=$(primary_ranked_value "
+            EXPLAIN (COSTS off)
+            SELECT id
+              FROM ${prefix}_docs
+             ORDER BY body <@> to_bm25query(
+                          'legacy recovery', '${prefix}_idx');")
+        summary=$(primary_value \
+            "SELECT bm25_summarize_index('${prefix}_idx');")
+        error "${prefix}: recovered ranked scan returned ${remaining}/15000 rows; heap=${heap_count}; plan=${plan}; summary=${summary}"
+    fi
+
+    summary=$(primary_value \
+        "SELECT bm25_summarize_index('${prefix}_idx');")
+    total_docs=$(sed -n 's/^  total_docs: \([0-9][0-9]*\)$/\1/p' \
+        <<<"${summary}")
+    total_len=$(sed -n 's/^  total_len: \([0-9][0-9]*\)$/\1/p' \
+        <<<"${summary}")
+    if [ "${expect_replaced}" = "no" ]; then
+        [ "${total_docs}" = "${expected_total_docs}" ] ||
+            error "${prefix}: recovered total_docs is ${total_docs}, expected ${expected_total_docs}"
+        [ "${total_len}" = "${expected_total_len}" ] ||
+            error "${prefix}: recovered total_len is ${total_len}, expected ${expected_total_len}"
+    fi
+
+    if [ "${expect_replaced}" = "yes" ]; then
+        primary_value "SELECT txid_current();" >/dev/null
+        primary_value "SELECT txid_current();" >/dev/null
+        primary_sql "VACUUM ${prefix}_docs;" >/dev/null
+        parked=$(primary_value \
+            "SELECT bm25_pending_free_pages('${prefix}_idx');")
+        [ "${parked}" -gt 0 ] ||
+            error "${prefix}: provisional reclaim batch drained on activation"
+
+        primary_value "SELECT txid_current();" >/dev/null
+        primary_value "SELECT txid_current();" >/dev/null
+        primary_sql "VACUUM ${prefix}_docs;" >/dev/null
+        parked=$(primary_value \
+            "SELECT bm25_pending_free_pages('${prefix}_idx');")
+        [ "${parked}" = "0" ] ||
+            error "${prefix}: activated reclaim batch remained parked (${parked})"
+
+        primary_sql "REINDEX INDEX ${prefix}_idx;" >/dev/null
+        expected_total_docs=$(index_stat "${prefix}" total_docs)
+        expected_total_len=$(index_stat "${prefix}" total_len)
+        [ "${total_docs}" = "${expected_total_docs}" ] ||
+            error "${prefix}: recovered total_docs ${total_docs} differs from REINDEX ${expected_total_docs}"
+        [ "${total_len}" = "${expected_total_len}" ] ||
+            error "${prefix}: recovered total_len ${total_len} differs from REINDEX ${expected_total_len}"
+    fi
+
+    log "PASS: ${prefix} recovered root ${new_root}, pending ${parked}"
+}
+
 assert_crash_recovery() {
     local prefix=$1
     local expected_graph=$2
@@ -275,6 +457,42 @@ test_publication_crash_recovery() {
         after_publish "{0,1,0,0,0,0,0,0}" 1 yes
 }
 
+test_legacy_vacuum_crash_recovery() {
+    local old_root
+    local old_total_docs
+    local old_total_len
+
+    if [ "${HAS_INJECTION_POINTS}" -ne 1 ]; then
+        log "Skipping legacy VACUUM crash recovery: no injection points"
+        return
+    fi
+
+    log "Testing parallel legacy VACUUM publication crash recovery..."
+
+    create_legacy_vacuum_fixture legacy_before_publish
+    old_root=$(legacy_root legacy_before_publish)
+    old_total_docs=$(index_stat legacy_before_publish total_docs)
+    old_total_len=$(index_stat legacy_before_publish total_len)
+    [ -n "${old_root}" ] ||
+        error "legacy_before_publish: fixture has no L0 segment root"
+    trigger_legacy_vacuum_panic \
+        legacy_before_publish \
+        pg-textsearch-before-compaction-publish
+    assert_legacy_vacuum_recovery \
+        legacy_before_publish "${old_root}" no no \
+        "${old_total_docs}" "${old_total_len}"
+
+    create_legacy_vacuum_fixture legacy_after_publish
+    old_root=$(legacy_root legacy_after_publish)
+    [ -n "${old_root}" ] ||
+        error "legacy_after_publish: fixture has no L0 segment root"
+    trigger_legacy_vacuum_panic \
+        legacy_after_publish \
+        pg-textsearch-after-compaction-publish
+    assert_legacy_vacuum_recovery \
+        legacy_after_publish "${old_root}" yes yes "" ""
+}
+
 expect_recovery_rejection() {
     local function_name=$1
     local output
@@ -327,6 +545,7 @@ EOF
         -l "${PRIMARY_DIR}/postgres.log" -m fast -w
 
     test_publication_crash_recovery
+    test_legacy_vacuum_crash_recovery
     test_standby_guards
     log "Compaction recovery tests PASSED"
 }

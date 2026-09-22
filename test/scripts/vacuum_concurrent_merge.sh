@@ -43,11 +43,15 @@ ERR_DIR="${DATA_DIR}/client_logs"
 KEEP_DIR="${SCRIPT_DIR}/../tmp_vacuum_concurrent_merge_logs"
 TEST_SIZE_MULTIPLIER=${TEST_SIZE_MULTIPLIER:-1.0}
 POINT_AFTER_SELECT='pg-textsearch-compaction-after-select'
+POINT_SOURCE_ESTIMATE='pg-textsearch-compaction-source-estimate'
+POINT_VACUUM_RECLAIM='pg-textsearch-vacuum-memtable-reclaim'
+POINT_MEMTABLE_EXTEND='pg-textsearch-memtable-extend'
+POINT_EXCLUSIVE_WAITER='pg-textsearch-index-lock-exclusive-waiter'
 # Injection points only exist on a server built with
 # --enable-injection-points; the rest of this script runs either way.
 HAS_INJECTION_POINTS=0
 PRELOAD_LIBRARIES='pg_textsearch'
-if [ -f "$(pg_config --pkglibdir)/injection_points.so" ]; then
+if [ -f "$("${PG_CONFIG}" --pkglibdir)/injection_points.so" ]; then
     HAS_INJECTION_POINTS=1
     PRELOAD_LIBRARIES='pg_textsearch,injection_points'
 fi
@@ -96,11 +100,17 @@ diagnose() {
           FROM pg_locks
          WHERE (locktype = 'relation'
                 AND relation IN ('docs_bm25'::regclass,
-                                 'coord_bm25'::regclass))
+                                 'coord_bm25'::regclass,
+                                 'identify_bm25'::regclass,
+                                 'reclaim_bm25'::regclass,
+                                 'yield_bm25'::regclass))
             OR (locktype = 'object'
                 AND classid = 'pg_am'::regclass
                 AND objid IN ('docs_bm25'::regclass,
-                              'coord_bm25'::regclass))
+                              'coord_bm25'::regclass,
+                              'identify_bm25'::regclass,
+                              'reclaim_bm25'::regclass,
+                              'yield_bm25'::regclass))
          ORDER BY pid, locktype, mode;" 2>&1 || true
     warn "server log tail:"
     tail -n 80 "${LOGFILE}" 2>/dev/null || true
@@ -209,6 +219,64 @@ SELECT bm25_spill_index('coord_bm25');
 INSERT INTO coord_docs(body)
 SELECT 'coordcase batch4 document ' || gs FROM generate_series(1, 8) gs;
 SELECT bm25_spill_index('coord_bm25');
+
+CREATE TABLE identify_docs (
+    id bigserial PRIMARY KEY,
+    body text NOT NULL
+);
+CREATE INDEX identify_bm25 ON identify_docs USING bm25(body)
+    WITH (text_config='english', compaction='off');
+ALTER TABLE identify_docs SET (autovacuum_enabled=false);
+INSERT INTO identify_docs(body)
+SELECT 'identify vacuum document ' || gs || ' ' || repeat(md5(gs::text), 8)
+FROM generate_series(1, 20000) gs;
+SELECT bm25_spill_index('identify_bm25');
+DELETE FROM identify_docs WHERE id <= 1000;
+
+CREATE TABLE yield_docs (
+    id bigserial PRIMARY KEY,
+    body text NOT NULL
+);
+CREATE INDEX yield_bm25 ON yield_docs USING bm25(body)
+    WITH (text_config='english', compaction='off');
+ALTER TABLE yield_docs SET (autovacuum_enabled=false);
+INSERT INTO yield_docs(body)
+SELECT 'yieldcase batch1 document ' || gs FROM generate_series(1, 8) gs;
+SELECT bm25_spill_index('yield_bm25');
+INSERT INTO yield_docs(body)
+SELECT 'yieldcase batch2 document ' || gs FROM generate_series(1, 8) gs;
+SELECT bm25_spill_index('yield_bm25');
+INSERT INTO yield_docs(body)
+SELECT 'yieldcase batch3 document ' || gs FROM generate_series(1, 8) gs;
+SELECT bm25_spill_index('yield_bm25');
+INSERT INTO yield_docs(body)
+SELECT 'yieldcase batch4 document ' || gs FROM generate_series(1, 8) gs;
+SELECT bm25_spill_index('yield_bm25');
+DELETE FROM yield_docs WHERE id <= 4;
+
+CREATE TABLE reclaim_docs (
+    id bigserial PRIMARY KEY,
+    body text NOT NULL
+);
+CREATE INDEX reclaim_bm25 ON reclaim_docs USING bm25(body)
+    WITH (text_config='english', compaction='off');
+ALTER TABLE reclaim_docs SET (autovacuum_enabled=false);
+INSERT INTO reclaim_docs(body)
+SELECT 'retired reclaim document ' || gs || ' ' || repeat(md5(gs::text), 8)
+FROM generate_series(1, 6000) gs;
+SELECT bm25_spill_index('reclaim_bm25');
+INSERT INTO reclaim_docs(body) VALUES ('reclaimrace live memtable document');
+
+CREATE TABLE snapshot_lock_docs (
+    id bigserial PRIMARY KEY,
+    body text NOT NULL
+);
+INSERT INTO snapshot_lock_docs(body)
+SELECT 'snapshotlock committed document ' || gs
+FROM generate_series(1, 10) gs;
+CREATE INDEX snapshot_lock_bm25 ON snapshot_lock_docs USING bm25(body)
+    WITH (text_config='english', compaction='off');
+ALTER TABLE snapshot_lock_docs SET (autovacuum_enabled=false);
 SQL
 }
 
@@ -254,6 +322,7 @@ client_backend_pid() {
 # custom wait event, so its state is observable directly.
 injection_waiting() {
     local backend=$1
+    local point=$2
 
     sql -c "
         SELECT EXISTS (
@@ -261,34 +330,74 @@ injection_waiting() {
               FROM pg_stat_activity
              WHERE pid = ${backend}
                AND wait_event_type = 'InjectionPoint'
-               AND wait_event = '${POINT_AFTER_SELECT}'
+               AND wait_event = '${point}'
         );" 2>/dev/null || true
 }
 
 wait_for_injection() {
     local backend=$1
+    local point=$2
     local deadline=$((SECONDS + 10))
 
     while ((SECONDS < deadline)); do
-        if [ "$(injection_waiting "${backend}")" = "t" ]; then
-            log "Backend ${backend} is waiting at ${POINT_AFTER_SELECT}"
+        if [ "$(injection_waiting "${backend}" "${point}")" = "t" ]; then
+            log "Backend ${backend} is waiting at ${point}"
             return
         fi
         sleep 0.05
     done
-    error "backend ${backend} did not reach ${POINT_AFTER_SELECT}"
+    error "backend ${backend} did not reach ${point}"
 }
 
 assert_still_paused() {
     local backend=$1
+    local point=$2
+    local client_pid=$3
+    local label=$4
 
-    [ "$(injection_waiting "${backend}")" = "t" ] ||
-        error "VACUUM did not overlap the compaction wait"
+    [ "$(injection_waiting "${backend}" "${point}")" = "t" ] ||
+        error "${label} left ${point} before the proof completed"
+    kill -0 "${client_pid}" 2>/dev/null ||
+        error "${label} client exited before the proof completed"
 }
 
+# Release one backend parked at a point and wait for it to leave.
 release_injection() {
-    sql -c "SELECT injection_points_wakeup('${POINT_AFTER_SELECT}');" \
-        >/dev/null || error "could not wake ${POINT_AFTER_SELECT}"
+    local backend=$1
+    local point=$2
+    local deadline
+
+    sql -c "SELECT injection_points_wakeup('${point}');" >/dev/null 2>&1 ||
+        true
+    deadline=$((SECONDS + 10))
+    while ((SECONDS < deadline)); do
+        [ "$(injection_waiting "${backend}" "${point}")" = "t" ] || return 0
+        sleep 0.05
+    done
+    error "backend ${backend} stayed parked at ${point} after wakeup"
+}
+
+# Keep waking a backend that re-enters the same point until its client
+# finishes.
+drain_injection() {
+    local backend=$1
+    local point=$2
+    local client_pid=$3
+
+    while kill -0 "${client_pid}" 2>/dev/null; do
+        if [ "$(injection_waiting "${backend}" "${point}")" = "t" ]; then
+            sql -c "SELECT injection_points_wakeup('${point}');" \
+                >/dev/null 2>&1 || true
+        fi
+        sleep 0.02
+    done
+}
+
+# Attach a point for the connecting backend only, so concurrent
+# sessions are unaffected.  Emitted as psql -c arguments.
+attach_local_wait() {
+    printf "SELECT injection_points_set_local();
+            SELECT injection_points_attach('%s', 'wait');" "$1"
 }
 
 wait_for_exit() {
@@ -327,6 +436,285 @@ assert_no_segment_errors() {
             "${ERR_DIR}" "${LOGFILE}" | sed -n '1,5p'
         error "TEST FAILED: concurrent maintenance reported an index storage error"
     fi
+}
+
+test_memtable_snapshot_lock_order() {
+    local writer_output="${ERR_DIR}/snapshot_lock_writer.log"
+    local reader_output="${ERR_DIR}/snapshot_lock_reader.log"
+    local writer_pid reader_pid writer_backend reader_backend
+    local result expected state_proof=f deadline
+
+    if [ "${HAS_INJECTION_POINTS}" -ne 1 ]; then
+        log "Skipping memtable snapshot lock order: no injection points"
+        return
+    fi
+
+    # PR3's unlocked VACUUM cleanup uses the same graph snapshot helper while
+    # inserts may extend the memtable. A ranked reader exposes the helper's
+    # exact snapshot and wait state, which VACUUM itself does not return.
+    log "Case: read snapshot acquires memtable tail before metapage..."
+
+    PGAPPNAME=pgts-snapshot-lock-writer \
+        PGOPTIONS="-c statement_timeout=30000 -c lock_timeout=15000" \
+        psql -h "${SOCKET_DIR}" -p "${TEST_PORT}" -d "${TEST_DB}" \
+        -qAt -v ON_ERROR_STOP=1 \
+        -c "SELECT pg_backend_pid();" \
+        -c "$(attach_local_wait "${POINT_MEMTABLE_EXTEND}")" \
+        -c "INSERT INTO snapshot_lock_docs(body)
+            SELECT 'snapshotlock uncommitted extension ' || gs
+              FROM generate_series(1, 1000) gs;" \
+        >"${writer_output}" 2>&1 &
+    writer_pid=$!
+    writer_backend=$(client_backend_pid \
+        "${writer_output}" "memtable extension writer")
+    wait_for_injection "${writer_backend}" "${POINT_MEMTABLE_EXTEND}"
+
+    PGAPPNAME=pgts-snapshot-lock-reader \
+        PGOPTIONS="-c statement_timeout=15000 -c lock_timeout=14000" \
+        psql -h "${SOCKET_DIR}" -p "${TEST_PORT}" -d "${TEST_DB}" \
+        -qAt -v ON_ERROR_STOP=1 \
+        -c "SELECT pg_backend_pid();" \
+        -c "SET enable_seqscan = off;
+            SELECT string_agg(id::text, ',' ORDER BY id)
+              FROM (
+                    SELECT id
+                      FROM snapshot_lock_docs
+                     ORDER BY body <@> to_bm25query(
+                                  'snapshotlock', 'snapshot_lock_bm25')
+                     LIMIT 2000
+                   ) ranked;" \
+        >"${reader_output}" 2>&1 &
+    reader_pid=$!
+    reader_backend=$(client_backend_pid \
+        "${reader_output}" "snapshot lock-order reader")
+
+    deadline=$((SECONDS + 5))
+    while ((SECONDS < deadline)); do
+        state_proof=$(sql -c "
+            SELECT EXISTS (
+                SELECT 1
+                  FROM pg_stat_activity reader
+                 WHERE reader.pid = ${reader_backend}
+                   AND reader.state = 'active'
+                   AND reader.wait_event_type = 'LWLock'
+                   AND reader.wait_event = 'BufferContent'
+                   AND reader.query LIKE '%snapshot_lock_docs%'
+            );" 2>/dev/null || true)
+        [ "${state_proof}" = "t" ] && break
+        sleep 0.05
+    done
+    [ "${state_proof}" = "t" ] ||
+        error "reader did not wait on BufferContent while writer held old tail"
+    assert_still_paused "${writer_backend}" "${POINT_MEMTABLE_EXTEND}" \
+        "${writer_pid}" "tail-extension writer"
+    kill -0 "${reader_pid}" 2>/dev/null ||
+        error "snapshot reader exited before the explicit gate release"
+
+    drain_injection "${writer_backend}" "${POINT_MEMTABLE_EXTEND}" \
+        "${writer_pid}"
+
+    wait_success "${reader_pid}" 10 "snapshot lock-order reader" \
+        "${reader_output}"
+    wait_success "${writer_pid}" 10 "memtable extension writer" \
+        "${writer_output}"
+    result=$(tail -n 1 "${reader_output}")
+    expected=$(seq 1 10 | paste -sd, -)
+    [ "${result}" = "${expected}" ] ||
+        error "snapshot lock-order reader returned ${result}, expected ${expected}"
+    log "Tail extension and exact ranked snapshot completed without deadlock"
+}
+
+test_vacuum_reclaim_does_not_gate_readers() {
+    local vacuum_output="${ERR_DIR}/reclaim_vacuum.log"
+    local spill_output="${ERR_DIR}/reclaim_spill.log"
+    local reader_output="${ERR_DIR}/reclaim_reader.log"
+    local compactor_output="${ERR_DIR}/reclaim_compactor.log"
+    local vacuum_pid spill_pid reader_pid compactor_pid
+    local vacuum_backend spill_backend compactor_backend
+    local oid reader_result lock_proof=f deadline
+
+    if [ "${HAS_INJECTION_POINTS}" -ne 1 ]; then
+        log "Skipping full-fork VACUUM reclaim case: no injection points"
+        return
+    fi
+
+    log "Case: full-fork VACUUM reclaim does not hold the per-index lock..."
+    oid=$(sql -c "SELECT 'reclaim_bm25'::regclass::oid;")
+    for _ in $(seq 1 32); do
+        sql -c "SELECT txid_current();" >/dev/null
+    done
+
+    PGAPPNAME=pgts-reclaim-vacuum \
+        PGOPTIONS="-c statement_timeout=90000 -c lock_timeout=30000" \
+        psql -h "${SOCKET_DIR}" -p "${TEST_PORT}" -d "${TEST_DB}" \
+        -qAt -v ON_ERROR_STOP=1 \
+        -c "SELECT pg_backend_pid();" \
+        -c "$(attach_local_wait "${POINT_VACUUM_RECLAIM}")" \
+        -c "VACUUM reclaim_docs;" \
+        >"${vacuum_output}" 2>&1 &
+    vacuum_pid=$!
+    vacuum_backend=$(client_backend_pid "${vacuum_output}" "reclaim VACUUM")
+    wait_for_injection "${vacuum_backend}" "${POINT_VACUUM_RECLAIM}"
+
+    PGAPPNAME=pgts-reclaim-spill \
+        PGOPTIONS="-c statement_timeout=90000 -c lock_timeout=30000" \
+        psql -h "${SOCKET_DIR}" -p "${TEST_PORT}" -d "${TEST_DB}" \
+        -qAt -v ON_ERROR_STOP=1 \
+        -c "SELECT pg_backend_pid();" \
+        -c "$(attach_local_wait "${POINT_EXCLUSIVE_WAITER}")" \
+        -c "SELECT bm25_spill_index('reclaim_bm25');" \
+        >"${spill_output}" 2>&1 &
+    spill_pid=$!
+    spill_backend=$(client_backend_pid "${spill_output}" "reclaim spill")
+    wait_for_injection "${spill_backend}" "${POINT_EXCLUSIVE_WAITER}"
+    release_injection "${spill_backend}" "${POINT_EXCLUSIVE_WAITER}"
+
+    PGAPPNAME=pgts-reclaim-reader \
+        PGOPTIONS="-c statement_timeout=5000 -c lock_timeout=4000" \
+        sql -c "
+            SELECT count(*)
+              FROM (
+                    SELECT id
+                      FROM reclaim_docs
+                     ORDER BY body <@> to_bm25query(
+                                  'reclaimrace', 'reclaim_bm25')
+                     LIMIT 10
+                   ) ranked;" \
+        >"${reader_output}" 2>&1 &
+    reader_pid=$!
+
+    wait_success "${spill_pid}" 5 "exclusive spill during reclaim" \
+        "${spill_output}"
+    wait_success "${reader_pid}" 5 "later ranked reader during reclaim" \
+        "${reader_output}"
+    reader_result=$(tail -n 1 "${reader_output}")
+    [ "${reader_result}" = "1" ] ||
+        error "later reclaim reader returned ${reader_result}"
+    assert_still_paused "${vacuum_backend}" "${POINT_VACUUM_RECLAIM}" \
+        "${vacuum_pid}" "reclaim VACUUM"
+
+    PGAPPNAME=pgts-reclaim-compactor \
+        PGOPTIONS="-c statement_timeout=90000 -c lock_timeout=30000" \
+        psql -h "${SOCKET_DIR}" -p "${TEST_PORT}" -d "${TEST_DB}" \
+        -qAt -v ON_ERROR_STOP=1 \
+        -c "SELECT pg_backend_pid();" \
+        -c "SELECT bm25_force_merge('reclaim_bm25');" \
+        >"${compactor_output}" 2>&1 &
+    compactor_pid=$!
+    compactor_backend=$(client_backend_pid \
+        "${compactor_output}" "reclaim force merge")
+
+    deadline=$((SECONDS + 3))
+    while ((SECONDS < deadline)); do
+        lock_proof=$(sql -c "
+            SELECT EXISTS (
+                SELECT 1
+                  FROM pg_stat_activity activity
+                  JOIN pg_locks pending
+                    ON pending.pid = activity.pid
+                 WHERE activity.pid = ${compactor_backend}
+                   AND activity.state = 'active'
+                   AND ${vacuum_backend} =
+                       ANY (pg_blocking_pids(activity.pid))
+                   AND pending.locktype = 'object'
+                   AND pending.classid = 'pg_am'::regclass
+                   AND pending.objid = ${oid}
+                   AND pending.objsubid = 3
+                   AND pending.mode = 'ExclusiveLock'
+                   AND NOT pending.granted
+            );" 2>/dev/null || true)
+        [ "${lock_proof}" = "t" ] && break
+        sleep 0.05
+    done
+    [ "${lock_proof}" = "t" ] ||
+        error "force merge was not serialized by reclaim maintenance"
+    assert_still_paused "${vacuum_backend}" "${POINT_VACUUM_RECLAIM}" \
+        "${vacuum_pid}" "reclaim VACUUM"
+
+    release_injection "${vacuum_backend}" "${POINT_VACUUM_RECLAIM}"
+    wait_success "${vacuum_pid}" 20 "reclaim VACUUM" "${vacuum_output}"
+    wait_success "${compactor_pid}" 15 "post-reclaim force merge" \
+        "${compactor_output}"
+    log "Exclusive spill and ranked reader completed while reclaim stayed paused"
+}
+
+test_vacuum_identification_does_not_gate_readers() {
+    local vacuum_output="${ERR_DIR}/identify_vacuum.log"
+    local spill_output="${ERR_DIR}/identify_spill.log"
+    local reader_output="${ERR_DIR}/identify_reader.log"
+    local vacuum_pid
+    local spill_pid
+    local reader_pid
+    local vacuum_backend
+    local spill_backend
+    local oid
+    local reader_result
+
+    if [ "${HAS_INJECTION_POINTS}" -ne 1 ]; then
+        log "Skipping VACUUM identification case: no injection points"
+        return
+    fi
+
+    log "Case: VACUUM identification does not gate later readers..."
+    oid=$(sql -c "SELECT 'identify_bm25'::regclass::oid;")
+
+    PGAPPNAME=pgts-identify-vacuum \
+        PGOPTIONS="-c statement_timeout=90000 -c lock_timeout=30000" \
+        psql -h "${SOCKET_DIR}" -p "${TEST_PORT}" -d "${TEST_DB}" \
+        -qAt -v ON_ERROR_STOP=1 \
+        -c "SELECT pg_backend_pid();" \
+        -c "$(attach_local_wait "${POINT_SOURCE_ESTIMATE}")" \
+        -c "VACUUM identify_docs;" \
+        >"${vacuum_output}" 2>&1 &
+    vacuum_pid=$!
+    vacuum_backend=$(client_backend_pid \
+        "${vacuum_output}" "identification VACUUM client")
+    wait_for_injection "${vacuum_backend}" "${POINT_SOURCE_ESTIMATE}"
+
+    PGAPPNAME=pgts-identify-spill \
+        PGOPTIONS="-c statement_timeout=90000 -c lock_timeout=30000" \
+        psql -h "${SOCKET_DIR}" -p "${TEST_PORT}" -d "${TEST_DB}" \
+        -qAt -v ON_ERROR_STOP=1 \
+        -c "SELECT pg_backend_pid();" \
+        -c "INSERT INTO identify_docs(body)
+            VALUES ('queued spill reader visibility');" \
+        -c "$(attach_local_wait "${POINT_EXCLUSIVE_WAITER}")" \
+        -c "SELECT bm25_spill_index('identify_bm25');" \
+        >"${spill_output}" 2>&1 &
+    spill_pid=$!
+    spill_backend=$(client_backend_pid "${spill_output}" "identification spill")
+    wait_for_injection "${spill_backend}" "${POINT_EXCLUSIVE_WAITER}"
+    release_injection "${spill_backend}" "${POINT_EXCLUSIVE_WAITER}"
+    assert_still_paused "${vacuum_backend}" "${POINT_SOURCE_ESTIMATE}" \
+        "${vacuum_pid}" "identification VACUUM"
+
+    PGAPPNAME=pgts-identify-reader \
+        PGOPTIONS="-c statement_timeout=2000 -c lock_timeout=1500" \
+        sql -c "
+            SELECT count(*)
+              FROM (
+                    SELECT id
+                      FROM identify_docs
+                     ORDER BY body <@> to_bm25query(
+                                  'identify', 'identify_bm25')
+                     LIMIT 1
+                   ) ranked;" \
+        >"${reader_output}" 2>&1 &
+    reader_pid=$!
+    wait_success "${reader_pid}" 3 "later identification reader" \
+        "${reader_output}"
+    reader_result=$(tail -n 1 "${reader_output}")
+    [ "${reader_result}" = "1" ] ||
+        error "later identification reader returned ${reader_result}"
+
+    assert_still_paused "${vacuum_backend}" "${POINT_SOURCE_ESTIMATE}" \
+        "${vacuum_pid}" "identification VACUUM"
+    log "Later reader completed while VACUUM identification was paused"
+
+    release_injection "${vacuum_backend}" "${POINT_SOURCE_ESTIMATE}"
+    wait_success "${vacuum_pid}" 15 "identification VACUUM" \
+        "${vacuum_output}"
+    wait_success "${spill_pid}" 15 "identification spill" "${spill_output}"
 }
 
 test_vacuum_waits_for_force_merge() {
@@ -377,7 +765,7 @@ test_vacuum_waits_for_force_merge() {
         >"${compactor_output}" 2>&1 &
     compactor_pid=$!
     compactor_backend=$(backend_pid pgts-vacuum-compactor)
-    wait_for_injection "${compactor_backend}"
+    wait_for_injection "${compactor_backend}" "${POINT_AFTER_SELECT}"
 
     sql -c "DELETE FROM coord_docs WHERE id BETWEEN 5 AND 8;" >/dev/null
 
@@ -421,9 +809,10 @@ test_vacuum_waits_for_force_merge() {
         error "VACUUM exited before the selected-source compaction resumed"
     kill -0 "${compactor_pid}" 2>/dev/null ||
         error "force merge exited before VACUUM blocking was proved"
-    assert_still_paused "${compactor_backend}"
+    assert_still_paused "${compactor_backend}" "${POINT_AFTER_SELECT}" \
+        "${compactor_pid}" "force merge"
 
-    release_injection
+    release_injection "${compactor_backend}" "${POINT_AFTER_SELECT}"
     wait_success "${compactor_pid}" 15 "force merge" "${compactor_output}"
     wait_success "${vacuum_pid}" 15 "VACUUM" "${vacuum_output}"
 
@@ -488,6 +877,109 @@ test_vacuum_waits_for_force_merge() {
     assert_no_segment_errors
 
     log "VACUUM waited for force merge and removed all known deleted documents"
+}
+
+test_compact_yields_to_vacuum() {
+    local compactor_output="${ERR_DIR}/yield_compactor.log"
+    local vacuum_output="${ERR_DIR}/yield_vacuum.log"
+    local compactor_pid
+    local vacuum_pid
+    local compactor_backend
+    local vacuum_backend
+    local oid
+    local lock_proof=f
+    local deadline
+    local levels
+    local vacuum_drain_pid
+    local compactor_drain_pid
+
+    if [ "${HAS_INJECTION_POINTS}" -ne 1 ]; then
+        log "Skipping compaction yield case: no injection points"
+        return
+    fi
+
+    log "Case: explicit compaction yields maintenance between passes..."
+    oid=$(sql -c "SELECT 'yield_bm25'::regclass::oid;")
+    levels=$(sql -c "SELECT bm25_level_counts('yield_bm25'::regclass);")
+    [ "${levels}" = "{4,0,0,0,0,0,0,0}" ] ||
+        error "yield_bm25 starts with unexpected levels ${levels}"
+
+    PGAPPNAME=pgts-yield-compactor \
+        sql -c "
+            SET statement_timeout = '90s';
+            SET pg_textsearch.segments_per_level = 2;
+            SELECT injection_points_set_local();
+            SELECT injection_points_attach('${POINT_AFTER_SELECT}', 'wait');
+            SELECT bm25_compact('yield_bm25'::regclass);" \
+        >"${compactor_output}" 2>&1 &
+    compactor_pid=$!
+    compactor_backend=$(backend_pid pgts-yield-compactor)
+    wait_for_injection "${compactor_backend}" "${POINT_AFTER_SELECT}"
+
+    PGAPPNAME=pgts-yield-vacuum \
+        PGOPTIONS="-c statement_timeout=90000 -c lock_timeout=30000" \
+        psql -h "${SOCKET_DIR}" -p "${TEST_PORT}" -d "${TEST_DB}" \
+        -qAt -v ON_ERROR_STOP=1 \
+        -c "SELECT pg_backend_pid();" \
+        -c "$(attach_local_wait "${POINT_SOURCE_ESTIMATE}")" \
+        -c "VACUUM yield_docs;" \
+        >"${vacuum_output}" 2>&1 &
+    vacuum_pid=$!
+    vacuum_backend=$(client_backend_pid "${vacuum_output}" "yield VACUUM")
+
+    deadline=$((SECONDS + 3))
+    while ((SECONDS < deadline)); do
+        lock_proof=$(sql -c "
+            SELECT EXISTS (
+                SELECT 1
+                  FROM pg_stat_activity activity
+                  JOIN pg_locks pending
+                    ON pending.pid = activity.pid
+                 WHERE activity.pid = ${vacuum_backend}
+                   AND activity.state = 'active'
+                   AND ${compactor_backend} =
+                       ANY (pg_blocking_pids(activity.pid))
+                   AND pending.locktype = 'object'
+                   AND pending.classid = 'pg_am'::regclass
+                   AND pending.objid = ${oid}
+                   AND pending.objsubid = 3
+                   AND pending.mode = 'ExclusiveLock'
+                   AND NOT pending.granted
+            );" 2>/dev/null || true)
+        if [ "${lock_proof}" = "t" ]; then
+            break
+        fi
+        sleep 0.05
+    done
+    [ "${lock_proof}" = "t" ] ||
+        error "VACUUM did not queue behind the first compaction pass"
+
+    # Releasing the first pass lets it publish and drop maintenance.  The
+    # queued VACUUM must win the handoff: it reaches its own pause while
+    # the compactor is still shut out of a second selection.
+    release_injection "${compactor_backend}" "${POINT_AFTER_SELECT}"
+    wait_for_injection "${vacuum_backend}" "${POINT_SOURCE_ESTIMATE}"
+    [ "$(injection_waiting "${compactor_backend}" "${POINT_AFTER_SELECT}")" \
+        = "f" ] ||
+        error "second compaction pass selected sources before queued VACUUM acquired maintenance"
+
+    # Both backends re-enter their points once per pass and contend for
+    # the same maintenance lock, so drain them concurrently.
+    drain_injection "${vacuum_backend}" "${POINT_SOURCE_ESTIMATE}" \
+        "${vacuum_pid}" &
+    vacuum_drain_pid=$!
+    drain_injection "${compactor_backend}" "${POINT_AFTER_SELECT}" \
+        "${compactor_pid}" &
+    compactor_drain_pid=$!
+    wait_success "${vacuum_pid}" 30 "yield VACUUM" "${vacuum_output}"
+    wait_success "${compactor_pid}" 30 "yielding compactor" \
+        "${compactor_output}"
+    wait "${vacuum_drain_pid}" "${compactor_drain_pid}" 2>/dev/null || true
+
+    levels=$(sql -c "SELECT bm25_level_counts('yield_bm25'::regclass);")
+    [ "${levels}" = "{0,0,1,0,0,0,0,0}" ] ||
+        error "explicit compaction left unexpected levels ${levels}"
+    log "Queued VACUUM acquired maintenance between compaction passes"
 }
 
 # Spill the memtable aggressively so many small segments accrue for the
@@ -597,7 +1089,11 @@ run_test() {
 # Main
 setup_test_db
 seed_data
+test_memtable_snapshot_lock_order
+test_vacuum_reclaim_does_not_gate_readers
+test_vacuum_identification_does_not_gate_readers
 test_vacuum_waits_for_force_merge
+test_compact_yields_to_vacuum
 run_test
 
 log "All tests passed!"

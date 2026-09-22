@@ -86,18 +86,11 @@ extern void tp_tombstone_build_detached(
 		uint32					  num_blocks,
 		FullTransactionId		  merged_fxid,
 		TpDetachedTombstoneBatch *batch);
-extern BlockNumber tp_tombstone_enqueue_extend(
-		Relation		  index,
-		BlockNumber		 *blocks,
-		uint32			  num_blocks,
-		FullTransactionId merged_fxid,
-		BlockNumber		  old_head);
 
 /*
  * Replace the reclaim stamp on every tracked container page.  Ordinary
- * compaction calls this while the batch is detached.  A next-XID prepared
- * replacement calls it after the provisionally stamped batch becomes
- * reachable.
+ * compaction calls this while the batch is detached; parallel VACUUM calls it
+ * after the provisionally stamped batch becomes reachable.
  */
 extern void tp_tombstone_restamp_batch(
 		Relation				 index,

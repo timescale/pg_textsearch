@@ -110,11 +110,11 @@ tombstone_build_internal(
 		const BlockNumber		 *blocks,
 		uint32					  num_blocks,
 		FullTransactionId		  merged_fxid,
-		BlockNumber				  next_page,
 		TpDetachedTombstoneBatch *batch)
 {
-	uint32 remaining = num_blocks;
-	uint32 capacity;
+	BlockNumber next_page = InvalidBlockNumber;
+	uint32		remaining = num_blocks;
+	uint32		capacity;
 
 	Assert(batch != NULL);
 	memset(batch, 0, sizeof(*batch));
@@ -166,44 +166,7 @@ tp_tombstone_build_detached(
 		FullTransactionId		  merged_fxid,
 		TpDetachedTombstoneBatch *batch)
 {
-	tombstone_build_internal(
-			index, blocks, num_blocks, merged_fxid, InvalidBlockNumber, batch);
-}
-
-BlockNumber
-tp_tombstone_enqueue_extend(
-		Relation		  index,
-		BlockNumber		 *blocks,
-		uint32			  num_blocks,
-		FullTransactionId merged_fxid,
-		BlockNumber		  old_head)
-{
-	volatile TpDetachedTombstoneBatch batch;
-
-	if (num_blocks == 0)
-		return old_head;
-
-	memset((TpDetachedTombstoneBatch *)&batch, 0, sizeof(batch));
-	PG_TRY();
-	{
-		tombstone_build_internal(
-				index,
-				blocks,
-				num_blocks,
-				merged_fxid,
-				old_head,
-				(TpDetachedTombstoneBatch *)&batch);
-	}
-	PG_CATCH();
-	{
-		tp_tombstone_discard_detached(
-				index, *(TpDetachedTombstoneBatch *)&batch);
-		PG_RE_THROW();
-	}
-	PG_END_TRY();
-	if (batch.owned_pages != NULL)
-		pfree((BlockNumber *)batch.owned_pages);
-	return batch.head;
+	tombstone_build_internal(index, blocks, num_blocks, merged_fxid, batch);
 }
 
 void

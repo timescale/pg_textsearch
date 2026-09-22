@@ -125,8 +125,8 @@ CREATE INDEX reclaim_idx ON reclaim_docs
 
 -- Add a second segment through the on-disk memtable, then delete exactly
 -- those rows so VACUUM drops that all-dead segment.  First create an FSM
--- free-page pool: tombstone construction safely claims reusable pages
--- without racing concurrent insert allocation.
+-- free-page pool: unlocked VACUUM preparation may safely allocate its
+-- detached tombstone pages there instead of extending the relation.
 INSERT INTO reclaim_docs
 SELECT g, 'vacuum pool beta term' || (g % 50)
 FROM generate_series(1501, 3000) g;

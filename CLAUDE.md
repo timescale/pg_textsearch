@@ -228,6 +228,11 @@ documents instead of rebuilding segments. This is O(dead_docs) instead
 of O(all_docs). Dead docs are filtered during BMW scoring and
 physically removed during segment merge.
 
+The serial cleanup pass holds the maintenance object lock, but not the
+per-index LWLock, while scanning the full index fork for reclaimable DEAD
+memtable pages. This serializes force-merge truncation without blocking
+spills or later readers behind an O(index-pages) shared lock.
+
 **Stale statistics after VACUUM**: After VACUUM marks docs dead, the
 segment's `total_docs`, `total_tokens`, and per-term `doc_freq` are
 not updated. This means BM25 IDF calculations use slightly stale

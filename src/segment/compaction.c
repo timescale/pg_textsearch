@@ -1770,8 +1770,10 @@ tp_publish_compaction_output(
 		memcpy(current_counts,
 			   current_meta->level_counts,
 			   sizeof(current_counts));
-		current_docs	= current_meta->total_docs;
-		current_tokens	= current_meta->total_len;
+		current_docs   = current_meta->total_docs;
+		current_tokens = current_meta->total_len;
+		if (stats_policy == TP_STATS_REBASE_CLAMP_LEGACY_VACUUM)
+			current_tokens = tp_injected_vacuum_total_len(current_tokens);
 		current_pending = tp_metapage_pending_free_head(current_meta);
 		if (stats_policy != TP_STATS_REBASE_STRICT &&
 			stats_policy != TP_STATS_REBASE_CLAMP_LEGACY_VACUUM)

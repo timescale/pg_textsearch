@@ -12,6 +12,8 @@ PG_MODULE_MAGIC;
 PG_FUNCTION_INFO_V1(pg_textsearch_test_attach_panic);
 PG_FUNCTION_INFO_V1(pg_textsearch_test_attach_segment_limit);
 PG_FUNCTION_INFO_V1(pg_textsearch_test_attach_reclaim_horizon_hold);
+PG_FUNCTION_INFO_V1(pg_textsearch_test_attach_legacy_segment);
+PG_FUNCTION_INFO_V1(pg_textsearch_test_attach_vacuum_total_len);
 
 Datum
 pg_textsearch_test_attach_panic(PG_FUNCTION_ARGS)
@@ -63,6 +65,52 @@ pg_textsearch_test_attach_reclaim_horizon_hold(PG_FUNCTION_ARGS)
 			TP_INJECTION_RECLAIM_HORIZON,
 			"pg_textsearch",
 			"tp_injection_reclaim_horizon_hold",
+			&condition,
+			sizeof(condition));
+
+	PG_RETURN_VOID();
+}
+
+Datum
+pg_textsearch_test_attach_legacy_segment(PG_FUNCTION_ARGS)
+{
+	int64 total_tokens = PG_GETARG_INT64(0);
+	TpInjectionTokenTotal condition;
+
+	if (total_tokens < 0)
+		ereport(ERROR,
+				(errcode(ERRCODE_NUMERIC_VALUE_OUT_OF_RANGE),
+				 errmsg("legacy segment token total must be nonnegative")));
+
+	condition.pid		  = MyProcPid;
+	condition.total_tokens = (uint64)total_tokens;
+	InjectionPointAttach(
+			TP_INJECTION_LEGACY_SEGMENT,
+			"pg_textsearch",
+			"tp_injection_legacy_segment",
+			&condition,
+			sizeof(condition));
+
+	PG_RETURN_VOID();
+}
+
+Datum
+pg_textsearch_test_attach_vacuum_total_len(PG_FUNCTION_ARGS)
+{
+	int64 total_tokens = PG_GETARG_INT64(0);
+	TpInjectionTokenTotal condition;
+
+	if (total_tokens < 0)
+		ereport(ERROR,
+				(errcode(ERRCODE_NUMERIC_VALUE_OUT_OF_RANGE),
+				 errmsg("VACUUM token total must be nonnegative")));
+
+	condition.pid		  = MyProcPid;
+	condition.total_tokens = (uint64)total_tokens;
+	InjectionPointAttach(
+			TP_INJECTION_VACUUM_TOTAL_LEN,
+			"pg_textsearch",
+			"tp_injection_vacuum_total_len",
 			&condition,
 			sizeof(condition));
 

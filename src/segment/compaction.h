@@ -61,7 +61,6 @@ tp_compact_step(struct TpLocalIndexState *index_state, Relation index);
 /*
  * Run at most one below-threshold pass whose selected prefix contains an
  * already-empty V5 segment.  The caller already holds maintenance.
- * Consumed by VACUUM.
  */
 extern bool
 tp_compact_empty_step(struct TpLocalIndexState *index_state, Relation index);
@@ -69,8 +68,9 @@ tp_compact_empty_step(struct TpLocalIndexState *index_state, Relation index);
 /*
  * Publish one already-built replacement for one published source segment.
  * The caller holds maintenance and passes ownership of replacement_root.
- * Current-XID mode publishes a fully stamped batch; next-XID mode attaches
- * a provisional batch, then samples and WAL-restamps it after publication.
+ * Serial VACUUM uses its current transaction ID; parallel VACUUM attaches a
+ * provisional tombstone batch, then samples and WAL-restamps it after the
+ * publication record is inserted.
  */
 extern void tp_publish_prepared_segment_replacement(
 		struct TpLocalIndexState	   *index_state,

@@ -14,3 +14,14 @@ CREATE FUNCTION pg_textsearch_test_attach_reclaim_horizon_hold()
 RETURNS void
 AS 'MODULE_PATHNAME', 'pg_textsearch_test_attach_reclaim_horizon_hold'
 LANGUAGE C STRICT PARALLEL UNSAFE;
+
+CREATE FUNCTION pg_textsearch_test_attach_legacy_segment(total_tokens bigint)
+RETURNS void
+AS 'MODULE_PATHNAME', 'pg_textsearch_test_attach_legacy_segment'
+LANGUAGE C STRICT PARALLEL UNSAFE;
+
+CREATE FUNCTION pg_textsearch_test_attach_vacuum_total_len(
+    total_tokens bigint)
+RETURNS void
+AS 'MODULE_PATHNAME', 'pg_textsearch_test_attach_vacuum_total_len'
+LANGUAGE C STRICT PARALLEL UNSAFE;

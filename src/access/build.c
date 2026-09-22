@@ -347,9 +347,13 @@ tp_compact_build_private(TpLocalIndexState *index_state, Relation index_rel)
 		CHECK_FOR_INTERRUPTS();
 }
 
-static void
-tp_apply_compaction_policy(TpLocalIndexState *index_state, Relation index_rel)
+void
+tp_apply_compaction_policy(
+		TpLocalIndexState *index_state, Relation index_rel, bool spilled)
 {
+	if (!spilled)
+		return;
+
 	/*
 	 * Reached when a VACUUM (PARALLEL n) worker spills this index's
 	 * memtable during cleanup.  Publication assigns an XID for its
@@ -385,6 +389,12 @@ tp_apply_compaction_policy(TpLocalIndexState *index_state, Relation index_rel)
 			PROGRESS_CREATEIDX_SUBPHASE, TP_PHASE_LOADING);
 }
 
+/* Flags controlling tp_spill_memtable_if_needed_internal(). */
+#define TP_SPILL_APPLY_POLICY	  0x01 /* run the policy after spilling */
+#define TP_SPILL_COMPACT_FOR_ROOM 0x02 /* compact a full L0 to make room */
+#define TP_SPILL_REQUIRED		  0x04 /* empty chain is the postcondition */
+#define TP_SPILL_NOWAIT			  0x08 /* skip rather than wait for the lock */
+
 /*
  * Report whether level 0 already holds its maximum segment count, so
  * a spill would raise the capacity error instead of linking a segment.
@@ -418,16 +428,15 @@ tp_l0_at_capacity(Relation index_rel)
  */
 static bool
 tp_make_room_for_spill(
-		Relation		   index_rel,
-		TpLocalIndexState *index_state,
-		bool			   apply_compaction_policy,
-		bool			   require_spill)
+		Relation index_rel, TpLocalIndexState *index_state, int flags)
 {
+	bool require_spill = (flags & TP_SPILL_REQUIRED) != 0;
+
 	if (!tp_l0_at_capacity(index_rel))
 		return true;
 
 	/* The shutdown spill never compacts, so it cannot make room. */
-	if (!apply_compaction_policy)
+	if (!(flags & TP_SPILL_COMPACT_FOR_ROOM))
 		return require_spill;
 
 	if (tp_index_compaction_mode(index_rel) == TP_COMPACTION_MANUAL)
@@ -445,64 +454,64 @@ tp_make_room_for_spill(
  * to avoid runt L0 segments.  The pre-lock read is a fast bailout; the
  * authoritative check runs after exclusive acquisition.
  *
- * require_spill makes an empty chain the postcondition: the spill runs even
- * at a full level 0, where it reports the capacity limit.  VACUUM needs this
- * because it identifies dead documents from published segments alone.
+ * TP_SPILL_REQUIRED makes an empty chain the postcondition: the spill runs
+ * even at a full level 0, where it reports the capacity limit.  VACUUM needs
+ * this because it identifies dead documents from published segments alone.
  *
- * wait_for_index_lock=false makes the spill skip rather than block, so the
+ * TP_SPILL_NOWAIT makes the spill skip rather than block, so the
  * shutdown hook never waits on a busy index.
  */
-static void
+static bool
 tp_spill_memtable_if_needed_internal(
 		Relation		   index,
 		TpLocalIndexState *index_state,
 		uint32			   min_pages,
-		bool			   apply_compaction_policy,
-		bool			   require_spill,
-		bool			   wait_for_index_lock)
+		int				   flags)
 {
-	bool policy_needed = false;
+	bool spilled = false;
 
 	/* Standby is read-only; spill is primary-only. */
 	if (RecoveryInProgress())
-		return;
+		return false;
 
 	if (!index_state || !index_state->shared)
-		return;
+		return false;
 
 	if (pg_atomic_read_u32(&index_state->shared->chain_page_count) < min_pages)
-		return;
+		return false;
 
-	if (!tp_make_room_for_spill(
-				index, index_state, apply_compaction_policy, require_spill))
-		return;
+	if (!tp_make_room_for_spill(index, index_state, flags))
+		return false;
 
 	/*
 	 * Keep spill publication outside compaction's prepare/publish window.
 	 * A no-wait caller must not block here either, or the shutdown hook
 	 * would wait on the very index it promised to skip.
 	 */
-	if (wait_for_index_lock)
+	if (flags & TP_SPILL_NOWAIT)
+	{
+		if (!tp_try_compaction_publication_lock(index, ShareLock))
+			return false;
+	}
+	else
 		tp_compaction_publication_lock(index, ShareLock);
-	else if (!tp_try_compaction_publication_lock(index, ShareLock))
-		return;
 
 	PG_TRY();
 	{
 		bool acquired;
 
-		if (wait_for_index_lock)
+		if (flags & TP_SPILL_NOWAIT)
+			acquired = tp_try_acquire_index_lock(index_state, LW_EXCLUSIVE);
+		else
 		{
 			tp_acquire_index_lock(index_state, LW_EXCLUSIVE);
 			acquired = true;
 		}
-		else
-			acquired = tp_try_acquire_index_lock(index_state, LW_EXCLUSIVE);
 
 		if (acquired &&
 			pg_atomic_read_u32(&index_state->shared->chain_page_count) >=
 					min_pages)
-			policy_needed = tp_do_spill(index_state, index, NULL);
+			spilled = tp_do_spill(index_state, index, NULL);
 	}
 	PG_FINALLY();
 	{
@@ -512,36 +521,44 @@ tp_spill_memtable_if_needed_internal(
 	}
 	PG_END_TRY();
 
-	if (apply_compaction_policy && policy_needed)
-		tp_apply_compaction_policy(index_state, index);
+	if (flags & TP_SPILL_APPLY_POLICY)
+		tp_apply_compaction_policy(index_state, index, spilled);
+	return spilled;
 }
 
 void
 tp_spill_memtable_if_needed(
 		Relation index, TpLocalIndexState *index_state, uint32 min_pages)
 {
-	tp_spill_memtable_if_needed_internal(
-			index, index_state, min_pages, true, false, true);
+	(void)tp_spill_memtable_if_needed_internal(
+			index,
+			index_state,
+			min_pages,
+			TP_SPILL_APPLY_POLICY | TP_SPILL_COMPACT_FOR_ROOM);
 }
 
 /*
- * Spill with an empty chain as the postcondition; see
- * tp_spill_memtable_if_needed_internal().
+ * Spill for VACUUM: defer the compaction policy to the caller, and
+ * make an empty chain the postcondition so Phase 2 can identify dead
+ * documents from published segments alone.
  */
-void
-tp_spill_memtable_required(
+bool
+tp_spill_memtable_if_needed_deferred(
 		Relation index, TpLocalIndexState *index_state, uint32 min_pages)
 {
-	tp_spill_memtable_if_needed_internal(
-			index, index_state, min_pages, true, true, true);
+	return tp_spill_memtable_if_needed_internal(
+			index,
+			index_state,
+			min_pages,
+			TP_SPILL_COMPACT_FOR_ROOM | TP_SPILL_REQUIRED);
 }
 
 void
 tp_spill_memtable_without_compaction_if_needed(
 		Relation index, TpLocalIndexState *index_state, uint32 min_pages)
 {
-	tp_spill_memtable_if_needed_internal(
-			index, index_state, min_pages, false, false, false);
+	(void)tp_spill_memtable_if_needed_internal(
+			index, index_state, min_pages, TP_SPILL_NOWAIT);
 }
 
 /*
@@ -743,8 +760,7 @@ tp_spill_memtable(PG_FUNCTION_ARGS)
 	}
 	PG_END_TRY();
 
-	if (spilled)
-		tp_apply_compaction_policy(index_state, index_rel);
+	tp_apply_compaction_policy(index_state, index_rel, spilled);
 	index_close(index_rel, RowExclusiveLock);
 
 	/* Return block number or NULL */

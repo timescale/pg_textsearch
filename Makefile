@@ -96,7 +96,8 @@ PG_CPPFLAGS += -Wno-unknown-warning-option -Wno-clobbered -Wno-packed-not-aligne
 REGRESS = abort aerodocs basic binary_io bmw bmw_skip_advance boolean_queries bulk_load cache_apply cache_memory_cap cache_source cache_spill catalog_stats chain_source compaction compaction_request compression concurrent_build coverage deletion vacuum vacuum_bitmap vacuum_extended vacuum_rebuild dropped empty explicit_index expression_index filtered_seed force_merge implicit index inheritance large_documents limits lock manyterms memory memtable_append memtable_page memtable_spill memtable_spill_dead memtable_reclaim merge mixed parallel_build parallel_bmw partitioned partitioned_many partial_index pgstats queries quoted_identifiers rescan rls schema scoring1 scoring2 scoring3 scoring4 scoring5 scoring6 security security_acl segment segment_integrity segment_reclaim tombstone_reuse tombstone_recover strings temp_table text_array text_config unsupported updates vector vector_v1_rejected unlogged_index wand
 INJECTION_REGRESS = merge_injection compaction_injection \
 	compaction_error_injection \
-	force_merge_injection segment_reclaim_injection
+	force_merge_injection segment_reclaim_injection \
+	vacuum_rebuild_injection
 REGRESS_OPTS = --inputdir=test --outputdir=test
 
 PG_CONFIG ?= pg_config
@@ -128,6 +129,7 @@ test-injection-shell:
 	@cd test/scripts && ./crash_safety_spill.sh
 	@cd test/scripts && ./nonblocking_compaction.sh
 	@cd test/scripts && ./compaction_recovery.sh
+	@cd test/scripts && ./parallel_vacuum.sh injection
 	@cd test/scripts && ./standby_reclaim.sh
 else
 install-test-injection test-injection-sql test-injection-shell:
