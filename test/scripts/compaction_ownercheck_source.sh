@@ -80,9 +80,34 @@ check_spill_policy_order() {
 }
 
 check_spill_policy_order tp_spill_memtable_if_needed_internal
-check_spill_policy_order tp_auto_spill_if_needed
+
+#
+# The auto-spill path must reuse that single implementation rather than
+# open-coding the acquire / spill / release / policy sequence again.
+#
+if ! sed -n '/^tp_auto_spill_if_needed(/,/^}$/p' "${BUILD_SOURCE}" |
+        grep -Fq 'tp_spill_memtable_if_needed('; then
+    echo "tp_auto_spill_if_needed must delegate to the shared spill" >&2
+    exit 1
+fi
+
+#
+# Making room runs the compaction policy, which takes index maintenance
+# and the per-index exclusive lock itself, so it must not be called with
+# the per-index lock already held.
+#
+if sed -n '/^tp_make_room_for_spill(/,/^}$/p' "${BUILD_SOURCE}" |
+        grep -Fq 'tp_acquire_index_lock'; then
+    echo "tp_make_room_for_spill must not hold the per-index lock" >&2
+    exit 1
+fi
 check_spill_policy_order tp_spill_memtable
 
+#
+# The explicit compaction entry points must take index maintenance
+# without waiting, and before the per-index lock.  Waiting closes a
+# deadlock cycle with a concurrent REINDEX INDEX CONCURRENTLY.
+#
 check_compaction_lock_order() {
     local function_name="$1"
     local function_body
@@ -94,7 +119,7 @@ check_compaction_lock_order() {
             "${SOURCE_FILE}"
     )"
     maintenance_line="$(
-        grep -n 'tp_compaction_lock(index_rel)' \
+        grep -n 'tp_require_compaction_admission(index_rel)' \
             <<<"${function_body}" | head -1 | cut -d: -f1 || true
     )"
     index_lock_line="$(

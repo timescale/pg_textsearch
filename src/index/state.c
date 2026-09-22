@@ -388,6 +388,7 @@ tp_create_shared_index_state(Oid index_oid, Oid heap_oid, bool reuse_if_exists)
 			&shared_state->lock, tp_tranche_id(TP_TRANCHE_INDEX_LOCK));
 	pg_atomic_init_u32(&shared_state->exclusive_waiters, 0);
 	ConditionVariableInit(&shared_state->exclusive_waiters_cv);
+	pg_atomic_init_u64(&shared_state->exclusive_admissions, 0);
 	pg_atomic_init_u64(&shared_state->spill_generation, 0);
 	memtable_dp = dsa_allocate(dsa, sizeof(TpMemtable));
 	if (!DsaPointerIsValid(memtable_dp))
@@ -534,6 +535,7 @@ tp_create_build_index_state(Oid index_oid, Oid heap_oid)
 			&shared_state->lock, tp_tranche_id(TP_TRANCHE_INDEX_LOCK));
 	pg_atomic_init_u32(&shared_state->exclusive_waiters, 0);
 	ConditionVariableInit(&shared_state->exclusive_waiters_cv);
+	pg_atomic_init_u64(&shared_state->exclusive_admissions, 0);
 	pg_atomic_init_u64(&shared_state->spill_generation, 0);
 
 	/* Check if index already registered (rebuild case) */
@@ -1277,6 +1279,9 @@ tp_acquire_index_lock(TpLocalIndexState *local_state, LWLockMode mode)
 
 	local_state->lock_held = true;
 	local_state->lock_mode = mode;
+
+	if (mode == LW_EXCLUSIVE)
+		pg_atomic_fetch_add_u64(&local_state->shared->exclusive_admissions, 1);
 
 	/*
 	 * The LWLockAcquire provides acquire semantics (memory barrier),

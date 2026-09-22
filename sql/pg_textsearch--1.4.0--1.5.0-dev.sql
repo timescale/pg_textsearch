@@ -85,7 +85,7 @@ COMMENT ON FUNCTION @extschema@.bm25_needs_compaction(regclass) IS
 
 CREATE FUNCTION @extschema@.bm25_test_hold_index_lock(
     index_name text, exclusive boolean, milliseconds integer)
-    RETURNS void
+    RETURNS bigint
     AS 'MODULE_PATHNAME', 'tp_test_hold_index_lock'
     LANGUAGE C VOLATILE STRICT;
 
@@ -94,10 +94,17 @@ CREATE FUNCTION @extschema@.bm25_test_exclusive_waiters(index_name text)
     AS 'MODULE_PATHNAME', 'tp_test_exclusive_waiters'
     LANGUAGE C VOLATILE STRICT;
 
+CREATE FUNCTION @extschema@.bm25_test_exclusive_admissions(index_name text)
+    RETURNS bigint
+    AS 'MODULE_PATHNAME', 'tp_test_exclusive_admissions'
+    LANGUAGE C VOLATILE STRICT;
+
 REVOKE EXECUTE ON FUNCTION
     @extschema@.bm25_test_hold_index_lock(text, boolean, integer) FROM PUBLIC;
 REVOKE EXECUTE ON FUNCTION
     @extschema@.bm25_test_exclusive_waiters(text) FROM PUBLIC;
+REVOKE EXECUTE ON FUNCTION
+    @extschema@.bm25_test_exclusive_admissions(text) FROM PUBLIC;
 
 ALTER OPERATOR FAMILY @extschema@.text_bm25_ops USING bm25
     ADD OPERATOR 1 pg_catalog.@@ (text, pg_catalog.tsquery);

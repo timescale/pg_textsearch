@@ -874,13 +874,14 @@ tp_bulkdelete(
 	}
 
 	/*
-	 * Phase 1: Spill memtable so all data is in segments.  Pass
-	 * min_postings=1 to preserve existing "spill anything non-empty"
-	 * behavior for the bulkdelete path.
+	 * Phase 1: Spill memtable so all data is in segments.  Phase 2
+	 * identifies dead documents from published segments alone, so the
+	 * chain must be empty on return -- a spill that cannot run reports
+	 * the level-0 capacity limit rather than stranding dead records.
 	 */
 	index_state = tp_get_local_index_state(RelationGetRelid(info->index));
 	if (index_state != NULL)
-		tp_spill_memtable_if_needed(info->index, index_state, 1);
+		tp_spill_memtable_required(info->index, index_state, 1);
 
 	/*
 	 * Hold the per-index LWLock in shared mode across Phase 2 (identify)

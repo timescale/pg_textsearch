@@ -102,7 +102,6 @@ late_reader() {
             'docs_bm25', false, 0);" \
         >"${ERR_DIR}/late_reader.log" 2>&1
 }
-
 writer() {
     PGAPPNAME=pgts-fair-writer $PSQL <<'SQL'
 SET statement_timeout = '60s';
@@ -152,6 +151,12 @@ wait_for_writer_queue() {
     fail "exclusive writer never registered as waiting"
 }
 
+#
+# Wait until the late reader is parked on the admission condition
+# variable.  A reader that finishes first is not necessarily a
+# failure -- the writer may already have been admitted and released --
+# so leave the verdict to the admission-order assertion in run_test.
+#
 wait_for_late_reader_admission() {
     local late_reader_pid="$1"
     local deadline=$((SECONDS + 10))
@@ -159,8 +164,7 @@ wait_for_late_reader_admission() {
 
     while ((SECONDS < deadline)); do
         if ! kill -0 "${late_reader_pid}" 2>/dev/null; then
-            cat "${ERR_DIR}/late_reader.log" || true
-            fail "late shared reader exited before reaching admission"
+            return
         fi
         waiting=$($PSQL -c "
             SELECT count(*)
@@ -186,6 +190,8 @@ run_test() {
     local writer_status=0
     local update_count
     local ranked_count
+    local admissions_before
+    local admissions_at_read
 
     log "Holding the per-index lock in shared mode..."
     hold_reader &
@@ -193,6 +199,8 @@ run_test() {
     wait_for_holder
 
     log "Starting updates that trigger an exclusive automatic spill..."
+    admissions_before=$($PSQL -c "
+        SELECT bm25_test_exclusive_admissions('docs_bm25');")
     writer >"${ERR_DIR}/writer.log" 2>&1 &
     writer_pid=$!
     wait_for_writer_queue
@@ -219,6 +227,21 @@ run_test() {
     update_count=$(grep -E '^[0-9]+$' "${ERR_DIR}/writer.log" | tail -1)
     if [ "${update_count:-0}" -le 0 ]; then
         fail "writer did not update any rows"
+    fi
+
+    #
+    # bm25_test_hold_index_lock() reports the exclusive admission count
+    # it observed once it held the lock.  The reader queued behind the
+    # writer, so the writer's spill must appear in that count.
+    #
+    admissions_at_read=$(
+        grep -E '^[0-9]+$' "${ERR_DIR}/late_reader.log" | tail -1)
+    if [ -z "${admissions_at_read}" ]; then
+        cat "${ERR_DIR}/late_reader.log" || true
+        fail "late shared reader did not report its admission count"
+    fi
+    if [ "${admissions_at_read}" -le "${admissions_before:-0}" ]; then
+        fail "late shared reader was admitted ahead of the queued writer"
     fi
 
     ranked_count=$($PSQL -c "

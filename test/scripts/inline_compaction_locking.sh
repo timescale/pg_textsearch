@@ -164,7 +164,7 @@ SQL
     $PSQL -c "DROP TABLE inline_deadlock CASCADE;" >/dev/null
 }
 
-test_full_l0_defers_spill() {
+test_full_l0_compacts_then_spills() {
     local chain_records
     local level_counts
     local ranked_count
@@ -188,16 +188,15 @@ SQL
     chain_records=$($PSQL -c "
         SELECT COALESCE(sum(n_records), 0)
         FROM bm25_memtable_chain('inline_capacity_idx');")
-    if [ "${chain_records:-0}" -lt 1 ]; then
-        fail "full-L0 automatic spill did not preserve deferred memtable data"
+    if [ "${chain_records:-0}" -ne 0 ]; then
+        fail "full-L0 spill did not drain the chain after making room"
     fi
     level_counts=$($PSQL -c "
         SELECT bm25_level_counts('inline_capacity_idx'::regclass);")
-    if [ "${level_counts}" != "{0,1,0,0,0,0,0,0}" ]; then
-        fail "full-L0 deferral did not run inline compaction policy"
+    if [ "${level_counts}" != "{1,1,0,0,0,0,0,0}" ]; then
+        fail "full-L0 spill did not compact level 0 before spilling"
     fi
 
-    $PSQL -c "SELECT bm25_spill_index('inline_capacity_idx');" >/dev/null
     ranked_count=$($PSQL -c "
         SELECT count(*) FROM (
             SELECT 1
@@ -206,7 +205,7 @@ SQL
                 'alpha', 'inline_capacity_idx')
         ) ranked;")
     if [ "${ranked_count}" -ne 3 ]; then
-        fail "deferred full-L0 spill lost indexed documents"
+        fail "full-L0 spill lost indexed documents"
     fi
 
     $PSQL <<'SQL' >/dev/null
@@ -217,11 +216,71 @@ DROP TABLE inline_capacity CASCADE;
 SQL
 }
 
-test_irreducible_full_l0_errors() {
-    local error_log="${CLIENT_DIR}/irreducible.log"
+#
+# VACUUM identifies dead documents from published segments alone, so
+# its phase-1 spill must leave the chain empty even when level 0 is at
+# its segment-count limit.  A spill deferred back to the caller strands
+# the dead records in the chain, where they survive the vacuum and can
+# be scored against a recycled ctid.
+#
+test_vacuum_drains_chain_at_full_l0() {
+    local chain_records
+    local level_counts
+    local ranked_count
 
-    log "Testing an irreducible full L0 remains fail-closed"
-    if $PSQL >"${error_log}" 2>&1 <<'SQL'
+    log "Testing VACUUM drains the memtable chain at a full L0"
+    $PSQL <<'SQL' >/dev/null
+CREATE TABLE vacuum_capacity (id integer PRIMARY KEY, body text NOT NULL);
+CREATE INDEX vacuum_capacity_idx ON vacuum_capacity USING bm25(body)
+    WITH (text_config='english', compaction='manual');
+SET pg_textsearch.debug_segment_count_limit = 2;
+SET pg_textsearch.segments_per_level = 2;
+INSERT INTO vacuum_capacity VALUES (1, 'capacity alpha one');
+SELECT bm25_spill_index('vacuum_capacity_idx');
+INSERT INTO vacuum_capacity VALUES (2, 'capacity alpha two');
+SELECT bm25_spill_index('vacuum_capacity_idx');
+ALTER INDEX vacuum_capacity_idx SET (compaction='inline');
+INSERT INTO vacuum_capacity VALUES (3, 'capacity victimtoken three');
+INSERT INTO vacuum_capacity VALUES (4, 'capacity alpha four');
+DELETE FROM vacuum_capacity WHERE id = 3;
+VACUUM vacuum_capacity;
+SQL
+
+    chain_records=$($PSQL -c "
+        SELECT COALESCE(sum(n_records), 0)
+        FROM bm25_memtable_chain('vacuum_capacity_idx');")
+    if [ "${chain_records:-0}" -ne 0 ]; then
+        fail "VACUUM left dead records in the memtable chain at a full L0"
+    fi
+    level_counts=$($PSQL -c "
+        SELECT bm25_level_counts('vacuum_capacity_idx'::regclass);")
+    if [ "${level_counts}" != "{1,1,0,0,0,0,0,0}" ]; then
+        fail "VACUUM did not compact level 0 before spilling"
+    fi
+    ranked_count=$($PSQL -c "
+        SELECT count(*) FROM (
+            SELECT 1
+            FROM vacuum_capacity
+            ORDER BY body <@> to_bm25query(
+                'alpha', 'vacuum_capacity_idx')
+        ) ranked;")
+    if [ "${ranked_count}" -ne 3 ]; then
+        fail "VACUUM spill lost indexed documents"
+    fi
+
+    $PSQL <<'SQL' >/dev/null
+RESET pg_textsearch.segments_per_level;
+RESET pg_textsearch.debug_segment_count_limit;
+DROP TABLE vacuum_capacity CASCADE;
+SQL
+}
+
+test_irreducible_full_l0_errors() {
+    local mode="$1"
+    local error_log="${CLIENT_DIR}/irreducible_${mode}.log"
+
+    log "Testing an irreducible full L0 remains fail-closed (${mode})"
+    if $PSQL -v mode="${mode}" >"${error_log}" 2>&1 <<'SQL'
 CREATE TABLE inline_irreducible (
     id integer PRIMARY KEY, body text NOT NULL);
 CREATE INDEX inline_irreducible_idx ON inline_irreducible USING bm25(body)
@@ -245,18 +304,23 @@ BEGIN
     END LOOP;
 END
 $$;
-ALTER INDEX inline_irreducible_idx SET (compaction='inline');
+-- Background mode needs pg_durable to pass ALTER INDEX admission; the
+-- spill path only reads the relopt, so set it directly.
+UPDATE pg_catalog.pg_class
+SET reloptions = array_replace(reloptions, 'compaction=manual',
+                               'compaction=' || :'mode')
+WHERE oid = 'inline_irreducible_idx'::regclass;
 SET pg_textsearch.memtable_pages_threshold = 1;
 INSERT INTO inline_irreducible
 VALUES (5000, 'irreducible capacity trigger');
 SQL
     then
-        fail "irreducible full L0 silently deferred the spill"
+        fail "irreducible full L0 (${mode}) silently deferred the spill"
     fi
     if ! grep -Fq "bm25 segment count limit reached at level 0" \
         "${error_log}"; then
         cat "${error_log}"
-        fail "irreducible full L0 failed for an unexpected reason"
+        fail "irreducible full L0 (${mode}) failed for an unexpected reason"
     fi
 
     $PSQL -c "DROP TABLE inline_irreducible CASCADE;" >/dev/null
@@ -351,25 +415,119 @@ SQL
     $PSQL -c "DROP TABLE managed_reindex CASCADE;" >/dev/null
 }
 
+#
+# The public compaction entry points must decline maintenance the same
+# way the spill path does.  A blocking acquisition inside a transaction
+# that REINDEX CONCURRENTLY is waiting on closes a deadlock cycle.
+#
+test_public_compaction_reindex_admission() {
+    local fifo="${CLIENT_DIR}/public.fifo"
+    local caller_log="${CLIENT_DIR}/public_caller.log"
+    local reindex_log="${CLIENT_DIR}/public_reindex.log"
+    local caller_pid
+    local reindex_pid
+
+    log "Testing public compaction declines REINDEX maintenance admission"
+    $PSQL <<'SQL' >/dev/null
+CREATE TABLE public_compact (id integer PRIMARY KEY, body text NOT NULL);
+INSERT INTO public_compact VALUES (1, 'public alpha document');
+CREATE INDEX public_compact_idx ON public_compact USING bm25(body)
+    WITH (text_config='english', compaction='manual');
+SQL
+
+    mkfifo "${fifo}"
+    PGAPPNAME=pgts-public-caller \
+        $PSQL <"${fifo}" >"${caller_log}" 2>&1 &
+    caller_pid=$!
+    exec 3>"${fifo}"
+    printf '%s\n' \
+        "BEGIN;" \
+        "UPDATE public_compact SET body = body || ' held' WHERE id = 1;" \
+        "SELECT 'caller-ready';" >&3
+    wait_for_file_text "${caller_log}" "caller-ready" "public caller"
+
+    PGAPPNAME=pgts-public-reindex \
+        $PSQL -c "REINDEX INDEX CONCURRENTLY public_compact_idx;" \
+        >"${reindex_log}" 2>&1 &
+    reindex_pid=$!
+    wait_for_reindex_wait pgts-public-reindex public_compact_idx
+
+    printf '%s\n' \
+        "DO \$\$ BEGIN
+             PERFORM bm25_compact('public_compact_idx'::regclass);
+             RAISE NOTICE 'compact-ran';
+         EXCEPTION WHEN lock_not_available THEN
+             RAISE NOTICE 'compact-declined';
+         END \$\$;" \
+        "DO \$\$ BEGIN
+             PERFORM bm25_compact_step('public_compact_idx'::regclass);
+             RAISE NOTICE 'step-ran';
+         EXCEPTION WHEN lock_not_available THEN
+             RAISE NOTICE 'step-declined';
+         END \$\$;" \
+        "DO \$\$ BEGIN
+             PERFORM bm25_force_merge('public_compact_idx');
+             RAISE NOTICE 'merge-ran';
+         EXCEPTION WHEN lock_not_available THEN
+             RAISE NOTICE 'merge-declined';
+         END \$\$;" \
+        "SELECT 'caller-finished';" \
+        "COMMIT;" >&3
+    exec 3>&-
+
+    wait "${caller_pid}" || {
+        cat "${caller_log}"
+        cat "${reindex_log}"
+        fail "public compaction blocked behind REINDEX maintenance admission"
+    }
+    wait "${reindex_pid}" || {
+        cat "${caller_log}"
+        cat "${reindex_log}"
+        fail "REINDEX CONCURRENTLY aborted during public compaction"
+    }
+
+    if grep -qi "deadlock detected" "${caller_log}" "${reindex_log}"; then
+        fail "public compaction deadlocked with REINDEX CONCURRENTLY"
+    fi
+    for marker in compact-declined step-declined merge-declined; do
+        grep -Fq "${marker}" "${caller_log}" || {
+            cat "${caller_log}"
+            fail "public compaction did not report ${marker}"
+        }
+    done
+
+    $PSQL -c "DROP TABLE public_compact CASCADE;" >/dev/null
+}
+
 setup_test_db
 case "${TEST_CASE}" in
 reindex)
     test_reindex_deadlock
     ;;
 capacity)
-    test_full_l0_defers_spill
+    test_full_l0_compacts_then_spills
+    ;;
+vacuum)
+    test_vacuum_drains_chain_at_full_l0
     ;;
 irreducible)
-    test_irreducible_full_l0_errors
+    test_irreducible_full_l0_errors inline
+    test_irreducible_full_l0_errors background
     ;;
 managed)
     test_managed_reindex_admission
     ;;
+public)
+    test_public_compaction_reindex_admission
+    ;;
 all)
     test_reindex_deadlock
-    test_full_l0_defers_spill
-    test_irreducible_full_l0_errors
+    test_full_l0_compacts_then_spills
+    test_vacuum_drains_chain_at_full_l0
+    test_irreducible_full_l0_errors inline
+    test_irreducible_full_l0_errors background
     test_managed_reindex_admission
+    test_public_compaction_reindex_admission
     ;;
 *)
     fail "unknown test case: ${TEST_CASE}"

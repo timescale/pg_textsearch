@@ -308,11 +308,17 @@ tp_do_spill(
 	return true;
 }
 
-static void
+/*
+ * Compact level 0 when index maintenance is free, reporting whether
+ * the pass ran.  Never waits: a writer that blocks here closes a
+ * deadlock cycle with a REINDEX INDEX CONCURRENTLY waiting on this
+ * transaction to drain.
+ */
+static bool
 tp_compact_inline(TpLocalIndexState *index_state, Relation index_rel)
 {
 	if (!tp_try_compaction_lock(index_rel))
-		return;
+		return false;
 
 	PG_TRY();
 	{
@@ -326,15 +332,13 @@ tp_compact_inline(TpLocalIndexState *index_state, Relation index_rel)
 		tp_compaction_unlock(index_rel);
 	}
 	PG_END_TRY();
+
+	return true;
 }
 
 static void
-tp_apply_compaction_policy(
-		TpLocalIndexState *index_state, Relation index_rel, bool policy_needed)
+tp_apply_compaction_policy(TpLocalIndexState *index_state, Relation index_rel)
 {
-	if (!policy_needed)
-		return;
-
 	pgstat_progress_update_param(
 			PROGRESS_CREATEIDX_SUBPHASE, TP_PHASE_COMPACTING);
 	switch (tp_index_compaction_mode(index_rel))
@@ -361,21 +365,60 @@ tp_apply_compaction_policy(
 			PROGRESS_CREATEIDX_SUBPHASE, TP_PHASE_LOADING);
 }
 
+/*
+ * Report whether level 0 already holds its maximum segment count, so
+ * a spill would raise the capacity error instead of linking a segment.
+ */
 static bool
-tp_defer_spill_for_l0_compaction(
-		TpLocalIndexState *index_state, Relation index_rel)
+tp_l0_at_capacity(Relation index_rel)
 {
-	TpIndexMetaPage metap;
-	bool			defer;
+	TpIndexMetaPage metap		= tp_get_metapage(index_rel);
+	bool			at_capacity = metap->level_counts[0] >=
+					   (uint16)tp_max_segments_per_level;
 
-	metap = tp_get_metapage(index_rel);
-	defer = metap->level_counts[0] >= tp_max_segments_per_level &&
-			metap->level_counts[0] >= tp_segments_per_level &&
-			tp_index_compaction_mode(index_rel) != TP_COMPACTION_MANUAL &&
-			tp_l0_compaction_reduces_count(index_state, index_rel);
 	pfree(metap);
 
-	return defer;
+	return at_capacity;
+}
+
+/*
+ * Make room at level 0 for a spill, and report whether the spill
+ * should be attempted at all.
+ *
+ * A full level 0 is normally transient: compacting it merges the
+ * segments into level 1 and the spill proceeds.  Compaction runs here
+ * regardless of the index's policy, because a background worker's pass
+ * comes too late for a spill that is blocked now; manual indexes opt
+ * out of automatic maintenance and fall through to the capacity error.
+ *
+ * Only a denied maintenance admission leaves level 0 full without
+ * knowing whether it is reducible.  The records then stay in the
+ * durable chain for a later spill to drain, unless the caller requires
+ * an empty chain on return.  Every other outcome falls through to the
+ * spill, so a level 0 that compaction cannot reduce still fails closed
+ * rather than growing the chain without bound.
+ */
+static bool
+tp_make_room_for_spill(
+		Relation		   index_rel,
+		TpLocalIndexState *index_state,
+		bool			   apply_compaction_policy,
+		bool			   require_spill)
+{
+	if (!tp_l0_at_capacity(index_rel))
+		return true;
+
+	/* The shutdown spill never compacts, so it cannot make room. */
+	if (!apply_compaction_policy)
+		return require_spill;
+
+	if (tp_index_compaction_mode(index_rel) == TP_COMPACTION_MANUAL)
+		return true;
+
+	if (tp_compact_inline(index_state, index_rel))
+		return true;
+
+	return require_spill || !tp_l0_at_capacity(index_rel);
 }
 
 /*
@@ -385,13 +428,19 @@ tp_defer_spill_for_l0_compaction(
  * L0 segments on lightly-loaded indexes.  The pre-lock read is
  * a fast bailout; if it races with an insert, the worst case
  * is a harmless no-op inside tp_do_spill().
+ *
+ * require_spill makes an empty chain the postcondition: the spill
+ * runs even at a full level 0, where it reports the capacity limit.
+ * VACUUM needs this because it identifies dead documents from
+ * published segments alone.
  */
 static void
 tp_spill_memtable_if_needed_internal(
 		Relation		   index,
 		TpLocalIndexState *index_state,
 		uint32			   min_pages,
-		bool			   apply_compaction_policy)
+		bool			   apply_compaction_policy,
+		bool			   require_spill)
 {
 	bool policy_needed = false;
 
@@ -405,12 +454,16 @@ tp_spill_memtable_if_needed_internal(
 	if (pg_atomic_read_u32(&index_state->shared->chain_page_count) < min_pages)
 		return;
 
+	if (!tp_make_room_for_spill(
+				index, index_state, apply_compaction_policy, require_spill))
+		return;
+
 	tp_acquire_index_lock(index_state, LW_EXCLUSIVE);
 	PG_TRY();
 	{
-		if (tp_defer_spill_for_l0_compaction(index_state, index))
-			policy_needed = apply_compaction_policy;
-		else
+		/* Re-check: another backend may have spilled while we waited. */
+		if (pg_atomic_read_u32(&index_state->shared->chain_page_count) >=
+			min_pages)
 			policy_needed = tp_do_spill(index_state, index, NULL);
 	}
 	PG_FINALLY();
@@ -420,40 +473,46 @@ tp_spill_memtable_if_needed_internal(
 	}
 	PG_END_TRY();
 
-	if (apply_compaction_policy)
-		tp_apply_compaction_policy(index_state, index, policy_needed);
+	if (apply_compaction_policy && policy_needed)
+		tp_apply_compaction_policy(index_state, index);
 }
 
 void
 tp_spill_memtable_if_needed(
 		Relation index, TpLocalIndexState *index_state, uint32 min_pages)
 {
-	tp_spill_memtable_if_needed_internal(index, index_state, min_pages, true);
+	tp_spill_memtable_if_needed_internal(
+			index, index_state, min_pages, true, false);
+}
+
+/*
+ * Spill with an empty chain as the postcondition; see
+ * tp_spill_memtable_if_needed_internal().
+ */
+void
+tp_spill_memtable_required(
+		Relation index, TpLocalIndexState *index_state, uint32 min_pages)
+{
+	tp_spill_memtable_if_needed_internal(
+			index, index_state, min_pages, true, true);
 }
 
 void
 tp_spill_memtable_without_compaction_if_needed(
 		Relation index, TpLocalIndexState *index_state, uint32 min_pages)
 {
-	tp_spill_memtable_if_needed_internal(index, index_state, min_pages, false);
+	tp_spill_memtable_if_needed_internal(
+			index, index_state, min_pages, false, false);
 }
 
 /*
  * Auto-spill the on-disk memtable when the chain grows past the
  * configured page threshold (issue #374).
- *
- * The pre-lock read of chain_page_count is a fast bailout
- * (approximate: a concurrent insert may have bumped the counter
- * since we read it).  False positives just trigger an
- * unnecessary lock acquisition (re-checked under LW_EXCLUSIVE
- * below); false negatives mean this insert doesn't spill but
- * the next one will.
  */
 static void
 tp_auto_spill_if_needed(TpLocalIndexState *index_state, Relation index_rel)
 {
 	uint32 threshold;
-	bool   apply_policy = false;
 
 	if (!index_state || !index_rel || !index_state->shared)
 		return;
@@ -462,37 +521,7 @@ tp_auto_spill_if_needed(TpLocalIndexState *index_state, Relation index_rel)
 	if (threshold == 0)
 		return; /* auto-spill disabled */
 
-	if (pg_atomic_read_u32(&index_state->shared->chain_page_count) < threshold)
-		return;
-
-	/*
-	 * Acquire exclusive lock to spill.  This blocks concurrent
-	 * inserters (who hold LW_SHARED) until the spill completes.
-	 * The spill itself writes segment pages and updates the
-	 * metapage — it does not acquire any other LWLock or
-	 * heavyweight lock, so deadlock is not possible.
-	 */
-	tp_acquire_index_lock(index_state, LW_EXCLUSIVE);
-	PG_TRY();
-	{
-		/* Re-check: another backend may have spilled while we waited. */
-		if (pg_atomic_read_u32(&index_state->shared->chain_page_count) >=
-			threshold)
-		{
-			if (tp_defer_spill_for_l0_compaction(index_state, index_rel))
-				apply_policy = true;
-			else
-				apply_policy = tp_do_spill(index_state, index_rel, NULL);
-		}
-	}
-	PG_FINALLY();
-	{
-		if (index_state->lock_held)
-			tp_release_index_lock(index_state);
-	}
-	PG_END_TRY();
-
-	tp_apply_compaction_policy(index_state, index_rel, apply_policy);
+	tp_spill_memtable_if_needed(index_rel, index_state, threshold);
 }
 
 /*
@@ -764,7 +793,8 @@ tp_spill_memtable(PG_FUNCTION_ARGS)
 	}
 	PG_END_TRY();
 
-	tp_apply_compaction_policy(index_state, index_rel, spilled);
+	if (spilled)
+		tp_apply_compaction_policy(index_state, index_rel);
 	index_close(index_rel, RowExclusiveLock);
 
 	/* Return block number or NULL */
@@ -820,7 +850,9 @@ tp_force_merge(PG_FUNCTION_ARGS)
 	 * Serialize same-index maintenance before taking LW_EXCLUSIVE.
 	 * Force-merge is an administrative operation with no expectation
 	 * of concurrent read throughput, so it retains the coarse per-index
-	 * lock for the complete operation.
+	 * lock for the complete operation.  Admission never waits: a caller
+	 * that blocks here closes a deadlock cycle with a REINDEX INDEX
+	 * CONCURRENTLY waiting on this transaction.
 	 */
 	{
 		TpLocalIndexState *index_state = tp_get_local_index_state(index_oid);
@@ -834,7 +866,7 @@ tp_force_merge(PG_FUNCTION_ARGS)
 							"\"%s\"",
 							index_name)));
 
-		tp_compaction_lock(index_rel);
+		tp_require_compaction_admission(index_rel);
 		PG_TRY();
 		{
 			tp_acquire_index_lock(index_state, LW_EXCLUSIVE);

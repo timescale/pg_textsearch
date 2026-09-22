@@ -297,7 +297,9 @@ See [RELEASING.md](RELEASING.md) for release instructions.
   segments, and an existing segment that already exceeds the budget
   remains an uncombinable singleton. Published sources stay immutable
   while replacements are built; displaced pages enter deferred reclaim
-  (see #380) rather than becoming immediately reusable.
+  (see #380) rather than becoming immediately reusable. Raises
+  `lock_not_available` rather than waiting when another session holds
+  index maintenance.
 - `bm25_level_counts(idx regclass)` - Segments held at each of the eight
   LSM levels
 - `bm25_needs_compaction(idx regclass)` - Whether any level holds at
@@ -308,9 +310,14 @@ See [RELEASING.md](RELEASING.md) for release instructions.
 - `bm25_compact(idx regclass)` - Run compaction passes to completion
   under one per-index exclusive lock. Requires index ownership. A
   published pass is a physical change and is **not** undone by ROLLBACK.
+  Raises `lock_not_available` rather than waiting when another session
+  holds index maintenance; waiting would deadlock with a concurrent
+  `REINDEX INDEX CONCURRENTLY`.
 - `bm25_compact_step(idx regclass)` - Run at most one pass and report
   whether one ran, letting a caller spread a cascade over several
-  transactions. Requires index ownership.
+  transactions. Requires index ownership. Raises `lock_not_available`
+  on the same terms as `bm25_compact()`, so a `false` return always
+  means "no reducible debt", never "maintenance was busy".
 - `bm25_pending_free_pages(index_name)` - Count displaced segment pages
   currently parked in the deferred-free tombstone chain (issue #380),
   awaiting standby-safe FSM reclaim

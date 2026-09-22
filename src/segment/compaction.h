@@ -11,8 +11,8 @@ typedef struct RelationData *Relation;
 
 extern uint64 tp_max_segment_size_bytes(void);
 
-extern void tp_compaction_lock(Relation index);
 extern bool tp_try_compaction_lock(Relation index);
+extern void tp_require_compaction_admission(Relation index);
 extern void tp_compaction_unlock(Relation index);
 
 /*
@@ -20,8 +20,6 @@ extern void tp_compaction_unlock(Relation index);
  * Advisory only; see the comment on the definition.
  */
 extern bool tp_compaction_needed(Relation index);
-extern bool tp_l0_compaction_reduces_count(
-		struct TpLocalIndexState *index_state, Relation index);
 extern void tp_maybe_compact_level(
 		struct TpLocalIndexState *index_state,
 		Relation				  index,

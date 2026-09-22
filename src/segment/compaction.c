@@ -63,17 +63,34 @@ typedef struct TpCompactionPlan
 	uint16				retained_counts[TP_MAX_LEVELS];
 } TpCompactionPlan;
 
-void
-tp_compaction_lock(Relation index)
-{
-	LockRelationOid(RelationGetRelid(index), ShareUpdateExclusiveLock);
-}
-
 bool
 tp_try_compaction_lock(Relation index)
 {
 	return ConditionalLockRelationOid(
 			RelationGetRelid(index), ShareUpdateExclusiveLock);
+}
+
+/*
+ * Take index maintenance for an explicit compaction request, reporting
+ * rather than waiting when another session holds it.  Waiting closes a
+ * deadlock cycle with a REINDEX INDEX CONCURRENTLY that already holds
+ * maintenance and is waiting on this transaction to drain.
+ */
+void
+tp_require_compaction_admission(Relation index)
+{
+	if (tp_try_compaction_lock(index))
+		return;
+
+	ereport(ERROR,
+			(errcode(ERRCODE_LOCK_NOT_AVAILABLE),
+			 errmsg("could not obtain maintenance access to bm25 index "
+					"\"%s\"",
+					RelationGetRelationName(index)),
+			 errdetail(
+					 "Another session is compacting, reindexing, or "
+					 "vacuuming the index."),
+			 errhint("Retry once the concurrent operation completes.")));
 }
 
 void
@@ -1100,26 +1117,6 @@ tp_free_compaction_plan(TpCompactionPlan *plan)
  * holds the per-index exclusive lock can therefore run exactly one pass
  * and release, leaving the index in a consistent state.
  */
-bool
-tp_l0_compaction_reduces_count(TpLocalIndexState *index_state, Relation index)
-{
-	TpIndexMetaPage	 snapshot;
-	TpCompactionPlan plan		   = {0};
-	bool			 reduces_count = false;
-
-	tp_require_compaction_lock(index_state);
-
-	snapshot = tp_get_metapage(index);
-	if ((uint32)snapshot->level_counts[0] >= (uint32)tp_segments_per_level &&
-		tp_build_ordinary_plan(index, snapshot, 0, &plan))
-		reduces_count = plan.retained_counts[0] < snapshot->level_counts[0];
-
-	pfree(snapshot);
-	tp_free_compaction_plan(&plan);
-
-	return reduces_count;
-}
-
 static bool
 tp_compact_once(
 		TpLocalIndexState *index_state, Relation index, uint32 first_level)

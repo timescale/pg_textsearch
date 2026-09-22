@@ -224,7 +224,7 @@ tp_compact_index(PG_FUNCTION_ARGS)
 				 errmsg("could not get index state for \"%s\"", relname)));
 	}
 
-	tp_compaction_lock(index_rel);
+	tp_require_compaction_admission(index_rel);
 	PG_TRY();
 	{
 		tp_acquire_index_lock(index_state, LW_EXCLUSIVE);
@@ -273,7 +273,7 @@ tp_compact_index_step(PG_FUNCTION_ARGS)
 				 errmsg("could not get index state for \"%s\"", relname)));
 	}
 
-	tp_compaction_lock(index_rel);
+	tp_require_compaction_admission(index_rel);
 	PG_TRY();
 	{
 		tp_acquire_index_lock(index_state, LW_EXCLUSIVE);

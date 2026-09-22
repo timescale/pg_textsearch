@@ -74,7 +74,11 @@ combines adjacent immutable segments within `pg_textsearch.max_segment_size`.
 
 The `compaction` index option controls spill-time behavior:
 
-- `inline` compacts threshold debt during spills and index builds;
+- `inline` compacts threshold debt during spills and index builds. It never
+  waits for index maintenance: when another session holds it -- a concurrent
+  `REINDEX INDEX CONCURRENTLY`, `VACUUM`, or explicit compaction -- the pass is
+  skipped rather than blocking the writer, and the debt is picked up by the
+  next spill or by explicit maintenance;
 - `background` dispatches a pre-commit request when possible. Runtime
   no-dispatch contexts such as autovacuum and callback re-entry compact
   inline. Index builds leave compaction to the managed workflow after
@@ -86,8 +90,19 @@ Prepared transactions do not flush queued background requests. Unconfigured,
 unresolvable, or failed callbacks do not fall back inline; the compaction debt
 remains for a later spill or explicit maintenance.
 
+A level 0 that is already at `pg_textsearch.segments_per_level` blocks the
+spill outright, so `inline` and `background` indexes both compact it in the
+spilling process; a background worker's pass would come too late. If that
+compaction is skipped because maintenance is busy, the records stay in the
+durable memtable chain for a later spill to drain. If it runs but cannot
+reduce level 0 -- every segment is over `max_segment_size` -- the spill fails
+closed with a segment-count error rather than growing the chain without
+bound. `manual` indexes take that error directly.
+
 `bm25_compact()` drives reducible debt to completion under one per-index lock.
-`bm25_compact_step()` runs at most one pass. Drive repeated maintenance from
+`bm25_compact_step()` runs at most one pass. Both, like `bm25_force_merge()`,
+take index maintenance without waiting and raise `lock_not_available` when
+another session holds it. Drive repeated maintenance from
 the return value of `bm25_compact_step()`, not
 `bm25_needs_compaction()`, because over-budget segments can leave a level
 permanently above its advisory threshold.

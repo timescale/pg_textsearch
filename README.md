@@ -360,8 +360,11 @@ REINDEX INDEX docs_idx;
 ### Compaction
 
 With the default `inline` policy, compaction of levels that reach the configured
-threshold occurs as part of the write transaction that triggers the spill.
-These functions provide manual and scheduled control:
+threshold occurs as part of the write transaction that triggers the spill. It is
+skipped, and left to the next spill, when another session is reindexing,
+vacuuming, or compacting the index. These functions provide manual and scheduled
+control; each raises `lock_not_available` rather than waiting when another
+session holds index maintenance:
 
 ```sql
 SELECT bm25_force_merge('docs_idx');
@@ -476,7 +479,8 @@ LIMIT 10;
 
 ### Background Compaction
 
-The default `inline` policy compacts synchronously during memtable spills.
+The default `inline` policy compacts during memtable spills, skipping the pass
+when another session holds index maintenance.
 Managed `background` mode uses [pg_durable](https://github.com/microsoft/pg_durable)
 0.2.8 or newer rather than a built-in worker. pg_durable must be preloaded,
 initialized in the current database, and granted to the index owner. The owner

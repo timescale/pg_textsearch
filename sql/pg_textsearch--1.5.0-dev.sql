@@ -338,13 +338,18 @@ CREATE FUNCTION @extschema@.bm25_pending_free_pages(index_name text)
 -- tests.  Superuser-only; not supported APIs.
 CREATE FUNCTION @extschema@.bm25_test_hold_index_lock(
     index_name text, exclusive boolean, milliseconds integer)
-    RETURNS void
+    RETURNS bigint
     AS 'MODULE_PATHNAME', 'tp_test_hold_index_lock'
     LANGUAGE C VOLATILE STRICT;
 
 CREATE FUNCTION @extschema@.bm25_test_exclusive_waiters(index_name text)
     RETURNS bigint
     AS 'MODULE_PATHNAME', 'tp_test_exclusive_waiters'
+    LANGUAGE C VOLATILE STRICT;
+
+CREATE FUNCTION @extschema@.bm25_test_exclusive_admissions(index_name text)
+    RETURNS bigint
+    AS 'MODULE_PATHNAME', 'tp_test_exclusive_admissions'
     LANGUAGE C VOLATILE STRICT;
 
 -- INTERNAL-ONLY test scaffold (issues #426, #427): return the live
@@ -376,6 +381,8 @@ REVOKE EXECUTE ON FUNCTION
     @extschema@.bm25_test_hold_index_lock(text, boolean, integer) FROM PUBLIC;
 REVOKE EXECUTE ON FUNCTION
     @extschema@.bm25_test_exclusive_waiters(text) FROM PUBLIC;
+REVOKE EXECUTE ON FUNCTION
+    @extschema@.bm25_test_exclusive_admissions(text) FROM PUBLIC;
 REVOKE EXECUTE ON FUNCTION
     @extschema@.bm25_test_recycle_tombstone_head(text) FROM PUBLIC;
 REVOKE EXECUTE ON FUNCTION
