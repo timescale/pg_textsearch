@@ -9,7 +9,8 @@
 #include "debug/injection.h"
 #include "miscadmin.h"
 
-static uint32 injected_segment_count_limit = PG_UINT16_MAX;
+static uint32 injected_segment_count_limit	= PG_UINT16_MAX;
+static bool	  injected_reclaim_horizon_held = false;
 
 #if PG_VERSION_NUM >= 180000
 #define TP_INJECTION_CALLBACK_ARGS \
@@ -22,14 +23,28 @@ static uint32 injected_segment_count_limit = PG_UINT16_MAX;
 extern PGDLLEXPORT void tp_injection_panic(TP_INJECTION_CALLBACK_ARGS);
 extern PGDLLEXPORT void
 		tp_injection_segment_count_limit(TP_INJECTION_CALLBACK_ARGS);
+extern PGDLLEXPORT void
+		tp_injection_reclaim_horizon_hold(TP_INJECTION_CALLBACK_ARGS);
 #endif
 
 uint32
-tp_segment_count_limit(void)
+tp_injected_segment_count_limit(void)
 {
 	injected_segment_count_limit = PG_UINT16_MAX;
 	TP_INJECTION_POINT(TP_INJECTION_SEGMENT_COUNT_LIMIT);
 	return injected_segment_count_limit;
+}
+
+/*
+ * Report whether a test is pinning the deferred-reclaim horizon so no
+ * parked page is recyclable.
+ */
+bool
+tp_injected_reclaim_horizon_held(void)
+{
+	injected_reclaim_horizon_held = false;
+	TP_INJECTION_POINT(TP_INJECTION_RECLAIM_HORIZON);
+	return injected_reclaim_horizon_held;
 }
 
 #ifdef USE_INJECTION_POINTS
@@ -64,5 +79,20 @@ tp_injection_segment_count_limit(TP_INJECTION_CALLBACK_ARGS)
 			 name);
 
 	injected_segment_count_limit = (uint32)condition->limit;
+}
+
+void
+tp_injection_reclaim_horizon_hold(TP_INJECTION_CALLBACK_ARGS)
+{
+	const TpInjectionCondition *condition = private_data;
+
+#if PG_VERSION_NUM >= 180000
+	(void)arg;
+#endif
+	(void)name;
+	if (condition->pid != MyProcPid)
+		return;
+
+	injected_reclaim_horizon_held = true;
 }
 #endif

@@ -1,0 +1,170 @@
+#!/bin/bash
+#
+# Parallel VACUUM enters parallel mode before calling index bulk-delete,
+# including for indexes processed by the leader.  pg_textsearch maintenance
+# must therefore avoid assigning a transaction ID while removing dead docs.
+#
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PG_CONFIG="${PG_CONFIG:-pg_config}"
+PGBINDIR="$("${PG_CONFIG}" --bindir)"
+export PATH="${PGBINDIR}:${PATH}"
+TEST_PORT=55461
+TEST_DB=parallel_vacuum_test
+DATA_DIR="${SCRIPT_DIR}/../tmp_parallel_vacuum"
+SOCKET_DIR="/tmp/pgts-parallel-vacuum-$$"
+LOGFILE="${DATA_DIR}/postgres.log"
+
+cleanup() {
+    local exit_code=$?
+
+    trap - EXIT INT TERM
+    if [ -f "${DATA_DIR}/postmaster.pid" ]; then
+        pg_ctl stop -D "${DATA_DIR}" -m immediate >/dev/null 2>&1 || true
+    fi
+    rm -rf "${DATA_DIR}" "${SOCKET_DIR}"
+    exit "${exit_code}"
+}
+
+trap cleanup EXIT INT TERM
+
+rm -rf "${DATA_DIR}" "${SOCKET_DIR}"
+mkdir -p "${DATA_DIR}" "${SOCKET_DIR}"
+
+initdb -D "${DATA_DIR}" --auth-local=trust --auth-host=trust \
+    >/dev/null 2>&1
+cat >>"${DATA_DIR}/postgresql.conf" <<EOF
+port = ${TEST_PORT}
+unix_socket_directories = '${SOCKET_DIR}'
+listen_addresses = 'localhost'
+shared_preload_libraries = 'pg_textsearch'
+logging_collector = on
+log_directory = '.'
+log_filename = 'postgres.log'
+autovacuum = off
+EOF
+
+if ! pg_ctl start -D "${DATA_DIR}" -l "${LOGFILE}" -w >/dev/null; then
+    cat "${LOGFILE}" >&2
+    exit 1
+fi
+createdb -h "${SOCKET_DIR}" -p "${TEST_PORT}" "${TEST_DB}"
+
+PSQL=(
+    psql
+    -h "${SOCKET_DIR}"
+    -p "${TEST_PORT}"
+    -d "${TEST_DB}"
+    -qAt
+    -v ON_ERROR_STOP=1
+)
+
+"${PSQL[@]}" <<'SQL' >/dev/null
+CREATE EXTENSION pg_textsearch;
+SET pg_textsearch.memtable_pages_threshold = 0;
+
+CREATE TABLE spill_docs (
+    id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    body text NOT NULL
+);
+CREATE INDEX spill_docs_bm25 ON spill_docs USING bm25(body)
+    WITH (text_config = 'english', compaction = 'off');
+DO $$
+BEGIN
+    FOR batch IN 1..8 LOOP
+        INSERT INTO spill_docs (body)
+        SELECT 'parallel spill batch ' || batch || ' document ' || gs
+        FROM generate_series(1, 500) gs;
+        PERFORM bm25_spill_index('spill_docs_bm25');
+    END LOOP;
+END
+$$;
+ALTER INDEX spill_docs_bm25 SET (compaction = 'inline');
+INSERT INTO spill_docs (body)
+SELECT 'parallel spill pending document ' || gs || ' ' ||
+       repeat(md5(gs::text), 4)
+FROM generate_series(1, 20000) gs;
+DELETE FROM spill_docs WHERE id <= 5000;
+
+CREATE TABLE docs (
+    id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    body text NOT NULL
+);
+CREATE INDEX docs_bm25 ON docs USING bm25(body)
+    WITH (text_config = 'english', compaction = 'off');
+INSERT INTO docs (body)
+SELECT 'parallel vacuum document ' || gs || ' ' || repeat(md5(gs::text), 4)
+FROM generate_series(1, 20000) gs;
+SELECT bm25_spill_index('docs_bm25');
+DELETE FROM docs;
+SQL
+
+if ! spill_vacuum_output=$(
+    "${PSQL[@]}" <<'SQL' 2>&1
+SET min_parallel_index_scan_size = 0;
+VACUUM (PARALLEL 1, VERBOSE) spill_docs;
+SQL
+); then
+    echo "${spill_vacuum_output}" >&2
+    exit 1
+fi
+
+if ! grep -q "launched 1 parallel vacuum worker" \
+    <<<"${spill_vacuum_output}"; then
+    echo "parallel spill VACUUM did not launch a worker" >&2
+    echo "${spill_vacuum_output}" >&2
+    exit 1
+fi
+
+spill_remaining=$(
+    "${PSQL[@]}" -c "
+        SELECT count(*)
+          FROM (
+                SELECT id
+                  FROM spill_docs
+                 ORDER BY body <@> to_bm25query(
+                         'parallel spill', 'spill_docs_bm25')
+               ) ranked;"
+)
+
+if [ "${spill_remaining}" != "19000" ]; then
+    echo "parallel VACUUM spill retained ${spill_remaining}/19000 documents" \
+        >&2
+    exit 1
+fi
+
+if ! vacuum_output=$(
+    "${PSQL[@]}" <<'SQL' 2>&1
+SET min_parallel_index_scan_size = 0;
+VACUUM (PARALLEL 1, VERBOSE) docs;
+SQL
+); then
+    echo "${vacuum_output}" >&2
+    exit 1
+fi
+
+if ! grep -q "launched 1 parallel vacuum worker" <<<"${vacuum_output}"; then
+    echo "parallel VACUUM did not launch a worker" >&2
+    echo "${vacuum_output}" >&2
+    exit 1
+fi
+
+remaining=$(
+    "${PSQL[@]}" -c "
+        SELECT count(*)
+          FROM (
+                SELECT id
+                  FROM docs
+                 ORDER BY body <@> to_bm25query(
+                         'parallel vacuum', 'docs_bm25')
+               ) ranked;"
+)
+
+if [ "${remaining}" != "0" ]; then
+    echo "parallel VACUUM left ${remaining} deleted documents searchable" >&2
+    exit 1
+fi
+
+echo "Parallel VACUUM test passed"

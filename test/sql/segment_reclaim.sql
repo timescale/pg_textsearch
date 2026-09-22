@@ -8,11 +8,18 @@
 CREATE EXTENSION IF NOT EXISTS pg_textsearch;
 CREATE TABLE reclaim_docs (id int, body text)
     WITH (autovacuum_enabled = false);
+CREATE TABLE reclaim_control (id int, body text)
+    WITH (autovacuum_enabled = false);
 INSERT INTO reclaim_docs
+SELECT g, 'alpha beta gamma delta term' || (g % 50)
+FROM generate_series(1, 2000) g;
+INSERT INTO reclaim_control
 SELECT g, 'alpha beta gamma delta term' || (g % 50)
 FROM generate_series(1, 2000) g;
 
 CREATE INDEX reclaim_idx ON reclaim_docs
+    USING bm25 (body) WITH (text_config = 'english');
+CREATE INDEX reclaim_control_idx ON reclaim_control
     USING bm25 (body) WITH (text_config = 'english');
 
 -- Build wrote a segment directly, so the memtable is empty here; the
@@ -20,14 +27,55 @@ CREATE INDEX reclaim_idx ON reclaim_docs
 INSERT INTO reclaim_docs
 SELECT g, 'alpha beta term' || (g % 50)
 FROM generate_series(2001, 4000) g;
+INSERT INTO reclaim_control
+SELECT g, 'alpha beta term' || (g % 50)
+FROM generate_series(2001, 4000) g;
 SELECT bm25_spill_index('reclaim_idx') > 0 AS spilled;
+\pset format unaligned
+SELECT bm25_spill_index('reclaim_control_idx') > 0 AS control_spilled;
 
 -- Merge the L0 segments into one L1 segment; this displaces the source
 -- segments' pages, which must be parked (not freed).
 SELECT bm25_force_merge('reclaim_idx');
+SELECT bm25_force_merge('reclaim_control_idx');
 
 -- After a merge, displaced pages are parked (> 0), NOT freed.
 SELECT bm25_pending_free_pages('reclaim_idx') > 0 AS parked_after_merge;
+
+-- The control index used identical construction, so its first detached
+-- batch must have the same size. Drain only that batch before performing
+-- identical second merges on both indexes; its later parked count then
+-- measures the second batch alone.
+SELECT bm25_pending_free_pages('reclaim_idx')
+    AS first_batch_count \gset
+SELECT bm25_pending_free_pages('reclaim_control_idx')
+    = :first_batch_count AS control_first_batch_matches;
+SELECT txid_current() IS NOT NULL AS control_t1;
+SELECT txid_current() IS NOT NULL AS control_t2;
+VACUUM reclaim_control;
+SELECT bm25_pending_free_pages('reclaim_control_idx')
+    AS control_after_first_drain;
+
+-- Attach another detached batch while the first one is still parked in
+-- reclaim_idx. If publication replaced the old head, its count would equal
+-- the control's second batch alone instead of first_batch + control_batch.
+INSERT INTO reclaim_docs
+SELECT g, 'alpha beta second merge term' || (g % 50)
+FROM generate_series(4001, 5000) g;
+INSERT INTO reclaim_control
+SELECT g, 'alpha beta second merge term' || (g % 50)
+FROM generate_series(4001, 5000) g;
+SELECT bm25_spill_index('reclaim_idx') > 0 AS second_spilled;
+SELECT bm25_spill_index('reclaim_control_idx') > 0
+    AS control_second_spilled;
+SELECT bm25_force_merge('reclaim_idx');
+SELECT bm25_force_merge('reclaim_control_idx');
+SELECT bm25_pending_free_pages('reclaim_idx')
+    = :first_batch_count
+      + bm25_pending_free_pages('reclaim_control_idx')
+    AS preserved_old_tombstones;
+\pset format aligned
+DROP TABLE reclaim_control;
 
 -- Advance the global xid horizon past the merge stamp so the parked
 -- pages become reclaimable, then VACUUM to drain them.
@@ -58,7 +106,7 @@ SELECT pg_relation_size('reclaim_idx') / current_setting('block_size')::int
     AS blocks_before_reuse \gset
 INSERT INTO reclaim_docs
 SELECT g, 'alpha beta term' || (g % 50)
-FROM generate_series(4001, 5000) g;
+FROM generate_series(5001, 6000) g;
 SELECT bm25_spill_index('reclaim_idx') > 0 AS reuse_spilled;
 SELECT pg_relation_size('reclaim_idx') / current_setting('block_size')::int
     <= :blocks_before_reuse AS reused_freed_pages_no_extension;
@@ -77,8 +125,8 @@ CREATE INDEX reclaim_idx ON reclaim_docs
 
 -- Add a second segment through the on-disk memtable, then delete exactly
 -- those rows so VACUUM drops that all-dead segment.  First create an FSM
--- free-page pool: VACUUM's tombstone pages must not consume it while
--- running under LW_SHARED, or they can race concurrent insert allocation.
+-- free-page pool: tombstone construction safely claims reusable pages
+-- without racing concurrent insert allocation.
 INSERT INTO reclaim_docs
 SELECT g, 'vacuum pool beta term' || (g % 50)
 FROM generate_series(1501, 3000) g;
@@ -99,12 +147,12 @@ SELECT pg_relation_size('reclaim_idx') / current_setting('block_size')::int
 DELETE FROM reclaim_docs WHERE id BETWEEN 3001 AND 3020;
 VACUUM reclaim_docs;
 SELECT pg_relation_size('reclaim_idx') / current_setting('block_size')::int
-    > :blocks_before_vacuum_drop AS vacuum_tombstone_extended;
+    <= :blocks_before_vacuum_drop AS vacuum_tombstone_reused_fsm;
 
--- VACUUM should park the dropped segment's pages, not recycle them yet.
-SELECT bm25_pending_free_pages('reclaim_idx') > 0 AS parked_after_vacuum_drop;
-
--- Once the xid horizon advances, a later VACUUM drains the parked pages.
+-- VACUUM may retain the pages or reclaim them immediately if concurrent
+-- transactions already advanced the horizon. A later VACUUM drains any
+-- retained pages.  segment_reclaim_injection.sql pins the horizon with
+-- an injection point to assert the parking behaviour deterministically.
 SELECT txid_current() IS NOT NULL AS vt1;
 SELECT txid_current() IS NOT NULL AS vt2;
 VACUUM reclaim_docs;
@@ -122,5 +170,80 @@ SELECT pg_relation_size('reclaim_idx') / current_setting('block_size')::int
     <= :blocks_before_vacuum_reuse AS vacuum_reused_freed_pages_no_extension;
 \pset format aligned
 
+-- Force merge may truncate only pages that reclaim has already stamped
+-- recyclable. Build a free-page pool below a one-page memtable at EOF, then
+-- let force merge spill into that pool. The retired memtable page remains
+-- protected by dead_fxid and must survive until VACUUM emits conflict WAL and
+-- stamps it TP_FREE_PAGE_MAGIC.
+\pset format unaligned
+CREATE TABLE truncate_docs (id int, body text)
+    WITH (autovacuum_enabled = false);
+INSERT INTO truncate_docs
+SELECT g, 'truncate alpha beta gamma ' || g || ' ' ||
+       repeat(md5(g::text), 4)
+FROM generate_series(1, 2000) g;
+CREATE INDEX truncate_idx ON truncate_docs
+    USING bm25 (body)
+    WITH (text_config = 'english', compaction = 'off');
+INSERT INTO truncate_docs
+SELECT g, 'truncate alpha beta delta ' || g || ' ' ||
+       repeat(md5(g::text), 4)
+FROM generate_series(2001, 4000) g;
+SELECT bm25_spill_index('truncate_idx') > 0 AS truncate_pool_spilled;
+SELECT bm25_force_merge('truncate_idx');
+SELECT bm25_pending_free_pages('truncate_idx') > 0
+    AS truncate_pool_parked;
+
+INSERT INTO truncate_docs VALUES (4001, 'truncate eof marker');
+CREATE TEMP TABLE truncate_suffix AS
+SELECT max(blkno)::bigint AS blkno
+FROM bm25_memtable_chain('truncate_idx');
+SELECT blkno + 1 =
+           pg_relation_size('truncate_idx'::regclass, 'main') /
+           current_setting('block_size')::int
+    AS truncate_memtable_at_eof
+FROM truncate_suffix;
+
+SELECT txid_current() IS NOT NULL AS truncate_t1;
+SELECT txid_current() IS NOT NULL AS truncate_t2;
+VACUUM truncate_docs;
+SELECT bm25_pending_free_pages('truncate_idx') = 0
+    AS truncate_pool_drained;
+
+SELECT bm25_force_merge('truncate_idx');
+SELECT EXISTS (
+           SELECT 1
+           FROM bm25_memtable_dead_pages('truncate_idx') dead,
+                truncate_suffix suffix
+           WHERE dead.blkno = suffix.blkno
+             AND dead.dead_fxid > 0
+       )
+       AND (
+           SELECT blkno <
+                  pg_relation_size('truncate_idx'::regclass, 'main') /
+                  current_setting('block_size')::int
+           FROM truncate_suffix
+       )
+    AS force_merge_preserved_unreclaimed_suffix;
+
+SELECT txid_current() IS NOT NULL AS truncate_reclaim_t1;
+SELECT txid_current() IS NOT NULL AS truncate_reclaim_t2;
+VACUUM truncate_docs;
+CREATE TEMP TABLE truncate_recyclable_size AS
+SELECT pg_relation_size('truncate_idx'::regclass, 'main') /
+       current_setting('block_size')::int AS blocks;
+SELECT bm25_force_merge('truncate_idx');
+SELECT before.blocks >
+           pg_relation_size('truncate_idx'::regclass, 'main') /
+           current_setting('block_size')::int
+       AND suffix.blkno >=
+           pg_relation_size('truncate_idx'::regclass, 'main') /
+           current_setting('block_size')::int
+    AS force_merge_truncated_recyclable_suffix
+FROM truncate_recyclable_size before,
+     truncate_suffix suffix;
+
+DROP TABLE truncate_docs;
+\pset format aligned
 DROP TABLE reclaim_docs;
 DROP EXTENSION pg_textsearch CASCADE;

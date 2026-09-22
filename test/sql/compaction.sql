@@ -50,8 +50,12 @@ SELECT NOT EXISTS (
            SELECT 1
            FROM pg_locks
            WHERE pid = pg_backend_pid()
-             AND relation = 'compaction_inline_idx'::regclass
-             AND mode = 'ShareUpdateExclusiveLock'
+             AND locktype = 'object'
+             AND classid = 'pg_am'::regclass
+             AND objid = 'compaction_inline_idx'::regclass
+             AND objsubid = 3
+             AND mode = 'ExclusiveLock'
+             AND granted
        ) AS inline_policy_releases_maintenance_lock;
 COMMIT;
 DROP TABLE compaction_inline CASCADE;
@@ -344,11 +348,8 @@ DROP TABLE compaction_rollback CASCADE;
 -- A level can sit at the segment threshold with nothing to compact:
 -- every candidate group already exceeds max_segment_size, and an
 -- over-budget segment is an uncombinable singleton.  This is not
--- compaction debt -- no pass would reduce it -- but
--- bm25_needs_compaction() is a count-only signal and cannot tell the
--- two apart, so it reports the full level that bm25_compact_step()
--- correctly declines to act on.  A scheduler that retried on a false
--- return would spin here.
+-- compaction debt, and bm25_needs_compaction() reports false so a
+-- scheduler looping on it does not spin.
 CREATE TABLE compaction_unreducible (id bigint PRIMARY KEY, body text);
 CREATE INDEX compaction_unreducible_idx ON compaction_unreducible
     USING bm25(body) WITH (text_config = 'simple');
@@ -372,8 +373,8 @@ $$;
 SELECT bm25_level_counts('compaction_unreducible_idx'::regclass) =
            ARRAY[2, 0, 0, 0, 0, 0, 0, 0]
        AS unreducible_level_is_at_threshold;
-SELECT bm25_needs_compaction('compaction_unreducible_idx'::regclass)
-       AS unreducible_reports_full_level;
+SELECT NOT bm25_needs_compaction('compaction_unreducible_idx'::regclass)
+       AS unreducible_level_reports_no_work;
 SELECT bm25_compact_step('compaction_unreducible_idx'::regclass)
        AS unreducible_step_declines;
 SELECT bm25_compact('compaction_unreducible_idx'::regclass);

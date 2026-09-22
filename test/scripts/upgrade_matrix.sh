@@ -332,6 +332,85 @@ run_boolean_completeness_upgrade() {
   [ "$count" = "3" ] || fail "1.4.0/boolean: post-REINDEX count $count != 3"
 }
 
+run_v8_tombstone_compaction_upgrade() {
+  fresh_cluster || { fail "1.4.0/v8-tombstone: cluster init failed"; return; }
+  echo "max_prepared_transactions = 1" >>"$DATA_DIR/postgresql.conf"
+  start_pg || { fail "1.4.0/v8-tombstone: old server failed to start"; return; }
+  createdb_upg
+  runsql "CREATE EXTENSION pg_textsearch;
+    CREATE TABLE d(id serial primary key, c text)
+      WITH (autovacuum_enabled = false);
+    CREATE INDEX i ON d USING bm25(c) WITH (text_config='english');"
+  runsql "BEGIN;
+    SELECT txid_current();
+    PREPARE TRANSACTION 'v8_tombstone_horizon';"
+  runsql "
+    SET pg_textsearch.segments_per_level = 64;
+    DO \$\$
+    DECLARE
+      batch integer;
+    BEGIN
+      FOR batch IN 0..7 LOOP
+        INSERT INTO d(c)
+        SELECT CASE WHEN (g % 12) = 0
+          THEN 'alpha beta gamma qwxsentinel doc ' || g
+          ELSE 'alpha beta gamma common filler doc ' || g END
+        FROM generate_series(batch * 120 + 1, batch * 120 + 120) g;
+        PERFORM bm25_spill_index('i');
+      END LOOP;
+      PERFORM bm25_force_merge('i');
+      FOR batch IN 8..9 LOOP
+        INSERT INTO d(c)
+        SELECT CASE WHEN (g % 12) = 0
+          THEN 'alpha beta gamma qwxsentinel doc ' || g
+          ELSE 'alpha beta gamma common filler doc ' || g END
+        FROM generate_series(batch * 120 + 1, batch * 120 + 120) g;
+        PERFORM bm25_spill_index('i');
+      END LOOP;
+    END
+    \$\$;"
+
+  local truth pre old_pending
+  truth="$(scalar "$TRUTH_Q")"
+  pre="$(scalar "$RECALL_Q")"
+  old_pending="$(scalar "SELECT bm25_pending_free_pages('i');")"
+  stop_pg
+
+  build_install_current || { fail "current build/install failed"; return; }
+  start_pg || {
+    fail "1.4.0/v8-tombstone: NEW server failed to start"
+    return
+  }
+  runsql "ALTER EXTENSION pg_textsearch UPDATE TO '1.5.0-dev';"
+
+  local before compact_result after post out err_f
+  before="$(scalar "SELECT bm25_pending_free_pages('i');")"
+  out="$BASE_DIR/v8-compact.out"
+  err_f="$BASE_DIR/v8-compact.err"
+  run_capture "SET pg_textsearch.segments_per_level = 2;
+    SELECT bm25_compact_step('i'::regclass);" "$out" "$err_f"
+  compact_result="$(tr -d '[:space:]' <"$out")"
+  after="$(scalar "SELECT bm25_pending_free_pages('i');")"
+  post="$(scalar "$RECALL_Q")"
+  runsql "ROLLBACK PREPARED 'v8_tombstone_horizon';"
+  stop_pg
+
+  log "  [1.4.0/v8-tombstone] truth=$truth pre=$pre old_pending=$old_pending before=$before compact=$compact_result after=$after post=$post"
+
+  [ "$pre" = "$truth" ] ||
+    fail "1.4.0/v8-tombstone: OLD-binary recall $pre != truth $truth"
+  [ "$old_pending" -gt 0 ] ||
+    fail "1.4.0/v8-tombstone: old force-merge did not park pages"
+  [ "$before" = "$old_pending" ] ||
+    fail "1.4.0/v8-tombstone: binary upgrade changed pending pages ($old_pending -> $before)"
+  [ "$compact_result" = "t" ] ||
+    fail "1.4.0/v8-tombstone: compaction did not publish: $(head -1 "$err_f")"
+  [ "$post" = "$truth" ] ||
+    fail "1.4.0/v8-tombstone: post-compaction recall $post != truth $truth"
+  [ "$after" -gt "$before" ] ||
+    fail "1.4.0/v8-tombstone: compaction did not add pending pages ($before -> $after)"
+}
+
 # ------------------------------------------------------------------ #
 # Main
 # ------------------------------------------------------------------ #
@@ -347,6 +426,11 @@ for v in $OLD_VERSIONS; do
     run_legacy "$v"
   else
     if [ "$v" = "1.4.0" ]; then
+      run_v8_tombstone_compaction_upgrade
+      build_install_old "$v" || {
+        fail "$v: could not reinstall old binary after V8 tombstone test"
+        continue
+      }
       run_boolean_completeness_upgrade
       build_install_old "$v" || {
         fail "$v: could not reinstall old binary after Boolean upgrade test"

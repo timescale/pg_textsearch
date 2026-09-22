@@ -458,9 +458,9 @@ SQL
 }
 
 #
-# The public compaction entry points must decline maintenance the same
-# way the spill path does.  A blocking acquisition inside a transaction
-# that REINDEX CONCURRENTLY is waiting on closes a deadlock cycle.
+# REINDEX CONCURRENTLY never takes the maintenance lock, so the public
+# compaction entry points run to completion inside the transaction it
+# is waiting on.
 #
 test_public_compaction_reindex_admission() {
     local fifo="${CLIENT_DIR}/public.fifo"
@@ -469,7 +469,7 @@ test_public_compaction_reindex_admission() {
     local caller_pid
     local reindex_pid
 
-    log "Testing public compaction declines REINDEX maintenance admission"
+    log "Testing public compaction proceeds alongside REINDEX CONCURRENTLY"
     $PSQL <<'SQL' >/dev/null
 CREATE TABLE public_compact (id integer PRIMARY KEY, body text NOT NULL);
 INSERT INTO public_compact VALUES (1, 'public alpha document');
@@ -531,7 +531,11 @@ SQL
     if grep -qi "deadlock detected" "${caller_log}" "${reindex_log}"; then
         fail "public compaction deadlocked with REINDEX CONCURRENTLY"
     fi
-    for marker in compact-declined step-declined merge-declined; do
+    #
+    # The entry points neither block nor decline, so each reports that
+    # it ran.
+    #
+    for marker in compact-ran step-ran merge-ran; do
         grep -Fq "${marker}" "${caller_log}" || {
             cat "${caller_log}"
             fail "public compaction did not report ${marker}"

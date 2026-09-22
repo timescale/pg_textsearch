@@ -21,6 +21,8 @@
 #include <nodes/value.h>
 #include <optimizer/optimizer.h>
 #include <storage/bufmgr.h>
+#include <storage/lmgr.h>
+#include <storage/lock.h>
 #include <tsearch/ts_type.h>
 #include <utils/acl.h>
 #include <utils/backend_progress.h>
@@ -35,6 +37,7 @@
 #include "constants.h"
 #include "debug/injection.h"
 #include "index/compaction_request.h"
+#include "index/freepage.h"
 #include "index/metapage.h"
 #include "index/registry.h"
 #include "index/state.h"
@@ -44,11 +47,9 @@
 #include "segment/compaction.h"
 #include "segment/dictionary.h"
 #include "segment/docmap.h"
-#include "segment/graph_snapshot.h"
 #include "segment/io.h"
 #include "segment/merge.h"
 #include "segment/segment.h"
-#include "segment/tombstone.h"
 #include "types/array.h"
 #include "types/vector.h"
 
@@ -239,11 +240,11 @@ tp_finish_spill(
 		FullTransactionId horizon;
 		TpIndexMetaPage	  metap;
 
-		horizon	   = ReadNextFullTransactionId();
 		metap	   = tp_get_metapage(index_rel);
 		chain_head = metap->memtable_head_blkno;
 		pfree(metap);
 
+		TP_INJECTION_POINT(TP_INJECTION_SPILL_BEFORE_FINALIZE);
 		tp_spill_finalize(
 				index_state,
 				index_rel,
@@ -254,6 +255,12 @@ tp_finish_spill(
 
 		TP_INJECTION_POINT(TP_INJECTION_AFTER_SPILL_FINALIZE);
 
+		/*
+		 * Sample only after the unpublication WAL is inserted.  Every
+		 * standby snapshot that can still discover the old chain then has
+		 * xmin at or below this reuse-conflict horizon.
+		 */
+		horizon = ReadNextFullTransactionId();
 		if (BlockNumberIsValid(chain_head))
 			tp_memtable_mark_chain_dead(index_rel, chain_head, horizon);
 	}
@@ -299,15 +306,17 @@ tp_do_spill(
 			index_rel,
 			&spill,
 			out_segment_root,
-			tp_segment_count_limit());
+			tp_injected_segment_count_limit());
 
 	return true;
 }
 
 /*
- * Compact level 0 when maintenance and exclusive index access are
- * both free, reporting whether the pass ran.  Never waits: a writer
- * that blocks here can close a lock cycle with concurrent index work.
+ * Run one compaction pass if the maintenance lock is free, reporting
+ * whether it ran.  This runs inside an ordinary INSERT, so the lock is
+ * taken conditionally: when another session already holds it, the
+ * INSERT skips compaction instead of waiting.  bm25_compact() and
+ * bm25_compact_step() wait for the lock.
  */
 static bool
 tp_compact_inline(TpLocalIndexState *index_state, Relation index_rel)
@@ -315,15 +324,9 @@ tp_compact_inline(TpLocalIndexState *index_state, Relation index_rel)
 	if (!tp_try_compaction_lock(index_rel))
 		return false;
 
-	if (!tp_try_acquire_index_lock(index_state, LW_EXCLUSIVE))
-	{
-		tp_compaction_unlock(index_rel);
-		return false;
-	}
-
 	PG_TRY();
 	{
-		tp_maybe_compact_level(index_state, index_rel, 0);
+		(void)tp_compact_step(index_state, index_rel);
 	}
 	PG_FINALLY();
 	{
@@ -337,8 +340,25 @@ tp_compact_inline(TpLocalIndexState *index_state, Relation index_rel)
 }
 
 static void
+tp_compact_build_private(TpLocalIndexState *index_state, Relation index_rel)
+{
+	Assert(index_state->lock_held);
+	while (tp_compact_step(index_state, index_rel))
+		CHECK_FOR_INTERRUPTS();
+}
+
+static void
 tp_apply_compaction_policy(TpLocalIndexState *index_state, Relation index_rel)
 {
+	/*
+	 * Reached when a VACUUM (PARALLEL n) worker spills this index's
+	 * memtable during cleanup.  Publication assigns an XID for its
+	 * reclaim stamp, which parallel mode forbids, so leave the new
+	 * segment in L0 for later serial maintenance to compact.
+	 */
+	if (IsInParallelMode() || IsParallelWorker())
+		return;
+
 	pgstat_progress_update_param(
 			PROGRESS_CREATEIDX_SUBPHASE, TP_PHASE_COMPACTING);
 	switch (tp_index_compaction_mode(index_rel))
@@ -372,8 +392,9 @@ tp_apply_compaction_policy(TpLocalIndexState *index_state, Relation index_rel)
 static bool
 tp_l0_at_capacity(Relation index_rel)
 {
-	TpIndexMetaPage metap = tp_get_metapage(index_rel);
-	bool at_capacity	  = metap->level_counts[0] >= tp_segment_count_limit();
+	TpIndexMetaPage metap		= tp_get_metapage(index_rel);
+	bool			at_capacity = metap->level_counts[0] >=
+					   tp_injected_segment_count_limit();
 
 	pfree(metap);
 
@@ -381,21 +402,19 @@ tp_l0_at_capacity(Relation index_rel)
 }
 
 /*
- * Make room at level 0 for a spill, and report whether the spill
- * should be attempted at all.
+ * Make room at level 0 for a spill, and report whether the spill should be
+ * attempted at all.
  *
- * A full level 0 is normally transient: compacting it merges the
- * segments into level 1 and the spill proceeds.  Compaction runs here
- * regardless of the index's policy, because a background worker's pass
- * comes too late for a spill that is blocked now; manual indexes opt
- * out of automatic maintenance and fall through to the capacity error.
+ * A full level 0 is normally transient: compacting it merges the segments
+ * into level 1 and the spill proceeds.  Compaction runs here regardless of
+ * the index's policy, because a background worker's pass comes too late for
+ * a spill blocked now; manual indexes fall through to the capacity error.
  *
- * Only a denied maintenance or index-lock admission leaves level 0
- * full without knowing whether it is reducible.  The records then stay
- * in the durable chain for a later spill to drain, unless the caller
- * requires an empty chain on return.  Every other outcome falls
- * through to the spill, so a level 0 that compaction cannot reduce
- * still fails closed rather than growing the chain without bound.
+ * Only a denied maintenance admission leaves level 0 full without knowing
+ * whether it is reducible; those records wait in the durable chain for a
+ * later spill, unless the caller requires an empty chain.  Every other
+ * outcome falls through to the spill, so an irreducible level 0 fails closed
+ * rather than growing the chain without bound.
  */
 static bool
 tp_make_room_for_spill(
@@ -421,17 +440,17 @@ tp_make_room_for_spill(
 }
 
 /*
- * Spill memtable to an L0 segment.  Caller passes a minimum
- * chain-page count below which the spill is a no-op — used by
- * VACUUM cleanup and the shutdown hook to avoid producing runt
- * L0 segments on lightly-loaded indexes.  The pre-lock read is
- * a fast bailout; if it races with an insert, the worst case
- * is a harmless no-op inside tp_do_spill().
+ * Spill memtable to an L0 segment.  min_pages is a chain-page count below
+ * which the spill is a no-op, used by VACUUM cleanup and the shutdown hook
+ * to avoid runt L0 segments.  The pre-lock read is a fast bailout; the
+ * authoritative check runs after exclusive acquisition.
  *
- * require_spill makes an empty chain the postcondition: the spill
- * runs even at a full level 0, where it reports the capacity limit.
- * VACUUM needs this because it identifies dead documents from
- * published segments alone.
+ * require_spill makes an empty chain the postcondition: the spill runs even
+ * at a full level 0, where it reports the capacity limit.  VACUUM needs this
+ * because it identifies dead documents from published segments alone.
+ *
+ * wait_for_index_lock=false makes the spill skip rather than block, so the
+ * shutdown hook never waits on a busy index.
  */
 static void
 tp_spill_memtable_if_needed_internal(
@@ -458,21 +477,38 @@ tp_spill_memtable_if_needed_internal(
 				index, index_state, apply_compaction_policy, require_spill))
 		return;
 
+	/*
+	 * Keep spill publication outside compaction's prepare/publish window.
+	 * A no-wait caller must not block here either, or the shutdown hook
+	 * would wait on the very index it promised to skip.
+	 */
 	if (wait_for_index_lock)
-		tp_acquire_index_lock(index_state, LW_EXCLUSIVE);
-	else if (!tp_try_acquire_index_lock(index_state, LW_EXCLUSIVE))
+		tp_compaction_publication_lock(index, ShareLock);
+	else if (!tp_try_compaction_publication_lock(index, ShareLock))
 		return;
+
 	PG_TRY();
 	{
-		/* Re-check: another backend may have spilled while we waited. */
-		if (pg_atomic_read_u32(&index_state->shared->chain_page_count) >=
-			min_pages)
+		bool acquired;
+
+		if (wait_for_index_lock)
+		{
+			tp_acquire_index_lock(index_state, LW_EXCLUSIVE);
+			acquired = true;
+		}
+		else
+			acquired = tp_try_acquire_index_lock(index_state, LW_EXCLUSIVE);
+
+		if (acquired &&
+			pg_atomic_read_u32(&index_state->shared->chain_page_count) >=
+					min_pages)
 			policy_needed = tp_do_spill(index_state, index, NULL);
 	}
 	PG_FINALLY();
 	{
 		if (index_state->lock_held)
 			tp_release_index_lock(index_state);
+		tp_compaction_publication_unlock(index, ShareLock);
 	}
 	PG_END_TRY();
 
@@ -510,17 +546,15 @@ tp_spill_memtable_without_compaction_if_needed(
 
 /*
  * Auto-spill the on-disk memtable when the chain grows past the
- * configured page threshold (issue #374).
+ * configured page threshold (issue #374).  The shared spill helper owns
+ * the threshold checks so every threshold-driven caller has identical
+ * race behavior.
  */
 static void
 tp_auto_spill_if_needed(TpLocalIndexState *index_state, Relation index_rel)
 {
-	uint32 threshold;
+	uint32 threshold = (uint32)tp_memtable_pages_threshold;
 
-	if (!index_state || !index_rel || !index_state->shared)
-		return;
-
-	threshold = (uint32)tp_memtable_pages_threshold;
 	if (threshold == 0)
 		return; /* auto-spill disabled */
 
@@ -591,128 +625,47 @@ tp_link_l0_chain_head(Relation index, BlockNumber segment_root)
 }
 
 /*
- * Truncate dead pages from an index relation.
+ * Truncate recyclable pages from the end of an index relation.
  *
- * Walks all segment chains via the metapage to find the highest
- * block still in use, then truncates everything beyond it.
- * This reclaims pages freed by compaction (which sit below the
- * high-water mark) and unused pool margin from parallel builds.
+ * Only a contiguous EOF suffix already carrying TP_FREE_PAGE_MAGIC is
+ * safe to remove.  That stamp proves the page was unlinked from every
+ * owning structure and completed its reclaim protocol, including standby
+ * conflict WAL where an old snapshot could still see it.
  *
- * Includes the on-disk memtable chain in the high-water mark
- * calculation: those pages hold live, not-yet-spilled documents
- * and must not be truncated even when a caller (e.g.
- * bm25_force_merge) only intended to reclaim segment space.
- * Caller is responsible for serializing concurrent extension of
- * the chain by holding the per-index LWLock EXCLUSIVE.
+ * Absence from the published graph is not proof of recyclability: DEAD
+ * memtable pages remain protected by dead_fxid, and a crash or handled
+ * error can leave unreachable structural pages.  Stop at any DEAD, live,
+ * unknown, or orphan page.
+ *
+ * Caller must hold the per-index LWLock EXCLUSIVE so no allocator can
+ * claim a stamped suffix page between inspection and RelationTruncate().
  */
 void
 tp_truncate_dead_pages(Relation index)
 {
-	TpSegmentGraphSnapshot *snapshot;
-	BlockNumber				max_used = 1; /* at least metapage */
-	BlockNumber				nblocks;
-	BlockNumber				chain_blk;
-	int						level;
+	BlockNumber nblocks		= RelationGetNumberOfBlocks(index);
+	BlockNumber truncate_to = nblocks;
 
-	snapshot = tp_segment_graph_snapshot_create(index);
-	for (level = 0; level < TP_MAX_LEVELS; level++)
+	while (truncate_to > TP_METAPAGE_BLKNO + 1)
 	{
-		const BlockNumber *roots;
-		uint32			   root_count;
+		BlockNumber blk = truncate_to - 1;
+		Buffer		buf;
+		Page		page;
+		bool		recyclable;
 
-		roots = tp_segment_graph_snapshot_level(snapshot, level, &root_count);
-		for (uint32 root_idx = 0; root_idx < root_count; root_idx++)
-		{
-			BlockNumber *pages;
-			uint32		 num_pages;
-			uint32		 i;
-			BlockNumber	 seg = roots[root_idx];
+		buf = ReadBuffer(index, blk);
+		LockBuffer(buf, BUFFER_LOCK_SHARE);
+		page	   = BufferGetPage(buf);
+		recyclable = tp_page_is_recyclable(page);
+		UnlockReleaseBuffer(buf);
 
-			num_pages = tp_segment_collect_pages(index, seg, &pages);
-			for (i = 0; i < num_pages; i++)
-			{
-				if (pages[i] + 1 > max_used)
-					max_used = pages[i] + 1;
-			}
-			if (pages)
-				pfree(pages);
-		}
+		if (!recyclable)
+			break;
+		truncate_to = blk;
 	}
 
-	/*
-	 * Walk the on-disk memtable chain (including continuation
-	 * pages reached via fragment head records) so live pages are
-	 * never truncated.  Each link is read under SHARED buffer
-	 * lock; the per-index LWLock held by the caller (EXCLUSIVE)
-	 * ensures no concurrent extension races us.
-	 *
-	 * The graph snapshot's metapage copy normalizes a v6 metapage
-	 * left over from a v1.2.x upgrade (issue #383), so absent
-	 * memtable fields read as InvalidBlockNumber rather than the
-	 * raw zero bytes at that offset.
-	 */
-	chain_blk = snapshot->metapage.memtable_head_blkno;
-	while (chain_blk != InvalidBlockNumber)
-	{
-		Buffer				  cbuf;
-		Page				  cpage;
-		TpMemtablePageHeader *chdr;
-		BlockNumber			  next_blk;
-
-		if (chain_blk + 1 > max_used)
-			max_used = chain_blk + 1;
-
-		cbuf = ReadBuffer(index, chain_blk);
-		LockBuffer(cbuf, BUFFER_LOCK_SHARE);
-		cpage = BufferGetPage(cbuf);
-		if (!tp_memtable_page_is_valid(cpage))
-		{
-			UnlockReleaseBuffer(cbuf);
-			tp_segment_graph_snapshot_free(snapshot);
-			ereport(ERROR,
-					(errcode(ERRCODE_DATA_CORRUPTED),
-					 errmsg("pg_textsearch memtable page at block %u in "
-							"index \"%s\" has invalid magic",
-							chain_blk,
-							RelationGetRelationName(index))));
-		}
-		chdr	 = tp_memtable_page_header(cpage);
-		next_blk = chdr->next_block;
-
-		/*
-		 * A fragment head page's next_block points to the first
-		 * continuation page; walk through them so they're all
-		 * included in max_used.  Continuation pages link
-		 * forward via their own next_block field to the next
-		 * continuation, terminating when the next non-
-		 * continuation page is reached (or InvalidBlockNumber).
-		 */
-		UnlockReleaseBuffer(cbuf);
-		chain_blk = next_blk;
-	}
-
-	tp_segment_graph_snapshot_free(snapshot);
-
-	/*
-	 * Fold in the deferred-free tombstone chain (issue #380): both
-	 * the tombstone pages and the displaced blocks they park must
-	 * survive truncation.  Truncating a parked page would dangle
-	 * pending_free_head and (being WAL-logged) could yank a page a
-	 * hot standby is still reading out from under it.  Read the
-	 * chain after releasing the metapage buffer to avoid taking a
-	 * second SHARE lock on block 0; the caller's per-index
-	 * LWLock EXCLUSIVE keeps the chain stable.
-	 */
-	{
-		BlockNumber tomb_max = tp_tombstone_max_used_block(index);
-
-		if (tomb_max > max_used)
-			max_used = tomb_max;
-	}
-
-	nblocks = RelationGetNumberOfBlocks(index);
-	if (max_used < nblocks)
-		RelationTruncate(index, max_used);
+	if (truncate_to < nblocks)
+		RelationTruncate(index, truncate_to);
 }
 
 /*
@@ -769,6 +722,8 @@ tp_spill_memtable(PG_FUNCTION_ARGS)
 				 errmsg("could not get index state for \"%s\"", index_name)));
 	}
 
+	/* Keep spill publication outside compaction's prepare/publish window. */
+	tp_compaction_publication_lock(index_rel, ShareLock);
 	tp_acquire_index_lock(index_state, LW_EXCLUSIVE);
 	PG_TRY();
 	{
@@ -784,6 +739,7 @@ tp_spill_memtable(PG_FUNCTION_ARGS)
 	{
 		if (index_state->lock_held)
 			tp_release_index_lock(index_state);
+		tp_compaction_publication_unlock(index_rel, ShareLock);
 	}
 	PG_END_TRY();
 
@@ -841,11 +797,11 @@ tp_force_merge(PG_FUNCTION_ARGS)
 	index_rel = index_open(index_oid, RowExclusiveLock);
 
 	/*
-	 * Serialize same-index maintenance before taking LW_EXCLUSIVE.
-	 * Force-merge is an administrative operation with no expectation
-	 * of concurrent read throughput, so it retains the coarse per-index
-	 * lock for the complete operation.  Admission never waits because
-	 * waiting here can close a lock cycle with concurrent index work.
+	 * Serialize same-index maintenance before phase-specific LWLocks.
+	 * Waiting is safe: the maintenance lock lives in pg_am's object
+	 * namespace, outside the relation locks REINDEX INDEX CONCURRENTLY
+	 * takes.  An explicit merge should queue behind concurrent
+	 * maintenance rather than fail.
 	 */
 	{
 		TpLocalIndexState *index_state = tp_get_local_index_state(index_oid);
@@ -859,15 +815,19 @@ tp_force_merge(PG_FUNCTION_ARGS)
 							"\"%s\"",
 							index_name)));
 
-		tp_require_compaction_admission(index_rel);
+		tp_compaction_lock(index_rel);
 		PG_TRY();
 		{
-			tp_require_index_lock_admission(index_state, index_rel);
+			tp_acquire_index_lock(index_state, LW_EXCLUSIVE);
 			has_memtable = tp_prepare_spill(index_state, index_rel, &spill);
 			if (has_memtable)
 				tp_finish_spill(
 						index_state, index_rel, &spill, NULL, PG_UINT16_MAX);
+			tp_release_index_lock(index_state);
+
 			tp_force_compact(index_state, index_rel);
+
+			tp_acquire_index_lock(index_state, LW_EXCLUSIVE);
 			tp_truncate_dead_pages(index_rel);
 		}
 		PG_FINALLY();
@@ -1482,7 +1442,7 @@ tp_build_callback(
 		pgstat_progress_update_param(
 				PROGRESS_CREATEIDX_SUBPHASE, TP_PHASE_COMPACTING);
 		if (tp_index_compaction_mode(bs->index) == TP_COMPACTION_INLINE)
-			tp_maybe_compact_level(bs->index_state, bs->index, 0);
+			tp_compact_build_private(bs->index_state, bs->index);
 		pgstat_progress_update_param(
 				PROGRESS_CREATEIDX_SUBPHASE, TP_PHASE_LOADING);
 	}
@@ -1790,7 +1750,7 @@ tp_build(Relation heap, Relation index, IndexInfo *indexInfo)
 			{
 				pgstat_progress_update_param(
 						PROGRESS_CREATEIDX_SUBPHASE, TP_PHASE_COMPACTING);
-				tp_maybe_compact_level(index_state, index, 0);
+				tp_compact_build_private(index_state, index);
 			}
 		}
 

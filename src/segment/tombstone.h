@@ -17,8 +17,10 @@
 
 #include <postgres.h>
 
+#include <access/generic_xlog.h>
 #include <access/transam.h>
 #include <storage/block.h>
+#include <storage/bufmgr.h>
 #include <storage/bufpage.h>
 #include <utils/rel.h>
 
@@ -41,6 +43,15 @@ typedef struct TpTombstonePageData
 } TpTombstonePageData;
 
 typedef TpTombstonePageData *TpTombstonePage;
+
+typedef struct TpDetachedTombstoneBatch
+{
+	BlockNumber head;
+	BlockNumber tail;
+	/* Exact container allocations owned until publication succeeds. */
+	BlockNumber *owned_pages;
+	uint32		 owned_count;
+} TpDetachedTombstoneBatch;
 
 static inline TpTombstonePage
 tp_tombstone_page(Page page)
@@ -65,15 +76,17 @@ extern bool tp_tombstone_page_is_valid(Page page);
 extern BlockNumber tp_tombstone_read_head(Relation index);
 
 /*
- * Park `num_blocks` displaced blocks into one or more freshly
- * allocated tombstone pages, stamping `merged_fxid` and chaining the
- * batch tail to `old_head`.  Each page is written in its own
- * GenericXLog record (still unreferenced until the caller installs
- * the returned head into metap->pending_free_head in the SAME record
- * as the level-swap).  Returns the head block of the new batch, or
- * `old_head` unchanged when num_blocks == 0.
+ * Build an unreachable batch of tombstone pages.  The tail initially
+ * links to InvalidBlockNumber; neither the metapage nor an existing
+ * tombstone page is changed.
  */
-extern BlockNumber tp_tombstone_enqueue(
+extern void tp_tombstone_build_detached(
+		Relation				  index,
+		const BlockNumber		 *blocks,
+		uint32					  num_blocks,
+		FullTransactionId		  merged_fxid,
+		TpDetachedTombstoneBatch *batch);
+extern BlockNumber tp_tombstone_enqueue_extend(
 		Relation		  index,
 		BlockNumber		 *blocks,
 		uint32			  num_blocks,
@@ -81,16 +94,35 @@ extern BlockNumber tp_tombstone_enqueue(
 		BlockNumber		  old_head);
 
 /*
- * Variant for callers that do not serialize against concurrent FSM
- * allocators.  Extends the relation instead of reusing an FSM free
- * page.
+ * Replace the reclaim stamp on every tracked container page.  Ordinary
+ * compaction calls this while the batch is detached.  A next-XID prepared
+ * replacement calls it after the provisionally stamped batch becomes
+ * reachable.
  */
-extern BlockNumber tp_tombstone_enqueue_extend(
-		Relation		  index,
-		BlockNumber		 *blocks,
-		uint32			  num_blocks,
-		FullTransactionId merged_fxid,
-		BlockNumber		  old_head);
+extern void tp_tombstone_restamp_batch(
+		Relation				 index,
+		TpDetachedTombstoneBatch batch,
+		FullTransactionId		 merged_fxid);
+
+/*
+ * Register the detached tail in the caller's GenericXLog publication record
+ * and link it to old_head.  A parallel replacement may allow an invalid
+ * provisional stamp.  Returns the still-locked tail buffer, which the caller
+ * must release after GenericXLogFinish.
+ */
+extern Buffer tp_tombstone_attach_detached(
+		GenericXLogState		*state,
+		Relation				 index,
+		TpDetachedTombstoneBatch batch,
+		BlockNumber				 old_head,
+		bool					 allow_invalid_stamp);
+
+/*
+ * Return only an unreachable batch's container pages to the FSM.
+ * The displaced source blocks listed in those pages remain untouched.
+ */
+extern void
+tp_tombstone_discard_detached(Relation index, TpDetachedTombstoneBatch batch);
 
 /*
  * Drain past-horizon tombstones.  For each tombstone whose
@@ -122,12 +154,3 @@ extern uint32 tp_tombstone_drain(
  * Caller must hold the per-index LWLock in shared mode.
  */
 extern uint64 tp_pending_free_block_count(Relation index);
-
-/*
- * Highest (block + 1) referenced by the tombstone chain — both the
- * tombstone pages themselves and the displaced blocks they list.
- * Returns 0 when the chain is empty.  Index truncation folds this
- * into its high-water mark so parked-but-not-yet-freed pages are
- * never shrunk away (issue #380).
- */
-extern BlockNumber tp_tombstone_max_used_block(Relation index);

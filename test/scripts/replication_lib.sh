@@ -35,16 +35,29 @@ NC='\033[0m'
 REPL_SOCKET_DIR=${REPL_SOCKET_DIR-/tmp}
 export PGHOST=${REPL_HOST:-${REPL_SOCKET_DIR}}
 
+# Injection points only exist on a server built with
+# --enable-injection-points. Sourcing scripts use this to skip the
+# cases that need a deterministic pause.
+HAS_INJECTION_POINTS=0
+REPL_PRELOAD_LIBRARIES='pg_textsearch'
+if [ -f "$(pg_config --pkglibdir)/injection_points.so" ] &&
+    [ -f "$(pg_config --pkglibdir)/pg_textsearch_test.so" ]; then
+    HAS_INJECTION_POINTS=1
+    REPL_PRELOAD_LIBRARIES='pg_textsearch,injection_points'
+fi
+
+# Diagnostics go to stderr: helpers are called from inside command
+# substitutions, whose stdout is captured rather than shown.
 log() {
-    echo -e "${GREEN}[$(date '+%H:%M:%S')] $1${NC}"
+    echo -e "${GREEN}[$(date '+%H:%M:%S')] $1${NC}" >&2
 }
 
 warn() {
-    echo -e "${YELLOW}[$(date '+%H:%M:%S')] WARNING: $1${NC}"
+    echo -e "${YELLOW}[$(date '+%H:%M:%S')] WARNING: $1${NC}" >&2
 }
 
 error() {
-    echo -e "${RED}[$(date '+%H:%M:%S')] ERROR: $1${NC}"
+    echo -e "${RED}[$(date '+%H:%M:%S')] ERROR: $1${NC}" >&2
     exit 1
 }
 
@@ -187,7 +200,7 @@ max_connections = 30
 log_min_messages = notice
 logging_collector = on
 log_filename = 'postgres.log'
-shared_preload_libraries = 'pg_textsearch'
+shared_preload_libraries = '${REPL_PRELOAD_LIBRARIES}'
 wal_level = replica
 max_wal_senders = 8
 hot_standby = on
@@ -202,6 +215,11 @@ EOF
     createdb -p "${PRIMARY_PORT}" "${TEST_DB}"
     psql -p "${PRIMARY_PORT}" -d "${TEST_DB}" \
         -c "CREATE EXTENSION pg_textsearch;" >/dev/null
+    if [ "${HAS_INJECTION_POINTS}" -eq 1 ]; then
+        psql -p "${PRIMARY_PORT}" -d "${TEST_DB}" \
+            -c "CREATE EXTENSION injection_points;
+                CREATE EXTENSION pg_textsearch_test;" >/dev/null
+    fi
 }
 
 # Standby is built from primary via pg_basebackup. Caller must

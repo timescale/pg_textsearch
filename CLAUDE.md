@@ -33,31 +33,20 @@ consider a dedicated `pg_textsearch` schema for cleaner namespace management.
   and running the same test. Even if it does reproduce on main, it
   still needs to be investigated and fixed, not ignored.
 
-- **Physical replication**: In-place and publication mutations are WAL-logged
-  via `GenericXLog`; newly written segment pages use `log_newpage_buffer()`
-  when WAL is required. There is no custom resource manager; pg_textsearch
-  does not register an rmgr. Stock PostgreSQL replay reconstructs every page
-  on a streaming standby or during crash recovery — including the on-disk
-  memtable chain pages, segment pages, and the metapage. This is what lets
-  PostgreSQL's single-page WAL-redo helper (and any other no-extension-load
-  replay context) work without loading `pg_textsearch.so`.
-  **Read [ARCHITECTURE.md](ARCHITECTURE.md#storage-and-wal) before
-  changing the write/read/spill flow.** Closes #345, #349, #350,
-  #374.
+- **Physical replication**: every page mutation is WAL-logged with stock
+  records (`GenericXLog`, `log_newpage_buffer()`, and the btree page-reuse
+  conflict record). pg_textsearch registers no custom rmgr, so stock replay
+  reconstructs every page without loading `pg_textsearch.so`.
+  **Read [ARCHITECTURE.md](ARCHITECTURE.md#storage-and-wal) before changing
+  the write/read/spill flow.**
 
-- **Standby-safe segment reclaim (#380)**: A segment merge does not
-  free the displaced source pages to the FSM immediately. Doing so is
-  safe on the primary but unsafe for in-flight hot-standby queries,
-  because there is no custom rmgr to resolve recovery conflicts during
-  replay. Instead, displaced pages are *parked* in a WAL-logged
-  (`GenericXLog`) tombstone chain off the metapage (`pending_free_head`),
-  stamped with the merge's `FullTransactionId`. They return to the FSM
-  only once a later VACUUM (or the next merge) observes that the stamp
-  precedes `GetOldestNonRemovableTransactionId` — the standby-safe
-  reclaim horizon. **`hot_standby_feedback = on` is required** on hot
-  standbys serving queries, so their oldest snapshot holds the
-  primary's horizon back until they finish reading the pages. Observe
-  the parked count with `bm25_pending_free_pages(index_name)`.
+- **Standby-safe segment reclaim**: displaced segment pages are parked in a
+  WAL-logged tombstone chain off the metapage and returned to the FSM only
+  once a later VACUUM or merge observes that the reclaim horizon has passed
+  their stamp. **`hot_standby_feedback = on` is required** on hot standbys
+  serving queries. Observe the parked count with
+  `bm25_pending_free_pages(index_name)`.
+  See [ARCHITECTURE.md](ARCHITECTURE.md#deferred-reclaim).
 
 ## Core Architecture
 
@@ -111,7 +100,7 @@ make                   # build extension
 make install           # install to Postgres
 make test              # run SQL regression tests only
 make installcheck      # run SQL regression tests
-make test-all          # run all tests (SQL + shell scripts)
+make test-all          # run SQL, default shell, and replication tests
 
 # Run a single test
 $(pg_config --pgxs | xargs dirname)/../../src/test/regress/pg_regress \
@@ -122,7 +111,7 @@ make test-concurrency  # multi-session concurrency tests
 make test-recovery     # crash recovery tests
 make test-segment      # multi-backend segment tests
 make test-stress       # long-running stress tests
-make test-shell        # run all shell-based tests
+make test-shell        # run default shell tests (excludes replication)
 make test-local        # run tests with dedicated Postgres instance
 make expected          # generate expected output from test results
 ```
@@ -296,27 +285,27 @@ See [RELEASING.md](RELEASING.md) for release instructions.
   segments, and an existing segment that already exceeds the budget
   remains an uncombinable singleton. Published sources stay immutable
   while replacements are built; displaced pages enter deferred reclaim
-  (see #380) rather than becoming immediately reusable. Raises
-  `lock_not_available` rather than waiting for maintenance admission or
-  exclusive index access.
+  (see #380) rather than becoming immediately reusable. Waits for index
+  maintenance when another session holds it.
 - `bm25_level_counts(idx regclass)` - Segments held at each of the eight
   LSM levels
-- `bm25_needs_compaction(idx regclass)` - Whether any level holds at
-  least `segments_per_level` segments. Advisory only: a level whose
-  segments all exceed `max_segment_size` cannot be reduced but still
-  counts as full, so this must not be used on its own as a loop
-  condition. Drive loops from `bm25_compact_step()`'s return value.
-- `bm25_compact(idx regclass)` - Run compaction passes to completion
-  under one per-index exclusive lock. Requires index ownership. A
+- `bm25_needs_compaction(idx regclass)` - Whether `bm25_compact_step()`
+  would run a pass. Runs the same selection without publishing, so a
+  level that is full of over-budget segments reports false; safe as a
+  loop condition. Never waits: reports true when another session holds
+  index maintenance.
+- `bm25_compact(idx regclass)` - Run compaction passes to completion,
+  releasing same-index maintenance admission between passes so a long
+  cascade does not starve a queued VACUUM. Requires index ownership. A
   published pass is a physical change and is **not** undone by ROLLBACK.
-  Raises `lock_not_available` rather than waiting for maintenance
-  admission or exclusive index access; waiting can close a lock cycle
-  with concurrent index work.
+  Waits for index maintenance when another session holds it; the
+  maintenance lock is private to this extension, so waiting cannot deadlock
+  with a concurrent `REINDEX INDEX CONCURRENTLY`.
 - `bm25_compact_step(idx regclass)` - Run at most one pass and report
   whether one ran, letting a caller spread a cascade over several
-  transactions. Requires index ownership. Raises `lock_not_available`
-  on the same terms as `bm25_compact()`, so a `false` return always
-  means "no reducible debt", never "maintenance was busy".
+  transactions. Requires index ownership. Waits on the same terms as
+  `bm25_compact()`, so a `false` return always means "no reducible debt",
+  never "maintenance was busy".
 - `bm25_pending_free_pages(index_name)` - Count displaced segment pages
   currently parked in the deferred-free tombstone chain (issue #380),
   awaiting standby-safe FSM reclaim

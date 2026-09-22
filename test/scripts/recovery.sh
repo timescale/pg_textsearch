@@ -4,11 +4,12 @@
 # This script simulates actual crashes and verifies recovery functionality
 #
 
-set -e  # Exit on error
+set -eu
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 TEST_PORT=55435
 TEST_DB=crash_recovery_test
+TEST_HOST=127.0.0.1
 DATA_DIR="${SCRIPT_DIR}/../tmp_crash_test"
 LOGFILE="${DATA_DIR}/postgres.log"
 
@@ -32,13 +33,22 @@ error() {
 }
 
 cleanup() {
+    local status=$?
     log "Cleaning up test environment..."
+    if [ "${status}" -ne 0 ]; then
+        for logfile in "${LOGFILE}" "${DATA_DIR}/log/postgres.log"; do
+            if [ -f "${logfile}" ]; then
+                echo "=== ${logfile} (last 80 lines) ==="
+                tail -80 "${logfile}" 2>/dev/null || true
+            fi
+        done
+    fi
     if [ -f "${DATA_DIR}/postmaster.pid" ]; then
         pg_ctl stop -D "${DATA_DIR}" -m fast &>/dev/null ||
             pg_ctl stop -D "${DATA_DIR}" -m immediate &>/dev/null || true
     fi
     rm -rf "${DATA_DIR}"
-    exit 0
+    exit "$status"
 }
 
 # Set up cleanup trap
@@ -59,6 +69,8 @@ setup_test_db() {
     # Configure test instance
     cat >> "${DATA_DIR}/postgresql.conf" << EOF
 port = ${TEST_PORT}
+listen_addresses = '${TEST_HOST}'
+unix_socket_directories = ''
 log_statement = 'all'
 shared_buffers = 128MB
 max_connections = 20
@@ -66,6 +78,7 @@ log_min_messages = notice
 logging_collector = on
 log_filename = 'postgres.log'
 shared_preload_libraries = '${lib_name}'
+restart_after_crash = off
 EOF
 
     # Start PostgreSQL
@@ -73,18 +86,26 @@ EOF
     pg_ctl start -D "${DATA_DIR}" -l "${LOGFILE}" -w
 
     # Create test database
-    createdb -p "${TEST_PORT}" "${TEST_DB}"
+    createdb -h "${TEST_HOST}" -p "${TEST_PORT}" "${TEST_DB}"
 
     # Install extension
-    psql -p "${TEST_PORT}" -d "${TEST_DB}" -c "CREATE EXTENSION pg_textsearch;" >/dev/null
+    psql -h "${TEST_HOST}" -p "${TEST_PORT}" -d "${TEST_DB}" \
+        -c "CREATE EXTENSION pg_textsearch;" >/dev/null
 }
 
 run_sql() {
-    psql -p "${TEST_PORT}" -d "${TEST_DB}" -c "$1" 2>/dev/null
+    if [ "$#" -eq 0 ]; then
+        psql -h "${TEST_HOST}" -p "${TEST_PORT}" -d "${TEST_DB}" \
+            2>/dev/null
+    else
+        psql -h "${TEST_HOST}" -p "${TEST_PORT}" -d "${TEST_DB}" \
+            -c "$1" 2>/dev/null
+    fi
 }
 
 run_sql_file() {
-    psql -p "${TEST_PORT}" -d "${TEST_DB}" -f "$1" 2>/dev/null
+    psql -h "${TEST_HOST}" -p "${TEST_PORT}" -d "${TEST_DB}" \
+        -f "$1" 2>/dev/null
 }
 
 simulate_crash() {
@@ -113,13 +134,11 @@ restart_postgres() {
     log "Restarting PostgreSQL after crash..."
 
     # Start PostgreSQL again
-    pg_ctl start -D "${DATA_DIR}" -l "${LOGFILE}" -w
-
-    # Wait for startup
-    sleep 2
+    pg_ctl start -D "${DATA_DIR}" -l "${LOGFILE}" -w -t 30
 
     # Verify connection works
-    psql -p "${TEST_PORT}" -d "${TEST_DB}" -c "SELECT 1;" >/dev/null
+    psql -h "${TEST_HOST}" -p "${TEST_PORT}" -d "${TEST_DB}" \
+        -c "SELECT 1;" >/dev/null
     log "PostgreSQL restarted successfully"
 }
 
@@ -294,14 +313,16 @@ test_empty_index_rebuild() {
     log "Phase 2: restart server"
     pg_ctl stop -D "${DATA_DIR}" -m fast >/dev/null 2>&1
     pg_ctl start -D "${DATA_DIR}" -l "${LOGFILE}" -w >/dev/null 2>&1
-    psql -p "${TEST_PORT}" -d "${TEST_DB}" -c "SELECT 1;" >/dev/null
+    psql -h "${TEST_HOST}" -p "${TEST_PORT}" -d "${TEST_DB}" \
+        -c "SELECT 1;" >/dev/null
 
     # Phase 3: first query against the empty index — drives
     # bootstrap. Empty-index branch should leave shared state
     # registered with total_docs=0.
     log "Phase 3: first query post-restart fires bootstrap"
     local count
-    count=$(psql -tA -p "${TEST_PORT}" -d "${TEST_DB}" -c "
+    count=$(psql -tA -h "${TEST_HOST}" -p "${TEST_PORT}" \
+        -d "${TEST_DB}" -c "
         SELECT count(*) FROM (
             SELECT id FROM empty_rebuild_test
             ORDER BY content <@> to_bm25query('alpha', 'empty_rebuild_idx')
@@ -315,9 +336,10 @@ test_empty_index_rebuild() {
     # insert should be queryable via the same backend's now-warm
     # local state.
     log "Phase 4: post-bootstrap insert + query"
-    psql -p "${TEST_PORT}" -d "${TEST_DB}" -c \
+    psql -h "${TEST_HOST}" -p "${TEST_PORT}" -d "${TEST_DB}" -c \
         "INSERT INTO empty_rebuild_test (content) VALUES ('alpha bravo charlie');" >/dev/null
-    count=$(psql -tA -p "${TEST_PORT}" -d "${TEST_DB}" -c "
+    count=$(psql -tA -h "${TEST_HOST}" -p "${TEST_PORT}" \
+        -d "${TEST_DB}" -c "
         SELECT count(*) FROM (
             SELECT id FROM empty_rebuild_test
             ORDER BY content <@> to_bm25query('alpha', 'empty_rebuild_idx')

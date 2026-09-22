@@ -55,6 +55,13 @@ regressions to `REGRESS` and installs the `pg_textsearch_test` helper
 extension as part of `make install`. On ordinary packaged PostgreSQL
 builds, these tests are omitted.
 
+Scripts that mix injection-point cases with ordinary ones — such as
+`standby_reclaim.sh`, `compaction_recovery.sh`, and
+`vacuum_concurrent_merge.sh` — skip only the cases that need a
+deterministic pause, so they stay useful on packaged builds.
+`nonblocking_compaction.sh` needs injection points throughout and skips
+entirely.
+
 CI builds PostgreSQL 17, 18, and 19 with injection points enabled and caches
 the installed prefixes. The sanitizer builds use the same configure option.
 
