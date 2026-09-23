@@ -23,8 +23,8 @@ The Makefile defines these entry points:
 
 | Target | Coverage |
 | --- | --- |
-| `make test` | SQL regression suite and source guards |
-| `make installcheck` | Standard PGXS regression run and source guards |
+| `make test` | SQL regression suite |
+| `make installcheck` | Standard PGXS regression run |
 | `make test-local` | Install and test in a temporary cluster on port 55433 |
 | `make test-shell` | Concurrency, recovery, segment, CIC, multi-index, and reindex |
 | `make test-all` | `make test` plus `make test-shell` |
