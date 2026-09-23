@@ -21,6 +21,7 @@
 #include <fmgr.h>
 #include <lib/stringinfo.h>
 #include <libpq/pqformat.h>
+#include <miscadmin.h>
 #include <nodes/pg_list.h>
 #include <nodes/value.h>
 #include <tsearch/ts_type.h>
@@ -60,28 +61,40 @@
  *
  * The cache is stored in fn_extra and persists for the duration of the
  * query. IDF values are computed once on first call and reused.
+ *
+ * Cached terms are capped: the cache is keyed by index state, not by
+ * query text, so a per-row query value would otherwise accumulate the
+ * whole corpus vocabulary for the life of the statement.  Terms past
+ * the cap are simply recomputed.
  */
-#define MAX_CACHED_TERMS 64
+#define TP_MAX_CACHED_IDF_TERMS 1024
 
 typedef struct TermIdfEntry
 {
-	char   term[NAMEDATALEN]; /* null-terminated term string */
-	uint32 doc_freq;		  /* unified doc frequency (memtable + segments) */
-	float4 idf;				  /* cached IDF value */
+	char  *term;	 /* null-terminated term string */
+	uint32 doc_freq; /* unified doc frequency (memtable + segments) */
+	float4 idf;		 /* cached IDF value */
 } TermIdfEntry;
 
 typedef struct QueryScoreCache
 {
-	Oid			 index_oid;			/* index this cache is for */
-	BlockNumber	 first_segment;		/* segment chain head at cache time */
-	int32		 total_docs;		/* total docs at cache time */
-	float4		 avg_doc_len;		/* avg doc length at cache time */
-	int			 num_terms;			/* number of cached terms */
-	bool		 cache_full_warned; /* true after limit-exceeded warning */
-	TermIdfEntry terms[MAX_CACHED_TERMS];
+	Oid			  index_oid;	 /* index this cache is for */
+	BlockNumber	  first_segment; /* segment chain head at cache time */
+	int32		  total_docs;	 /* total docs at cache time */
+	float4		  avg_doc_len;	 /* avg doc length at cache time */
+	int			  num_terms;	 /* number of cached terms */
+	int			  terms_capacity;
+	MemoryContext context;
+	TermIdfEntry *terms;
 } QueryScoreCache;
 
 /* Local helper functions */
+
+static float4 find_term_frequency_in_arrays(
+		char **doc_terms,
+		int32 *doc_frequencies,
+		int	   doc_term_count,
+		char  *query_lexeme);
 
 /*
  * Look up cached IDF for a term. Returns -1.0 if not found in cache.
@@ -108,30 +121,36 @@ lookup_cached_idf(QueryScoreCache *cache, const char *term, uint32 *doc_freq)
 
 /*
  * Add a term's IDF to the cache.
- * Warns once per query if the cache limit is exceeded.
  */
 static void
 cache_term_idf(
 		QueryScoreCache *cache, const char *term, uint32 doc_freq, float4 idf)
 {
+	int new_capacity;
+
 	if (!cache)
 		return;
 
-	if (cache->num_terms >= MAX_CACHED_TERMS)
-	{
-		/* Warn once when limit is first exceeded */
-		if (!cache->cache_full_warned)
-		{
-			ereport(WARNING,
-					(errmsg("BM25 IDF cache limit exceeded (%d terms), "
-							"additional terms will not be cached",
-							MAX_CACHED_TERMS)));
-			cache->cache_full_warned = true;
-		}
+	if (cache->num_terms >= TP_MAX_CACHED_IDF_TERMS)
 		return;
+
+	if (cache->num_terms == cache->terms_capacity)
+	{
+		new_capacity = cache->terms_capacity == 0 ? 16
+												  : cache->terms_capacity * 2;
+		if (new_capacity > TP_MAX_CACHED_IDF_TERMS)
+			new_capacity = TP_MAX_CACHED_IDF_TERMS;
+		if (cache->terms == NULL)
+			cache->terms = MemoryContextAlloc(
+					cache->context, sizeof(TermIdfEntry) * new_capacity);
+		else
+			cache->terms = repalloc(
+					cache->terms, sizeof(TermIdfEntry) * new_capacity);
+		cache->terms_capacity = new_capacity;
 	}
 
-	strlcpy(cache->terms[cache->num_terms].term, term, NAMEDATALEN);
+	cache->terms[cache->num_terms].term =
+			MemoryContextStrdup(cache->context, term);
 	cache->terms[cache->num_terms].doc_freq = doc_freq;
 	cache->terms[cache->num_terms].idf		= idf;
 	cache->num_terms++;
@@ -156,6 +175,49 @@ cache_is_valid(
 	if (cache->total_docs != total_docs)
 		return false;
 	return true;
+}
+
+static bool
+query_cache_misses_document_term(
+		QueryScoreCache *cache,
+		TSVector		 query,
+		char		   **doc_terms,
+		int32			*doc_frequencies,
+		int				 doc_term_count)
+{
+	WordEntry *entries;
+	char	  *lexemes;
+
+	entries = ARRPTR(query);
+	lexemes = STRPTR(query);
+	for (int i = 0; i < query->size; i++)
+	{
+		char  *term;
+		float4 idf;
+		uint32 doc_freq;
+		float4 tf;
+
+		term = pnstrdup(lexemes + entries[i].pos, entries[i].len);
+		idf	 = lookup_cached_idf(cache, term, &doc_freq);
+		if (idf >= 0.0f)
+		{
+			/*
+			 * A cached term cannot force the full sources open, so its
+			 * frequency in the document does not matter here.  Checking
+			 * the cache first keeps the common all-cached row off the
+			 * O(doc_term_count) scan that scoring repeats anyway.
+			 */
+			pfree(term);
+			continue;
+		}
+		tf = find_term_frequency_in_arrays(
+				doc_terms, doc_frequencies, doc_term_count, term);
+		pfree(term);
+		if (tf != 0.0f)
+			return true;
+	}
+
+	return false;
 }
 
 PG_FUNCTION_INFO_V1(tpquery_in);
@@ -665,6 +727,162 @@ calculate_term_score(
 }
 
 /*
+ * Open a memtable source and a segment snapshot that describe one graph
+ * generation.  capture_roots selects a full capture over a metadata-only
+ * one; recovery must be sampled once by the caller so promotion mid-query
+ * cannot mix a recovery-mode capture with a primary-mode one.
+ */
+static void
+tp_standalone_sources_open(
+		TpLocalIndexState				 *index_state,
+		Relation						  index_rel,
+		bool							  recovery,
+		bool							  capture_roots,
+		TpDataSource *volatile			 *memtable_src,
+		TpSegmentGraphSnapshot *volatile *segment_snapshot,
+		TpLocalIndexState *volatile		 *locked_state)
+{
+	Assert(index_state != NULL);
+	Assert(memtable_src != NULL && *memtable_src == NULL);
+	Assert(segment_snapshot != NULL && *segment_snapshot == NULL);
+	Assert(locked_state != NULL && *locked_state == NULL);
+
+	if (recovery)
+	{
+		/*
+		 * WAL replay publishes spills without taking the per-index lock,
+		 * so no lock can hold the graph still on a standby.  Bound the
+		 * chain source to the snapshot's captured endpoint instead, so
+		 * both halves describe one generation.
+		 */
+		*segment_snapshot = capture_roots
+								  ? tp_segment_graph_snapshot_create(index_rel)
+								  : tp_segment_graph_snapshot_create_metadata(
+											index_rel);
+		*memtable_src	  = tp_memtable_chain_source_create_bounded(
+				index_rel, &(*segment_snapshot)->memtable, NULL, 0);
+	}
+	else
+	{
+		/*
+		 * Preserve primary admission and cache semantics: the source owns
+		 * LW_SHARED before roots are copied, excluding spill publication
+		 * across the pair.
+		 */
+		*memtable_src = tp_memtable_source_create_for_read(
+				index_state, index_rel, NULL, 0);
+
+		/*
+		 * An empty memtable yields no source and therefore no lock, so
+		 * take LW_SHARED here: the snapshot and any later upgrade must
+		 * observe the same graph generation.
+		 */
+		if (*memtable_src == NULL)
+		{
+			tp_acquire_index_lock(index_state, LW_SHARED);
+			*locked_state = index_state;
+		}
+		*segment_snapshot = capture_roots
+								  ? tp_segment_graph_snapshot_create(index_rel)
+								  : tp_segment_graph_snapshot_create_metadata(
+											index_rel);
+	}
+}
+
+/*
+ * Release the source, snapshot and lock opened as one generation, so the
+ * caller can reopen a different one.
+ */
+static void
+tp_standalone_sources_close(
+		TpDataSource *volatile			 *memtable_src,
+		TpSegmentGraphSnapshot *volatile *segment_snapshot,
+		TpLocalIndexState *volatile		 *locked_state)
+{
+	if (*segment_snapshot != NULL)
+	{
+		tp_segment_graph_snapshot_free(*segment_snapshot);
+		*segment_snapshot = NULL;
+	}
+	if (*memtable_src != NULL)
+	{
+		tp_source_close(*memtable_src);
+		*memtable_src = NULL;
+	}
+	if (*locked_state != NULL)
+	{
+		tp_release_index_lock(*locked_state);
+		*locked_state = NULL;
+	}
+}
+
+static QueryScoreCache *
+tp_standalone_prepare_cache(
+		FunctionCallInfo		fcinfo,
+		Oid						index_oid,
+		TpDataSource		   *memtable_src,
+		TpSegmentGraphSnapshot *segment_snapshot,
+		TpIndexMetaPage		   *metap_out,
+		Oid					   *text_config_oid,
+		int32				   *total_docs,
+		float4				   *avg_doc_len)
+{
+	TpIndexMetaPage	 metap;
+	QueryScoreCache *cache;
+	BlockNumber		 first_segment;
+	int64			 total_len;
+
+	Assert(segment_snapshot != NULL);
+	Assert(metap_out != NULL);
+	Assert(text_config_oid != NULL);
+	Assert(total_docs != NULL);
+	Assert(avg_doc_len != NULL);
+
+	metap			 = &segment_snapshot->metapage;
+	*metap_out		 = metap;
+	*text_config_oid = metap->text_config_oid;
+	first_segment	 = metap->level_heads[0];
+	*total_docs		 = metap->total_docs;
+	total_len		 = metap->total_len;
+
+	if (memtable_src != NULL)
+	{
+		int64 sum = (int64)*total_docs + memtable_src->total_docs;
+
+		*total_docs = (sum > PG_INT32_MAX) ? PG_INT32_MAX : (int32)sum;
+		total_len += memtable_src->total_len;
+	}
+
+	*avg_doc_len = *total_docs > 0
+						 ? (float4)((double)total_len / (double)*total_docs)
+						 : 0.0f;
+
+	cache = (QueryScoreCache *)fcinfo->flinfo->fn_extra;
+	if (!cache_is_valid(cache, index_oid, first_segment, *total_docs))
+	{
+		MemoryContext cache_context;
+
+		if (cache != NULL)
+			MemoryContextDelete(cache->context);
+		cache_context = AllocSetContextCreate(
+				fcinfo->flinfo->fn_mcxt,
+				"pg_textsearch standalone score cache",
+				ALLOCSET_DEFAULT_SIZES);
+		cache = (QueryScoreCache *)
+				MemoryContextAllocZero(cache_context, sizeof(QueryScoreCache));
+		cache->index_oid		 = index_oid;
+		cache->first_segment	 = first_segment;
+		cache->total_docs		 = *total_docs;
+		cache->avg_doc_len		 = *avg_doc_len;
+		cache->num_terms		 = 0;
+		cache->context			 = cache_context;
+		fcinfo->flinfo->fn_extra = cache;
+	}
+
+	return cache;
+}
+
+/*
  * BM25 scoring function for text <@> bm25query operations
  *
  * This operator is called per-row when scoring documents, so we use fn_extra
@@ -686,7 +904,6 @@ bm25_text_bm25query_score(PG_FUNCTION_ARGS)
 	Relation volatile index_rel						  = NULL;
 	TpIndexMetaPage metap							  = NULL;
 	TpSegmentGraphSnapshot *volatile segment_snapshot = NULL;
-	bool			   segment_roots_loaded			  = false;
 	Oid				   text_config_oid;
 	char			 **doc_terms	   = NULL;
 	int32			  *doc_frequencies = NULL;
@@ -706,13 +923,11 @@ bm25_text_bm25query_score(PG_FUNCTION_ARGS)
 	const bool		 recovery = RecoveryInProgress();
 	float4			 avg_doc_len;
 	int32			 total_docs;
-	int64			 total_len;
 	float8			 result = 0.0;
 	int				 q_i;
 	float4			 doc_length;
 	int				 query_term_count;
 	QueryScoreCache *cache;
-	BlockNumber		 first_segment;
 	bool			 is_partitioned;
 	char			*indexed_colname = NULL;
 
@@ -776,69 +991,21 @@ bm25_text_bm25query_score(PG_FUNCTION_ARGS)
 					 errmsg("could not get index state for index OID %u",
 							RelationGetRelid(index_rel))));
 
-		/*
-		 * The source owns per-index LW_SHARED for its lifetime. Open it
-		 * before copying segment roots so spill cannot publish between the
-		 * memtable and segment snapshots.
-		 */
-		if (recovery)
-		{
-			/*
-			 * WAL replay publishes spills without taking the per-index
-			 * lock, so no lock can hold the graph still on a standby and
-			 * the roots cannot be collected lazily.  Capture the whole
-			 * graph up front and bound the chain source to the captured
-			 * endpoint, so both halves describe one generation.
-			 *
-			 * This costs a walk of every root on every row, because <@>
-			 * is a per-row operator.  Correctness first: the lazy path
-			 * below is only sound while a lock pins the generation.
-			 * Standbys pay it only for standalone scoring, not for index
-			 * scans.  PR #505 makes it lazy here too, by re-deriving the
-			 * totals and the bounded source from the upgraded snapshot so
-			 * the pair still describes one generation.
-			 */
-			segment_snapshot	 = tp_segment_graph_snapshot_create(index_rel);
-			segment_roots_loaded = true;
-			memtable_src		 = tp_memtable_chain_source_create_bounded(
-					index_rel, &segment_snapshot->memtable, NULL, 0);
-		}
-		else
-		{
-			memtable_src = tp_memtable_source_create_for_read(
-					index_state, index_rel, NULL, 0);
-
-			/*
-			 * An empty memtable yields no source and therefore no lock, so
-			 * take LW_SHARED here: the metadata snapshot and the deferred
-			 * root walk must observe the same graph generation.
-			 */
-			if (memtable_src == NULL)
-			{
-				tp_acquire_index_lock(index_state, LW_SHARED);
-				locked_state = index_state;
-			}
-			/*
-			 * Only the metapage is needed to size the corpus and validate
-			 * the IDF cache.  The segment roots cost a walk of every root
-			 * at every level, so collect them lazily on the first cache
-			 * miss; the source's LW_SHARED keeps the graph stable.
-			 */
-			segment_snapshot = tp_segment_graph_snapshot_create_metadata(
-					index_rel);
-		}
-		metap			= &segment_snapshot->metapage;
-		text_config_oid = metap->text_config_oid;
-		first_segment	= metap->level_heads[0];
-		total_docs		= metap->total_docs;
-		total_len		= metap->total_len;
+		tp_standalone_sources_open(
+				index_state,
+				index_rel,
+				recovery,
+				false,
+				&memtable_src,
+				&segment_snapshot,
+				&locked_state);
 
 		/*
 		 * If a storage-less inheritance parent was selected, switch to its
 		 * first physical child and acquire that child's source before its
 		 * segment snapshot.
 		 */
-		if (!is_partitioned && total_docs == 0 &&
+		if (!is_partitioned && segment_snapshot->metapage.total_docs == 0 &&
 			(memtable_src == NULL || memtable_src->total_docs == 0) &&
 			indexed_colname != NULL)
 		{
@@ -854,109 +1021,34 @@ bm25_text_bm25query_score(PG_FUNCTION_ARGS)
 				{
 					Relation old_rel = index_rel;
 
-					if (segment_snapshot != NULL)
-					{
-						tp_segment_graph_snapshot_free(segment_snapshot);
-						segment_snapshot = NULL;
-						metap			 = NULL;
-					}
-					if (memtable_src != NULL)
-					{
-						tp_source_close(memtable_src);
-						memtable_src = NULL;
-					}
-					if (locked_state != NULL)
-					{
-						tp_release_index_lock(locked_state);
-						locked_state = NULL;
-					}
+					tp_standalone_sources_close(
+							&memtable_src, &segment_snapshot, &locked_state);
+					metap = NULL;
 
 					index_rel = index_open(first_child_idx, AccessShareLock);
 					index_close(old_rel, AccessShareLock);
 					index_state = child_state;
 
-					if (recovery)
-					{
-						segment_snapshot = tp_segment_graph_snapshot_create(
-								index_rel);
-						segment_roots_loaded = true;
-						memtable_src = tp_memtable_chain_source_create_bounded(
-								index_rel,
-								&segment_snapshot->memtable,
-								NULL,
-								0);
-					}
-					else
-					{
-						segment_roots_loaded = false;
-						memtable_src = tp_memtable_source_create_for_read(
-								index_state, index_rel, NULL, 0);
-						if (memtable_src == NULL)
-						{
-							tp_acquire_index_lock(index_state, LW_SHARED);
-							locked_state = index_state;
-						}
-						segment_snapshot =
-								tp_segment_graph_snapshot_create_metadata(
-										index_rel);
-					}
-					metap			= &segment_snapshot->metapage;
-					text_config_oid = metap->text_config_oid;
-					first_segment	= metap->level_heads[0];
-					total_docs		= metap->total_docs;
-					total_len		= metap->total_len;
+					tp_standalone_sources_open(
+							index_state,
+							index_rel,
+							recovery,
+							false,
+							&memtable_src,
+							&segment_snapshot,
+							&locked_state);
 				}
 			}
 		}
-
-		/*
-		 * Phase 4 of issue #374: add the active memtable's contribution
-		 * on top of the persisted-segment totals from the same locked
-		 * source/snapshot interval.
-		 */
-		if (memtable_src != NULL)
-		{
-			int64 chain_docs = memtable_src->total_docs;
-			int64 chain_len	 = memtable_src->total_len;
-			int64 sum		 = (int64)total_docs + chain_docs;
-
-			total_docs = (sum > PG_INT32_MAX) ? PG_INT32_MAX : (int32)sum;
-			total_len += chain_len;
-		}
-
-		avg_doc_len = total_docs > 0
-							? (float4)((double)total_len / (double)total_docs)
-							: 0.0f;
-
-		/*
-		 * Get or initialize the IDF cache. The cache is stored in fn_extra
-		 * and persists for the duration of the query. We invalidate it if
-		 * the index state changes (new segments, new documents).
-		 */
-		cache = (QueryScoreCache *)fcinfo->flinfo->fn_extra;
-		if (!cache_is_valid(cache, index_oid, first_segment, total_docs))
-		{
-			/* Allocate new cache in function memory context */
-			cache = (QueryScoreCache *)MemoryContextAllocZero(
-					fcinfo->flinfo->fn_mcxt, sizeof(QueryScoreCache));
-			cache->index_oid		 = index_oid;
-			cache->first_segment	 = first_segment;
-			cache->total_docs		 = total_docs;
-			cache->avg_doc_len		 = avg_doc_len;
-			cache->num_terms		 = 0;
-			fcinfo->flinfo->fn_extra = cache;
-		}
-
-		/*
-		 * Tokenize the document. Uses tp_tokenize_text so that documents
-		 * larger than the tsvector dictionary cap are chunked + merged.
-		 */
-		raw_doc_length = tp_tokenize_text(
-				text_arg,
-				text_config_oid,
-				&doc_terms,
-				&doc_frequencies,
-				&doc_term_count);
+		cache = tp_standalone_prepare_cache(
+				fcinfo,
+				index_oid,
+				memtable_src,
+				segment_snapshot,
+				&metap,
+				&text_config_oid,
+				&total_docs,
+				&avg_doc_len);
 
 		/* Tokenize the query text to get query terms (always small) */
 		query_tsvector_datum = DirectFunctionCall2Coll(
@@ -968,6 +1060,48 @@ bm25_text_bm25query_score(PG_FUNCTION_ARGS)
 		query_tsvector		= DatumGetTSVector(query_tsvector_datum);
 		query_entries		= ARRPTR(query_tsvector);
 		query_lexemes_start = STRPTR(query_tsvector);
+
+		/*
+		 * Tokenize the document before opening segment roots.  Rows that
+		 * contain no uncached query term can score entirely from the IDF
+		 * cache and the lightweight metadata snapshot.
+		 */
+		raw_doc_length = tp_tokenize_text(
+				text_arg,
+				text_config_oid,
+				&doc_terms,
+				&doc_frequencies,
+				&doc_term_count);
+
+		if (query_cache_misses_document_term(
+					cache,
+					query_tsvector,
+					doc_terms,
+					doc_frequencies,
+					doc_term_count))
+		{
+			tp_standalone_sources_close(
+					&memtable_src, &segment_snapshot, &locked_state);
+			metap = NULL;
+
+			tp_standalone_sources_open(
+					index_state,
+					index_rel,
+					recovery,
+					true,
+					&memtable_src,
+					&segment_snapshot,
+					&locked_state);
+			cache = tp_standalone_prepare_cache(
+					fcinfo,
+					index_oid,
+					memtable_src,
+					segment_snapshot,
+					&metap,
+					&text_config_oid,
+					&total_docs,
+					&avg_doc_len);
+		}
 
 		/*
 		 * Calculate document length with fieldnorm quantization.
@@ -1045,16 +1179,15 @@ bm25_text_bm25query_score(PG_FUNCTION_ARGS)
 						}
 					}
 
-					if (!segment_roots_loaded)
-					{
-						TpSegmentGraphSnapshot *full;
-
-						full = tp_segment_graph_snapshot_create(index_rel);
-						tp_segment_graph_snapshot_free(segment_snapshot);
-						segment_snapshot	 = full;
-						metap				 = &segment_snapshot->metapage;
-						segment_roots_loaded = true;
-					}
+					/*
+					 * The snapshot was already upgraded to a full capture
+					 * above if any query term could miss the cache, so the
+					 * roots and the memtable source still describe one
+					 * generation here.  Re-capturing in this loop would
+					 * swap the snapshot while leaving the source bound to
+					 * the previous generation.
+					 */
+					Assert(segment_snapshot->roots_captured);
 
 					segment_doc_freq = tp_segment_roots_get_doc_freq(
 							index_rel,
@@ -1093,30 +1226,16 @@ bm25_text_bm25query_score(PG_FUNCTION_ARGS)
 		}
 
 		/* Clean up */
-		tp_segment_graph_snapshot_free(segment_snapshot);
-		segment_snapshot = NULL;
-		metap			 = NULL;
-		if (memtable_src)
-		{
-			tp_source_close(memtable_src);
-			memtable_src = NULL;
-		}
-		if (locked_state)
-		{
-			tp_release_index_lock(locked_state);
-			locked_state = NULL;
-		}
+		tp_standalone_sources_close(
+				&memtable_src, &segment_snapshot, &locked_state);
+		metap = NULL;
 		index_close(index_rel, AccessShareLock);
 		index_rel = NULL;
 	}
 	PG_CATCH();
 	{
-		if (segment_snapshot)
-			tp_segment_graph_snapshot_free(segment_snapshot);
-		if (memtable_src)
-			tp_source_close(memtable_src);
-		if (locked_state)
-			tp_release_index_lock(locked_state);
+		tp_standalone_sources_close(
+				&memtable_src, &segment_snapshot, &locked_state);
 		if (index_rel)
 			index_close(index_rel, AccessShareLock);
 		PG_RE_THROW();
