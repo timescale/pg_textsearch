@@ -794,9 +794,9 @@ bm25_text_bm25query_score(PG_FUNCTION_ARGS)
 			 * is a per-row operator.  Correctness first: the lazy path
 			 * below is only sound while a lock pins the generation.
 			 * Standbys pay it only for standalone scoring, not for index
-			 * scans.  Removing the per-row cost means recomputing the
-			 * totals and rebuilding the bounded source from the upgraded
-			 * snapshot so the pair stays one generation.
+			 * scans.  PR #505 makes it lazy here too, by re-deriving the
+			 * totals and the bounded source from the upgraded snapshot so
+			 * the pair still describes one generation.
 			 */
 			segment_snapshot	 = tp_segment_graph_snapshot_create(index_rel);
 			segment_roots_loaded = true;
