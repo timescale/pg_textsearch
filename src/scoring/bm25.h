@@ -29,8 +29,6 @@ extern int tp_score_documents(
 		char			 **query_terms,
 		int32			  *query_frequencies,
 		int				   query_term_count,
-		float4			   k1,
-		float4			   b,
 		int				   max_results,
 		ItemPointer		   result_ctids,
 		float4			 **result_scores);

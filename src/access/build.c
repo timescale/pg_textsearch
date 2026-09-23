@@ -43,6 +43,7 @@
 #include "segment/compaction.h"
 #include "segment/dictionary.h"
 #include "segment/docmap.h"
+#include "segment/graph_snapshot.h"
 #include "segment/io.h"
 #include "segment/merge.h"
 #include "segment/segment.h"
@@ -613,29 +614,25 @@ tp_link_l0_chain_head(Relation index, BlockNumber segment_root)
 void
 tp_truncate_dead_pages(Relation index)
 {
-	Buffer			metabuf;
-	Page			metapage;
-	TpIndexMetaPage metap;
-	BlockNumber		max_used = 1; /* at least metapage */
-	BlockNumber		nblocks;
-	BlockNumber		chain_blk;
-	int				level;
+	TpSegmentGraphSnapshot *snapshot;
+	BlockNumber				max_used = 1; /* at least metapage */
+	BlockNumber				nblocks;
+	BlockNumber				chain_blk;
+	int						level;
 
-	metabuf = ReadBuffer(index, TP_METAPAGE_BLKNO);
-	LockBuffer(metabuf, BUFFER_LOCK_SHARE);
-	metapage = BufferGetPage(metabuf);
-	metap	 = (TpIndexMetaPage)PageGetContents(metapage);
-
+	snapshot = tp_segment_graph_snapshot_create(index);
 	for (level = 0; level < TP_MAX_LEVELS; level++)
 	{
-		BlockNumber seg = metap->level_heads[level];
+		const BlockNumber *roots;
+		uint32			   root_count;
 
-		while (seg != InvalidBlockNumber)
+		roots = tp_segment_graph_snapshot_level(snapshot, level, &root_count);
+		for (uint32 root_idx = 0; root_idx < root_count; root_idx++)
 		{
-			TpSegmentReader *reader;
-			BlockNumber		*pages;
-			uint32			 num_pages;
-			uint32			 i;
+			BlockNumber *pages;
+			uint32		 num_pages;
+			uint32		 i;
+			BlockNumber	 seg = roots[root_idx];
 
 			num_pages = tp_segment_collect_pages(index, seg, &pages);
 			for (i = 0; i < num_pages; i++)
@@ -645,10 +642,6 @@ tp_truncate_dead_pages(Relation index)
 			}
 			if (pages)
 				pfree(pages);
-
-			reader = tp_segment_open(index, seg);
-			seg	   = reader->header->next_segment;
-			tp_segment_close(reader);
 		}
 	}
 
@@ -659,13 +652,12 @@ tp_truncate_dead_pages(Relation index)
 	 * lock; the per-index LWLock held by the caller (EXCLUSIVE)
 	 * ensures no concurrent extension races us.
 	 *
-	 * Use tp_metapage_read_memtable_head() (not a direct struct
-	 * read) so a v6 metapage left over from a v1.2.x upgrade
-	 * (issue #383) returns InvalidBlockNumber instead of the
-	 * raw zero bytes at that offset — block 0 is the metapage
-	 * itself, and walking it would fail the magic check below.
+	 * The graph snapshot's metapage copy normalizes a v6 metapage
+	 * left over from a v1.2.x upgrade (issue #383), so absent
+	 * memtable fields read as InvalidBlockNumber rather than the
+	 * raw zero bytes at that offset.
 	 */
-	chain_blk = tp_metapage_read_memtable_head(metapage);
+	chain_blk = snapshot->metapage.memtable_head_blkno;
 	while (chain_blk != InvalidBlockNumber)
 	{
 		Buffer				  cbuf;
@@ -682,7 +674,7 @@ tp_truncate_dead_pages(Relation index)
 		if (!tp_memtable_page_is_valid(cpage))
 		{
 			UnlockReleaseBuffer(cbuf);
-			UnlockReleaseBuffer(metabuf);
+			tp_segment_graph_snapshot_free(snapshot);
 			ereport(ERROR,
 					(errcode(ERRCODE_DATA_CORRUPTED),
 					 errmsg("pg_textsearch memtable page at block %u in "
@@ -705,7 +697,7 @@ tp_truncate_dead_pages(Relation index)
 		chain_blk = next_blk;
 	}
 
-	UnlockReleaseBuffer(metabuf);
+	tp_segment_graph_snapshot_free(snapshot);
 
 	/*
 	 * Fold in the deferred-free tombstone chain (issue #380): both
