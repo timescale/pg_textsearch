@@ -316,6 +316,124 @@ new primary insert (before=${LL_BEFORE}, after=${LL_AFTER})"
     log "Test 5 PASSED: Long-lived backend sees new primary inserts"
 }
 
+# ---------------------------------------------------------------
+# Test 6: Segment graph snapshots vs concurrent WAL replay
+# ---------------------------------------------------------------
+# Standalone <@> scoring captures the metapage, the memtable chain
+# endpoint and every published segment root as one snapshot, then walks
+# only the captured block numbers.  On a primary the reader's per-index
+# LWLock already excludes spill publication, so the recovery-mode
+# capture path is unreachable there.  A standby has no such protection:
+# there is no custom rmgr, so WAL replay republishes the graph without
+# taking the per-index lock.
+#
+# This exercises that path -- roughly two thousand recovery-mode
+# captures -- against a primary that is spilling and merging, and
+# asserts no reader error and no torn or corrupt segment read.  The
+# debug pause GUCs widen the capture windows so replay interleaves.
+#
+# It does not prove the root walk itself is atomic: the pause hooks
+# bracket the capture, not the individual level chains, so replay
+# cannot be forced to land between two levels from a shell test.
+test_standby_snapshot_race() {
+    log "=== Test 6: Standby snapshot vs concurrent replay ==="
+
+    primary_sql "
+        DROP TABLE IF EXISTS race_docs CASCADE;
+        CREATE TABLE race_docs (
+            id bigserial PRIMARY KEY,
+            content text NOT NULL
+        );
+        CREATE INDEX race_idx ON race_docs USING bm25(content)
+            WITH (text_config='english');
+        INSERT INTO race_docs (content)
+        SELECT 'postgres bm25 snapshot race ' || gs
+        FROM generate_series(1, 30) gs;
+        SELECT bm25_spill_index('race_idx');
+        INSERT INTO race_docs (content)
+        SELECT 'postgres bm25 second batch ' || gs
+        FROM generate_series(1, 30) gs;
+        SELECT bm25_spill_index('race_idx');
+    " >/dev/null
+
+    wait_for_standby_catchup
+
+    local plan
+    plan=$(standby_sql "EXPLAIN (COSTS off)
+        SELECT content <@> to_bm25query('postgres bm25', 'race_idx')
+        FROM race_docs")
+    if ! echo "${plan}" | grep -qi 'Seq Scan'; then
+        echo "${plan}"
+        error "Test 6 SETUP FAILED: reader does not use standalone scoring"
+    fi
+
+    local readerlog="${STANDBY_DIR}/snapshot_race_reader.log"
+    local standbylog="${STANDBY_DIR}/log/postgres.log"
+    : > "${readerlog}"
+
+    (
+        for _ in $(seq 1 10); do
+            psql -p "${STANDBY_PORT}" -d "${TEST_DB}" -qAt \
+                -v ON_ERROR_STOP=1 -c "
+                SET enable_indexscan=off;
+                SET enable_bitmapscan=off;
+                SET statement_timeout='120s';
+                SET pg_textsearch.\
+debug_segment_graph_snapshot_pause_before_lock_ms=1;
+                SET pg_textsearch.\
+debug_segment_graph_snapshot_pause_before_unlock_ms=8;
+                SET pg_textsearch.debug_segment_graph_snapshot_pause_ms=8;
+                SELECT count(score) FROM (
+                    SELECT content <@> to_bm25query('postgres bm25',
+                        'race_idx') AS score
+                    FROM race_docs
+                ) s" >>"${readerlog}" 2>&1 || exit 40
+        done
+    ) &
+    local reader_pid=$!
+
+    (
+        for _ in $(seq 1 15); do
+            psql -p "${PRIMARY_PORT}" -d "${TEST_DB}" -qAt -c "
+                INSERT INTO race_docs (content)
+                SELECT 'racer postgres bm25 ' || gs
+                FROM generate_series(1, 10) gs;
+                SELECT bm25_spill_index('race_idx');
+                SELECT bm25_force_merge('race_idx');
+            " >/dev/null 2>&1 || true
+        done
+    ) &
+    local writer_pid=$!
+
+    local failed=0
+    wait ${reader_pid} || failed=1
+    wait ${writer_pid} || true
+
+    local torn='shorter than its recorded count'
+    torn="${torn}|longer than its recorded count"
+    torn="${torn}|could not read BM25 segment root"
+    torn="${torn}|segment-root count overflow"
+    torn="${torn}|invalid segment header"
+
+    if grep -IEq "${torn}" "${readerlog}" || \
+       grep -IEq "${torn}" "${standbylog}"; then
+        grep -IEn "${torn}" "${readerlog}" "${standbylog}" | head -5
+        error "Test 6 FAILED: standby snapshot torn by concurrent replay"
+    fi
+    if [ "${failed}" -ne 0 ]; then
+        tail -n 10 "${readerlog}"
+        error "Test 6 FAILED: standby reader exited with an error"
+    fi
+
+    # Prove the run actually opened the window it claims to test.
+    if ! grep -q "segment graph snapshot pause at before-unlock" \
+         "${standbylog}"; then
+        error "Test 6 FAILED: the capture window never opened on the standby"
+    fi
+
+    log "Test 6 PASSED: standby snapshots survived concurrent replay"
+}
+
 main() {
     log "Starting pg_textsearch physical replication test..."
 
@@ -330,6 +448,7 @@ main() {
     test_ongoing_replication
     test_segment_replication
     test_long_lived_backend_staleness
+    test_standby_snapshot_race
     test_standby_promotion
 
     log "All physical replication tests passed!"
