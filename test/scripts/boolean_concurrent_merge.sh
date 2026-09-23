@@ -119,7 +119,13 @@ merger() {
         "${PSQL[@]}" -c "
             SET pg_textsearch.segments_per_level=2;
             SET statement_timeout='60s';
-            SELECT bm25_force_merge('docs_bm25');
+            DO \$merge\$
+            BEGIN
+                PERFORM bm25_force_merge('docs_bm25');
+            EXCEPTION WHEN lock_not_available THEN
+                NULL;
+            END
+            \$merge\$;
             SELECT bm25_pending_free_pages('docs_bm25')" \
             >>"${ERR_DIR}/merger.log" 2>&1
         "${PSQL[@]}" -c "VACUUM docs" >>"${ERR_DIR}/merger.log" 2>&1

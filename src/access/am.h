@@ -181,10 +181,23 @@ struct IndexBulkDeleteResult *tp_vacuumcleanup(
 char *tp_buildphasename(int64 phase);
 
 /*
- * Spill a memtable to an L0 segment.  Skips when
- * chain_page_count < min_pages.  Acquires LW_EXCLUSIVE internally.
+ * Spill a memtable to an L0 segment.  Skips when chain_page_count <
+ * min_pages.  Acquires LW_EXCLUSIVE for spill durability, releases it,
+ * then applies the index's compaction policy.
  */
 void tp_spill_memtable_if_needed(
+		Relation index, TpLocalIndexState *index_state, uint32 min_pages);
+
+/*
+ * Spill with an empty chain as the postcondition, for callers whose
+ * correctness depends on it.  A level 0 with no room reports its
+ * capacity limit instead of leaving records in the chain.
+ */
+void tp_spill_memtable_required(
+		Relation index, TpLocalIndexState *index_state, uint32 min_pages);
+
+/* Shutdown cleanup spills durable state without starting maintenance. */
+void tp_spill_memtable_without_compaction_if_needed(
 		Relation index, TpLocalIndexState *index_state, uint32 min_pages);
 
 /*

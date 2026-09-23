@@ -9,6 +9,7 @@
 #include <common/int.h>
 #include <storage/bufmgr.h>
 #include <storage/indexfsm.h>
+#include <storage/lmgr.h>
 #include <storage/lwlock.h>
 
 #include "access/am.h"
@@ -61,6 +62,56 @@ typedef struct TpCompactionPlan
 	BlockNumber			retained_heads[TP_MAX_LEVELS];
 	uint16				retained_counts[TP_MAX_LEVELS];
 } TpCompactionPlan;
+
+bool
+tp_try_compaction_lock(Relation index)
+{
+	return ConditionalLockRelationOid(
+			RelationGetRelid(index), ShareUpdateExclusiveLock);
+}
+
+/*
+ * Take index maintenance for an explicit compaction request, reporting
+ * rather than waiting when another session holds it.  Waiting closes a
+ * deadlock cycle with a REINDEX INDEX CONCURRENTLY that already holds
+ * maintenance and is waiting on this transaction to drain.
+ */
+void
+tp_require_compaction_admission(Relation index)
+{
+	if (tp_try_compaction_lock(index))
+		return;
+
+	ereport(ERROR,
+			(errcode(ERRCODE_LOCK_NOT_AVAILABLE),
+			 errmsg("could not obtain maintenance access to bm25 index "
+					"\"%s\"",
+					RelationGetRelationName(index)),
+			 errdetail(
+					 "Another session is compacting, reindexing, or "
+					 "vacuuming the index."),
+			 errhint("Retry once the concurrent operation completes.")));
+}
+
+void
+tp_require_index_lock_admission(TpLocalIndexState *index_state, Relation index)
+{
+	if (tp_try_acquire_index_lock(index_state, LW_EXCLUSIVE))
+		return;
+
+	ereport(ERROR,
+			(errcode(ERRCODE_LOCK_NOT_AVAILABLE),
+			 errmsg("could not obtain exclusive access to bm25 index \"%s\"",
+					RelationGetRelationName(index)),
+			 errdetail("Another session is using or maintaining the index."),
+			 errhint("Retry once the concurrent operation completes.")));
+}
+
+void
+tp_compaction_unlock(Relation index)
+{
+	UnlockRelationOid(RelationGetRelid(index), ShareUpdateExclusiveLock);
+}
 
 static void
 tp_require_compaction_lock(TpLocalIndexState *index_state)

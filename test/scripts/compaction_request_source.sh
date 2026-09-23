@@ -832,22 +832,53 @@ bulk_spill_body="$(
 )"
 open_line="$(grep -n "index_rel = try_index_open" <<<"${bulk_spill_body}" |
     cut -d: -f1)"
-acquire_line="$(grep -n "tp_acquire_index_lock(local_state" \
+spill_line="$(grep -n "tp_spill_memtable_if_needed(index_rel, local_state, 0)" \
     <<<"${bulk_spill_body}" | cut -d: -f1)"
-release_line="$(grep -n "tp_release_index_lock(local_state" \
-    <<<"${bulk_spill_body}" | tail -1 | cut -d: -f1)"
 close_line="$(grep -n "index_close(index_rel" <<<"${bulk_spill_body}" |
     cut -d: -f1)"
 
-if [[ -z "${open_line}" || -z "${acquire_line}" ||
-      "${open_line}" -ge "${acquire_line}" ]]; then
-    echo "bulk spill does not open the relation before its index LWLock" >&2
+if [[ -z "${open_line}" || -z "${spill_line}" ||
+      "${open_line}" -ge "${spill_line}" ]]; then
+    echo "bulk spill does not open the relation before spilling" >&2
     exit 1
 fi
 
-if [[ -z "${release_line}" || -z "${close_line}" ||
-      "${release_line}" -ge "${close_line}" ]]; then
-    echo "bulk spill does not release its index LWLock before relation close" >&2
+if [[ -z "${spill_line}" || -z "${close_line}" ||
+      "${spill_line}" -ge "${close_line}" ]]; then
+    echo "bulk spill does not finish before relation close" >&2
+    exit 1
+fi
+
+shutdown_spill_body="$(
+    sed -n '/^tp_shutdown_spill_one(LocalStateCacheEntry \*entry)/,/^}/p' \
+        "${STATE_SOURCE}"
+)"
+if ! grep -Fq "tp_spill_memtable_without_compaction_if_needed(" \
+        <<<"${shutdown_spill_body}" ||
+   grep -Fq "tp_spill_memtable_if_needed(" <<<"${shutdown_spill_body}"; then
+    echo "shutdown spill must not run post-spill compaction policy" >&2
+    exit 1
+fi
+
+shutdown_catch="$(
+    sed -n '/PG_CATCH();/,/PG_END_TRY();/p' <<<"${shutdown_spill_body}"
+)"
+shutdown_guard_line="$(
+    grep -n "if (entry->local_state->lock_held)" <<<"${shutdown_catch}" |
+        cut -d: -f1
+)"
+shutdown_release_line="$(
+    grep -n "tp_release_index_lock(entry->local_state)" \
+        <<<"${shutdown_catch}" | cut -d: -f1
+)"
+shutdown_flush_line="$(
+    grep -n "FlushErrorState()" <<<"${shutdown_catch}" | cut -d: -f1
+)"
+if [[ -z "${shutdown_guard_line}" || -z "${shutdown_release_line}" ||
+      -z "${shutdown_flush_line}" ||
+      "${shutdown_guard_line}" -ge "${shutdown_release_line}" ||
+      "${shutdown_release_line}" -ge "${shutdown_flush_line}" ]]; then
+    echo "shutdown spill catch must guard and release the index lock" >&2
     exit 1
 fi
 

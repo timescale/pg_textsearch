@@ -119,6 +119,13 @@ jobs:
         export PATH="/usr/lib/postgresql/${{ matrix.pg_version }}/bin:$PATH"
 
         # concurrency.sh and segment.sh manage their own PostgreSQL instances
+        echo "Running spill-time inline compaction locking tests..."
+        if (cd test/scripts && ./inline_compaction_locking.sh); then
+          echo "✓ Spill-time inline compaction locking tests passed"
+        else
+          echo "✗ Spill-time inline compaction locking tests failed"
+          exit 1
+        fi
         echo "Running concurrency tests..."
         if (cd test/scripts && ./concurrency.sh); then
           echo "✓ Concurrency tests passed"
@@ -180,6 +187,13 @@ jobs:
           echo "✓ Compaction ownership-check source guard passed"
         else
           echo "✗ Compaction ownership-check source guard failed"
+          exit 1
+        fi
+        echo "Running compaction request source guard..."
+        if (cd test/scripts && ./compaction_request_source.sh); then
+          echo "✓ Compaction request source guard passed"
+        else
+          echo "✗ Compaction request source guard failed"
           exit 1
         fi
         echo "Running shutdown spill tests..."
@@ -675,6 +689,12 @@ jobs:
         make installcheck PGHOST=$PWD/tmp_sanitizer_test PGPORT=55433
 
         # Run shell-based tests under sanitizer (more likely to find memory issues)
+        echo "Running spill-time inline compaction locking tests under sanitizer..."
+        timeout 600s bash -c "
+          export PATH=\"$HOME/$PG_INSTALL_DIR/bin:\$PATH\"
+          cd test/scripts && ./inline_compaction_locking.sh
+        "
+
         echo "Running concurrency tests under sanitizer..."
         timeout 1200s bash -c "
           export PATH=\"$HOME/$PG_INSTALL_DIR/bin:\$PATH\"
