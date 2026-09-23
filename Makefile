@@ -155,8 +155,12 @@ test-rls-locking:
 	@echo "Running RLS DDL locking tests..."
 	@cd test/scripts && ./rls_ddl_locking.sh
 
+test-standalone-snapshot:
+	@cd test/scripts && ./standalone_snapshot.sh
+
 test-concurrency: test-rls-locking
 	@echo "Running concurrency tests..."
+	@cd test/scripts && ./standalone_snapshot.sh
 	@cd test/scripts && ./inline_compaction_locking.sh
 	@cd test/scripts && ./concurrency.sh
 	@cd test/scripts && ./boolean_concurrent_merge.sh
@@ -417,6 +421,7 @@ help:
 	test test-segment-io-limits test-mixed-update-query-benchmark \
 	test-durable \
 	clean-test-dirs installcheck test-rls-locking test-concurrency \
+	test-standalone-snapshot \
 	test-recovery test-segment test-stress test-cic test-chinese \
 	test-replication test-replication-extended \
 	test-logical-replication test-multi-index test-reindex \
