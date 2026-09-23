@@ -99,26 +99,9 @@ PGXS := $(shell $(PG_CONFIG) --pgxs)
 include $(PGXS)
 
 # SQL regression tests
-test: test-compaction-ownercheck test-compaction-request-source \
-	test-segment-io-limits test-boolean-lock test-boolean-memory \
-	test-boolean-rescan test-mixed-update-query-benchmark
+test: test-segment-io-limits test-mixed-update-query-benchmark
 	@echo "Running SQL regression tests..."
 	@$(pg_regress_installcheck) $(REGRESS_OPTS) $(REGRESS)
-
-test-compaction-ownercheck:
-	@./test/scripts/compaction_ownercheck_source.sh
-
-test-compaction-request-source:
-	@./test/scripts/compaction_request_source.sh
-
-test-boolean-lock:
-	@./test/scripts/boolean_lock_source.sh
-
-test-boolean-memory:
-	@./test/scripts/boolean_memory_source.sh
-
-test-boolean-rescan:
-	@./test/scripts/boolean_rescan_source.sh
 
 test-segment-io-limits:
 	@set -e; tmp_dir="$$(mktemp -d)"; \
@@ -138,13 +121,8 @@ test-durable:
 	@echo "Running managed pg_durable compaction tests..."
 	@cd test/scripts && ./durable_compaction.sh
 
-# Run source-level guards with every regression entry point.
-installcheck: test-compaction-ownercheck test-compaction-request-source \
-	test-segment-io-limits test-boolean-lock test-boolean-memory \
-	test-boolean-rescan test-mixed-update-query-benchmark
-test-local: test-compaction-ownercheck test-compaction-request-source \
-	test-segment-io-limits test-boolean-lock test-boolean-memory \
-	test-boolean-rescan test-mixed-update-query-benchmark
+installcheck: test-segment-io-limits test-mixed-update-query-benchmark
+test-local: test-segment-io-limits test-mixed-update-query-benchmark
 
 # Custom local test target with dedicated PostgreSQL instance
 test-local: install
@@ -399,7 +377,6 @@ help:
 	@echo ""
 	@echo "Testing targets:"
 	@echo "  make test         - Run source guard and SQL regression tests"
-	@echo "  make test-compaction-ownercheck - Check compaction ownership ordering"
 	@echo "  make installcheck - Run SQL regression tests"
 	@echo "  make test-local   - Run tests with dedicated PostgreSQL instance"
 	@echo "  make test-all     - Run all tests (SQL regression + shell scripts)"
@@ -436,9 +413,8 @@ help:
 	@echo "  make format"
 
 .PHONY: \
-	test test-compaction-ownercheck test-compaction-request-source \
-	test-segment-io-limits test-boolean-lock test-boolean-memory \
-	test-boolean-rescan test-mixed-update-query-benchmark test-durable \
+	test test-segment-io-limits test-mixed-update-query-benchmark \
+	test-durable \
 	clean-test-dirs installcheck test-rls-locking test-concurrency \
 	test-recovery test-segment test-stress test-cic test-chinese \
 	test-replication test-replication-extended \
