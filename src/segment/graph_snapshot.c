@@ -207,6 +207,18 @@ tp_segment_graph_snapshot_create_internal(Relation index, bool capture_roots)
 				snapshot->metapage.memtable_head_blkno,
 				snapshot->metapage.memtable_tail_blkno,
 				&snapshot->memtable);
+		/*
+		 * The endpoint is captured, and the metapage SHARE lock still
+		 * blocks the chain from being extended past it.  Release the tail
+		 * before the root walk so appends that fit the current page are
+		 * not stalled for its duration; the captured free offset already
+		 * hides anything written after this point.
+		 */
+		if (BufferIsValid(tail_buffer))
+		{
+			UnlockReleaseBuffer(tail_buffer);
+			tail_buffer = InvalidBuffer;
+		}
 		if (capture_roots)
 			tp_capture_segment_roots(index, snapshot);
 
@@ -216,8 +228,6 @@ tp_segment_graph_snapshot_create_internal(Relation index, bool capture_roots)
 					tp_debug_segment_graph_snapshot_pause_before_unlock_ms,
 					"before-unlock");
 		UnlockReleaseBuffer(buffer);
-		if (BufferIsValid(tail_buffer))
-			UnlockReleaseBuffer(tail_buffer);
 		if (capture_roots)
 			tp_debug_segment_graph_snapshot_pause(
 					index,

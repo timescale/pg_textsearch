@@ -699,6 +699,11 @@ bm25_text_bm25query_score(PG_FUNCTION_ARGS)
 	TpLocalIndexState *index_state;
 	TpDataSource *volatile memtable_src		 = NULL;
 	TpLocalIndexState *volatile locked_state = NULL;
+	/*
+	 * Sample once: promotion mid-query must not mix a recovery-mode
+	 * capture with a primary-mode one.
+	 */
+	const bool		 recovery = RecoveryInProgress();
 	float4			 avg_doc_len;
 	int32			 total_docs;
 	int64			 total_len;
@@ -776,27 +781,44 @@ bm25_text_bm25query_score(PG_FUNCTION_ARGS)
 		 * before copying segment roots so spill cannot publish between the
 		 * memtable and segment snapshots.
 		 */
-		memtable_src = tp_memtable_source_create_for_read(
-				index_state, index_rel, NULL, 0);
-
-		/*
-		 * An empty memtable yields no source and therefore no lock, so
-		 * take LW_SHARED here: the metadata snapshot and the deferred
-		 * root walk must observe the same graph generation.
-		 */
-		if (memtable_src == NULL)
+		if (recovery)
 		{
-			tp_acquire_index_lock(index_state, LW_SHARED);
-			locked_state = index_state;
+			/*
+			 * WAL replay publishes spills without taking the per-index
+			 * lock, so no lock can hold the graph still on a standby and
+			 * the roots cannot be collected lazily.  Capture the whole
+			 * graph up front and bound the chain source to the captured
+			 * endpoint, so both halves describe one generation.
+			 */
+			segment_snapshot	 = tp_segment_graph_snapshot_create(index_rel);
+			segment_roots_loaded = true;
+			memtable_src		 = tp_memtable_chain_source_create_bounded(
+					index_rel, &segment_snapshot->memtable, NULL, 0);
 		}
-		/*
-		 * Only the metapage is needed to size the corpus and validate the
-		 * IDF cache.  The segment roots cost a walk of every root at every
-		 * level, so collect them lazily on the first cache miss; the
-		 * source's LW_SHARED keeps the graph stable until then.
-		 */
-		segment_snapshot = tp_segment_graph_snapshot_create_metadata(
-				index_rel);
+		else
+		{
+			memtable_src = tp_memtable_source_create_for_read(
+					index_state, index_rel, NULL, 0);
+
+			/*
+			 * An empty memtable yields no source and therefore no lock, so
+			 * take LW_SHARED here: the metadata snapshot and the deferred
+			 * root walk must observe the same graph generation.
+			 */
+			if (memtable_src == NULL)
+			{
+				tp_acquire_index_lock(index_state, LW_SHARED);
+				locked_state = index_state;
+			}
+			/*
+			 * Only the metapage is needed to size the corpus and validate
+			 * the IDF cache.  The segment roots cost a walk of every root
+			 * at every level, so collect them lazily on the first cache
+			 * miss; the source's LW_SHARED keeps the graph stable.
+			 */
+			segment_snapshot = tp_segment_graph_snapshot_create_metadata(
+					index_rel);
+		}
 		metap			= &segment_snapshot->metapage;
 		text_config_oid = metap->text_config_oid;
 		first_segment	= metap->level_heads[0];
@@ -845,16 +867,31 @@ bm25_text_bm25query_score(PG_FUNCTION_ARGS)
 					index_close(old_rel, AccessShareLock);
 					index_state = child_state;
 
-					memtable_src = tp_memtable_source_create_for_read(
-							index_state, index_rel, NULL, 0);
-					if (memtable_src == NULL)
+					if (recovery)
 					{
-						tp_acquire_index_lock(index_state, LW_SHARED);
-						locked_state = index_state;
+						segment_snapshot = tp_segment_graph_snapshot_create(
+								index_rel);
+						segment_roots_loaded = true;
+						memtable_src = tp_memtable_chain_source_create_bounded(
+								index_rel,
+								&segment_snapshot->memtable,
+								NULL,
+								0);
 					}
-					segment_snapshot =
-							tp_segment_graph_snapshot_create_metadata(
-									index_rel);
+					else
+					{
+						segment_roots_loaded = false;
+						memtable_src = tp_memtable_source_create_for_read(
+								index_state, index_rel, NULL, 0);
+						if (memtable_src == NULL)
+						{
+							tp_acquire_index_lock(index_state, LW_SHARED);
+							locked_state = index_state;
+						}
+						segment_snapshot =
+								tp_segment_graph_snapshot_create_metadata(
+										index_rel);
+					}
 					metap			= &segment_snapshot->metapage;
 					text_config_oid = metap->text_config_oid;
 					first_segment	= metap->level_heads[0];

@@ -487,6 +487,11 @@ tp_memtable_chain_source_create_internal(
 
 	Assert(state != NULL || !acquire_index_lock);
 	Assert(rel != NULL);
+	/*
+	 * A bounded (snapshot) source never acquires the lock, so the
+	 * empty-snapshot early return below has nothing to release.
+	 */
+	Assert(snapshot == NULL || !acquire_index_lock);
 	Assert(query_term_count >= 0);
 	Assert(query_term_count == 0 || query_terms != NULL);
 
