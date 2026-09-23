@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790062251824,
+  "lastUpdate": 1790148691066,
   "repoUrl": "https://github.com/timescale/pg_textsearch",
   "entries": {
     "Concurrent INSERT (pg_textsearch)": [
@@ -10668,6 +10668,68 @@ window.BENCHMARK_DATA = {
           {
             "name": "pg_textsearch INSERT latency (c=8)",
             "value": 1.02,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tjgreen@gmail.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "9e6cc25aadcad114a641ea4d74d4c8ee97a47ba3",
+          "message": "Remove grep-based source guard scripts (#507)\n\n## Problem\n\n`test/scripts/*_source.sh` are five shell scripts wired into `make\ntest`, `make installcheck`, `make test-local`, and CI. None of them\nstart a server. They grep the C source for call spellings and compare\nline numbers to assert ordering — `compaction_request_source.sh` alone\nis 885 lines containing 148 `grep` assertions against source text.\n\nThis fails in both directions:\n\n- **False red.** A semantically neutral refactor breaks them, so they\nget rewritten to track the code rather than constrain it. A recent\nread-path change had to rewrite `boolean_lock_source.sh` purely because\nfunction names moved.\n- **False green.** A rename or an extracted helper slips past the\npattern while the guard still passes, so the invariant they claim to\nprotect isn't.\n\nThey also distort the code under test. `compaction_ownercheck_source.sh`\nidentifies the first unlock call by line position, which forces the\nspill path into a single-unlock shape chosen to satisfy the grep rather\nthan to express the locking intent.\n\n## Change\n\nRemoves all five scripts and their Makefile targets, dependency-list\nentries, `.PHONY` entries, help text, and CI steps.\n\nThe locking and ownership behavior they approximate is exercised by the\nconcurrency, recovery, and compaction shell suites, which run against a\nreal server and assert observable outcomes.\n\n`test-segment-io-limits` is kept — it compiles and runs an actual C test\nrather than grepping source.\n\n## Verification\n\n- PostgreSQL 18: 79/79 regression tests via `make test-local`\n- Build clean, 0 warnings\n- `ci.yml` validated as well-formed YAML; no remaining references to the\nremoved targets or scripts",
+          "timestamp": "2026-09-23T02:01:02Z",
+          "url": "https://github.com/timescale/pg_textsearch/commit/9e6cc25aadcad114a641ea4d74d4c8ee97a47ba3"
+        },
+        "date": 1790148654924,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "pg_textsearch INSERT TPS (c=1)",
+            "value": 2012.360368,
+            "unit": "tps"
+          },
+          {
+            "name": "pg_textsearch INSERT latency (c=1)",
+            "value": 0.497,
+            "unit": "ms"
+          },
+          {
+            "name": "pg_textsearch INSERT TPS (c=2)",
+            "value": 3631.89778,
+            "unit": "tps"
+          },
+          {
+            "name": "pg_textsearch INSERT latency (c=2)",
+            "value": 0.551,
+            "unit": "ms"
+          },
+          {
+            "name": "pg_textsearch INSERT TPS (c=4)",
+            "value": 6027.362793,
+            "unit": "tps"
+          },
+          {
+            "name": "pg_textsearch INSERT latency (c=4)",
+            "value": 0.664,
+            "unit": "ms"
+          },
+          {
+            "name": "pg_textsearch INSERT TPS (c=8)",
+            "value": 8070.552972,
+            "unit": "tps"
+          },
+          {
+            "name": "pg_textsearch INSERT latency (c=8)",
+            "value": 0.991,
             "unit": "ms"
           }
         ]
