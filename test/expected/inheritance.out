@@ -133,8 +133,9 @@ NOTICE:  BM25 index build started for relation inh_child_bm25
 NOTICE:  Using text search configuration: english
 NOTICE:  Using index options: k1=1.20, b=0.75
 NOTICE:  BM25 index build completed: 4 documents, avg_length=4.50
--- Query via parent index — should fall back to child index
--- This exercises find_first_child_bm25_index in query.c
+-- Query via parent index — should fall back to child index.
+-- ORDER BY makes this an index scan, which resolves the parent in the
+-- planner, so it does not reach find_first_child_bm25_index.
 SELECT content,
        content <@> to_bm25query('fox', 'inh_parent_bm25') AS score
 FROM inh_parent
@@ -144,6 +145,38 @@ LIMIT 3;
 ---------------------------------------------+---------------------
  the quick brown fox jumps over the lazy dog | -1.0594960451126099
 (1 row)
+
+-- Standalone scoring against the storage-less parent.  Deliberately no
+-- ORDER BY: that is what forces the standalone path (the documented
+-- exception for tests whose target *is* standalone scoring), which is
+-- the only caller of find_first_child_bm25_index.  Scoring every row
+-- exercises the parent -> first-child hop, which swaps the relation,
+-- the index state, the segment snapshot and the memtable source
+-- together; non-matching rows score 0.
+-- The plan assertion guards against this silently becoming an index
+-- scan, which is how the query above stopped covering this path.
+EXPLAIN (COSTS OFF)
+SELECT content, content <@> to_bm25query('fox', 'inh_parent_bm25')
+FROM inh_parent;
+                   QUERY PLAN                    
+-------------------------------------------------
+ Result
+   ->  Append
+         ->  Seq Scan on inh_parent inh_parent_1
+         ->  Seq Scan on inh_child inh_parent_2
+(4 rows)
+
+SELECT content, round((content <@>
+           to_bm25query('fox', 'inh_parent_bm25'))::numeric, 4) AS score
+FROM inh_parent
+ORDER BY content;
+                   content                   |  score  
+---------------------------------------------+---------
+ database query optimization techniques      |  0.0000
+ information retrieval and ranking           |  0.0000
+ postgresql full text search engine          |  0.0000
+ the quick brown fox jumps over the lazy dog | -1.0595
+(4 rows)
 
 -- Cleanup
 DROP TABLE inh_child CASCADE;

@@ -65,6 +65,7 @@
 #include "index/state.h"
 #include "planner/hooks.h"
 #include "scoring/bm25.h"
+#include "segment/graph_snapshot.h"
 
 #if PG_VERSION_NUM >= 180000
 PG_MODULE_MAGIC_EXT(.name = "pg_textsearch", .version = "1.5.0-dev");
@@ -712,6 +713,54 @@ _PG_init(void)
 			false,
 			PGC_SUSET, /* superuser-only: forces a server-wide PANIC,
 						* so unprivileged roles must not reach it */
+			0,
+			NULL,
+			NULL,
+			NULL);
+
+	DefineCustomIntVariable(
+			"pg_textsearch.debug_segment_graph_snapshot_pause_before_lock_ms",
+			"Pause before capturing a segment and memtable graph.",
+			"Testing-only interruptible pause before acquiring the metapage "
+			"buffer share lock for a common read snapshot.",
+			&tp_debug_segment_graph_snapshot_pause_before_lock_ms,
+			0,
+			0,
+			60000,
+			PGC_SUSET,
+			0,
+			NULL,
+			NULL,
+			NULL);
+
+	DefineCustomIntVariable(
+			"pg_textsearch."
+			"debug_segment_graph_snapshot_pause_before_unlock_ms",
+			"Pause before releasing a completed index read snapshot.",
+			"Testing-only interruptible pause after copying every segment "
+			"root and the bounded memtable endpoint while retaining the "
+			"metapage buffer share lock.",
+			&tp_debug_segment_graph_snapshot_pause_before_unlock_ms,
+			0,
+			0,
+			60000,
+			PGC_SUSET,
+			0,
+			NULL,
+			NULL,
+			NULL);
+
+	DefineCustomIntVariable(
+			"pg_textsearch.debug_segment_graph_snapshot_pause_ms",
+			"Pause after copying a complete index read snapshot.",
+			"Testing-only interruptible pause after releasing the metapage "
+			"buffer lock and before consuming the copied segment roots or "
+			"bounded memtable endpoint.",
+			&tp_debug_segment_graph_snapshot_pause_ms,
+			0,
+			0,
+			60000,
+			PGC_SUSET,
 			0,
 			NULL,
 			NULL,

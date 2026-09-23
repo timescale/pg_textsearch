@@ -216,6 +216,7 @@ setup_standby() {
     cat >> "${STANDBY_DIR}/postgresql.conf" <<EOF
 port = ${STANDBY_PORT}
 unix_socket_directories = '${REPL_SOCKET_DIR}'
+hot_standby_feedback = on
 EOF
 
     pg_ctl start -D "${STANDBY_DIR}" \

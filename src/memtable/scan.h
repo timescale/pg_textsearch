@@ -24,5 +24,4 @@
 bool tp_memtable_search(
 		IndexScanDesc	   scan,
 		TpLocalIndexState *index_state,
-		TpVector		  *query_vector,
-		TpIndexMetaPage	   metap);
+		TpVector		  *query_vector);
