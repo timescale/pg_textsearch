@@ -86,9 +86,13 @@ FROM generate_series(1, 100) AS i;
 SELECT bm25_spill_index('coverage_idx');
 
 -- Both debug readers must enumerate every root recorded by the metapage.
+-- Count the segment headers rather than merely matching one: a LIKE test
+-- passes with a single segment and would not catch a dump that stops
+-- after the first root.
 SELECT bm25_summarize_index('coverage_idx') ~ E'Total: 2 segments'
-       AND bm25_dump_index('coverage_idx') LIKE
-           '%========== Segment at block %'
+       AND array_length(
+               string_to_array(bm25_dump_index('coverage_idx'),
+                               '========== Segment at block'), 1) - 1 = 2
     AS dump_multi_segment;
 
 -- =============================================================================

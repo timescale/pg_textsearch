@@ -789,6 +789,14 @@ bm25_text_bm25query_score(PG_FUNCTION_ARGS)
 			 * the roots cannot be collected lazily.  Capture the whole
 			 * graph up front and bound the chain source to the captured
 			 * endpoint, so both halves describe one generation.
+			 *
+			 * This costs a walk of every root on every row, because <@>
+			 * is a per-row operator.  Correctness first: the lazy path
+			 * below is only sound while a lock pins the generation.
+			 * Standbys pay it only for standalone scoring, not for index
+			 * scans.  Removing the per-row cost means recomputing the
+			 * totals and rebuilding the bounded source from the upgraded
+			 * snapshot so the pair stays one generation.
 			 */
 			segment_snapshot	 = tp_segment_graph_snapshot_create(index_rel);
 			segment_roots_loaded = true;

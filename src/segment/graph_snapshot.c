@@ -220,7 +220,10 @@ tp_segment_graph_snapshot_create_internal(Relation index, bool capture_roots)
 			tail_buffer = InvalidBuffer;
 		}
 		if (capture_roots)
+		{
 			tp_capture_segment_roots(index, snapshot);
+			snapshot->roots_captured = true;
+		}
 
 		if (capture_roots)
 			tp_debug_segment_graph_snapshot_pause(
@@ -258,6 +261,12 @@ tp_segment_graph_snapshot_level(
 
 	Assert(snapshot != NULL);
 	Assert(count != NULL);
+	/*
+	 * A metadata-only snapshot reports zero roots for every level, which
+	 * is indistinguishable from an index with no segments.  Fail loudly
+	 * instead of silently scoring against an empty graph.
+	 */
+	Assert(snapshot->roots_captured);
 	if (level >= TP_MAX_LEVELS)
 		ereport(ERROR,
 				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
