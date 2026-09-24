@@ -13,6 +13,7 @@ SOCKET_DIR="${TMPDIR:-/tmp}/pgts_inline_${TEST_PORT}"
 LOGFILE="${DATA_DIR}/postgres.log"
 CLIENT_DIR="${DATA_DIR}/clients"
 TEST_CASE="${1:-all}"
+HAS_INJECTION_POINTS=0
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -57,6 +58,16 @@ EOF
     createdb -h "${SOCKET_DIR}" -p "${TEST_PORT}" "${TEST_DB}"
     psql -h "${SOCKET_DIR}" -p "${TEST_PORT}" -d "${TEST_DB}" \
         -c "CREATE EXTENSION pg_textsearch;" >/dev/null
+    if psql -h "${SOCKET_DIR}" -p "${TEST_PORT}" -d "${TEST_DB}" -qAt \
+        -c "SELECT count(*) = 2
+            FROM pg_available_extensions
+            WHERE name IN ('injection_points', 'pg_textsearch_test');" |
+        grep -qx t; then
+        psql -h "${SOCKET_DIR}" -p "${TEST_PORT}" -d "${TEST_DB}" \
+            -c "CREATE EXTENSION injection_points;
+                CREATE EXTENSION pg_textsearch_test;" >/dev/null
+        HAS_INJECTION_POINTS=1
+    fi
 }
 
 PSQL="psql -h ${SOCKET_DIR} -p ${TEST_PORT} -d ${TEST_DB} -qAt \
@@ -102,6 +113,16 @@ wait_for_reindex_wait() {
     done
 
     fail "REINDEX CONCURRENTLY did not reach its writer wait"
+}
+
+skip_without_injection_points() {
+    local description="$1"
+
+    if [ "${HAS_INJECTION_POINTS}" -eq 1 ]; then
+        return 1
+    fi
+    log "Skipping ${description}: injection points are unavailable"
+    return 0
 }
 
 test_reindex_deadlock() {
@@ -169,12 +190,17 @@ test_full_l0_compacts_then_spills() {
     local level_counts
     local ranked_count
 
+    if skip_without_injection_points \
+        "automatic spill at a full but compactable L0"; then
+        return
+    fi
+
     log "Testing automatic spill at a full but compactable L0"
     $PSQL <<'SQL' >/dev/null
 CREATE TABLE inline_capacity (id integer PRIMARY KEY, body text NOT NULL);
 CREATE INDEX inline_capacity_idx ON inline_capacity USING bm25(body)
     WITH (text_config='english', compaction='manual');
-SET pg_textsearch.debug_segment_count_limit = 2;
+SELECT pg_textsearch_test_attach_segment_limit(2);
 SET pg_textsearch.segments_per_level = 2;
 INSERT INTO inline_capacity VALUES (1, 'capacity alpha one');
 SELECT bm25_spill_index('inline_capacity_idx');
@@ -211,7 +237,8 @@ SQL
     $PSQL <<'SQL' >/dev/null
 RESET pg_textsearch.memtable_pages_threshold;
 RESET pg_textsearch.segments_per_level;
-RESET pg_textsearch.debug_segment_count_limit;
+SELECT injection_points_detach(
+    'pg-textsearch-segment-count-limit');
 DROP TABLE inline_capacity CASCADE;
 SQL
 }
@@ -228,12 +255,17 @@ test_vacuum_drains_chain_at_full_l0() {
     local level_counts
     local ranked_count
 
+    if skip_without_injection_points \
+        "VACUUM draining the memtable chain at a full L0"; then
+        return
+    fi
+
     log "Testing VACUUM drains the memtable chain at a full L0"
     $PSQL <<'SQL' >/dev/null
 CREATE TABLE vacuum_capacity (id integer PRIMARY KEY, body text NOT NULL);
 CREATE INDEX vacuum_capacity_idx ON vacuum_capacity USING bm25(body)
     WITH (text_config='english', compaction='manual');
-SET pg_textsearch.debug_segment_count_limit = 2;
+SELECT pg_textsearch_test_attach_segment_limit(2);
 SET pg_textsearch.segments_per_level = 2;
 INSERT INTO vacuum_capacity VALUES (1, 'capacity alpha one');
 SELECT bm25_spill_index('vacuum_capacity_idx');
@@ -270,7 +302,8 @@ SQL
 
     $PSQL <<'SQL' >/dev/null
 RESET pg_textsearch.segments_per_level;
-RESET pg_textsearch.debug_segment_count_limit;
+SELECT injection_points_detach(
+    'pg-textsearch-segment-count-limit');
 DROP TABLE vacuum_capacity CASCADE;
 SQL
 }
@@ -279,6 +312,11 @@ test_irreducible_full_l0_errors() {
     local mode="$1"
     local error_log="${CLIENT_DIR}/irreducible_${mode}.log"
 
+    if skip_without_injection_points \
+        "irreducible full L0 fail-closed test (${mode})"; then
+        return
+    fi
+
     log "Testing an irreducible full L0 remains fail-closed (${mode})"
     if $PSQL -v mode="${mode}" >"${error_log}" 2>&1 <<'SQL'
 CREATE TABLE inline_irreducible (
@@ -286,7 +324,7 @@ CREATE TABLE inline_irreducible (
 CREATE INDEX inline_irreducible_idx ON inline_irreducible USING bm25(body)
     WITH (text_config='english', compaction='manual');
 SET pg_textsearch.max_segment_size = '1MB';
-SET pg_textsearch.debug_segment_count_limit = 2;
+SELECT pg_textsearch_test_attach_segment_limit(2);
 SET pg_textsearch.segments_per_level = 2;
 SET pg_textsearch.memtable_pages_threshold = 0;
 SET pg_textsearch.bulk_load_threshold = 0;
@@ -323,7 +361,11 @@ SQL
         fail "irreducible full L0 (${mode}) failed for an unexpected reason"
     fi
 
-    $PSQL -c "DROP TABLE inline_irreducible CASCADE;" >/dev/null
+    $PSQL <<'SQL' >/dev/null
+SELECT injection_points_detach(
+    'pg-textsearch-segment-count-limit');
+DROP TABLE inline_irreducible CASCADE;
+SQL
 }
 
 test_managed_reindex_admission() {
@@ -511,6 +553,12 @@ vacuum)
     test_vacuum_drains_chain_at_full_l0
     ;;
 irreducible)
+    test_irreducible_full_l0_errors inline
+    test_irreducible_full_l0_errors background
+    ;;
+injection)
+    test_full_l0_compacts_then_spills
+    test_vacuum_drains_chain_at_full_l0
     test_irreducible_full_l0_errors inline
     test_irreducible_full_l0_errors background
     ;;

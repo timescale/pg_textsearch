@@ -74,6 +74,7 @@ OBJS = \
 	src/index/source.o \
 	src/planner/hooks.o \
 	src/planner/cost.o \
+	src/debug/injection.o \
 	src/debug/dump.o
 
 # Shared library target
@@ -93,11 +94,41 @@ PG_CPPFLAGS += -Wno-unknown-warning-option -Wno-clobbered -Wno-packed-not-aligne
 
 # Test configuration
 REGRESS = abort aerodocs basic binary_io bmw bmw_skip_advance boolean_queries bulk_load cache_apply cache_memory_cap cache_source cache_spill catalog_stats chain_source compaction compaction_request compression concurrent_build coverage deletion vacuum vacuum_bitmap vacuum_extended vacuum_rebuild dropped empty explicit_index expression_index filtered_seed force_merge implicit index inheritance large_documents limits lock manyterms memory memtable_append memtable_page memtable_spill memtable_spill_dead memtable_reclaim merge mixed parallel_build parallel_bmw partitioned partitioned_many partial_index pgstats queries quoted_identifiers rescan rls schema scoring1 scoring2 scoring3 scoring4 scoring5 scoring6 security security_acl segment segment_integrity segment_reclaim tombstone_reuse tombstone_recover strings temp_table text_array text_config unsupported updates vector vector_v1_rejected unlogged_index wand
+INJECTION_REGRESS = merge_injection compaction_injection \
+	force_merge_injection
 REGRESS_OPTS = --inputdir=test --outputdir=test
 
 PG_CONFIG ?= pg_config
 PGXS := $(shell $(PG_CONFIG) --pgxs)
 include $(PGXS)
+
+# Makefile.global (included by PGXS) reports how the server was
+# configured.  The injection tests and the helper module that drives
+# them only exist for a --enable-injection-points server.
+ifeq ($(enable_injection_points),yes)
+REGRESS += $(INJECTION_REGRESS)
+
+install: install-test-injection
+
+install-test-injection:
+	@# PGXS does not encode PG_CONFIG in object dependencies, so stale
+	@# objects from another server version would silently be reused.
+	@$(MAKE) -C test/modules/pg_textsearch_test \
+		PG_CONFIG="$(PG_CONFIG)" clean
+	@$(MAKE) -C test/modules/pg_textsearch_test PG_CONFIG="$(PG_CONFIG)"
+	@$(MAKE) -C test/modules/pg_textsearch_test \
+		PG_CONFIG="$(PG_CONFIG)" install
+
+test-injection-sql:
+	@$(pg_regress_installcheck) $(REGRESS_OPTS) $(INJECTION_REGRESS)
+
+test-injection-shell:
+	@cd test/scripts && ./inline_compaction_locking.sh injection
+	@cd test/scripts && ./crash_safety_spill.sh
+else
+install-test-injection test-injection-sql test-injection-shell:
+	@echo "PostgreSQL injection points are disabled; skipping $@"
+endif
 
 # SQL regression tests
 test: test-segment-io-limits test-mixed-update-query-benchmark
@@ -149,6 +180,8 @@ clean-test-dirs:
 	@rm -rf tmp_check_shared coverage-html coverage.info
 	@find . -name "*.gcda" -delete 2>/dev/null || true
 	@find . -name "*.gcno" -delete 2>/dev/null || true
+	@$(MAKE) -C test/modules/pg_textsearch_test \
+		PG_CONFIG="$(PG_CONFIG)" clean >/dev/null 2>&1 || true
 
 # Shell script test targets (assume extension is already installed)
 test-rls-locking:
@@ -420,6 +453,7 @@ help:
 .PHONY: \
 	test test-segment-io-limits test-mixed-update-query-benchmark \
 	test-durable \
+	test-injection-sql test-injection-shell install-test-injection \
 	clean-test-dirs installcheck test-rls-locking test-concurrency \
 	test-standalone-snapshot \
 	test-recovery test-segment test-stress test-cic test-chinese \

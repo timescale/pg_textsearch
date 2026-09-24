@@ -11,6 +11,7 @@ on:
       - 'Makefile'
       - 'pg_textsearch.control'
       - '.github/workflows/sanitizer-build-and-test.yml'
+      - '.github/scripts/build-postgres-sanitizer.sh'
   workflow_dispatch:
 
 env:
@@ -51,57 +52,25 @@ jobs:
     - name: Create sanitizer logs directory
       run: mkdir -p ${{ github.workspace }}/sanitizer_logs
 
-    - name: Get date for caching
-      id: get-date
-      run: echo "date=$(date +\"%d\")" >> $GITHUB_OUTPUT
-
     - name: Cache PostgreSQL ${{ matrix.pg }}
       id: cache-postgresql
       uses: actions/cache@v4
       with:
         path: ~/${{ env.PG_SRC_DIR }}
-        key: "${{ env.name }}-postgresql-${{ matrix.pg }}-${{ env.CC }}-${{ steps.get-date.outputs.date }}-${{ hashFiles('.github/**') }}"
+        key: sanitizer-postgresql-${{ matrix.pg }}-${{ env.CC }}-randomized-memory-injection-v1-${{ hashFiles('.github/scripts/build-postgres-sanitizer.sh', 'test/postgres-asan-instrumentation.patch', 'test/postgres-asan-instrumentation-PG18GE.patch') }}
 
     - name: Build PostgreSQL ${{ matrix.pg }} with sanitizers
       if: steps.cache-postgresql.outputs.cache-hit != 'true'
       run: |
-        wget -q -O postgresql.tar.bz2 \
-          https://ftp.postgresql.org/pub/source/v${{ matrix.pg }}/postgresql-${{ matrix.pg }}.tar.bz2
-        mkdir -p ~/$PG_SRC_DIR
-        tar --extract --file postgresql.tar.bz2 --directory ~/$PG_SRC_DIR --strip-components 1
-
-        # Add instrumentation to the Postgres memory contexts.
-        # PG18 moved stack_is_too_deep() to a different file, so we need
-        # different patches for PG17 vs PG18+.
-        # For more details, see:
-        # https://github.com/timescale/eng-database/wiki/Using-Address-Sanitizer
-        PG_MAJOR=$(echo "${{ matrix.pg }}" | sed -e 's![.].*!!')
-        if [ ${PG_MAJOR} -lt 18 ]; then
-          echo "Applying PG17 ASAN patch..."
-          patch -F5 -p1 -d ~/$PG_SRC_DIR < test/postgres-asan-instrumentation.patch
-        else
-          echo "Applying PG18+ ASAN patch..."
-          patch -F5 -p1 -d ~/$PG_SRC_DIR < test/postgres-asan-instrumentation-PG18GE.patch
-        fi
-
-        cd ~/$PG_SRC_DIR
-        # RANDOMIZE_ALLOCATED_MEMORY makes stringTypeDatum() run type input
-        # functions twice, catching input functions that scribble on their
-        # argument cstring. ASAN alone misses this (the scribble is an
-        # in-bounds write), so define it explicitly for the source build.
-        ./configure --prefix=$HOME/$PG_INSTALL_DIR --enable-debug --enable-cassert \
-          --with-openssl --without-readline --without-zlib --without-libxml \
-          CPPFLAGS="-DRANDOMIZE_ALLOCATED_MEMORY"
-        make -j$(nproc)
-        # Build the pg_walinspect contrib module under the same
-        # sanitizer flags. wal_audit.sh requires it; without this
-        # CREATE EXTENSION pg_walinspect fails at test setup.
-        make -C contrib/pg_walinspect -j$(nproc)
+        .github/scripts/build-postgres-sanitizer.sh \
+          "${{ matrix.pg }}" "$HOME/$PG_SRC_DIR" "$HOME/$PG_INSTALL_DIR" \
+          true true
 
     - name: Install PostgreSQL ${{ matrix.pg }}
       run: |
         cd ~/$PG_SRC_DIR
         make install
+        make -C src/test/modules/injection_points install
         # On cache hits the build step is skipped, so re-run the
         # pg_walinspect build here (no-op when already built) and
         # always install it.

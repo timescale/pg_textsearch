@@ -147,12 +147,6 @@ bool tp_memtable_cache_enabled = true;
  */
 bool tp_log_cache_state = false;
 
-/* Debug: trigger PANIC after spill finalize for crash-safety testing */
-bool tp_debug_panic_after_spill_finalize = false;
-
-/* Per-level segment capacity; the debug GUC may lower it in tests. */
-int tp_max_segments_per_level = PG_UINT16_MAX;
-
 /*
  * Soft+hard memory budget for the in-memory memtable cache, in
  * kilobytes.  Restored from v1; scaffolding only in this build —
@@ -703,21 +697,6 @@ _PG_init(void)
 			NULL,
 			NULL);
 
-	DefineCustomBoolVariable(
-			"pg_textsearch.debug_panic_after_spill_finalize",
-			"Trigger PANIC after spill finalize for crash-safety testing.",
-			"When enabled, forces a server crash immediately after "
-			"tp_spill_finalize completes. Used only for regression "
-			"testing crash-safe spill ordering.",
-			&tp_debug_panic_after_spill_finalize,
-			false,
-			PGC_SUSET, /* superuser-only: forces a server-wide PANIC,
-						* so unprivileged roles must not reach it */
-			0,
-			NULL,
-			NULL,
-			NULL);
-
 	DefineCustomIntVariable(
 			"pg_textsearch.debug_segment_graph_snapshot_pause_before_lock_ms",
 			"Pause before capturing a segment and memtable graph.",
@@ -760,20 +739,6 @@ _PG_init(void)
 			0,
 			0,
 			60000,
-			PGC_SUSET,
-			0,
-			NULL,
-			NULL,
-			NULL);
-
-	DefineCustomIntVariable(
-			"pg_textsearch.debug_segment_count_limit",
-			"Set the maximum persisted segment count per level.",
-			"Testing-only limit for exercising segment-count overflow.",
-			&tp_max_segments_per_level,
-			PG_UINT16_MAX,
-			1,
-			PG_UINT16_MAX,
 			PGC_SUSET,
 			0,
 			NULL,

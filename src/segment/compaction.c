@@ -14,6 +14,7 @@
 
 #include "access/am.h"
 #include "constants.h"
+#include "debug/injection.h"
 #include "index/metapage.h"
 #include "index/state.h"
 #include "segment/alive_bitset.h"
@@ -914,7 +915,7 @@ tp_initialize_ordinary_plan(
 
 	Assert(total_sources > 0);
 	plan->source_capacity = total_sources;
-	plan->output_capacity = (uint32)tp_max_segments_per_level;
+	plan->output_capacity = tp_segment_count_limit();
 	plan->sources		  = palloc0(
 			sizeof(TpCompactionSource) * plan->source_capacity);
 	plan->batches = palloc0(sizeof(TpCompactionBatch) * plan->source_capacity);
