@@ -1,4 +1,3 @@
-\pset format unaligned
 SET client_min_messages = warning;
 CREATE EXTENSION pg_textsearch;
 CREATE EXTENSION injection_points;

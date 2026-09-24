@@ -1,8 +1,10 @@
+#include <postgres.h>
+
+#include <fmgr.h>
+#include <miscadmin.h>
+#include <utils/injection_point.h>
+
 #include "debug/injection.h"
-#include "fmgr.h"
-#include "miscadmin.h"
-#include "postgres.h"
-#include "utils/injection_point.h"
 
 PG_MODULE_MAGIC;
 

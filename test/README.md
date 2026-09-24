@@ -49,12 +49,14 @@ extended period.
 ## Injection Points
 
 Injection-point tests require PostgreSQL configured with
-`--enable-injection-points`. The targets build and install the
-`pg_textsearch_test` helper extension before running. On ordinary packaged
-PostgreSQL builds, these tests are omitted or skipped.
+`--enable-injection-points`. The Makefile detects this through
+`enable_injection_points` and, when it is set, adds the injection
+regressions to `REGRESS` and installs the `pg_textsearch_test` helper
+extension as part of `make install`. On ordinary packaged PostgreSQL
+builds, these tests are omitted.
 
-CI builds PostgreSQL 17 and 18 with injection points enabled and caches the
-installed prefixes. The sanitizer builds use the same configure option.
+CI builds PostgreSQL 17, 18, and 19 with injection points enabled and caches
+the installed prefixes. The sanitizer builds use the same configure option.
 
 ## Sanitizers
 

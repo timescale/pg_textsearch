@@ -1,13 +1,14 @@
-\pset format unaligned
 SET client_min_messages = warning;
 CREATE EXTENSION pg_textsearch;
 CREATE EXTENSION injection_points;
 CREATE EXTENSION pg_textsearch_test;
 SET pg_textsearch.segments_per_level = 3;
 SELECT pg_textsearch_test_attach_segment_limit(2);
-pg_textsearch_test_attach_segment_limit
-
+ pg_textsearch_test_attach_segment_limit 
+-----------------------------------------
+ 
 (1 row)
+
 CREATE TABLE merge_capacity (id serial PRIMARY KEY, content text);
 CREATE INDEX merge_capacity_idx ON merge_capacity USING bm25(content)
   WITH (text_config='english');
@@ -60,9 +61,11 @@ END
 $$;
 SELECT injection_points_detach(
            'pg-textsearch-segment-count-limit');
-injection_points_detach
-
+ injection_points_detach 
+-------------------------
+ 
 (1 row)
+
 DROP TABLE merge_capacity CASCADE;
 CREATE TABLE merge_nested_full (id serial PRIMARY KEY, content text);
 CREATE INDEX merge_nested_full_idx ON merge_nested_full USING bm25(content)
@@ -92,9 +95,11 @@ BEGIN
 END
 $$;
 SELECT pg_textsearch_test_attach_segment_limit(2);
-pg_textsearch_test_attach_segment_limit
-
+ pg_textsearch_test_attach_segment_limit 
+-----------------------------------------
+ 
 (1 row)
+
 SET pg_textsearch.segments_per_level = 2;
 DO $$
 DECLARE
@@ -132,9 +137,11 @@ END
 $$;
 SELECT injection_points_detach(
            'pg-textsearch-segment-count-limit');
-injection_points_detach
-
+ injection_points_detach 
+-------------------------
+ 
 (1 row)
+
 RESET pg_textsearch.segments_per_level;
 DROP TABLE merge_nested_full CASCADE;
 DROP EXTENSION pg_textsearch_test;
