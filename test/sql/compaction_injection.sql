@@ -1,8 +1,8 @@
 \pset format unaligned
 SET client_min_messages = warning;
-CREATE EXTENSION IF NOT EXISTS pg_textsearch;
-CREATE EXTENSION IF NOT EXISTS injection_points;
-CREATE EXTENSION IF NOT EXISTS pg_textsearch_test;
+CREATE EXTENSION pg_textsearch;
+CREATE EXTENSION injection_points;
+CREATE EXTENSION pg_textsearch_test;
 
 CREATE TABLE compaction_terminal (id serial PRIMARY KEY, body text);
 CREATE INDEX compaction_terminal_idx ON compaction_terminal
@@ -108,3 +108,6 @@ SELECT injection_points_detach(
            'pg-textsearch-segment-count-limit');
 RESET pg_textsearch.segments_per_level;
 DROP TABLE compaction_terminal CASCADE;
+DROP EXTENSION pg_textsearch_test;
+DROP EXTENSION injection_points;
+DROP EXTENSION pg_textsearch CASCADE;

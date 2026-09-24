@@ -1,8 +1,8 @@
 \pset format unaligned
 SET client_min_messages = warning;
-CREATE EXTENSION IF NOT EXISTS pg_textsearch;
-CREATE EXTENSION IF NOT EXISTS injection_points;
-CREATE EXTENSION IF NOT EXISTS pg_textsearch_test;
+CREATE EXTENSION pg_textsearch;
+CREATE EXTENSION injection_points;
+CREATE EXTENSION pg_textsearch_test;
 
 SET pg_textsearch.segments_per_level = 3;
 SELECT pg_textsearch_test_attach_segment_limit(2);
@@ -139,3 +139,6 @@ SELECT injection_points_detach(
            'pg-textsearch-segment-count-limit');
 RESET pg_textsearch.segments_per_level;
 DROP TABLE merge_nested_full CASCADE;
+DROP EXTENSION pg_textsearch_test;
+DROP EXTENSION injection_points;
+DROP EXTENSION pg_textsearch CASCADE;
