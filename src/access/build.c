@@ -252,7 +252,7 @@ tp_finish_spill(
 				spill->len_delta,
 				segment_capacity);
 
-		tp_injection_point_after_spill_finalize();
+		TP_INJECTION_POINT(TP_INJECTION_AFTER_SPILL_FINALIZE);
 
 		if (BlockNumberIsValid(chain_head))
 			tp_memtable_mark_chain_dead(index_rel, chain_head, horizon);

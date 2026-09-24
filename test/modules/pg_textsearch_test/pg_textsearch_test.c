@@ -1,14 +1,10 @@
-#include "postgres.h"
-
 #include "debug/injection.h"
 #include "fmgr.h"
 #include "miscadmin.h"
+#include "postgres.h"
 #include "utils/injection_point.h"
 
 PG_MODULE_MAGIC;
-
-#define TP_INJECTION_AFTER_SPILL_FINALIZE \
-	"pg-textsearch-after-spill-finalize"
 
 PG_FUNCTION_INFO_V1(pg_textsearch_test_attach_panic);
 PG_FUNCTION_INFO_V1(pg_textsearch_test_attach_segment_limit);
@@ -31,8 +27,8 @@ pg_textsearch_test_attach_panic(PG_FUNCTION_ARGS)
 Datum
 pg_textsearch_test_attach_segment_limit(PG_FUNCTION_ARGS)
 {
-	TpInjectionSegmentCountLimit condition = {
-			.pid = MyProcPid, .limit = PG_GETARG_INT32(0)};
+	TpInjectionSegmentCountLimit condition =
+			{.pid = MyProcPid, .limit = PG_GETARG_INT32(0)};
 
 	if (condition.limit < 1 || condition.limit > PG_UINT16_MAX)
 		ereport(ERROR,

@@ -8,9 +8,21 @@
 #include "access/xlog.h"
 #include "debug/injection.h"
 #include "miscadmin.h"
-#include "utils/injection_point.h"
 
 static uint32 injected_segment_count_limit = PG_UINT16_MAX;
+
+#if PG_VERSION_NUM >= 180000
+#define TP_INJECTION_CALLBACK_ARGS \
+	const char *name, const void *private_data, void *arg
+#else
+#define TP_INJECTION_CALLBACK_ARGS const char *name, const void *private_data
+#endif
+
+#ifdef USE_INJECTION_POINTS
+extern PGDLLEXPORT void tp_injection_panic(TP_INJECTION_CALLBACK_ARGS);
+extern PGDLLEXPORT void
+		tp_injection_segment_count_limit(TP_INJECTION_CALLBACK_ARGS);
+#endif
 
 uint32
 tp_segment_count_limit(void)
@@ -18,12 +30,6 @@ tp_segment_count_limit(void)
 	injected_segment_count_limit = PG_UINT16_MAX;
 	TP_INJECTION_POINT(TP_INJECTION_SEGMENT_COUNT_LIMIT);
 	return injected_segment_count_limit;
-}
-
-void
-tp_injection_point_after_spill_finalize(void)
-{
-	TP_INJECTION_POINT(TP_INJECTION_AFTER_SPILL_FINALIZE);
 }
 
 #ifdef USE_INJECTION_POINTS

@@ -400,7 +400,7 @@ jobs:
       uses: actions/cache@v4
       with:
         path: ${{ env.PGPREFIX }}
-        key: pg19-${{ env.PG19_REF }}-${{ matrix.cc }}-${{ runner.os }}
+        key: pg19-${{ env.PG19_REF }}-injection-v1-${{ matrix.cc }}-${{ runner.os }}
 
     - name: Build PostgreSQL ${{ env.PG19_REF }} from source
       if: steps.pgcache.outputs.cache-hit != 'true'
@@ -409,9 +409,18 @@ jobs:
           https://git.postgresql.org/git/postgresql.git /tmp/pgsrc
         cd /tmp/pgsrc
         CC=${{ matrix.cc }} ./configure --prefix="$PGPREFIX" \
-          --with-icu --enable-debug --enable-cassert
+          --with-icu --enable-debug --enable-cassert \
+          --enable-injection-points
         make -j"$(nproc)"
         make install
+        make -C src/test/modules/injection_points install
+
+    - name: Verify injection-point build
+      run: |
+        "$PGPREFIX/bin/pg_config" --configure |
+          grep -q -- '--enable-injection-points'
+        test -f \
+          "$("$PGPREFIX/bin/pg_config" --sharedir)/extension/injection_points.control"
 
     - name: Build extension with ${{ matrix.cc }}
       run: |
@@ -448,6 +457,7 @@ jobs:
           exit 1
         fi
         pg_ctl stop -D tmp_check_shared/data
+        make test-injection-shell
 
   build-msvc:
     name: PG${{ matrix.pg_version }} MSVC Build
