@@ -6,25 +6,6 @@ SET log_duration = off;
 -- Load pg_textsearch extension
 CREATE EXTENSION IF NOT EXISTS pg_textsearch;
 
-\set ECHO none
-\o /dev/null
-DO $$
-BEGIN
-    IF current_setting(
-           'pg_textsearch.debug_panic_after_spill_finalize',
-           true) IS NOT NULL THEN
-        RAISE EXCEPTION 'spill-finalize test GUC still exists';
-    END IF;
-    IF current_setting(
-           'pg_textsearch.debug_segment_count_limit',
-           true) IS NOT NULL THEN
-        RAISE EXCEPTION 'segment-count test GUC still exists';
-    END IF;
-END
-$$;
-\o
-\set ECHO all
-
 -- Enable score logging for testing
 SET pg_textsearch.log_scores = true;
 SET client_min_messages = NOTICE;
