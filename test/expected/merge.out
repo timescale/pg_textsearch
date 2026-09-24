@@ -220,6 +220,7 @@ ORDER BY content <@> to_bm25query('database', 'merge_test_idx'), id;
  10 | database transaction log |        -0.6931
 (5 rows)
 
+\set ECHO none
 --------------------------------------------------------------------------------
 -- Phase 7: Bound ordinary compaction outputs
 --------------------------------------------------------------------------------

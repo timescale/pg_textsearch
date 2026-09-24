@@ -573,6 +573,7 @@ END
 $$;
 RESET pg_textsearch.max_segment_size;
 DROP TABLE force_low_frequency CASCADE;
+\set ECHO none
 --------------------------------------------------------------------------------
 -- A bounded force merge produces maximal batches without exceeding the
 -- configured segment-size budget.
