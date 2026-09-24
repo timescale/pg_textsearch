@@ -38,11 +38,23 @@ The Makefile defines these entry points:
 | `make test-cic` | `CREATE INDEX CONCURRENTLY` |
 | `make test-multi-index` | Multi-index, user, and schema behavior |
 | `make test-reindex` | Multi-backend reindex invalidation |
+| `make test-injection-sql` | SQL tests requiring PostgreSQL injection points |
+| `make test-injection-shell` | Crash and concurrency injection-point tests |
 | `make test-chinese` | Optional zhparser regression |
 
 `make test-shell` is the standard shell suite. Replication and stress targets
 are separate because they create additional PostgreSQL instances or run for an
 extended period.
+
+## Injection Points
+
+Injection-point tests require PostgreSQL configured with
+`--enable-injection-points`. The targets build and install the
+`pg_textsearch_test` helper extension before running. On ordinary packaged
+PostgreSQL builds, these tests are omitted or skipped.
+
+CI builds PostgreSQL 17 and 18 with injection points enabled and caches the
+installed prefixes. The sanitizer builds use the same configure option.
 
 ## Sanitizers
 

@@ -11,6 +11,7 @@ on:
       - 'pg_textsearch.control'
       - '.clang-format'
       - '.github/workflows/ci.yml'
+      - '.github/scripts/build-postgres-injection.sh'
       - 'scripts/msvc-build.ps1'
   pull_request:
     branches: [ main ]
@@ -22,6 +23,7 @@ on:
       - 'pg_textsearch.control'
       - '.clang-format'
       - '.github/workflows/ci.yml'
+      - '.github/scripts/build-postgres-injection.sh'
       - 'scripts/msvc-build.ps1'
   workflow_dispatch:
 
@@ -267,6 +269,74 @@ jobs:
           test/regression.out
           test/results/
         retention-days: 7
+
+  injection-points:
+    name: PG${{ matrix.pg }} Injection Points
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        pg: ["17.10", "18.4"]
+    env:
+      PGPREFIX: ${{ runner.temp }}/postgresql
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Install build dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y bison build-essential curl flex
+
+    - name: Cache injection-enabled PostgreSQL
+      id: pg-cache
+      uses: actions/cache@v4
+      with:
+        path: ${{ env.PGPREFIX }}
+        key: postgresql-injection-${{ matrix.pg }}-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('.github/scripts/build-postgres-injection.sh') }}
+
+    - name: Build PostgreSQL ${{ matrix.pg }}
+      if: steps.pg-cache.outputs.cache-hit != 'true'
+      run: |
+        .github/scripts/build-postgres-injection.sh \
+          "${{ matrix.pg }}" "$PGPREFIX"
+
+    - name: Verify injection-point build
+      run: |
+        "$PGPREFIX/bin/pg_config" --configure |
+          grep -q -- '--enable-injection-points'
+        test -f \
+          "$PGPREFIX/share/postgresql/extension/injection_points.control"
+
+    - name: Build and install pg_textsearch
+      run: |
+        export PATH="$PGPREFIX/bin:$PATH"
+        make clean
+        make PG_CFLAGS="-Werror -Wno-error=unused-parameter"
+        make install
+
+    - name: Run injection-point tests
+      timeout-minutes: 15
+      run: |
+        export PATH="$PGPREFIX/bin:$PATH"
+        cluster="$RUNNER_TEMP/pg_textsearch-injection"
+        rm -rf "$cluster"
+        initdb -D "$cluster" --auth-local=trust --auth-host=trust
+        echo "port = 55439" >> "$cluster/postgresql.conf"
+        echo "unix_socket_directories = '$cluster'" \
+          >> "$cluster/postgresql.conf"
+        echo "shared_preload_libraries = 'pg_textsearch'" \
+          >> "$cluster/postgresql.conf"
+        trap 'pg_ctl stop -D "$cluster" -m immediate >/dev/null 2>&1 || true' \
+          EXIT
+        pg_ctl start -D "$cluster" -l "$cluster/server.log" -w
+        createdb -h "$cluster" -p 55439 contrib_regression
+        make test-injection-sql \
+          PGHOST="$cluster" PGPORT=55439
+        pg_ctl stop -D "$cluster" -m fast -w
+        trap - EXIT
+        make test-injection-shell
 
 
   build-test-multiple-configs:
@@ -562,16 +632,12 @@ jobs:
     - name: Create sanitizer logs directory
       run: mkdir -p ${{ github.workspace }}/sanitizer_logs
 
-    - name: Get date for caching
-      id: get-date
-      run: echo "date=$(date +\"%d\")" >> $GITHUB_OUTPUT
-
     - name: Cache PostgreSQL ${{ matrix.pg }}
       id: cache-postgresql
       uses: actions/cache@v4
       with:
         path: ~/${{ env.PG_SRC_DIR }}
-        key: "Sanitizer-postgresql-${{ matrix.pg }}-${{ env.CC }}-${{ steps.get-date.outputs.date }}-${{ hashFiles('.github/**') }}"
+        key: sanitizer-postgresql-${{ matrix.pg }}-${{ env.CC }}-standard-memory-injection-v1-${{ hashFiles('test/postgres-asan-instrumentation.patch', 'test/postgres-asan-instrumentation-PG18GE.patch') }}
 
     - name: Build PostgreSQL ${{ matrix.pg }} with sanitizers
       if: steps.cache-postgresql.outputs.cache-hit != 'true'
@@ -597,13 +663,16 @@ jobs:
 
         cd ~/$PG_SRC_DIR
         ./configure --prefix=$HOME/$PG_INSTALL_DIR --enable-debug --enable-cassert \
+          --enable-injection-points \
           --with-openssl --without-readline --without-zlib --without-libxml
         make -j$(nproc)
+        make -C src/test/modules/injection_points -j$(nproc)
 
     - name: Install PostgreSQL ${{ matrix.pg }}
       run: |
         cd ~/$PG_SRC_DIR
         make install
+        make -C src/test/modules/injection_points install
         ~/$PG_INSTALL_DIR/bin/pg_config --version
 
     - name: Verify sanitizers are enabled
@@ -1305,7 +1374,7 @@ jobs:
   # Umbrella job for branch protection rules
   all-tests-passed:
     runs-on: ubuntu-latest
-    needs: [test, build-test-multiple-configs, build-msvc, performance-test, format-check, sanitizer, managed-compaction-pg18, coverage, pgspot]
+    needs: [test, injection-points, build-test-multiple-configs, build-msvc, performance-test, format-check, sanitizer, managed-compaction-pg18, coverage, pgspot]
     if: always()
     steps:
       - name: Check all jobs succeeded

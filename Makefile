@@ -1,5 +1,10 @@
 EXTENSION = pg_textsearch
 EXTVERSION = $(shell awk -F"'" '/default_version/ {print $$2}' pg_textsearch.control)
+PG_CONFIG ?= pg_config
+PG_CONFIG_H = $(shell $(PG_CONFIG) --includedir-server)/pg_config.h
+INJECTION_POINTS_ENABLED = $(shell \
+	grep -q '^#define USE_INJECTION_POINTS 1' "$(PG_CONFIG_H)" 2>/dev/null && \
+	echo yes)
 DATA = sql/pg_textsearch--1.5.0-dev.sql \
        sql/pg_textsearch--0.0.1--0.0.2.sql \
        sql/pg_textsearch--0.0.2--0.0.3.sql \
@@ -74,6 +79,7 @@ OBJS = \
 	src/index/source.o \
 	src/planner/hooks.o \
 	src/planner/cost.o \
+	src/debug/injection.o \
 	src/debug/dump.o
 
 # Shared library target
@@ -93,16 +99,43 @@ PG_CPPFLAGS += -Wno-unknown-warning-option -Wno-clobbered -Wno-packed-not-aligne
 
 # Test configuration
 REGRESS = abort aerodocs basic binary_io bmw bmw_skip_advance boolean_queries bulk_load cache_apply cache_memory_cap cache_source cache_spill catalog_stats chain_source compaction compaction_request compression concurrent_build coverage deletion vacuum vacuum_bitmap vacuum_extended vacuum_rebuild dropped empty explicit_index expression_index filtered_seed force_merge implicit index inheritance large_documents limits lock manyterms memory memtable_append memtable_page memtable_spill memtable_spill_dead memtable_reclaim merge mixed parallel_build parallel_bmw partitioned partitioned_many partial_index pgstats queries quoted_identifiers rescan rls schema scoring1 scoring2 scoring3 scoring4 scoring5 scoring6 security security_acl segment segment_integrity segment_reclaim tombstone_reuse tombstone_recover strings temp_table text_array text_config unsupported updates vector vector_v1_rejected unlogged_index wand
+ifeq ($(INJECTION_POINTS_ENABLED),yes)
+REGRESS += injection_points
+endif
 REGRESS_OPTS = --inputdir=test --outputdir=test
 
-PG_CONFIG ?= pg_config
 PGXS := $(shell $(PG_CONFIG) --pgxs)
 include $(PGXS)
 
+install-test-injection:
+ifeq ($(INJECTION_POINTS_ENABLED),yes)
+	@$(MAKE) -C test/modules/pg_textsearch_test PG_CONFIG="$(PG_CONFIG)"
+	@$(MAKE) -C test/modules/pg_textsearch_test \
+		PG_CONFIG="$(PG_CONFIG)" install
+else
+	@echo "PostgreSQL injection points are disabled; skipping test module"
+endif
+
 # SQL regression tests
-test: test-segment-io-limits test-mixed-update-query-benchmark
+test: install-test-injection test-segment-io-limits \
+	test-mixed-update-query-benchmark
 	@echo "Running SQL regression tests..."
 	@$(pg_regress_installcheck) $(REGRESS_OPTS) $(REGRESS)
+
+test-injection-sql: install-test-injection
+ifeq ($(INJECTION_POINTS_ENABLED),yes)
+	@$(pg_regress_installcheck) $(REGRESS_OPTS) injection_points
+else
+	@echo "PostgreSQL injection points are disabled; skipping SQL tests"
+endif
+
+test-injection-shell: install-test-injection
+ifeq ($(INJECTION_POINTS_ENABLED),yes)
+	@cd test/scripts && ./inline_compaction_locking.sh injection
+	@cd test/scripts && ./crash_safety_spill.sh
+else
+	@echo "PostgreSQL injection points are disabled; skipping shell tests"
+endif
 
 test-segment-io-limits:
 	@set -e; tmp_dir="$$(mktemp -d)"; \
@@ -122,8 +155,10 @@ test-durable:
 	@echo "Running managed pg_durable compaction tests..."
 	@cd test/scripts && ./durable_compaction.sh
 
-installcheck: test-segment-io-limits test-mixed-update-query-benchmark
-test-local: test-segment-io-limits test-mixed-update-query-benchmark
+installcheck: install-test-injection test-segment-io-limits \
+	test-mixed-update-query-benchmark
+test-local: install-test-injection test-segment-io-limits \
+	test-mixed-update-query-benchmark
 
 # Custom local test target with dedicated PostgreSQL instance
 test-local: install
@@ -149,6 +184,8 @@ clean-test-dirs:
 	@rm -rf tmp_check_shared coverage-html coverage.info
 	@find . -name "*.gcda" -delete 2>/dev/null || true
 	@find . -name "*.gcno" -delete 2>/dev/null || true
+	@$(MAKE) -C test/modules/pg_textsearch_test \
+		PG_CONFIG="$(PG_CONFIG)" clean >/dev/null 2>&1 || true
 
 # Shell script test targets (assume extension is already installed)
 test-rls-locking:
@@ -420,6 +457,7 @@ help:
 .PHONY: \
 	test test-segment-io-limits test-mixed-update-query-benchmark \
 	test-durable \
+	test-injection-sql test-injection-shell install-test-injection \
 	clean-test-dirs installcheck test-rls-locking test-concurrency \
 	test-standalone-snapshot \
 	test-recovery test-segment test-stress test-cic test-chinese \

@@ -33,6 +33,7 @@
 #include "access/build_parallel.h"
 #include "access/rls.h"
 #include "constants.h"
+#include "debug/injection.h"
 #include "index/compaction_request.h"
 #include "index/metapage.h"
 #include "index/registry.h"
@@ -251,13 +252,7 @@ tp_finish_spill(
 				spill->len_delta,
 				segment_capacity);
 
-		if (tp_debug_panic_after_spill_finalize)
-		{
-			XLogFlush(GetXLogInsertRecPtr());
-			elog(PANIC,
-				 "pg_textsearch: debug crash after spill finalize "
-				 "(tp_debug_panic_after_spill_finalize)");
-		}
+		tp_injection_point_after_spill_finalize();
 
 		if (BlockNumberIsValid(chain_head))
 			tp_memtable_mark_chain_dead(index_rel, chain_head, horizon);
@@ -304,7 +299,7 @@ tp_do_spill(
 			index_rel,
 			&spill,
 			out_segment_root,
-			tp_max_segments_per_level);
+			tp_segment_count_limit());
 
 	return true;
 }
@@ -377,9 +372,8 @@ tp_apply_compaction_policy(TpLocalIndexState *index_state, Relation index_rel)
 static bool
 tp_l0_at_capacity(Relation index_rel)
 {
-	TpIndexMetaPage metap		= tp_get_metapage(index_rel);
-	bool			at_capacity = metap->level_counts[0] >=
-					   (uint16)tp_max_segments_per_level;
+	TpIndexMetaPage metap = tp_get_metapage(index_rel);
+	bool at_capacity	  = metap->level_counts[0] >= tp_segment_count_limit();
 
 	pfree(metap);
 

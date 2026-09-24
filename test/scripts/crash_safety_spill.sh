@@ -27,8 +27,6 @@ error() { echo -e "${RED}[$(date '+%H:%M:%S')] ERROR: $1${NC}"; exit 1; }
 
 cleanup() {
     log "Cleaning up..."
-    pkill -f "postgres.*-D.*tmp_crash_safety_spill" 2>/dev/null || true
-    sleep 1
     if [ -f "${DATA_DIR}/postmaster.pid" ]; then
         pg_ctl stop -D "${DATA_DIR}" -m immediate &>/dev/null || true
     fi
@@ -61,7 +59,11 @@ EOF
 
     createdb -p ${TEST_PORT} ${TEST_DB}
 
-    psql -p ${TEST_PORT} -d ${TEST_DB} -c "CREATE EXTENSION pg_textsearch;" >/dev/null
+    psql -p ${TEST_PORT} -d ${TEST_DB} <<EOF >/dev/null
+CREATE EXTENSION pg_textsearch;
+CREATE EXTENSION injection_points;
+CREATE EXTENSION pg_textsearch_test;
+EOF
     log "Test database ready"
 }
 
@@ -90,15 +92,23 @@ EOF
     log "Initial verification passed: $count1 documents"
 
     log "Inserting data and triggering crash during spill (same transaction)..."
-    psql -p ${TEST_PORT} -d ${TEST_DB} <<EOF 2>&1 | grep -q "PANIC" || true
+    local crash_output="${DATA_DIR}/crash_output.log"
+    if psql -p ${TEST_PORT} -d ${TEST_DB} >"${crash_output}" 2>&1 <<EOF
 BEGIN;
 INSERT INTO docs (content)
 SELECT 'batch two document ' || i || ' more searchable text here'
 FROM generate_series(1, 500) i;
-SET pg_textsearch.debug_panic_after_spill_finalize = true;
+SELECT pg_textsearch_test_attach_panic();
 SELECT bm25_spill_index('docs_bm25');
 COMMIT;
 EOF
+    then
+        error "spill completed without triggering the injection point"
+    fi
+    grep -q "PANIC.*pg-textsearch-after-spill-finalize" "${crash_output}" || {
+        cat "${crash_output}"
+        error "spill failed without the expected injection-point PANIC"
+    }
 
     # Wait for PANIC to propagate
     sleep 1
@@ -149,10 +159,6 @@ EOF
     log "Final verification passed: $count2 documents"
     log "TEST PASSED: Crash safety spill ordering verified"
 }
-
-# Main
-pkill -f "postgres.*-D.*tmp_crash_safety_spill" 2>/dev/null || true
-sleep 1
 
 setup_test_db
 run_test
