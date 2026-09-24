@@ -1,0 +1,111 @@
+\pset format unaligned
+SET client_min_messages = warning;
+CREATE EXTENSION IF NOT EXISTS pg_textsearch;
+CREATE EXTENSION IF NOT EXISTS injection_points;
+CREATE EXTENSION IF NOT EXISTS pg_textsearch_test;
+CREATE TABLE compaction_terminal (id serial PRIMARY KEY, body text);
+CREATE INDEX compaction_terminal_idx ON compaction_terminal
+    USING bm25(body) WITH (text_config = 'english');
+SELECT pg_textsearch_test_attach_segment_limit(2);
+pg_textsearch_test_attach_segment_limit
+
+(1 row)
+DO $$
+DECLARE
+    n integer;
+BEGIN
+    FOR n IN 1..384 LOOP
+        PERFORM set_config(
+            'pg_textsearch.segments_per_level', '64', true);
+        INSERT INTO compaction_terminal (body)
+        VALUES (format('terminal segment document %s filler', n));
+        PERFORM bm25_spill_index('compaction_terminal_idx');
+        PERFORM set_config(
+            'pg_textsearch.segments_per_level', '2', true);
+
+        WHILE bm25_needs_compaction(
+                  'compaction_terminal_idx'::regclass) LOOP
+            EXIT WHEN NOT bm25_compact_step(
+                              'compaction_terminal_idx'::regclass);
+        END LOOP;
+    END LOOP;
+END
+$$;
+SET pg_textsearch.segments_per_level = 2;
+DO $$
+DECLARE
+    counts integer[];
+BEGIN
+    counts := bm25_level_counts('compaction_terminal_idx'::regclass);
+    IF counts <> ARRAY[0, 0, 0, 0, 0, 0, 0, 1]
+       OR bm25_needs_compaction(
+              'compaction_terminal_idx'::regclass) THEN
+        RAISE EXCEPTION 'top level did not drain: %', counts;
+    END IF;
+
+    IF bm25_compact_step('compaction_terminal_idx'::regclass) THEN
+        RAISE EXCEPTION 'settled top level reported compaction work';
+    END IF;
+    PERFORM bm25_compact('compaction_terminal_idx'::regclass);
+
+    counts := bm25_level_counts('compaction_terminal_idx'::regclass);
+    IF counts <> ARRAY[0, 0, 0, 0, 0, 0, 0, 1] THEN
+        RAISE EXCEPTION 'settled top level changed: %', counts;
+    END IF;
+END
+$$;
+SET pg_textsearch.segments_per_level = 64;
+DO $$
+DECLARE
+    n integer;
+BEGIN
+    FOR n IN 1..2 LOOP
+        INSERT INTO compaction_terminal (body)
+        VALUES (format('mixed lower segment document %s filler', n));
+        PERFORM bm25_spill_index('compaction_terminal_idx');
+    END LOOP;
+END
+$$;
+SET pg_textsearch.segments_per_level = 2;
+DO $$
+DECLARE
+    before_counts integer[];
+    counts integer[];
+BEGIN
+    counts := bm25_level_counts('compaction_terminal_idx'::regclass);
+    IF counts <> ARRAY[2, 0, 0, 0, 0, 0, 0, 1] THEN
+        RAISE EXCEPTION 'lower-level debt was not constructed: %', counts;
+    END IF;
+
+    PERFORM bm25_compact('compaction_terminal_idx'::regclass);
+    counts := bm25_level_counts('compaction_terminal_idx'::regclass);
+    IF counts <> ARRAY[0, 1, 0, 0, 0, 0, 0, 1] THEN
+        RAISE EXCEPTION 'lower-level debt did not compact: %', counts;
+    END IF;
+
+    IF (SELECT count(*) FROM (
+            SELECT 1
+            FROM compaction_terminal
+            ORDER BY body <@>
+                     to_bm25query('filler', 'compaction_terminal_idx')
+        ) ranked) <> 386 THEN
+        RAISE EXCEPTION 'mixed compaction lost documents';
+    END IF;
+
+    before_counts := counts;
+    IF bm25_compact_step('compaction_terminal_idx'::regclass) THEN
+        RAISE EXCEPTION 'settled mixed index reported compaction work';
+    END IF;
+    counts := bm25_level_counts('compaction_terminal_idx'::regclass);
+    IF counts <> before_counts THEN
+        RAISE EXCEPTION 'no-op compaction changed level counts: %', counts;
+    END IF;
+END
+$$;
+SELECT injection_points_detach(
+           'pg-textsearch-segment-count-limit');
+injection_points_detach
+
+(1 row)
+RESET pg_textsearch.segments_per_level;
+DROP TABLE compaction_terminal CASCADE;

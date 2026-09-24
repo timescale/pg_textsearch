@@ -38,7 +38,7 @@ The Makefile defines these entry points:
 | `make test-cic` | `CREATE INDEX CONCURRENTLY` |
 | `make test-multi-index` | Multi-index, user, and schema behavior |
 | `make test-reindex` | Multi-backend reindex invalidation |
-| `make test-injection-sql` | Existing SQL regressions with injection-only sections enabled |
+| `make test-injection-sql` | Behavior-specific SQL regressions requiring injection points |
 | `make test-injection-shell` | Crash and concurrency injection-point tests |
 | `make test-chinese` | Optional zhparser regression |
 

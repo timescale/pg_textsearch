@@ -1,0 +1,82 @@
+\pset format unaligned
+SET client_min_messages = warning;
+CREATE EXTENSION IF NOT EXISTS pg_textsearch;
+CREATE EXTENSION IF NOT EXISTS injection_points;
+CREATE EXTENSION IF NOT EXISTS pg_textsearch_test;
+
+SET pg_textsearch.max_segment_size = '1MB';
+
+CREATE TABLE force_lowered_capacity (
+    id bigint PRIMARY KEY,
+    content text
+);
+CREATE INDEX force_lowered_capacity_idx
+  ON force_lowered_capacity USING bm25(content)
+  WITH (text_config='simple');
+
+DO $$
+BEGIN
+    FOR batch IN 1..9 LOOP
+        INSERT INTO force_lowered_capacity
+        SELECT batch,
+               'capacitytoken ' ||
+               string_agg(format('cap%sx%s', batch, term),
+                          ' ' ORDER BY term)
+        FROM generate_series(1, 12000) term;
+        PERFORM bm25_spill_index('force_lowered_capacity_idx');
+    END LOOP;
+END
+$$;
+
+DO $$
+DECLARE
+    summary text := bm25_summarize_index('force_lowered_capacity_idx');
+BEGIN
+    IF regexp_count(summary, 'L[0-7] Segment [0-9]+:') <> 9
+       OR summary !~ 'L0 Segment 9:' THEN
+        RAISE EXCEPTION 'lowered-capacity layout was not constructed: %',
+                        summary;
+    END IF;
+END
+$$;
+
+SELECT pg_textsearch_test_attach_segment_limit(1);
+DO $$
+BEGIN
+    PERFORM bm25_force_merge('force_lowered_capacity_idx');
+END
+$$;
+
+INSERT INTO force_lowered_capacity
+VALUES (10, 'capacitytoken pending spill');
+DO $$
+BEGIN
+    PERFORM bm25_force_merge('force_lowered_capacity_idx');
+END
+$$;
+
+DO $$
+DECLARE
+    summary text := bm25_summarize_index('force_lowered_capacity_idx');
+BEGIN
+    IF regexp_count(summary, 'L[0-7] Segment [0-9]+:') <> 9
+       OR summary !~ E'Memtable:\n  terms: 0\n  documents: 0' THEN
+        RAISE EXCEPTION 'lowered-capacity force merge changed topology: %',
+                        summary;
+    END IF;
+
+    IF (SELECT count(*) FROM (
+            SELECT 1 FROM force_lowered_capacity
+            ORDER BY content <@>
+                     to_bm25query('capacitytoken',
+                                  'force_lowered_capacity_idx')
+        ) ranked) <> 10 THEN
+        RAISE EXCEPTION 'lowered-capacity force merge lost documents';
+    END IF;
+END
+$$;
+
+SELECT injection_points_detach(
+           'pg-textsearch-segment-count-limit');
+RESET pg_textsearch.max_segment_size;
+DROP TABLE force_lowered_capacity CASCADE;
