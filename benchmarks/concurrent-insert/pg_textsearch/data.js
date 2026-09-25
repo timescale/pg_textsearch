@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790234986776,
+  "lastUpdate": 1790321473379,
   "repoUrl": "https://github.com/timescale/pg_textsearch",
   "entries": {
     "Concurrent INSERT (pg_textsearch)": [
@@ -10792,6 +10792,68 @@ window.BENCHMARK_DATA = {
           {
             "name": "pg_textsearch INSERT latency (c=8)",
             "value": 1.117,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tjgreen@gmail.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "810025f1f4b90e5630fa5169a4816ba395fff692",
+          "message": "Use PostgreSQL injection points for fault tests (#511)\n\n## Summary\n\nReplaces the two test-only debug GUCs with PostgreSQL injection points,\nand\nmakes an injection-enabled PostgreSQL practical in CI by caching the\nbuilds.\n\n`pg_textsearch.debug_panic_after_spill_finalize` and\n`pg_textsearch.debug_segment_count_limit` are gone. The spill-PANIC and\nsegment-capacity faults are now injection points driven by a\n`pg_textsearch_test` helper extension, which attaches PID-scoped\ncallbacks the\nsame way `src/test/modules/injection_points` does upstream. Injection\npoints\ncompile to no-ops on a server built without `--enable-injection-points`,\nso\npackaged builds carry no fault-injection code.\n\nThe cases that need a fault live in `merge_injection`,\n`compaction_injection`,\nand `force_merge_injection`. Whether they run is a build-time question,\nso the\nMakefile answers it: `enable_injection_points` from `Makefile.global`\nadds them\nto `REGRESS` and installs the helper as part of `make install`. Coverage\nis\nunchanged; the tests moved rather than disappeared.\n\n## CI\n\nA new job builds and caches PostgreSQL 17.10 and 18.4 with injection\npoints\nenabled. The PG19 beta job now enables them too, so all three versions\nrun the\nfull suite including the injection tests. The sanitizer builds use the\nsame\nconfigure option.\n\nThe sanitizer cache key previously embedded the day of month and\n`hashFiles('.github/**')`, so it rebuilt PostgreSQL roughly daily and on\nany\nunrelated workflow edit. Keys are now derived from the build recipe,\nwhich is\nextracted into `.github/scripts/`, and the standard- and\nrandomized-memory\nvariants no longer share a key.\n\n## Testing\n\n- PG17, PG18, and PG19 injection SQL and shell suites\n- full regression suites with and without injection points\n- injection suite run twice in one database to confirm teardown\n- `make format-check`, actionlint\n\n---------\n\nCo-authored-by: Todd J. Green <1738591+tjgreen42@users.noreply.github.com>",
+          "timestamp": "2026-09-24T03:18:54Z",
+          "url": "https://github.com/timescale/pg_textsearch/commit/810025f1f4b90e5630fa5169a4816ba395fff692"
+        },
+        "date": 1790321435527,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "pg_textsearch INSERT TPS (c=1)",
+            "value": 2215.196593,
+            "unit": "tps"
+          },
+          {
+            "name": "pg_textsearch INSERT latency (c=1)",
+            "value": 0.451,
+            "unit": "ms"
+          },
+          {
+            "name": "pg_textsearch INSERT TPS (c=2)",
+            "value": 3840.238044,
+            "unit": "tps"
+          },
+          {
+            "name": "pg_textsearch INSERT latency (c=2)",
+            "value": 0.521,
+            "unit": "ms"
+          },
+          {
+            "name": "pg_textsearch INSERT TPS (c=4)",
+            "value": 5672.125316,
+            "unit": "tps"
+          },
+          {
+            "name": "pg_textsearch INSERT latency (c=4)",
+            "value": 0.705,
+            "unit": "ms"
+          },
+          {
+            "name": "pg_textsearch INSERT TPS (c=8)",
+            "value": 6913.163807,
+            "unit": "tps"
+          },
+          {
+            "name": "pg_textsearch INSERT latency (c=8)",
+            "value": 1.157,
             "unit": "ms"
           }
         ]
