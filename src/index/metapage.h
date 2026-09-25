@@ -167,9 +167,9 @@ StaticAssertDecl(
 /*
  * Metapage operations
  */
-extern int tp_max_segments_per_level;
-
-extern void			   tp_init_metapage(Page page, Oid text_config_oid);
+extern void tp_init_metapage(Page page, Oid text_config_oid);
+/* Caller must hold at least BUFFER_LOCK_SHARE on the metapage buffer. */
+extern TpIndexMetaPage tp_metapage_copy_from_page(Relation index, Page page);
 extern TpIndexMetaPage tp_get_metapage(Relation index);
 extern void
 tp_check_level_count_increment(TpIndexMetaPage metap, uint32 level);

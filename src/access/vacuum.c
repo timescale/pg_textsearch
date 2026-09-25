@@ -293,33 +293,6 @@ tp_apply_vacuum_shrinkage(
 }
 
 /*
- * Spill memtable to an L0 segment.  Caller passes a minimum
- * chain-page count below which the spill is a no-op — used by
- * VACUUM cleanup and the shutdown hook to avoid producing runt
- * L0 segments on lightly-loaded indexes.  The pre-lock read is
- * a fast bailout; if it races with an insert, the worst case
- * is a harmless no-op inside tp_do_spill().
- */
-void
-tp_spill_memtable_if_needed(
-		Relation index, TpLocalIndexState *index_state, uint32 min_pages)
-{
-	/* Standby is read-only; spill is primary-only. */
-	if (RecoveryInProgress())
-		return;
-
-	if (!index_state || !index_state->shared)
-		return;
-
-	if (pg_atomic_read_u32(&index_state->shared->chain_page_count) < min_pages)
-		return;
-
-	tp_acquire_index_lock(index_state, LW_EXCLUSIVE);
-	tp_do_spill(index_state, index, NULL);
-	tp_release_index_lock(index_state);
-}
-
-/*
  * Walk all segment docmaps and call the callback for each CTID.
  * Returns an array of TpVacuumSegmentInfo with affected flags set.
  * *num_segments_out receives the total segment count.
@@ -901,13 +874,14 @@ tp_bulkdelete(
 	}
 
 	/*
-	 * Phase 1: Spill memtable so all data is in segments.  Pass
-	 * min_postings=1 to preserve existing "spill anything non-empty"
-	 * behavior for the bulkdelete path.
+	 * Phase 1: Spill memtable so all data is in segments.  Phase 2
+	 * identifies dead documents from published segments alone, so the
+	 * chain must be empty on return -- a spill that cannot run reports
+	 * the level-0 capacity limit rather than stranding dead records.
 	 */
 	index_state = tp_get_local_index_state(RelationGetRelid(info->index));
 	if (index_state != NULL)
-		tp_spill_memtable_if_needed(info->index, index_state, 1);
+		tp_spill_memtable_required(info->index, index_state, 1);
 
 	/*
 	 * Hold the per-index LWLock in shared mode across Phase 2 (identify)

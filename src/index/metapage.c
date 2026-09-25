@@ -17,6 +17,7 @@
 #include <utils/rel.h>
 
 #include "constants.h"
+#include "debug/injection.h"
 #include "index/metapage.h"
 
 /*
@@ -76,52 +77,18 @@ tp_check_level_count_increment(TpIndexMetaPage metap, uint32 level)
 				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
 				 errmsg("invalid bm25 segment level %u", level)));
 
-	if (metap->level_counts[level] >= tp_max_segments_per_level)
+	if (metap->level_counts[level] >= tp_segment_count_limit())
 		ereport(ERROR,
 				(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
 				 errmsg("bm25 segment count limit reached at level %u",
 						level)));
 }
 
-/*
- * Get Tapir index metapage
- */
-TpIndexMetaPage
-tp_get_metapage(Relation index)
+static void
+tp_validate_metapage_version(Relation index, TpIndexMetaPage metap)
 {
-	Buffer			buf;
-	Page			page;
-	TpIndexMetaPage metap;
-	TpIndexMetaPage result;
-
-	/* Validate input relation */
-	if (!RelationIsValid(index))
-		elog(ERROR, "invalid relation passed to tp_get_metapage");
-
-	buf = ReadBuffer(index, TP_METAPAGE_BLKNO);
-	if (!BufferIsValid(buf))
-	{
-		elog(ERROR,
-			 "failed to read metapage buffer for BM25 index \"%s\"",
-			 RelationGetRelationName(index));
-	}
-
-	LockBuffer(buf, BUFFER_LOCK_SHARE);
-	page = BufferGetPage(buf);
-
-	metap = (TpIndexMetaPage)PageGetContents(page);
-	if (!metap)
-	{
-		UnlockReleaseBuffer(buf);
-		elog(ERROR,
-			 "failed to get metapage contents for BM25 index \"%s\"",
-			 RelationGetRelationName(index));
-	}
-
 	/* Validate magic number */
 	if (metap->magic != TP_METAPAGE_MAGIC)
-	{
-		UnlockReleaseBuffer(buf);
 		elog(ERROR,
 			 "Tapir index metapage is corrupted for index \"%s\": expected "
 			 "magic "
@@ -129,7 +96,6 @@ tp_get_metapage(Relation index)
 			 RelationGetRelationName(index),
 			 TP_METAPAGE_MAGIC,
 			 metap->magic);
-	}
 
 	/*
 	 * Check version compatibility.
@@ -167,21 +133,30 @@ tp_get_metapage(Relation index)
 		metap->version != TP_METAPAGE_VERSION_V7 &&
 		metap->version != TP_METAPAGE_VERSION_V6)
 	{
-		uint32 found_version = metap->version;
-
-		UnlockReleaseBuffer(buf);
 		ereport(ERROR,
 				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 				 errmsg("incompatible pg_textsearch index version for "
 						"\"%s\": found %u, expected %u",
 						RelationGetRelationName(index),
-						found_version,
+						metap->version,
 						TP_METAPAGE_VERSION),
 				 errhint("This index was created by a previous release of "
 						 "pg_textsearch and uses an incompatible on-disk "
 						 "format.  Run REINDEX INDEX %s to rebuild it.",
 						 RelationGetRelationName(index))));
 	}
+}
+
+TpIndexMetaPage
+tp_metapage_copy_from_page(Relation index, Page page)
+{
+	TpIndexMetaPage metap = (TpIndexMetaPage)PageGetContents(page);
+	TpIndexMetaPage result;
+
+	Assert(RelationIsValid(index));
+	Assert(page != NULL);
+
+	tp_validate_metapage_version(index, metap);
 
 	/*
 	 * Note: a v6 metapage with a non-Invalid _unused_docid_page
@@ -201,7 +176,7 @@ tp_get_metapage(Relation index)
 	 * offsets are unrelated (PageInit zero-fill, NOT
 	 * InvalidBlockNumber = 0xFFFFFFFF).
 	 */
-	result = (TpIndexMetaPage)palloc(sizeof(TpIndexMetaPageData));
+	result = palloc0(sizeof(TpIndexMetaPageData));
 	if (metap->version == TP_METAPAGE_VERSION)
 	{
 		memcpy(result, metap, sizeof(TpIndexMetaPageData));
@@ -228,6 +203,31 @@ tp_get_metapage(Relation index)
 		result->capabilities		= 0;
 	}
 
+	return result;
+}
+
+/*
+ * Get Tapir index metapage
+ */
+TpIndexMetaPage
+tp_get_metapage(Relation index)
+{
+	Buffer			buf;
+	Page			page;
+	TpIndexMetaPage result;
+
+	if (!RelationIsValid(index))
+		elog(ERROR, "invalid relation passed to tp_get_metapage");
+
+	buf = ReadBuffer(index, TP_METAPAGE_BLKNO);
+	if (!BufferIsValid(buf))
+		elog(ERROR,
+			 "failed to read metapage buffer for BM25 index \"%s\"",
+			 RelationGetRelationName(index));
+
+	LockBuffer(buf, BUFFER_LOCK_SHARE);
+	page   = BufferGetPage(buf);
+	result = tp_metapage_copy_from_page(index, page);
 	UnlockReleaseBuffer(buf);
 	return result;
 }

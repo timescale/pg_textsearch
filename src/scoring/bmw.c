@@ -572,24 +572,22 @@ score_segment_single_term_bmw(
 
 int
 tp_score_single_term_bmw(
-		TpLocalIndexState *local_state,
-		Relation		   index,
-		TpDataSource	  *memtable_src,
-		const char		  *term,
-		float4			   idf,
-		float4			   k1,
-		float4			   b,
-		float4			   avg_doc_len,
-		int				   max_results,
-		ItemPointerData	  *result_ctids,
-		float4			  *result_scores,
-		TpBMWStats		  *stats)
+		TpLocalIndexState			 *local_state,
+		Relation					  index,
+		const TpSegmentGraphSnapshot *snapshot,
+		TpDataSource				 *memtable_src,
+		const char					 *term,
+		float4						  idf,
+		float4						  k1,
+		float4						  b,
+		float4						  avg_doc_len,
+		int							  max_results,
+		ItemPointerData				 *result_ctids,
+		float4						 *result_scores,
+		TpBMWStats					 *stats)
 {
-	TpTopKHeap		heap;
-	TpIndexMetaPage metap;
-	BlockNumber		level_heads[TP_MAX_LEVELS];
-	int				level;
-	int				result_count;
+	TpTopKHeap heap;
+	int		   result_count;
 
 	(void)local_state; /* reserved for future use */
 
@@ -604,27 +602,22 @@ tp_score_single_term_bmw(
 	score_memtable_single_term(
 			&heap, memtable_src, term, idf, k1, b, avg_doc_len, stats);
 
-	/* Get segment level heads from metapage */
-	metap = tp_get_metapage(index);
-	for (level = 0; level < TP_MAX_LEVELS; level++)
-		level_heads[level] = metap->level_heads[level];
-	pfree(metap);
-
 	/* Score each segment level with BMW */
-	for (level = 0; level < TP_MAX_LEVELS; level++)
+	for (uint32 level = 0; level < TP_MAX_LEVELS; level++)
 	{
-		BlockNumber seg_head = level_heads[level];
+		uint32			   root_count;
+		const BlockNumber *roots =
+				tp_segment_graph_snapshot_level(snapshot, level, &root_count);
 
-		while (seg_head != InvalidBlockNumber)
+		for (uint32 root_idx = 0; root_idx < root_count; root_idx++)
 		{
-			TpSegmentReader *reader = tp_segment_open(index, seg_head);
+			TpSegmentReader *reader = tp_segment_open(index, roots[root_idx]);
 
 			CHECK_FOR_INTERRUPTS();
 
 			score_segment_single_term_bmw(
 					&heap, reader, term, idf, k1, b, avg_doc_len, stats);
 
-			seg_head = reader->header->next_segment;
 			tp_segment_close(reader);
 		}
 	}
@@ -1621,28 +1614,26 @@ score_segment_multi_term_bmw(
  */
 int
 tp_score_multi_term_bmw(
-		TpLocalIndexState *local_state,
-		Relation		   index,
-		TpDataSource	  *memtable_src,
-		char			 **query_terms,
-		int				   term_count,
-		int32			  *query_freqs,
-		float4			  *idfs,
-		float4			   k1,
-		float4			   b,
-		float4			   avg_doc_len,
-		int				   max_results,
-		ItemPointerData	  *result_ctids,
-		float4			  *result_scores,
-		TpBMWStats		  *stats)
+		TpLocalIndexState			 *local_state,
+		Relation					  index,
+		const TpSegmentGraphSnapshot *snapshot,
+		TpDataSource				 *memtable_src,
+		char						**query_terms,
+		int							  term_count,
+		int32						 *query_freqs,
+		float4						 *idfs,
+		float4						  k1,
+		float4						  b,
+		float4						  avg_doc_len,
+		int							  max_results,
+		ItemPointerData				 *result_ctids,
+		float4						 *result_scores,
+		TpBMWStats					 *stats)
 {
-	TpTopKHeap		heap;
-	TpIndexMetaPage metap;
-	BlockNumber		level_heads[TP_MAX_LEVELS];
-	TpTermState	  **terms;
-	int				level;
-	int				result_count;
-	int				i;
+	TpTopKHeap	  heap;
+	TpTermState **terms;
+	int			  result_count;
+	int			  i;
 
 	(void)local_state; /* reserved for future use */
 
@@ -1667,20 +1658,16 @@ tp_score_multi_term_bmw(
 	score_memtable_multi_term(
 			&heap, memtable_src, terms, term_count, k1, b, avg_doc_len, stats);
 
-	/* Get segment level heads from metapage */
-	metap = tp_get_metapage(index);
-	for (level = 0; level < TP_MAX_LEVELS; level++)
-		level_heads[level] = metap->level_heads[level];
-	pfree(metap);
-
 	/* Score each segment with block-based BMW */
-	for (level = 0; level < TP_MAX_LEVELS; level++)
+	for (uint32 level = 0; level < TP_MAX_LEVELS; level++)
 	{
-		BlockNumber seg_head = level_heads[level];
+		uint32			   root_count;
+		const BlockNumber *roots =
+				tp_segment_graph_snapshot_level(snapshot, level, &root_count);
 
-		while (seg_head != InvalidBlockNumber)
+		for (uint32 root_idx = 0; root_idx < root_count; root_idx++)
 		{
-			TpSegmentReader *reader = tp_segment_open(index, seg_head);
+			TpSegmentReader *reader = tp_segment_open(index, roots[root_idx]);
 
 			CHECK_FOR_INTERRUPTS();
 
@@ -1694,7 +1681,6 @@ tp_score_multi_term_bmw(
 					avg_doc_len,
 					stats);
 
-			seg_head = reader->header->next_segment;
 			tp_segment_close(reader);
 		}
 	}

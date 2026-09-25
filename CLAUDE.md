@@ -159,7 +159,6 @@ make format-single FILE=path/to/file.c  # format specific file
 | `pg_textsearch.compress_segments` | Enable compression for new segment blocks | true |
 | `pg_textsearch.filtered_seed` | Seed the BM25 internal top-K from estimated filter selectivity so filtered top-k queries (`WHERE ... ORDER BY score LIMIT k`) avoid executor backoff re-drives. Results identical. | true |
 | `pg_textsearch.filtered_seed_margin` | Seed = `ceil(margin * LIMIT / selectivity)`. Higher captures the true top-k in one scoring pass more often, at the cost of scoring deeper. Range [1, 1000] | 3.0 |
-| `pg_textsearch.debug_panic_after_spill_finalize` | Trigger PANIC after spill finalize (testing only, superuser-only) | false |
 | `pg_textsearch.memtable_cache_enabled` | Serve query reads from the in-memory memtable cache instead of the on-disk chain (chain remains source of truth; standbys always use the chain) | true |
 | `pg_textsearch.log_cache_state` | Log in-memory cache apply outcomes (OK / BUDGET_EXCEEDED / cold_build / RETRY / ABORT / fall back to chain) | false |
 | `pg_textsearch.memory_limit` | Approximate shared-memory budget (KB, `PGC_SIGHUP`) for the in-memory memtable cache. Three tiers: per-index per-record growth guard (`limit/8`) → BUDGET_EXCEEDED + chain fallback before a record crosses it; global soft cap (`limit/2`) → best-effort eviction of the largest non-caller cache; the global `limit` is an approximate admission threshold → catch-up or cold-build fallback when the entry-time estimate is already at the limit. Admitted or concurrent work may increase estimated usage past the limit. `0` = unlimited. | 2 GB |
@@ -297,7 +296,9 @@ See [RELEASING.md](RELEASING.md) for release instructions.
   segments, and an existing segment that already exceeds the budget
   remains an uncombinable singleton. Published sources stay immutable
   while replacements are built; displaced pages enter deferred reclaim
-  (see #380) rather than becoming immediately reusable.
+  (see #380) rather than becoming immediately reusable. Raises
+  `lock_not_available` rather than waiting for maintenance admission or
+  exclusive index access.
 - `bm25_level_counts(idx regclass)` - Segments held at each of the eight
   LSM levels
 - `bm25_needs_compaction(idx regclass)` - Whether any level holds at
@@ -308,9 +309,14 @@ See [RELEASING.md](RELEASING.md) for release instructions.
 - `bm25_compact(idx regclass)` - Run compaction passes to completion
   under one per-index exclusive lock. Requires index ownership. A
   published pass is a physical change and is **not** undone by ROLLBACK.
+  Raises `lock_not_available` rather than waiting for maintenance
+  admission or exclusive index access; waiting can close a lock cycle
+  with concurrent index work.
 - `bm25_compact_step(idx regclass)` - Run at most one pass and report
   whether one ran, letting a caller spread a cascade over several
-  transactions. Requires index ownership.
+  transactions. Requires index ownership. Raises `lock_not_available`
+  on the same terms as `bm25_compact()`, so a `false` return always
+  means "no reducible debt", never "maintenance was busy".
 - `bm25_pending_free_pages(index_name)` - Count displaced segment pages
   currently parked in the deferred-free tombstone chain (issue #380),
   awaiting standby-safe FSM reclaim
