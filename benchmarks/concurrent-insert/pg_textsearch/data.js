@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790321473379,
+  "lastUpdate": 1790407680158,
   "repoUrl": "https://github.com/timescale/pg_textsearch",
   "entries": {
     "Concurrent INSERT (pg_textsearch)": [
@@ -10854,6 +10854,68 @@ window.BENCHMARK_DATA = {
           {
             "name": "pg_textsearch INSERT latency (c=8)",
             "value": 1.157,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tjgreen@gmail.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "6f60ae24994892494b6040cae39c047adac27f13",
+          "message": "Make segment compaction non-blocking (#472)\n\n## Summary\n\nSegment compaction previously held the per-index exclusive lock for the\nentire merge, so every writer on that index stalled for the full\nduration\nof the merge — seconds to minutes on a large index. This PR restructures\ncompaction so the expensive work happens without that lock, and only the\nfinal pointer swap is exclusive.\n\n## How it works\n\nCompaction is split into phases, and the exclusive lock is taken only\nfor\nthe last one:\n\n1. **Admission** — a private per-index *maintenance* lock serializes\n   compaction against other maintenance on the same index, without\n   blocking readers or writers. Different indexes compact concurrently.\n2. **Select / build** — sources are chosen and replacement segments are\n   built copy-on-write into freshly allocated pages. Published sources\n   stay immutable, so concurrent inserts, spills, and queries proceed\n   normally throughout.\n3. **Stamp reclaim** — displaced pages are parked in the deferred-free\n   tombstone chain stamped with the merge's `FullTransactionId` rather\n   than returned to the FSM immediately, keeping in-flight standby\n   queries safe.\n4. **Validate and publish** — the source identities captured in phase 1\nare re-validated; if a concurrent spill changed the graph, the work is\ndiscarded rather than published. Only the atomic pointer swap takes the\n   exclusive lock.\n\nCancellation or an error at any point before publication discards the\nnewly allocated pages and leaves the existing graph untouched, so an\ninterrupted compaction is never observable.\n\n## Scope\n\nCore compaction publication machinery only. VACUUM integration is\ndeliberately deferred to a follow-up so the two changes can be reviewed\nindependently.\n\n## Validation\n\n- PostgreSQL 18 clean build, 79/79 SQL regression tests, formatting\nclean\n- New `nonblocking_compaction.sh`: deterministic coverage of concurrent\n  insert/spill during an unlocked build, same-index maintenance\n  serialization, concurrent compaction of distinct indexes, the\n  publication barrier, and cancellation at each allocation point\n- New `parallel_vacuum.sh`, plus extended recovery, standby-reclaim,\n  segment, shutdown-spill, and concurrent-merge suites",
+          "timestamp": "2026-09-26T03:26:44Z",
+          "url": "https://github.com/timescale/pg_textsearch/commit/6f60ae24994892494b6040cae39c047adac27f13"
+        },
+        "date": 1790407652471,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "pg_textsearch INSERT TPS (c=1)",
+            "value": 3641.930912,
+            "unit": "tps"
+          },
+          {
+            "name": "pg_textsearch INSERT latency (c=1)",
+            "value": 0.275,
+            "unit": "ms"
+          },
+          {
+            "name": "pg_textsearch INSERT TPS (c=2)",
+            "value": 7675.692585,
+            "unit": "tps"
+          },
+          {
+            "name": "pg_textsearch INSERT latency (c=2)",
+            "value": 0.261,
+            "unit": "ms"
+          },
+          {
+            "name": "pg_textsearch INSERT TPS (c=4)",
+            "value": 11420.795624,
+            "unit": "tps"
+          },
+          {
+            "name": "pg_textsearch INSERT latency (c=4)",
+            "value": 0.35,
+            "unit": "ms"
+          },
+          {
+            "name": "pg_textsearch INSERT TPS (c=8)",
+            "value": 17860.908516,
+            "unit": "tps"
+          },
+          {
+            "name": "pg_textsearch INSERT latency (c=8)",
+            "value": 0.448,
             "unit": "ms"
           }
         ]
