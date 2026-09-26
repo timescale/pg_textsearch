@@ -136,6 +136,39 @@ VACUUM vacuum_current_inflated;
 SELECT injection_points_detach('pg-textsearch-vacuum-total-len');
 DROP TABLE vacuum_current_inflated;
 
+-- Mixed graphs fail closed when a current-format header is corrupt.
+CREATE TABLE vacuum_mixed_current_corrupt (
+    id serial PRIMARY KEY,
+    content text
+);
+CREATE INDEX vacuum_mixed_current_corrupt_idx
+    ON vacuum_mixed_current_corrupt USING bm25(content)
+    WITH (text_config = 'english', compaction = 'off');
+INSERT INTO vacuum_mixed_current_corrupt (content)
+VALUES ('legacy mixed document one'), ('legacy mixed document two');
+SELECT pg_textsearch_test_attach_legacy_segment(8);
+SELECT bm25_spill_index('vacuum_mixed_current_corrupt_idx') > 0
+    AS mixed_legacy_created;
+SELECT injection_points_detach('pg-textsearch-legacy-segment');
+
+INSERT INTO vacuum_mixed_current_corrupt (content)
+VALUES ('current mixed document three'), ('current mixed document four');
+SELECT pg_textsearch_test_attach_v5_segment_total_len(1);
+SELECT bm25_spill_index('vacuum_mixed_current_corrupt_idx') > 0
+    AS mixed_current_created;
+SELECT injection_points_detach('pg-textsearch-v5-segment-total-len');
+
+VACUUM vacuum_mixed_current_corrupt;
+SELECT bm25_summarize_index('vacuum_mixed_current_corrupt_idx')
+           ~ E'total_docs: 4\n'
+       AND bm25_summarize_index('vacuum_mixed_current_corrupt_idx')
+           ~ E'total_len: 16\n'
+    AS mixed_corruption_preserved_totals;
+SELECT bm25_dump_index('vacuum_mixed_current_corrupt_idx')
+           LIKE '%Version: 4%'
+    AS mixed_corruption_preserved_legacy;
+DROP TABLE vacuum_mixed_current_corrupt;
+
 CREATE TABLE vacuum_mixed_no_dead (
     id serial PRIMARY KEY,
     content text

@@ -196,6 +196,63 @@ injection_points_detach
 
 (1 row)
 DROP TABLE vacuum_current_inflated;
+-- Mixed graphs fail closed when a current-format header is corrupt.
+CREATE TABLE vacuum_mixed_current_corrupt (
+    id serial PRIMARY KEY,
+    content text
+);
+CREATE INDEX vacuum_mixed_current_corrupt_idx
+    ON vacuum_mixed_current_corrupt USING bm25(content)
+    WITH (text_config = 'english', compaction = 'off');
+INSERT INTO vacuum_mixed_current_corrupt (content)
+VALUES ('legacy mixed document one'), ('legacy mixed document two');
+SELECT pg_textsearch_test_attach_legacy_segment(8);
+pg_textsearch_test_attach_legacy_segment
+
+(1 row)
+SELECT bm25_spill_index('vacuum_mixed_current_corrupt_idx') > 0
+    AS mixed_legacy_created;
+mixed_legacy_created
+t
+(1 row)
+SELECT injection_points_detach('pg-textsearch-legacy-segment');
+injection_points_detach
+
+(1 row)
+INSERT INTO vacuum_mixed_current_corrupt (content)
+VALUES ('current mixed document three'), ('current mixed document four');
+SELECT pg_textsearch_test_attach_v5_segment_total_len(1);
+pg_textsearch_test_attach_v5_segment_total_len
+
+(1 row)
+SELECT bm25_spill_index('vacuum_mixed_current_corrupt_idx') > 0
+    AS mixed_current_created;
+mixed_current_created
+t
+(1 row)
+SELECT injection_points_detach('pg-textsearch-v5-segment-total-len');
+injection_points_detach
+
+(1 row)
+VACUUM vacuum_mixed_current_corrupt;
+ERROR:  current segment token statistics are inconsistent
+HINT:  Run REINDEX INDEX public.vacuum_mixed_current_corrupt_idx to rebuild the index.
+CONTEXT:  while cleaning up index "vacuum_mixed_current_corrupt_idx" of relation "public.vacuum_mixed_current_corrupt"
+SELECT bm25_summarize_index('vacuum_mixed_current_corrupt_idx')
+           ~ E'total_docs: 4\n'
+       AND bm25_summarize_index('vacuum_mixed_current_corrupt_idx')
+           ~ E'total_len: 16\n'
+    AS mixed_corruption_preserved_totals;
+mixed_corruption_preserved_totals
+t
+(1 row)
+SELECT bm25_dump_index('vacuum_mixed_current_corrupt_idx')
+           LIKE '%Version: 4%'
+    AS mixed_corruption_preserved_legacy;
+mixed_corruption_preserved_legacy
+t
+(1 row)
+DROP TABLE vacuum_mixed_current_corrupt;
 CREATE TABLE vacuum_mixed_no_dead (
     id serial PRIMARY KEY,
     content text

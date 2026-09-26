@@ -41,6 +41,7 @@
 #include "memtable/page.h"
 #include "segment/alive_bitset.h"
 #include "segment/compaction.h"
+#include "segment/dictionary.h"
 #include "segment/graph_snapshot.h"
 #include "segment/io.h"
 #include "segment/segment.h"
@@ -278,6 +279,83 @@ tp_count_live_docs(
 }
 
 /*
+ * Sum exact term frequencies from a current-format segment.
+ * This is an exceptional consistency check, so it favors a complete
+ * posting walk over trusting the header value under investigation.
+ */
+static uint64
+tp_vacuum_measure_current_segment_tokens(
+		Relation index, BlockNumber root_block)
+{
+	TpSegmentReader *reader;
+	TpDictionary	 dictionary;
+	uint32			*string_offsets;
+	uint64			 total_tokens = 0;
+
+	reader = tp_segment_open_ex(index, root_block, false);
+	if (reader == NULL || reader->header == NULL)
+		ereport(ERROR,
+				(errcode(ERRCODE_DATA_CORRUPTED),
+				 errmsg("could not open current segment at block %u",
+						root_block)));
+
+	if (reader->header->num_terms == 0)
+	{
+		tp_segment_close(reader);
+		return 0;
+	}
+
+	tp_segment_read(
+			reader,
+			reader->header->dictionary_offset,
+			&dictionary,
+			sizeof(dictionary.num_terms));
+	if (dictionary.num_terms != reader->header->num_terms)
+		ereport(ERROR,
+				(errcode(ERRCODE_DATA_CORRUPTED),
+				 errmsg("current segment dictionary count is inconsistent")));
+
+	string_offsets = palloc(sizeof(uint32) * dictionary.num_terms);
+	tp_segment_read(
+			reader,
+			reader->header->dictionary_offset + sizeof(dictionary.num_terms),
+			string_offsets,
+			sizeof(uint32) * dictionary.num_terms);
+
+	for (uint32 i = 0; i < dictionary.num_terms; i++)
+	{
+		TpSegmentPostingIterator iterator;
+		TpSegmentPosting		*posting;
+		char					*term;
+
+		term = tp_segment_read_term_at_index(
+				reader, reader->header, string_offsets, i);
+		if (!tp_segment_posting_iterator_init(&iterator, reader, term))
+			ereport(ERROR,
+					(errcode(ERRCODE_DATA_CORRUPTED),
+					 errmsg("could not read current segment term")));
+
+		while (tp_segment_posting_iterator_next(&iterator, &posting))
+		{
+			if (pg_add_u64_overflow(
+						total_tokens,
+						(uint64)posting->frequency,
+						&total_tokens))
+				ereport(ERROR,
+						(errcode(ERRCODE_DATA_CORRUPTED),
+						 errmsg("current segment token statistics overflow")));
+		}
+
+		tp_segment_posting_iterator_free(&iterator);
+		pfree(term);
+	}
+
+	pfree(string_offsets);
+	tp_segment_close(reader);
+	return total_tokens;
+}
+
+/*
  * Walk all segment docmaps and call the callback for each CTID.
  * Returns an array of TpVacuumSegmentInfo with affected flags set.
  * *num_segments_out receives the total segment count.
@@ -401,6 +479,9 @@ tp_vacuum_identify_affected(
 
 					if (!identification_paused)
 					{
+						if (IsInParallelMode() && !IsParallelWorker())
+							TP_INJECTION_POINT(
+									TP_INJECTION_PARALLEL_VACUUM_LEADER_ESTIMATE);
 						TP_INJECTION_POINT(
 								TP_INJECTION_COMPACTION_SOURCE_ESTIMATE);
 						identification_paused = true;
@@ -903,6 +984,26 @@ tp_bulkdelete_internal(
 		legacy_segments_remaining	   = 0;
 		if (!header_totals_match_metap && legacy_segment_count > 0)
 		{
+			for (int i = 0; i < num_segments; i++)
+			{
+				uint64 measured_tokens;
+
+				if (!segments[i].is_v5)
+					continue;
+
+				measured_tokens = tp_vacuum_measure_current_segment_tokens(
+						info->index, segments[i].root_block);
+				if (measured_tokens != segments[i].total_tokens)
+					ereport(ERROR,
+							(errcode(ERRCODE_DATA_CORRUPTED),
+							 errmsg("current segment token statistics are "
+									"inconsistent"),
+							 errhint("Run REINDEX INDEX %s to rebuild the "
+									 "index.",
+									 tp_vacuum_reindex_hint_name(
+											 info->index))));
+			}
+
 			/*
 			 * Individual legacy contributions are unknowable once their
 			 * aggregate disagrees with the metapage.  Rebuild every legacy

@@ -15,10 +15,26 @@ export PATH="${PGBINDIR}:${PATH}"
 TEST_PORT=55461
 TEST_DB=parallel_vacuum_test
 DATA_DIR="${SCRIPT_DIR}/../tmp_parallel_vacuum"
-SOCKET_DIR="${REPO_ROOT}/.parallel_vacuum_sock"
+SOCKET_DIR=
 LOGFILE="${DATA_DIR}/postgres.log"
 MODE="${1:-normal}"
 PRELOAD_LIBRARIES=pg_textsearch
+
+cleanup() {
+    local exit_code=$?
+
+    trap - EXIT INT TERM
+    if [ -f "${DATA_DIR}/postmaster.pid" ]; then
+        pg_ctl stop -D "${DATA_DIR}" -m immediate >/dev/null 2>&1 || true
+    fi
+    rm -rf "${DATA_DIR}"
+    if [ -n "${SOCKET_DIR}" ]; then
+        rm -rf "${SOCKET_DIR}"
+    fi
+    exit "${exit_code}"
+}
+
+trap cleanup EXIT INT TERM
 
 if [ "${MODE}" = "injection" ]; then
     [ -f "$("${PG_CONFIG}" --pkglibdir)/injection_points.so" ] ||
@@ -29,21 +45,10 @@ if [ "${MODE}" = "injection" ]; then
     PRELOAD_LIBRARIES='pg_textsearch,injection_points'
 fi
 
-cleanup() {
-    local exit_code=$?
+SOCKET_DIR="$(mktemp -d /tmp/pgts-parallel-vacuum.XXXXXX)"
 
-    trap - EXIT INT TERM
-    if [ -f "${DATA_DIR}/postmaster.pid" ]; then
-        pg_ctl stop -D "${DATA_DIR}" -m immediate >/dev/null 2>&1 || true
-    fi
-    rm -rf "${DATA_DIR}" "${SOCKET_DIR}"
-    exit "${exit_code}"
-}
-
-trap cleanup EXIT INT TERM
-
-rm -rf "${DATA_DIR}" "${SOCKET_DIR}"
-mkdir -p "${DATA_DIR}" "${SOCKET_DIR}"
+rm -rf "${DATA_DIR}"
+mkdir -p "${DATA_DIR}"
 
 initdb -D "${DATA_DIR}" --auth-local=trust --auth-host=trust \
     >/dev/null 2>&1

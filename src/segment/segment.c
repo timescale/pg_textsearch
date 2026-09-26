@@ -1763,6 +1763,9 @@ tp_write_segment(
 		}
 		else
 		{
+			uint64 v5_total_tokens = tp_injected_v5_segment_total_len(
+					header.total_tokens);
+
 			existing_header->strings_offset		 = header.strings_offset;
 			existing_header->entries_offset		 = header.entries_offset;
 			existing_header->postings_offset	 = header.postings_offset;
@@ -1773,7 +1776,7 @@ tp_write_segment(
 			existing_header->alive_bitset_offset = header.alive_bitset_offset;
 			existing_header->alive_count		 = header.alive_count;
 			existing_header->num_docs			 = header.num_docs;
-			existing_header->total_tokens		 = header.total_tokens;
+			existing_header->total_tokens		 = v5_total_tokens;
 			existing_header->data_size			 = header.data_size;
 			existing_header->num_pages			 = header.num_pages;
 			existing_header->page_index			 = header.page_index;

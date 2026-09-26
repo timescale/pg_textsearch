@@ -235,8 +235,6 @@ index_stat() {
         sed -n "s/^  ${field}: \\([0-9][0-9]*\\)$/\\1/p"
 }
 
-# The panic fires inside a parallel vacuum worker, so the attached
-# condition matches the leader pid through the worker's lock group.
 trigger_legacy_vacuum_panic() {
     local prefix=$1
     local point=$2
@@ -264,6 +262,67 @@ trigger_legacy_vacuum_panic() {
     log_contains "panic triggered for injection point ${point}" ||
         error "${prefix}: missing PANIC marker for ${point}"
     restart_primary
+}
+
+test_parallel_worker_pid_matching() {
+    local output
+    local postmaster_pid
+    local rc
+
+    if [ "${HAS_INJECTION_POINTS}" -ne 1 ]; then
+        log "Skipping parallel worker PID matching: no injection points"
+        return
+    fi
+
+    log "Testing parallel worker injection matching..."
+    primary_sql "
+        SET pg_textsearch.memtable_pages_threshold = 0;
+        SET pg_textsearch.bulk_load_threshold = 0;
+        CREATE TABLE worker_match_docs (
+            id bigint GENERATED ALWAYS AS IDENTITY,
+            body text NOT NULL
+        ) WITH (autovacuum_enabled = false);
+        CREATE INDEX worker_match_a_idx
+            ON worker_match_docs USING bm25(body)
+            WITH (text_config = 'english', compaction = 'off');
+        CREATE INDEX worker_match_b_idx
+            ON worker_match_docs USING bm25(body)
+            WITH (text_config = 'english', compaction = 'off');
+        INSERT INTO worker_match_docs (body)
+        SELECT 'parallel worker matching document ' || gs
+          FROM generate_series(1, 20000) gs;
+        DELETE FROM worker_match_docs WHERE id <= 5000;
+        CHECKPOINT;
+    " >/dev/null
+
+    postmaster_pid=$(head -1 "${PRIMARY_DIR}/postmaster.pid")
+    set +e
+    output=$(PGOPTIONS="-c min_parallel_index_scan_size=0" \
+        timeout 30s psql -X -v ON_ERROR_STOP=1 \
+        -p "${PRIMARY_PORT}" -d "${TEST_DB}" \
+        -c "SELECT pg_textsearch_test_attach_worker_panic(
+                'pg-textsearch-compaction-source-estimate');" \
+        -c "SELECT injection_points_set_local();
+            SELECT injection_points_attach(
+                'pg-textsearch-parallel-vacuum-leader-estimate',
+                'wait');" \
+        -c "VACUUM (PARALLEL 1, VERBOSE) worker_match_docs;" 2>&1)
+    rc=$?
+    set -e
+
+    [ "${rc}" -ne 0 ] ||
+        error "parallel worker matching VACUUM survived the panic: ${output}"
+    [ "${rc}" -ne 124 ] ||
+        error "timed out waiting for parallel worker panic: ${output}"
+    grep -q "launched 1 parallel vacuum worker" <<<"${output}" ||
+        error "parallel worker matching did not launch a worker: ${output}"
+    wait_for_postmaster_exit "${postmaster_pid}" "worker_match"
+    log_contains \
+        "parallel worker panic triggered for injection point pg-textsearch-compaction-source-estimate" ||
+        error "parallel worker did not match its lock group leader"
+    restart_primary
+    primary_sql "DROP TABLE worker_match_docs;" >/dev/null
+    log "PASS: parallel worker matched its lock group leader"
 }
 
 assert_legacy_vacuum_recovery() {
@@ -545,6 +604,7 @@ EOF
         -l "${PRIMARY_DIR}/postgres.log" -m fast -w
 
     test_publication_crash_recovery
+    test_parallel_worker_pid_matching
     test_legacy_vacuum_crash_recovery
     test_standby_guards
     log "Compaction recovery tests PASSED"

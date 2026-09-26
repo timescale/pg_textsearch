@@ -346,6 +346,11 @@ only for root snapshots and brief validated publication; document
 identification, bitmap work, and dead-memtable reclaim remain unlocked from
 readers, inserts, and spills.
 
+When legacy and current segments disagree with the metapage token total,
+VACUUM verifies each current segment by summing its posting frequencies before
+attributing the residual to legacy headers. A current-format mismatch fails
+closed with a REINDEX hint before any replacement is published.
+
 Dead-memtable reclaim first records the currently reachable chain, then
 inspects pages under their buffer locks. A racing spill can only make that
 reachable set conservative, retaining pages until a later VACUUM. Live and

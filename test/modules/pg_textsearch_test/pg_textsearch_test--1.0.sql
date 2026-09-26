@@ -5,6 +5,12 @@ RETURNS void
 AS 'MODULE_PATHNAME', 'pg_textsearch_test_attach_panic'
 LANGUAGE C PARALLEL UNSAFE;
 
+CREATE FUNCTION pg_textsearch_test_attach_worker_panic(
+    point text DEFAULT NULL)
+RETURNS void
+AS 'MODULE_PATHNAME', 'pg_textsearch_test_attach_worker_panic'
+LANGUAGE C PARALLEL UNSAFE;
+
 CREATE FUNCTION pg_textsearch_test_attach_segment_limit(limit_value integer)
 RETURNS void
 AS 'MODULE_PATHNAME', 'pg_textsearch_test_attach_segment_limit'
@@ -18,6 +24,12 @@ LANGUAGE C STRICT PARALLEL UNSAFE;
 CREATE FUNCTION pg_textsearch_test_attach_legacy_segment(total_tokens bigint)
 RETURNS void
 AS 'MODULE_PATHNAME', 'pg_textsearch_test_attach_legacy_segment'
+LANGUAGE C STRICT PARALLEL UNSAFE;
+
+CREATE FUNCTION pg_textsearch_test_attach_v5_segment_total_len(
+    total_tokens bigint)
+RETURNS void
+AS 'MODULE_PATHNAME', 'pg_textsearch_test_attach_v5_segment_total_len'
 LANGUAGE C STRICT PARALLEL UNSAFE;
 
 CREATE FUNCTION pg_textsearch_test_attach_vacuum_total_len(
