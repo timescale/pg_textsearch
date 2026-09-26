@@ -27,6 +27,8 @@
 #include "index/state.h"
 #include "memtable/chain_source.h"
 #include "memtable/page.h"
+#include "segment/compaction.h"
+#include "segment/format.h"
 #include "segment/graph_snapshot.h"
 #include "segment/io.h"
 #include "segment/segment.h"

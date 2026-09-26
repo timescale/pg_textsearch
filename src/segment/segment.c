@@ -28,6 +28,7 @@
 #include <utils/timestamp.h>
 
 #include "debug/dump.h"
+#include "debug/injection.h"
 #include "index/freepage.h"
 #include "index/metapage.h"
 #include "index/state.h"
@@ -1725,6 +1726,7 @@ tp_write_segment(
 	 */
 	{
 		GenericXLogState *xlog_state;
+		uint64			  legacy_total_tokens;
 
 		header_buf = ReadBuffer(index, header_block);
 		LockBuffer(header_buf, BUFFER_LOCK_EXCLUSIVE);
@@ -1733,20 +1735,52 @@ tp_write_segment(
 		header_page = GenericXLogRegisterBuffer(xlog_state, header_buf, 0);
 
 		existing_header = (TpSegmentHeader *)PageGetContents(header_page);
-		existing_header->strings_offset		 = header.strings_offset;
-		existing_header->entries_offset		 = header.entries_offset;
-		existing_header->postings_offset	 = header.postings_offset;
-		existing_header->skip_index_offset	 = header.skip_index_offset;
-		existing_header->fieldnorm_offset	 = header.fieldnorm_offset;
-		existing_header->ctid_pages_offset	 = header.ctid_pages_offset;
-		existing_header->ctid_offsets_offset = header.ctid_offsets_offset;
-		existing_header->alive_bitset_offset = header.alive_bitset_offset;
-		existing_header->alive_count		 = header.alive_count;
-		existing_header->num_docs			 = header.num_docs;
-		existing_header->total_tokens		 = header.total_tokens;
-		existing_header->data_size			 = header.data_size;
-		existing_header->num_pages			 = header.num_pages;
-		existing_header->page_index			 = header.page_index;
+		if (tp_injected_legacy_segment(&legacy_total_tokens))
+		{
+			TpSegmentHeaderV4 legacy = {
+					.magic				 = header.magic,
+					.version			 = TP_SEGMENT_FORMAT_VERSION_4,
+					.created_at			 = header.created_at,
+					.num_pages			 = header.num_pages,
+					.data_size			 = header.data_size,
+					.level				 = header.level,
+					.next_segment		 = header.next_segment,
+					.dictionary_offset	 = header.dictionary_offset,
+					.strings_offset		 = header.strings_offset,
+					.entries_offset		 = header.entries_offset,
+					.postings_offset	 = header.postings_offset,
+					.skip_index_offset	 = header.skip_index_offset,
+					.fieldnorm_offset	 = header.fieldnorm_offset,
+					.ctid_pages_offset	 = header.ctid_pages_offset,
+					.ctid_offsets_offset = header.ctid_offsets_offset,
+					.num_terms			 = header.num_terms,
+					.num_docs			 = header.num_docs,
+					.total_tokens		 = legacy_total_tokens,
+					.page_index			 = header.page_index,
+			};
+
+			memcpy(existing_header, &legacy, sizeof(legacy));
+		}
+		else
+		{
+			uint64 v5_total_tokens = tp_injected_v5_segment_total_len(
+					header.total_tokens);
+
+			existing_header->strings_offset		 = header.strings_offset;
+			existing_header->entries_offset		 = header.entries_offset;
+			existing_header->postings_offset	 = header.postings_offset;
+			existing_header->skip_index_offset	 = header.skip_index_offset;
+			existing_header->fieldnorm_offset	 = header.fieldnorm_offset;
+			existing_header->ctid_pages_offset	 = header.ctid_pages_offset;
+			existing_header->ctid_offsets_offset = header.ctid_offsets_offset;
+			existing_header->alive_bitset_offset = header.alive_bitset_offset;
+			existing_header->alive_count		 = header.alive_count;
+			existing_header->num_docs			 = header.num_docs;
+			existing_header->total_tokens		 = v5_total_tokens;
+			existing_header->data_size			 = header.data_size;
+			existing_header->num_pages			 = header.num_pages;
+			existing_header->page_index			 = header.page_index;
+		}
 
 		GenericXLogFinish(xlog_state);
 		UnlockReleaseBuffer(header_buf);

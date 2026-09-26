@@ -38,6 +38,7 @@
 
 #include "access/am.h"
 #include "constants.h"
+#include "debug/injection.h"
 #include "index/metapage.h"
 #include "index/registry.h"
 #include "index/source.h"
@@ -1266,6 +1267,7 @@ tp_acquire_index_lock(TpLocalIndexState *local_state, LWLockMode mode)
 	else
 	{
 		pg_atomic_fetch_add_u32(&local_state->shared->exclusive_waiters, 1);
+		TP_INJECTION_POINT(TP_INJECTION_INDEX_LOCK_EXCLUSIVE_WAITER);
 	}
 
 	PG_TRY();

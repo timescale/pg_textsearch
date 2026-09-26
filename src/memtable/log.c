@@ -49,6 +49,7 @@
 
 #include "compat.h"
 #include "constants.h"
+#include "debug/injection.h"
 #include "index/freepage.h"
 #include "index/metapage.h"
 #include "index/resolve.h"
@@ -211,6 +212,7 @@ memtable_extend_and_append(
 	TpIndexMetaPage	  metap;
 	GenericXLogState *xlog_state;
 
+	TP_INJECTION_POINT(TP_INJECTION_MEMTABLE_EXTEND);
 	newbuf = tp_memtable_alloc_page(rel);
 	newblk = BufferGetBlockNumber(newbuf);
 
