@@ -253,6 +253,13 @@ BEGIN
         END IF;
     END LOOP;
 
+    -- Runtime inline policy performs one bounded pass per spill.  Explicitly
+    -- drain the remaining cascade to construct the terminal-level fixtures.
+    PERFORM bm25_compact('force_l7_deep_idx'::regclass);
+    PERFORM bm25_compact('force_l7_single_idx'::regclass);
+    PERFORM bm25_compact('force_l7_mixed_idx'::regclass);
+    PERFORM bm25_compact('force_l7_memtable_idx'::regclass);
+
     INSERT INTO force_l7_mixed (content) VALUES ('mixed lower filler');
     PERFORM bm25_spill_index('force_l7_mixed_idx');
     INSERT INTO force_l7_memtable (content) VALUES ('memtable pending filler');

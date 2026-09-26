@@ -117,6 +117,7 @@ SET pg_textsearch.log_scores = false;
 -- =============================================================================
 
 SET pg_textsearch.log_bmw_stats = true;
+SET enable_seqscan = off;
 
 -- Single-term query
 SELECT count(*) FROM (
@@ -130,6 +131,7 @@ SELECT count(*) FROM (
     ORDER BY content <@> to_bm25query('hello world', 'coverage_idx')
 ) sub;
 
+SET enable_seqscan = on;
 SET pg_textsearch.log_bmw_stats = false;
 
 -- =============================================================================

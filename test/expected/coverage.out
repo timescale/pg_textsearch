@@ -148,6 +148,7 @@ SET pg_textsearch.log_scores = false;
 -- Test 8: BMW stats logging (exercises score.c bmw_stats path)
 -- =============================================================================
 SET pg_textsearch.log_bmw_stats = true;
+SET enable_seqscan = off;
 -- Single-term query
 SELECT count(*) FROM (
     SELECT 1 FROM coverage_docs
@@ -155,7 +156,7 @@ SELECT count(*) FROM (
 ) sub;
  count 
 -------
-   105
+     1
 (1 row)
 
 -- Multi-term query
@@ -165,9 +166,10 @@ SELECT count(*) FROM (
 ) sub;
  count 
 -------
-   105
+     1
 (1 row)
 
+SET enable_seqscan = on;
 SET pg_textsearch.log_bmw_stats = false;
 -- =============================================================================
 -- Test 9: AM handler property callbacks (exercises handler.c tp_property)

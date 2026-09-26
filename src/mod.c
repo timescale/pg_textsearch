@@ -63,8 +63,10 @@
 #include "index/metapage.h"
 #include "index/registry.h"
 #include "index/state.h"
+#include "memtable/log.h"
 #include "planner/hooks.h"
 #include "scoring/bm25.h"
+#include "segment/compaction.h"
 #include "segment/graph_snapshot.h"
 
 #if PG_VERSION_NUM >= 180000

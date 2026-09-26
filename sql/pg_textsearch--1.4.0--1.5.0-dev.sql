@@ -31,7 +31,7 @@ AS 'MODULE_PATHNAME', 'tp_compact_index'
 LANGUAGE C VOLATILE STRICT;
 
 COMMENT ON FUNCTION @extschema@.bm25_compact(regclass) IS
-    'Run threshold compaction to completion under one per-index exclusive lock. Passes already published are not undone by ROLLBACK, so a cascade that errors partway leaves its earlier passes applied.';
+    'Run threshold compaction to completion, yielding per-index maintenance admission between passes. Published passes are not undone by ROLLBACK, so a cascade that errors partway leaves its earlier passes applied.';
 
 CREATE FUNCTION @extschema@.bm25_compact_step(idx regclass)
 RETURNS boolean
@@ -62,26 +62,15 @@ REVOKE ALL ON FUNCTION
     @extschema@.bm25_background_target_is_current(oid, oid, oid, oid, oid)
     FROM PUBLIC;
 
--- VOLATILE because it reads live metapage state, and PARALLEL
--- RESTRICTED to match bm25_level_counts.  Every level counts: the top
--- level compacts into itself, so its debt is reducible like any
--- other's.
+-- VOLATILE because it runs the compaction planner against live
+-- metapage state, and PARALLEL RESTRICTED to match bm25_level_counts.
 CREATE FUNCTION @extschema@.bm25_needs_compaction(idx regclass)
 RETURNS boolean
-LANGUAGE sql VOLATILE STRICT PARALLEL RESTRICTED
-SET search_path = pg_catalog, pg_temp
-AS $$
-    SELECT EXISTS (
-        SELECT 1
-        FROM pg_catalog.unnest(
-                 @extschema@.bm25_level_counts(idx)) AS cnt
-        WHERE cnt >= pg_catalog.current_setting(
-                  'pg_textsearch.segments_per_level')::int
-    );
-$$;
+AS 'MODULE_PATHNAME', 'tp_needs_compaction'
+LANGUAGE C VOLATILE STRICT PARALLEL RESTRICTED;
 
 COMMENT ON FUNCTION @extschema@.bm25_needs_compaction(regclass) IS
-    'Report whether any level holds at least segments_per_level segments. Advisory only: a level whose segments are all over budget is reported as full even though bm25_compact_step has no way to reduce it, so this must not be used on its own as a retry condition.';
+    'Report whether bm25_compact_step would run a pass on this index. A level that holds segments_per_level segments but cannot be reduced -- every candidate group exceeds max_segment_size -- reports false, so this is safe as a retry condition.';
 
 ALTER OPERATOR FAMILY @extschema@.text_bm25_ops USING bm25
     ADD OPERATOR 1 pg_catalog.@@ (text, pg_catalog.tsquery);

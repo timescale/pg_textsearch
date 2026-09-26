@@ -95,7 +95,8 @@ PG_CPPFLAGS += -Wno-unknown-warning-option -Wno-clobbered -Wno-packed-not-aligne
 # Test configuration
 REGRESS = abort aerodocs basic binary_io bmw bmw_skip_advance boolean_queries bulk_load cache_apply cache_memory_cap cache_source cache_spill catalog_stats chain_source compaction compaction_request compression concurrent_build coverage deletion vacuum vacuum_bitmap vacuum_extended vacuum_rebuild dropped empty explicit_index expression_index filtered_seed force_merge implicit index inheritance large_documents limits lock manyterms memory memtable_append memtable_page memtable_spill memtable_spill_dead memtable_reclaim merge mixed parallel_build parallel_bmw partitioned partitioned_many partial_index pgstats queries quoted_identifiers rescan rls schema scoring1 scoring2 scoring3 scoring4 scoring5 scoring6 security security_acl segment segment_integrity segment_reclaim tombstone_reuse tombstone_recover strings temp_table text_array text_config unsupported updates vector vector_v1_rejected unlogged_index wand
 INJECTION_REGRESS = merge_injection compaction_injection \
-	force_merge_injection
+	compaction_error_injection \
+	force_merge_injection segment_reclaim_injection
 REGRESS_OPTS = --inputdir=test --outputdir=test
 
 PG_CONFIG ?= pg_config
@@ -125,6 +126,9 @@ test-injection-sql:
 test-injection-shell:
 	@cd test/scripts && ./inline_compaction_locking.sh injection
 	@cd test/scripts && ./crash_safety_spill.sh
+	@cd test/scripts && ./nonblocking_compaction.sh
+	@cd test/scripts && ./compaction_recovery.sh
+	@cd test/scripts && ./standby_reclaim.sh
 else
 install-test-injection test-injection-sql test-injection-shell:
 	@echo "PostgreSQL injection points are disabled; skipping $@"
@@ -188,6 +192,9 @@ test-rls-locking:
 	@echo "Running RLS DDL locking tests..."
 	@cd test/scripts && ./rls_ddl_locking.sh
 
+test-nonblocking-compaction:
+	@cd test/scripts && ./nonblocking_compaction.sh
+
 test-standalone-snapshot:
 	@cd test/scripts && ./standalone_snapshot.sh
 
@@ -195,6 +202,7 @@ test-concurrency: test-rls-locking
 	@echo "Running concurrency tests..."
 	@cd test/scripts && ./standalone_snapshot.sh
 	@cd test/scripts && ./inline_compaction_locking.sh
+	@cd test/scripts && ./parallel_vacuum.sh
 	@cd test/scripts && ./concurrency.sh
 	@cd test/scripts && ./boolean_concurrent_merge.sh
 	@cd test/scripts && ./partial_concurrent_read.sh
@@ -205,7 +213,6 @@ test-recovery:
 	@echo "Running crash recovery tests..."
 	@cd test/scripts && ./recovery.sh
 	@cd test/scripts && ./shutdown_spill.sh
-	@cd test/scripts && ./standby_reclaim.sh
 	@cd test/scripts && ./compaction_recovery.sh
 
 test-segment:
@@ -231,7 +238,9 @@ test-chinese:
 # Replication tests (not in test-shell: each spawns two Postgres instances)
 test-replication:
 	@echo "Running physical replication tests..."
-	@cd test/scripts && ./replication.sh
+	@cd test/scripts && TMPDIR=.. REPL_HOST=127.0.0.1 \
+	    REPL_SOCKET_DIR= ./replication.sh
+	@cd test/scripts && ./standby_reclaim.sh
 
 test-logical-replication:
 	@echo "Running logical replication tests..."
@@ -251,6 +260,7 @@ test-replication-extended:
 	    replication_spill_paths.sh \
 	    replication_memtable_dead_reclaim.sh \
 	    replication_segment_reclaim.sh \
+	    standby_reclaim.sh \
 	    wal_audit.sh"; \
 	failed=""; \
 	for s in $$scripts; do \
@@ -277,7 +287,7 @@ test-reindex:
 test-shell: test-concurrency test-recovery test-segment test-cic test-multi-index test-reindex
 	@echo "All shell-based tests completed"
 
-test-all: test test-shell
+test-all: test test-shell test-replication
 	@echo "All tests (SQL regression + shell scripts) completed successfully"
 
 # Generate expected output files from current test results
@@ -417,8 +427,9 @@ help:
 	@echo "  make test         - Run source guard and SQL regression tests"
 	@echo "  make installcheck - Run SQL regression tests"
 	@echo "  make test-local   - Run tests with dedicated PostgreSQL instance"
-	@echo "  make test-all     - Run all tests (SQL regression + shell scripts)"
-	@echo "  make test-shell   - Run shell-based tests (all shell scripts)"
+	@echo "  make test-all     - Run SQL, default shell, and replication tests"
+	@echo "  make test-shell   - Run default shell tests (excludes replication)"
+	@echo "  make test-nonblocking-compaction - Run compaction overlap tests (needs injection points)"
 	@echo "  make test-concurrency - Run concurrency tests"
 	@echo "  make test-recovery    - Run crash recovery tests"
 	@echo "  make test-segment     - Run multi-backend segment tests"
@@ -455,7 +466,7 @@ help:
 	test-durable \
 	test-injection-sql test-injection-shell install-test-injection \
 	clean-test-dirs installcheck test-rls-locking test-concurrency \
-	test-standalone-snapshot \
+	test-standalone-snapshot test-nonblocking-compaction \
 	test-recovery test-segment test-stress test-cic test-chinese \
 	test-replication test-replication-extended \
 	test-logical-replication test-multi-index test-reindex \

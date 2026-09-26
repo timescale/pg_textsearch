@@ -118,46 +118,12 @@ jobs:
         rm -rf tmp_check_shared
 
     - name: Run shell-based tests
-      timeout-minutes: 25
+      timeout-minutes: 35
       run: |
         export PATH="/usr/lib/postgresql/${{ matrix.pg_version }}/bin:$PATH"
 
-        # concurrency.sh and segment.sh manage their own PostgreSQL instances
-        echo "Running spill-time inline compaction locking tests..."
-        if (cd test/scripts && ./inline_compaction_locking.sh); then
-          echo "✓ Spill-time inline compaction locking tests passed"
-        else
-          echo "✗ Spill-time inline compaction locking tests failed"
-          exit 1
-        fi
-        echo "Running concurrency tests..."
-        if (cd test/scripts && ./concurrency.sh); then
-          echo "✓ Concurrency tests passed"
-        else
-          echo "✗ Concurrency tests failed"
-          exit 1
-        fi
-        echo "Running Boolean spill and merge concurrency tests..."
-        if (cd test/scripts && ./boolean_concurrent_merge.sh); then
-          echo "✓ Boolean spill and merge concurrency tests passed"
-        else
-          echo "✗ Boolean spill and merge concurrency tests failed"
-          exit 1
-        fi
-        echo "Running VACUUM concurrency tests..."
-        if (cd test/scripts && ./vacuum_concurrent_merge.sh); then
-          echo "✓ VACUUM concurrency tests passed"
-        else
-          echo "✗ VACUUM concurrency tests failed"
-          exit 1
-        fi
-        echo "Running concurrent duplicate-read tests..."
-        if (cd test/scripts && ./concurrent_duplicate_read.sh); then
-          echo "✓ Concurrent duplicate-read tests passed"
-        else
-          echo "✗ Concurrent duplicate-read tests failed"
-          exit 1
-        fi
+        make test-concurrency
+
         echo "Running segment tests..."
         if (cd test/scripts && ./segment.sh); then
           echo "✓ Segment tests passed"
@@ -275,13 +241,15 @@ jobs:
   injection-points:
     name: PG${{ matrix.pg }} Injection Points
     runs-on: ubuntu-22.04
-    timeout-minutes: 30
+    timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
         pg: ["17.10", "18.4"]
     env:
       PGPREFIX: /tmp/postgresql
+      # Instrument one leg only; both run the same tests.
+      COVERAGE_PG: "17.10"
 
     steps:
     - uses: actions/checkout@v4
@@ -289,7 +257,7 @@ jobs:
     - name: Install build dependencies
       run: |
         sudo apt-get update
-        sudo apt-get install -y bison build-essential curl flex
+        sudo apt-get install -y bison build-essential curl flex lcov
 
     - name: Cache injection-enabled PostgreSQL
       id: pg-cache
@@ -315,11 +283,17 @@ jobs:
       run: |
         export PATH="$PGPREFIX/bin:$PATH"
         make clean
-        make PG_CFLAGS="-Werror -Wno-error=unused-parameter"
+        warnflags="-Werror -Wno-error=unused-parameter"
+        if [ "${{ matrix.pg }}" = "$COVERAGE_PG" ]; then
+          make PG_CFLAGS="$warnflags --coverage -O0 -g" \
+               SHLIB_LINK="--coverage"
+        else
+          make PG_CFLAGS="$warnflags"
+        fi
         make install
 
     - name: Run injection-point tests
-      timeout-minutes: 15
+      timeout-minutes: 35
       run: |
         export PATH="$PGPREFIX/bin:$PATH"
         cluster="$RUNNER_TEMP/pg_textsearch-injection"
@@ -339,6 +313,31 @@ jobs:
         pg_ctl stop -D "$cluster" -m fast -w
         trap - EXIT
         make test-injection-shell
+
+    - name: Capture coverage data
+      if: matrix.pg == '17.10'
+      run: |
+        # ubuntu-22.04 ships lcov 1.x, so only its error classes are
+        # available here; the main coverage job runs lcov 2.x.
+        lcov --capture \
+             --directory . \
+             --output-file coverage.info \
+             --base-directory "$PWD" \
+             --no-external \
+             --ignore-errors gcov,source,graph
+        lcov --remove coverage.info '*/test/*' \
+             --output-file coverage.info
+        lcov --list coverage.info
+
+    - name: Upload coverage to Codecov
+      if: matrix.pg == '17.10'
+      uses: codecov/codecov-action@v5
+      with:
+        token: ${{ secrets.CODECOV_TOKEN }}
+        files: ./coverage.info
+        flags: injection
+        fail_ci_if_error: true
+        verbose: true
 
 
   build-test-multiple-configs:
@@ -431,7 +430,7 @@ jobs:
         make install
 
     - name: Run regression tests
-      timeout-minutes: 15
+      timeout-minutes: 25
       run: |
         export PATH="$PGPREFIX/bin:$PATH"
         rm -rf tmp_check_shared
@@ -984,12 +983,14 @@ jobs:
         pg_ctl start -D tmp_check_shared/data -l tmp_check_shared/data/logfile -w
 
     - name: Run shell-based tests
-      timeout-minutes: 10
+      timeout-minutes: 20
       run: |
         export PATH="/usr/lib/postgresql/17/bin:$PATH"
         # Run all shell-based tests for coverage.
         # Each spawns its own Postgres instance; the coverage-
         # instrumented .so writes gcda data to the build dir.
+        # Scripts that require an injection-point server are covered by
+        # the PG17 leg of the injection-points job instead.
         (cd test/scripts && ./concurrency.sh) || true
         (cd test/scripts && ./segment.sh) || true
         (cd test/scripts && ./recovery.sh) || true
@@ -998,6 +999,8 @@ jobs:
         (cd test/scripts && ./shutdown_spill.sh) || true
         (cd test/scripts && ./cic.sh) || true
         (cd test/scripts && ./multi_index.sh) || true
+        (cd test/scripts && ./parallel_vacuum.sh) || true
+        (cd test/scripts && ./vacuum_concurrent_merge.sh) || true
         (cd test/scripts && ./replication.sh) || true
         (cd test/scripts && ./replication_spill_paths.sh) || true
         (cd test/scripts && ./replication_segment_reclaim.sh) || true

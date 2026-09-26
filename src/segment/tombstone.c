@@ -9,11 +9,13 @@
 #include <access/generic_xlog.h>
 #include <miscadmin.h>
 #include <storage/bufmgr.h>
+#include <storage/indexfsm.h>
 
 #include "constants.h"
 #include "index/freepage.h"
 #include "index/metapage.h"
 #include "index/state.h"
+#include "segment/compaction.h"
 #include "segment/io.h"
 #include "segment/tombstone.h"
 
@@ -51,96 +53,121 @@ tp_tombstone_page_is_valid(Page page)
 		   t->num_blocks <= TP_TOMBSTONE_CAPACITY;
 }
 
-/*
- * Allocate one index page for a tombstone page.  With use_fsm, reuse
- * a recyclable free page from the FSM (skipping any live-structure
- * block the non-crash-safe FSM offers); otherwise extend the
- * relation.  The page is fully overwritten by the GenericXLog image
- * below, so its prior contents are irrelevant.
- */
-static BlockNumber
-tombstone_alloc_page(Relation index, bool use_fsm)
+static void
+tombstone_write_page(
+		Relation		   index,
+		BlockNumber		   block,
+		const BlockNumber *blocks,
+		uint32			   start,
+		uint32			   count,
+		FullTransactionId  merged_fxid,
+		BlockNumber		   next_page)
 {
-	Buffer		buffer;
-	BlockNumber block;
+	volatile Buffer buf				 = InvalidBuffer;
+	GenericXLogState *volatile state = NULL;
 
-	if (use_fsm)
-		return tp_fsm_claim_or_extend_block(index);
+	PG_TRY();
+	{
+		Page			page;
+		TpTombstonePage t;
 
-	buffer = ReadBufferExtended(
-			index, MAIN_FORKNUM, P_NEW, RBM_ZERO_AND_LOCK, NULL);
-	block = BufferGetBlockNumber(buffer);
-	UnlockReleaseBuffer(buffer);
-	return block;
+		buf = ReadBuffer(index, block);
+		LockBuffer(buf, BUFFER_LOCK_EXCLUSIVE);
+
+		state = GenericXLogStart(index);
+		page  = GenericXLogRegisterBuffer(
+				 (GenericXLogState *)state, buf, GENERIC_XLOG_FULL_IMAGE);
+
+		tp_tombstone_page_init(page, merged_fxid, next_page);
+		t			  = tp_tombstone_page(page);
+		t->num_blocks = count;
+		for (uint32 i = 0; i < count; i++)
+			t->blocks[i] = blocks[start + i];
+
+		GenericXLogFinish((GenericXLogState *)state);
+		state = NULL;
+		UnlockReleaseBuffer(buf);
+		buf = InvalidBuffer;
+	}
+	PG_CATCH();
+	{
+		if (state != NULL)
+			GenericXLogAbort((GenericXLogState *)state);
+		if (BufferIsValid(buf))
+		{
+			if (InterruptHoldoffCount == 0)
+				HOLD_INTERRUPTS();
+			UnlockReleaseBuffer(buf);
+		}
+		PG_RE_THROW();
+	}
+	PG_END_TRY();
 }
 
-static BlockNumber
-tombstone_enqueue_internal(
-		Relation		  index,
-		BlockNumber		 *blocks,
-		uint32			  num_blocks,
-		FullTransactionId merged_fxid,
-		BlockNumber		  old_head,
-		bool			  use_fsm)
+static void
+tombstone_build_internal(
+		Relation				  index,
+		const BlockNumber		 *blocks,
+		uint32					  num_blocks,
+		FullTransactionId		  merged_fxid,
+		BlockNumber				  next_page,
+		TpDetachedTombstoneBatch *batch)
 {
-	BlockNumber batch_head = old_head;
-	uint32		remaining  = num_blocks;
+	uint32 remaining = num_blocks;
+	uint32 capacity;
+
+	Assert(batch != NULL);
+	memset(batch, 0, sizeof(*batch));
+	batch->head = InvalidBlockNumber;
+	batch->tail = InvalidBlockNumber;
 
 	if (num_blocks == 0)
-		return old_head;
+		return;
+
+	capacity = num_blocks / TP_TOMBSTONE_CAPACITY +
+			   (num_blocks % TP_TOMBSTONE_CAPACITY != 0);
+	batch->owned_pages = palloc(sizeof(BlockNumber) * capacity);
 
 	/*
 	 * Build the batch tail-first so each page's next_page points at
-	 * an already-decided successor: the first page we write links to
-	 * old_head, and each subsequent page links to the previous one.
-	 * batch_head ends up at the last page written.
+	 * an already-decided successor.  Active construction is always
+	 * detached, so the first page terminates at InvalidBlockNumber.
 	 *
 	 * Per-page chunking honors TP_TOMBSTONE_CAPACITY.  We assign the
 	 * LAST chunk of `blocks` to the first page, walking backwards.
 	 */
 	while (remaining > 0)
 	{
-		uint32			  chunk = Min(remaining, TP_TOMBSTONE_CAPACITY);
-		uint32			  start = remaining - chunk;
-		BlockNumber		  blk	= tombstone_alloc_page(index, use_fsm);
-		GenericXLogState *state;
-		Buffer			  buf;
-		Page			  page;
-		TpTombstonePage	  t;
-		uint32			  k;
+		uint32		chunk = Min(remaining, TP_TOMBSTONE_CAPACITY);
+		uint32		start = remaining - chunk;
+		BlockNumber blk	  = tp_fsm_claim_or_extend_block(index);
 
-		buf = ReadBuffer(index, blk);
-		LockBuffer(buf, BUFFER_LOCK_EXCLUSIVE);
+		Assert(batch->owned_count < capacity);
+		batch->owned_pages[batch->owned_count++] = blk;
+		tp_compaction_allocation_injection_point(
+				TP_COMPACTION_ALLOCATION_TOMBSTONE);
 
-		state = GenericXLogStart(index);
-		page  = GenericXLogRegisterBuffer(state, buf, GENERIC_XLOG_FULL_IMAGE);
+		tombstone_write_page(
+				index, blk, blocks, start, chunk, merged_fxid, next_page);
 
-		tp_tombstone_page_init(page, merged_fxid, batch_head);
-		t			  = tp_tombstone_page(page);
-		t->num_blocks = chunk;
-		for (k = 0; k < chunk; k++)
-			t->blocks[k] = blocks[start + k];
-
-		GenericXLogFinish(state);
-		UnlockReleaseBuffer(buf);
-
-		batch_head = blk;
-		remaining  = start;
+		if (batch->tail == InvalidBlockNumber)
+			batch->tail = blk;
+		batch->head = blk;
+		next_page	= blk;
+		remaining	= start;
 	}
-
-	return batch_head;
 }
 
-BlockNumber
-tp_tombstone_enqueue(
-		Relation		  index,
-		BlockNumber		 *blocks,
-		uint32			  num_blocks,
-		FullTransactionId merged_fxid,
-		BlockNumber		  old_head)
+void
+tp_tombstone_build_detached(
+		Relation				  index,
+		const BlockNumber		 *blocks,
+		uint32					  num_blocks,
+		FullTransactionId		  merged_fxid,
+		TpDetachedTombstoneBatch *batch)
 {
-	return tombstone_enqueue_internal(
-			index, blocks, num_blocks, merged_fxid, old_head, true);
+	tombstone_build_internal(
+			index, blocks, num_blocks, merged_fxid, InvalidBlockNumber, batch);
 }
 
 BlockNumber
@@ -151,8 +178,167 @@ tp_tombstone_enqueue_extend(
 		FullTransactionId merged_fxid,
 		BlockNumber		  old_head)
 {
-	return tombstone_enqueue_internal(
-			index, blocks, num_blocks, merged_fxid, old_head, false);
+	volatile TpDetachedTombstoneBatch batch;
+
+	if (num_blocks == 0)
+		return old_head;
+
+	memset((TpDetachedTombstoneBatch *)&batch, 0, sizeof(batch));
+	PG_TRY();
+	{
+		tombstone_build_internal(
+				index,
+				blocks,
+				num_blocks,
+				merged_fxid,
+				old_head,
+				(TpDetachedTombstoneBatch *)&batch);
+	}
+	PG_CATCH();
+	{
+		tp_tombstone_discard_detached(
+				index, *(TpDetachedTombstoneBatch *)&batch);
+		PG_RE_THROW();
+	}
+	PG_END_TRY();
+	if (batch.owned_pages != NULL)
+		pfree((BlockNumber *)batch.owned_pages);
+	return batch.head;
+}
+
+void
+tp_tombstone_restamp_batch(
+		Relation				 index,
+		TpDetachedTombstoneBatch batch,
+		FullTransactionId		 merged_fxid)
+{
+	for (uint32 i = 0; i < batch.owned_count; i++)
+	{
+		volatile Buffer buf				 = InvalidBuffer;
+		GenericXLogState *volatile state = NULL;
+
+		PG_TRY();
+		{
+			Page			page;
+			TpTombstonePage tombstone;
+
+			buf = ReadBuffer(index, batch.owned_pages[i]);
+			LockBuffer(buf, BUFFER_LOCK_EXCLUSIVE);
+
+			state = GenericXLogStart(index);
+			page  = GenericXLogRegisterBuffer(
+					 (GenericXLogState *)state, buf, 0);
+			if (!tp_tombstone_page_is_valid(page))
+				ereport(ERROR,
+						(errcode(ERRCODE_DATA_CORRUPTED),
+						 errmsg("pg_textsearch: corrupt detached tombstone "
+								"page %u in index \"%s\"",
+								batch.owned_pages[i],
+								RelationGetRelationName(index))));
+
+			tombstone			   = tp_tombstone_page(page);
+			tombstone->merged_fxid = merged_fxid;
+
+			GenericXLogFinish((GenericXLogState *)state);
+			state = NULL;
+			UnlockReleaseBuffer(buf);
+			buf = InvalidBuffer;
+		}
+		PG_CATCH();
+		{
+			if (state != NULL)
+				GenericXLogAbort((GenericXLogState *)state);
+			if (BufferIsValid(buf))
+			{
+				if (InterruptHoldoffCount == 0)
+					HOLD_INTERRUPTS();
+				UnlockReleaseBuffer(buf);
+			}
+			PG_RE_THROW();
+		}
+		PG_END_TRY();
+	}
+}
+
+Buffer
+tp_tombstone_attach_detached(
+		GenericXLogState		*state,
+		Relation				 index,
+		TpDetachedTombstoneBatch batch,
+		BlockNumber				 old_head,
+		bool					 allow_invalid_stamp)
+{
+	volatile Buffer buf = InvalidBuffer;
+
+	Assert(state != NULL);
+
+	if (batch.owned_count == 0)
+	{
+		Assert(batch.head == InvalidBlockNumber);
+		Assert(batch.tail == InvalidBlockNumber);
+		return InvalidBuffer;
+	}
+
+	Assert(batch.head != InvalidBlockNumber);
+	Assert(batch.tail != InvalidBlockNumber);
+
+	PG_TRY();
+	{
+		Page			page;
+		TpTombstonePage t;
+
+		buf = ReadBuffer(index, batch.tail);
+		LockBuffer(buf, BUFFER_LOCK_EXCLUSIVE);
+		page = GenericXLogRegisterBuffer(state, buf, 0);
+
+		if (!tp_tombstone_page_is_valid(page))
+			ereport(ERROR,
+					(errcode(ERRCODE_DATA_CORRUPTED),
+					 errmsg("pg_textsearch: corrupt detached tombstone tail "
+							"page %u in index \"%s\"",
+							batch.tail,
+							RelationGetRelationName(index))));
+
+		t = tp_tombstone_page(page);
+		if (t->next_page != InvalidBlockNumber)
+			ereport(ERROR,
+					(errcode(ERRCODE_DATA_CORRUPTED),
+					 errmsg("pg_textsearch: detached tombstone tail page %u "
+							"is already attached",
+							batch.tail)));
+		if (!allow_invalid_stamp && !FullTransactionIdIsValid(t->merged_fxid))
+			ereport(ERROR,
+					(errcode(ERRCODE_INTERNAL_ERROR),
+					 errmsg("detached tombstone batch has no publication "
+							"reclaim stamp")));
+
+		t->next_page = old_head;
+	}
+	PG_CATCH();
+	{
+		if (BufferIsValid(buf))
+		{
+			if (InterruptHoldoffCount == 0)
+				HOLD_INTERRUPTS();
+			UnlockReleaseBuffer(buf);
+		}
+		PG_RE_THROW();
+	}
+	PG_END_TRY();
+
+	return (Buffer)buf;
+}
+
+void
+tp_tombstone_discard_detached(Relation index, TpDetachedTombstoneBatch batch)
+{
+	for (uint32 i = 0; i < batch.owned_count; i++)
+		tp_record_free_index_page(index, batch.owned_pages[i]);
+
+	if (batch.owned_count > 0)
+		IndexFreeSpaceMapVacuum(index);
+	if (batch.owned_pages != NULL)
+		pfree(batch.owned_pages);
 }
 
 /*
@@ -241,17 +427,21 @@ tp_tombstone_drain(
 
 	for (;;)
 	{
-		BlockNumber	 nblocks;
-		BlockNumber	 prev = InvalidBlockNumber;
-		BlockNumber	 cur;
-		BlockNumber	 victim		   = InvalidBlockNumber;
-		BlockNumber	 victim_prev   = InvalidBlockNumber;
-		BlockNumber	 victim_next   = InvalidBlockNumber;
-		BlockNumber *victim_blocks = NULL;
-		uint32		 victim_count  = 0;
-		bool		 corrupt	   = false;
-		BlockNumber	 corrupt_at	   = InvalidBlockNumber;
-		BlockNumber	 corrupt_prev  = InvalidBlockNumber;
+		BlockNumber		  nblocks;
+		BlockNumber		  prev = InvalidBlockNumber;
+		BlockNumber		  cur;
+		BlockNumber		  victim			 = InvalidBlockNumber;
+		BlockNumber		  victim_prev		 = InvalidBlockNumber;
+		BlockNumber		  victim_next		 = InvalidBlockNumber;
+		BlockNumber		 *unstamped_pages	 = NULL;
+		uint32			  unstamped_count	 = 0;
+		uint32			  unstamped_capacity = 0;
+		BlockNumber		 *victim_blocks		 = NULL;
+		uint32			  victim_count		 = 0;
+		FullTransactionId victim_fxid		 = InvalidFullTransactionId;
+		bool			  corrupt			 = false;
+		BlockNumber		  corrupt_at		 = InvalidBlockNumber;
+		BlockNumber		  corrupt_prev		 = InvalidBlockNumber;
 
 		CHECK_FOR_INTERRUPTS();
 
@@ -288,6 +478,40 @@ tp_tombstone_drain(
 			}
 
 			t = tp_tombstone_page(page);
+			if (!FullTransactionIdIsValid(t->merged_fxid))
+			{
+				/*
+				 * Collect the whole contiguous unstamped run;
+				 * restamping one page per chain walk is quadratic
+				 * in the number of tombstones.
+				 */
+				BlockNumber next = t->next_page;
+
+				if (unstamped_count == unstamped_capacity)
+				{
+					unstamped_capacity = unstamped_capacity == 0
+											   ? 8
+											   : unstamped_capacity * 2;
+					unstamped_pages =
+							unstamped_pages == NULL
+									? palloc(sizeof(BlockNumber) *
+											 unstamped_capacity)
+									: repalloc(
+											  unstamped_pages,
+											  sizeof(BlockNumber) *
+													  unstamped_capacity);
+				}
+				unstamped_pages[unstamped_count++] = cur;
+				UnlockReleaseBuffer(buf);
+				cur = next;
+				continue;
+			}
+			if (unstamped_count > 0)
+			{
+				/* Run ended; restamp it before considering a victim. */
+				UnlockReleaseBuffer(buf);
+				break;
+			}
 			if (FullTransactionIdPrecedes(t->merged_fxid, horizon))
 			{
 				uint32 k;
@@ -296,6 +520,7 @@ tp_tombstone_drain(
 				victim_prev	  = prev;
 				victim_next	  = t->next_page;
 				victim_count  = t->num_blocks;
+				victim_fxid	  = t->merged_fxid;
 				victim_blocks = palloc(
 						sizeof(BlockNumber) * Max(victim_count, 1));
 				for (k = 0; k < victim_count; k++)
@@ -324,6 +549,23 @@ tp_tombstone_drain(
 			prev = cur;
 			cur	 = t->next_page;
 			UnlockReleaseBuffer(buf);
+		}
+
+		if (unstamped_count > 0)
+		{
+			TpDetachedTombstoneBatch batch;
+
+			memset(&batch, 0, sizeof(batch));
+			batch.head		  = unstamped_pages[0];
+			batch.tail		  = unstamped_pages[unstamped_count - 1];
+			batch.owned_pages = unstamped_pages;
+			batch.owned_count = unstamped_count;
+			tp_tombstone_restamp_batch(
+					index, batch, ReadNextFullTransactionId());
+			pfree(unstamped_pages);
+			if (own_lock)
+				tp_release_index_lock(state);
+			continue;
 		}
 
 		/*
@@ -369,18 +611,19 @@ tp_tombstone_drain(
 			break; /* nothing left to drain */
 		}
 
+		tp_log_page_reuse_conflict(
+				index,
+				victim_count > 0 ? victim_blocks[0] : victim,
+				victim_fxid);
+
 		/* Unlink first (corruption-safe; a crash here only leaks). */
 		tombstone_unlink(index, victim_prev, victim, victim_next);
 
 		/*
-		 * Free under the same lock as the unlink.  Once unlinked the
-		 * blocks are invisible to tp_tombstone_max_used_block(), so
-		 * tp_truncate_dead_pages() (bm25_force_merge, same lock) could
-		 * truncate below them, leaving these frees to read past EOF or
-		 * to stamp a block that a truncate plus re-extension already
-		 * handed to a live structure.  Freeing before the unlink is no
-		 * better: a still-chained tombstone's blocks could be claimed
-		 * from the FSM, then freed again by a later drain.
+		 * Free under the same lock as the unlink so no other index
+		 * mutation observes an intermediate state.  Freeing before the
+		 * unlink is unsafe: a still-chained tombstone's blocks could be
+		 * claimed from the FSM, then freed again by a later drain.
 		 *
 		 * No CHECK_FOR_INTERRUPTS here — the tombstone is already
 		 * unlinked, so erroring part-way strands the rest.  The loop
@@ -414,12 +657,10 @@ tp_pending_free_block_count(Relation index)
 	BlockNumber cur	  = tp_tombstone_read_head(index);
 
 	/*
-	 * Caller must hold the per-index LWLock in shared mode so a
-	 * concurrent drain/enqueue can't recycle a tombstone page mid-walk
-	 * (see tp_pending_free_pages in dump.c).  Under that lock an
-	 * invalid page can only mean real corruption, so we ERROR like the
-	 * sibling walkers tp_tombstone_drain / tp_tombstone_max_used_block
-	 * rather than silently returning a short count.
+	 * Caller must hold the per-index LWLock in shared mode so a concurrent
+	 * drain/enqueue can't recycle a tombstone page mid-walk (see
+	 * tp_pending_free_pages in dump.c).  Under that lock an invalid page
+	 * means real corruption, so ERROR rather than return a short count.
 	 */
 	while (cur != InvalidBlockNumber)
 	{
@@ -451,53 +692,4 @@ tp_pending_free_block_count(Relation index)
 	}
 
 	return total;
-}
-
-BlockNumber
-tp_tombstone_max_used_block(Relation index)
-{
-	BlockNumber max_used = 0;
-	BlockNumber cur		 = tp_tombstone_read_head(index);
-
-	while (cur != InvalidBlockNumber)
-	{
-		Buffer			buf;
-		Page			page;
-		TpTombstonePage t;
-		BlockNumber		next;
-		uint32			k;
-
-		CHECK_FOR_INTERRUPTS();
-
-		buf = ReadBuffer(index, cur);
-		LockBuffer(buf, BUFFER_LOCK_SHARE);
-		page = BufferGetPage(buf);
-		if (!tp_tombstone_page_is_valid(page))
-		{
-			UnlockReleaseBuffer(buf);
-			ereport(ERROR,
-					(errcode(ERRCODE_DATA_CORRUPTED),
-					 errmsg("pg_textsearch: corrupt tombstone page %u "
-							"in index \"%s\"",
-							cur,
-							RelationGetRelationName(index))));
-		}
-
-		t = tp_tombstone_page(page);
-
-		/* The tombstone page itself must survive truncation. */
-		if (cur + 1 > max_used)
-			max_used = cur + 1;
-
-		/* So must every displaced block it parks. */
-		for (k = 0; k < t->num_blocks; k++)
-			if (t->blocks[k] + 1 > max_used)
-				max_used = t->blocks[k] + 1;
-
-		next = t->next_page;
-		UnlockReleaseBuffer(buf);
-		cur = next;
-	}
-
-	return max_used;
 }

@@ -194,6 +194,43 @@ tp_level_counts(PG_FUNCTION_ARGS)
 	PG_RETURN_ARRAYTYPE_P(result);
 }
 
+PG_FUNCTION_INFO_V1(tp_needs_compaction);
+
+Datum
+tp_needs_compaction(PG_FUNCTION_ARGS)
+{
+	Oid				   indexoid = PG_GETARG_OID(0);
+	Relation		   index_rel;
+	TpLocalIndexState *index_state;
+	bool			   available;
+
+	index_rel	= tp_open_bm25_index(indexoid, AccessShareLock, false);
+	index_state = tp_get_local_index_state(indexoid);
+	if (index_state == NULL)
+	{
+		char *relname = pstrdup(RelationGetRelationName(index_rel));
+
+		relation_close(index_rel, AccessShareLock);
+		ereport(ERROR,
+				(errcode(ERRCODE_INTERNAL_ERROR),
+				 errmsg("could not get index state for \"%s\"", relname)));
+	}
+
+	PG_TRY();
+	{
+		available = tp_compaction_pass_available(index_state, index_rel);
+	}
+	PG_FINALLY();
+	{
+		if (index_state->lock_held)
+			tp_release_index_lock(index_state);
+		relation_close(index_rel, AccessShareLock);
+	}
+	PG_END_TRY();
+
+	PG_RETURN_BOOL(available);
+}
+
 PG_FUNCTION_INFO_V1(tp_compact_index);
 
 Datum
@@ -202,6 +239,7 @@ tp_compact_index(PG_FUNCTION_ARGS)
 	Oid				   indexoid = PG_GETARG_OID(0);
 	Relation		   index_rel;
 	TpLocalIndexState *index_state;
+	volatile bool	   pass_ran;
 
 	if (RecoveryInProgress())
 		ereport(ERROR,
@@ -224,17 +262,28 @@ tp_compact_index(PG_FUNCTION_ARGS)
 				 errmsg("could not get index state for \"%s\"", relname)));
 	}
 
-	tp_require_compaction_admission(index_rel);
 	PG_TRY();
 	{
-		tp_require_index_lock_admission(index_state, index_rel);
-		tp_maybe_compact_level(index_state, index_rel, 0);
+		do
+		{
+			tp_compaction_lock(index_rel);
+			PG_TRY(_pass);
+			{
+				pass_ran = tp_compact_step(index_state, index_rel);
+			}
+			PG_FINALLY(_pass);
+			{
+				if (index_state->lock_held)
+					tp_release_index_lock(index_state);
+				tp_compaction_unlock(index_rel);
+			}
+			PG_END_TRY(_pass);
+
+			CHECK_FOR_INTERRUPTS();
+		} while (pass_ran);
 	}
 	PG_FINALLY();
 	{
-		if (index_state->lock_held)
-			tp_release_index_lock(index_state);
-		tp_compaction_unlock(index_rel);
 		relation_close(index_rel, RowExclusiveLock);
 	}
 	PG_END_TRY();
@@ -273,10 +322,9 @@ tp_compact_index_step(PG_FUNCTION_ARGS)
 				 errmsg("could not get index state for \"%s\"", relname)));
 	}
 
-	tp_require_compaction_admission(index_rel);
+	tp_compaction_lock(index_rel);
 	PG_TRY();
 	{
-		tp_require_index_lock_admission(index_state, index_rel);
 		pass_ran = tp_compact_step(index_state, index_rel);
 	}
 	PG_FINALLY();
@@ -319,6 +367,11 @@ tp_compact_index_step_if_current(PG_FUNCTION_ARGS)
 
 	PreventCommandIfReadOnly("bm25 index compaction");
 
+	/*
+	 * A dispatched worker defers instead of queueing: the schedule brings
+	 * it back, and a blocked worker would hold its slot and transaction
+	 * open for the length of an unrelated VACUUM or compaction.
+	 */
 	if (!tp_try_compaction_lock(index_rel))
 	{
 		relation_close(index_rel, RowExclusiveLock);
@@ -330,9 +383,10 @@ tp_compact_index_step_if_current(PG_FUNCTION_ARGS)
 		Relation current_rel;
 
 		/*
-		 * The captured target can change while this worker waits for
-		 * same-index maintenance.  Process relcache invalidations and repeat
-		 * the complete physical-target and background-policy validation.
+		 * ALTER OWNER, ALTER INDEX, or REINDEX may complete between the
+		 * captured target and admission.  Reopen without taking another
+		 * relation lock so relcache invalidations are processed, then
+		 * repeat the complete physical-target check.
 		 */
 		current_rel = tp_open_current_bm25_target(&target, NoLock, true, true);
 		if (current_rel == NULL)
@@ -347,10 +401,7 @@ tp_compact_index_step_if_current(PG_FUNCTION_ARGS)
 						 errmsg("could not get index state for \"%s\"",
 								RelationGetRelationName(index_rel))));
 
-			if (tp_try_acquire_index_lock(index_state, LW_EXCLUSIVE))
-				pass_ran = tp_compact_step(index_state, index_rel);
-			else
-				pass_ran = false;
+			pass_ran = tp_compact_step(index_state, index_rel);
 		}
 	}
 	PG_FINALLY();

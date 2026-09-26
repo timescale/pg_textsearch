@@ -224,6 +224,12 @@ extern void tp_dump_segment_to_output(
 /* Page index writing (used by segment_merge.c) */
 extern BlockNumber
 write_page_index(Relation index, BlockNumber *pages, uint32 num_pages);
+extern BlockNumber write_page_index_tracked(
+		Relation	  index,
+		BlockNumber	 *pages,
+		uint32		  num_pages,
+		BlockNumber **owned_pages,
+		uint32		 *owned_count);
 
 /* Page reclamation for segment compaction */
 extern uint32 tp_segment_collect_pages(
