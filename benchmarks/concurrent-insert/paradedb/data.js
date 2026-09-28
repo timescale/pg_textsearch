@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790494262486,
+  "lastUpdate": 1790581811636,
   "repoUrl": "https://github.com/timescale/pg_textsearch",
   "entries": {
     "Concurrent INSERT (ParadeDB)": [
@@ -10916,6 +10916,68 @@ window.BENCHMARK_DATA = {
           {
             "name": "ParadeDB INSERT latency (c=8)",
             "value": 0.694,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tjgreen@gmail.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "710976a5250535d9c950395e54bf5cc85d89e240",
+          "message": "Make VACUUM segment maintenance nonblocking (#503)\n\n## Summary\n\nVACUUM previously did its segment maintenance while holding the\nper-index\nexclusive lock, so dead-document identification, alive-bitmap mutation,\nand\ndead-page reclaim all blocked readers and writers for the duration. This\nmoves that work onto the copy-on-write publication path, leaving the\nexclusive lock held only for root snapshots and the brief validated\npublish.\n\n## How it works\n\n- **Bulk delete** snapshots the segment roots under a short lock,\nidentifies\n  dead documents and mutates alive bitmaps unlocked, then validates and\n  publishes. Readers, inserts, and spills continue throughout.\n- **Cleanup** unlinks emptied segments and scans the fork to reclaim\nDEAD\nmemtable pages. Reclaim first records the reachable chain and then\ninspects\n  pages under their buffer locks, so a racing spill can only make the\nreachable set conservative — a contended page is simply retained for a\nlater\n  VACUUM rather than freed unsafely.\n- **Ordering against compaction** is symmetric: whichever is admitted\nfirst\nruns, and the other either builds from the updated alive bits or\ndiscovers\nthe published output before applying deaths. This prevents both\nresurrection\n  of deleted documents and mutation through stale document IDs.\n- **Reclaim safety** keeps `dead_fxid` stamping, so a retired page\ncannot\nreach the FSM before old primary snapshots — or feedback-protected\nstandby\n  snapshots — are past it.\n- **Legacy statistics repair**: segments written before corpus\nstatistics were\ntracked are detected and corrected in place rather than being left to\nskew\n  BM25 scoring.\n\nParallel VACUUM can persist a zero-alive bitmap but cannot assign the\nreclaim\nXID needed to unlink it, so a later serial VACUUM or ordinary compaction\nnow\nprioritizes removing zero-alive segments even below the normal\ncompaction\nthreshold.\n\n## Validation\n\n- PostgreSQL 18 clean build, 79/79 SQL regression tests, formatting\nclean\n- New `vacuum_rebuild` regression test covering rebuild,\nlegacy-statistic\n  repair, and zero-alive segment removal\n- Extended `parallel_vacuum.sh`, `vacuum_concurrent_merge.sh`, and\n  `compaction_recovery.sh`\n- Deterministic nonblocking-compaction and inline-locking suites",
+          "timestamp": "2026-09-28T00:17:56Z",
+          "url": "https://github.com/timescale/pg_textsearch/commit/710976a5250535d9c950395e54bf5cc85d89e240"
+        },
+        "date": 1790581767286,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "ParadeDB INSERT TPS (c=1)",
+            "value": 2482.582579,
+            "unit": "tps"
+          },
+          {
+            "name": "ParadeDB INSERT latency (c=1)",
+            "value": 0.403,
+            "unit": "ms"
+          },
+          {
+            "name": "ParadeDB INSERT TPS (c=2)",
+            "value": 4853.282079,
+            "unit": "tps"
+          },
+          {
+            "name": "ParadeDB INSERT latency (c=2)",
+            "value": 0.412,
+            "unit": "ms"
+          },
+          {
+            "name": "ParadeDB INSERT TPS (c=4)",
+            "value": 7444.330821,
+            "unit": "tps"
+          },
+          {
+            "name": "ParadeDB INSERT latency (c=4)",
+            "value": 0.537,
+            "unit": "ms"
+          },
+          {
+            "name": "ParadeDB INSERT TPS (c=8)",
+            "value": 11255.383025,
+            "unit": "tps"
+          },
+          {
+            "name": "ParadeDB INSERT latency (c=8)",
+            "value": 0.711,
             "unit": "ms"
           }
         ]
