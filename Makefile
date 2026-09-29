@@ -128,6 +128,7 @@ test-injection-shell:
 	@cd test/scripts && ./inline_compaction_locking.sh injection
 	@cd test/scripts && ./crash_safety_spill.sh
 	@cd test/scripts && ./nonblocking_compaction.sh
+	@cd test/scripts && ./nonblocking_spill.sh
 	@cd test/scripts && ./compaction_recovery.sh
 	@cd test/scripts && ./parallel_vacuum.sh injection
 	@cd test/scripts && ./standby_reclaim.sh
@@ -196,6 +197,9 @@ test-rls-locking:
 
 test-nonblocking-compaction:
 	@cd test/scripts && ./nonblocking_compaction.sh
+
+test-nonblocking-spill:
+	@cd test/scripts && ./nonblocking_spill.sh
 
 test-standalone-snapshot:
 	@cd test/scripts && ./standalone_snapshot.sh
@@ -469,6 +473,7 @@ help:
 	test-injection-sql test-injection-shell install-test-injection \
 	clean-test-dirs installcheck test-rls-locking test-concurrency \
 	test-standalone-snapshot test-nonblocking-compaction \
+	test-nonblocking-spill \
 	test-recovery test-segment test-stress test-cic test-chinese \
 	test-replication test-replication-extended \
 	test-logical-replication test-multi-index test-reindex \

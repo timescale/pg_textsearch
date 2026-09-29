@@ -712,7 +712,8 @@ tp_spill_finalize(
 		BlockNumber		   new_segment_root,
 		uint64			   docs_delta,
 		uint64			   len_delta,
-		uint32			   segment_capacity)
+		uint32			   segment_capacity,
+		bool			  *published)
 {
 	Buffer			  metabuf;
 	Buffer			  seg_buf = InvalidBuffer;
@@ -783,9 +784,14 @@ tp_spill_finalize(
 	metap->total_len += len_delta;
 
 	GenericXLogFinish(state);
+	*published = true;
+	if (local_state != NULL && local_state->shared != NULL)
+		pg_atomic_write_u32(&local_state->shared->chain_page_count, 0);
 	if (BufferIsValid(seg_buf))
 		UnlockReleaseBuffer(seg_buf);
 	UnlockReleaseBuffer(metabuf);
+
+	TP_INJECTION_POINT(TP_INJECTION_AFTER_SPILL_FINALIZE);
 
 	/*
 	 * Step 2: drop the in-memory cache's dshash tables.

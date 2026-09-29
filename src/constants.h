@@ -196,7 +196,8 @@
  * victim inspection and a concurrent dsa_free of the victim's
  * shared state.
  */
-#define TP_TRANCHE_EVICTION_MUTEX 1012
+#define TP_TRANCHE_EVICTION_MUTEX	   1012
+#define TP_TRANCHE_MEMTABLE_WRITE_LOCK 1013
 
 /*
  * Bounds of the contiguous fixed-tranche block above.  TP_TRANCHE_COUNT
@@ -205,7 +206,7 @@
  * block stays contiguous.
  */
 #define TP_TRANCHE_FIRST TP_TRANCHE_STRING
-#define TP_TRANCHE_LAST	 TP_TRANCHE_EVICTION_MUTEX
+#define TP_TRANCHE_LAST	 TP_TRANCHE_MEMTABLE_WRITE_LOCK
 #define TP_TRANCHE_COUNT ((TP_TRANCHE_LAST) - (TP_TRANCHE_FIRST) + 1)
 
 /*

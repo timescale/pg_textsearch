@@ -188,6 +188,14 @@ typedef struct TpSharedIndexState
 	ConditionVariable exclusive_waiters_cv;
 
 	/*
+	 * Fence memtable writers while a spill builds from a stable chain.
+	 * Readers do not take this lock.
+	 */
+	LWLock			  memtable_write_lock;
+	pg_atomic_uint32  memtable_write_exclusive_waiters;
+	ConditionVariable memtable_write_exclusive_waiters_cv;
+
+	/*
 	 * Spill generation counter.  Bumped by tp_spill_finalize()
 	 * under LW_EXCLUSIVE after the on-disk chain is truncated.
 	 * Acts as the in-memory memtable cache's invalidation
@@ -278,6 +286,11 @@ tp_acquire_index_lock(TpLocalIndexState *local_state, LWLockMode mode);
 extern bool
 tp_try_acquire_index_lock(TpLocalIndexState *local_state, LWLockMode mode);
 extern void tp_release_index_lock(TpLocalIndexState *local_state);
+extern void tp_acquire_memtable_write_lock(
+		TpLocalIndexState *local_state, LWLockMode mode);
+extern bool tp_try_acquire_memtable_write_lock(
+		TpLocalIndexState *local_state, LWLockMode mode);
+extern void tp_release_memtable_write_lock(TpLocalIndexState *local_state);
 extern void tp_release_all_index_locks(void);
 
 /* Bulk load auto-spill */
