@@ -12,6 +12,7 @@
 #include <storage/indexfsm.h>
 
 #include "constants.h"
+#include "debug/injection.h"
 #include "index/freepage.h"
 #include "index/metapage.h"
 #include "index/state.h"
@@ -581,19 +582,20 @@ tp_tombstone_drain(
 
 		/* Unlink first (corruption-safe; a crash here only leaks). */
 		tombstone_unlink(index, victim_prev, victim, victim_next);
+		if (own_lock)
+			tp_release_index_lock(state);
+		TP_INJECTION_POINT(TP_INJECTION_TOMBSTONE_AFTER_UNLINK);
 
 		/*
-		 * Free under the same lock as the unlink so no other index
-		 * mutation observes an intermediate state.  Freeing before the
-		 * unlink is unsafe: a still-chained tombstone's blocks could be
-		 * claimed from the FSM, then freed again by a later drain.
+		 * Free only after unlink, but without the per-index lock.  The
+		 * maintenance lock keeps another drain out, and no published
+		 * structure references this batch now.  Freeing before unlink is
+		 * unsafe: a still-chained tombstone's blocks could be claimed from
+		 * the FSM, then freed again by a later drain.
 		 *
-		 * No CHECK_FOR_INTERRUPTS here — the tombstone is already
-		 * unlinked, so erroring part-way strands the rest.  The loop
-		 * is bounded by TP_TOMBSTONE_CAPACITY.
+		 * No CHECK_FOR_INTERRUPTS here: cancellation part-way strands the
+		 * remaining pages until REINDEX.
 		 */
-		Assert(!own_lock ||
-			   LWLockHeldByMeInMode(&state->shared->lock, LW_EXCLUSIVE));
 		{
 			uint32 k;
 
@@ -602,9 +604,6 @@ tp_tombstone_drain(
 			tp_record_free_index_page(index, victim);
 			freed += victim_count + 1;
 		}
-
-		if (own_lock)
-			tp_release_index_lock(state);
 
 		if (victim_blocks)
 			pfree(victim_blocks);

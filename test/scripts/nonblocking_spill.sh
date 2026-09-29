@@ -16,6 +16,7 @@ SOCKET_DIR="${SCRIPT_DIR}/.nbs_sock"
 LOGFILE="${DATA_DIR}/postgres.log"
 CLIENT_DIR="${DATA_DIR}/clients"
 POINT_SPILL_BEFORE_FINALIZE='pg-textsearch-spill-before-finalize'
+POINT_TOMBSTONE_AFTER_UNLINK='pg-textsearch-tombstone-after-unlink'
 
 fail() {
     echo "ERROR: $*" >&2
@@ -133,6 +134,7 @@ shared_preload_libraries = 'pg_textsearch'
 autovacuum = off
 pg_textsearch.memtable_pages_threshold = 0
 pg_textsearch.bulk_load_threshold = 0
+pg_textsearch.segments_per_level = 2
 EOF
 pg_ctl start -D "${DATA_DIR}" -l "${LOGFILE}" -w >/dev/null ||
     fail "PostgreSQL startup failed"
@@ -193,5 +195,124 @@ final_count=$(sql -c "
     ) ranked;")
 [ "${final_count}" = "501" ] ||
     fail "expected 501 ranked rows after spill, got ${final_count}"
+
+sql -c "
+    CREATE TABLE spill_cancel_docs (
+        id integer PRIMARY KEY,
+        body text NOT NULL
+    );
+    CREATE INDEX spill_cancel_idx ON spill_cancel_docs USING bm25(body)
+        WITH (text_config = 'english', compaction = 'manual');
+    INSERT INTO spill_cancel_docs
+    SELECT gs, 'cancelterm document ' || gs
+    FROM generate_series(1, 500) gs;" >/dev/null
+
+if PGAPPNAME=spill-cancel sql -c "
+    SELECT injection_points_set_local();
+    SELECT injection_points_attach(
+        '${POINT_SPILL_BEFORE_FINALIZE}', 'error');
+    SELECT bm25_spill_index('spill_cancel_idx');" \
+    >"${CLIENT_DIR}/cancel.log" 2>&1; then
+    fail "injected spill error completed successfully"
+fi
+
+cancel_chain_count=$(sql -c "
+    SELECT COALESCE(sum(n_records), 0)
+    FROM bm25_memtable_chain('spill_cancel_idx');")
+cancel_graph=$(sql -c "
+    SELECT bm25_level_counts('spill_cancel_idx'::regclass)::text;")
+cancel_ranked_count=$(sql -c "
+    SELECT count(*)
+    FROM (
+        SELECT 1
+        FROM spill_cancel_docs
+        ORDER BY body <@> to_bm25query('cancelterm', 'spill_cancel_idx')
+        LIMIT 500
+    ) ranked;")
+[ "${cancel_chain_count}" = "500" ] ||
+    fail "failed spill state: chain=${cancel_chain_count} graph=${cancel_graph} ranked=${cancel_ranked_count}"
+[ "${cancel_graph}" = "{0,0,0,0,0,0,0,0}" ] ||
+    fail "failed spill published a segment"
+[ "${cancel_ranked_count}" = "500" ] ||
+    fail "failed spill made chain documents unqueryable"
+
+sql -c "SELECT bm25_spill_index('spill_cancel_idx');" >/dev/null
+cancel_graph=$(sql -c "
+    SELECT bm25_level_counts('spill_cancel_idx'::regclass)::text;")
+[ "${cancel_graph}" = "{1,0,0,0,0,0,0,0}" ] ||
+    fail "spill after cancellation did not publish one segment"
+
+sql -c "
+    CREATE TABLE reclaim_docs (id integer PRIMARY KEY, body text NOT NULL);
+    CREATE INDEX reclaim_idx ON reclaim_docs USING bm25(body)
+        WITH (text_config = 'english', compaction = 'manual');" >/dev/null
+for batch in 1 2; do
+    sql -c "
+        INSERT INTO reclaim_docs
+        SELECT (${batch} - 1) * 200 + gs,
+               'reclaimterm batch ${batch} document ' || gs
+        FROM generate_series(1, 200) gs;
+        SELECT bm25_spill_index('reclaim_idx');" >/dev/null
+done
+sql -c "SELECT bm25_compact_step('reclaim_idx'::regclass);" >/dev/null
+[ "$(sql -c "SELECT bm25_pending_free_pages('reclaim_idx');")" -gt 0 ] ||
+    fail "first compaction did not create deferred reclaim work"
+
+for batch in 3 4; do
+    sql -c "
+        INSERT INTO reclaim_docs
+        SELECT (${batch} - 1) * 200 + gs,
+               'reclaimterm batch ${batch} document ' || gs
+        FROM generate_series(1, 200) gs;
+        SELECT bm25_spill_index('reclaim_idx');" >/dev/null
+done
+
+PGAPPNAME=reclaim-builder sql -c "
+    SET statement_timeout = '60s';
+    SELECT injection_points_set_local();
+    SELECT injection_points_attach(
+        '${POINT_TOMBSTONE_AFTER_UNLINK}', 'wait');
+    SELECT bm25_compact_step('reclaim_idx'::regclass);" \
+    >"${CLIENT_DIR}/reclaim.log" 2>&1 &
+reclaim_client=$!
+reclaim_backend=$(backend_pid reclaim-builder)
+
+deadline=$((SECONDS + 10))
+while ((SECONDS < deadline)); do
+    if [ "$(sql -c "
+        SELECT EXISTS (
+            SELECT 1
+            FROM pg_stat_activity
+            WHERE pid = ${reclaim_backend}
+              AND wait_event_type = 'InjectionPoint'
+              AND wait_event = '${POINT_TOMBSTONE_AFTER_UNLINK}'
+        );")" = "t" ]; then
+        break
+    fi
+    sleep 0.05
+done
+reclaim_wait_event=$(sql -c "
+    SELECT wait_event
+    FROM pg_stat_activity
+    WHERE pid = ${reclaim_backend};")
+[ "${reclaim_wait_event}" = "${POINT_TOMBSTONE_AFTER_UNLINK}" ] ||
+    fail "reclaim did not pause after tombstone unlink"
+
+PGAPPNAME=reclaim-reader sql -c "
+    SELECT count(*)
+    FROM (
+        SELECT 1
+        FROM reclaim_docs
+        ORDER BY body <@> to_bm25query('reclaimterm', 'reclaim_idx')
+        LIMIT 800
+    ) ranked;" >"${CLIENT_DIR}/reclaim_reader.log" 2>&1 &
+reclaim_reader=$!
+wait_for_exit "${reclaim_reader}" 3 "reader during tombstone free"
+grep -qx '800' "${CLIENT_DIR}/reclaim_reader.log" ||
+    fail "reader during tombstone free returned wrong results"
+
+sql -c "SELECT injection_points_wakeup(
+    '${POINT_TOMBSTONE_AFTER_UNLINK}');" >/dev/null
+wait_for_exit "${reclaim_client}" 20 "reclaim compaction"
 
 echo "nonblocking spill test passed"

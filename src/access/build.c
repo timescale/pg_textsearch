@@ -304,9 +304,9 @@ tp_do_spill(
 		Relation		   index_rel,
 		BlockNumber		  *out_segment_root)
 {
-	TpPreparedSpill spill;
-	volatile bool	prepared = false;
-	volatile bool	success	 = false;
+	TpPreparedSpill *spill;
+	volatile bool	 prepared = false;
+	volatile bool	 success  = false;
 
 	if (out_segment_root != NULL)
 		*out_segment_root = InvalidBlockNumber;
@@ -319,20 +319,23 @@ tp_do_spill(
 	if (RecoveryInProgress())
 		return false;
 
+	spill		= palloc0(sizeof(*spill));
+	spill->root = InvalidBlockNumber;
 	PG_TRY();
 	{
 		tp_acquire_index_lock(index_state, LW_EXCLUSIVE);
-		prepared = tp_prepare_spill(index_state, index_rel, &spill);
+		prepared = tp_prepare_spill(index_state, index_rel, spill);
 		tp_release_index_lock(index_state);
 		if (prepared)
 		{
-			tp_build_prepared_spill(index_rel, &spill);
+			tp_build_prepared_spill(index_rel, spill);
 			TP_INJECTION_POINT(TP_INJECTION_SPILL_BEFORE_FINALIZE);
+			CHECK_FOR_INTERRUPTS();
 			tp_acquire_index_lock(index_state, LW_EXCLUSIVE);
 			tp_publish_prepared_spill(
 					index_state,
 					index_rel,
-					&spill,
+					spill,
 					out_segment_root,
 					tp_injected_segment_count_limit());
 			tp_release_index_lock(index_state);
@@ -344,10 +347,11 @@ tp_do_spill(
 		if (index_state->lock_held)
 			tp_release_index_lock(index_state);
 		if (prepared)
-			tp_cleanup_prepared_spill(index_rel, &spill);
+			tp_cleanup_prepared_spill(index_rel, spill);
 	}
 	PG_END_TRY();
 
+	pfree(spill);
 	return success;
 }
 
