@@ -59,12 +59,19 @@ per physical index and executor, including larger-batch retries and cursor
 fetches. Corpus totals and term frequencies therefore stay consistent within
 that execution; a later statement captures fresh statistics. These are physical
 index statistics, not MVCC-filtered corpus statistics.
+Snapshots also identify the physical relation file, so a same-backend
+`REINDEX` or `TRUNCATE` captures a new generation rather than reusing old
+block numbers.
 
 A primary reader uses the memtable cache only when its applied endpoint
 matches the captured chain endpoint. It holds the cache apply lock in shared
 mode for that scoring call to prevent catch-up from changing the view.
-Otherwise it reads the bounded on-disk chain. No LWLock is held between rows
-or cursor fetches; the executor's heap snapshot protects retired pages from
+Otherwise it reads the bounded on-disk chain.
+Readers of an already matching cache share that lock without exclusive
+catch-up admission. The first ranked source also supplies the snapshot's
+corpus totals, avoiding a separate memtable walk.
+No LWLock is held between rows or cursor fetches; the executor's heap
+snapshot protects retired pages from
 reclaim. Executor memory-context cleanup releases the captured generations,
 including on errors and nested execution.
 

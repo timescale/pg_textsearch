@@ -22,7 +22,7 @@
  * stronger).  A bounded walker may run after that lock is
  * released because its endpoint was captured while the lock was
  * held and retired pages remain protected by the caller's scan
- * snapshot.  Bounded walkers also copy each inline vector and
+ * snapshot. Bounded walkers can optionally copy each inline vector and
  * release the page buffer before returning it.
  *
  * Cursor semantics.  Each call to tp_chain_walker_next() that
@@ -38,8 +38,8 @@
  *
  * Lifetime of out->vector_bytes: for ordinary walkers, inline
  * records point into the buffer page held SHARED until the next
- * call or close.  Bounded walkers copy inline records and release
- * the page before returning.  Fragment payloads are always
+ * call or close. Bounded walkers with copy_records enabled copy inline
+ * records and release the page before returning. Fragment payloads are always
  * reassembled into caller-owned memory.  In both allocated cases
  * owns_vector is true and the caller is responsible for pfree.
  */
@@ -138,7 +138,8 @@ extern bool tp_memtable_chain_snapshot_capture_locked(
 extern TpChainWalker *tp_chain_walker_open_bounded(
 		Relation					   rel,
 		const TpMemtableChainSnapshot *snapshot,
-		MemoryContext				   mcxt);
+		MemoryContext				   mcxt,
+		bool						   copy_records);
 
 /*
  * Advance the walker by one record.  On true, *out is populated

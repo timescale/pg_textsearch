@@ -360,4 +360,92 @@ END
 $$;
 SQL
 
+for use_cache in off on; do
+    "${PSQL[@]}" -v use_cache="${use_cache}" <<'SQL' >/dev/null
+SET client_min_messages = warning;
+SET pg_textsearch.memtable_cache_enabled = :'use_cache';
+CREATE TABLE rewrite_docs (body text);
+CREATE INDEX rewrite_idx ON rewrite_docs USING bm25(body)
+    WITH (text_config = 'simple');
+INSERT INTO rewrite_docs VALUES ('alpha'), ('beta');
+
+-- Simple PL/pgSQL expressions share the outer SELECT's executor context.
+CREATE FUNCTION rewrite_and_score() RETURNS void
+LANGUAGE plpgsql VOLATILE AS $$
+DECLARE
+    q bm25query := to_bm25query('alpha', 'rewrite_idx');
+    score float8;
+    n integer;
+BEGIN
+    score := 'alpha'::text <@> q;
+    FOR n IN 1..3 LOOP
+        REINDEX INDEX rewrite_idx;
+        score := 'alpha'::text <@> q;
+        IF abs(score + ln((2 * n + 1)::float8 / 1.5)) > 0.000001 THEN
+            RAISE EXCEPTION 'stale score after REINDEX: %', score;
+        END IF;
+        INSERT INTO rewrite_docs VALUES ('beta'), ('beta');
+    END LOOP;
+    TRUNCATE rewrite_docs;
+    INSERT INTO rewrite_docs VALUES ('beta');
+    score := 'alpha'::text <@> q;
+    IF score <> 0 THEN
+        RAISE EXCEPTION 'stale score after TRUNCATE: %', score;
+    END IF;
+END
+$$;
+SELECT rewrite_and_score();
+DROP FUNCTION rewrite_and_score();
+DROP TABLE rewrite_docs;
+SQL
+done
+
+startup_oid=$(
+    "${PSQL[@]}" <<'SQL'
+SET client_min_messages = warning;
+SET pg_textsearch.bulk_load_threshold = 0;
+SET pg_textsearch.memtable_pages_threshold = 0;
+SET enable_seqscan = off;
+CREATE TABLE startup_docs (id int, body text);
+CREATE INDEX startup_idx ON startup_docs USING bm25(body)
+    WITH (text_config = 'simple');
+INSERT INTO startup_docs
+SELECT g, 'alpha beta gamma' FROM generate_series(1, 5000) g;
+INSERT INTO startup_docs VALUES (5001, 'needle');
+SET pg_textsearch.memtable_cache_enabled = off;
+DO $$
+DECLARE
+    plan json;
+    buffers int;
+    pages int;
+BEGIN
+    EXECUTE $q$EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON, TIMING OFF)
+        SELECT id FROM startup_docs
+        ORDER BY body <@> to_bm25query('needle', 'startup_idx')
+        LIMIT 1$q$ INTO plan;
+    buffers := (plan->0->'Plan'->>'Shared Hit Blocks')::int
+             + (plan->0->'Plan'->>'Shared Read Blocks')::int;
+    pages := pg_relation_size('startup_idx')
+             / current_setting('block_size')::int;
+    IF buffers > pages + 16 THEN
+        RAISE EXCEPTION 'memtable startup used % buffers for % pages',
+            buffers, pages;
+    END IF;
+END
+$$;
+SET pg_textsearch.memtable_cache_enabled = on;
+SET pg_textsearch.log_cache_state = on;
+SELECT id FROM startup_docs
+ORDER BY body <@> to_bm25query('needle', 'startup_idx') LIMIT 1;
+SELECT 'startup_idx'::regclass::oid;
+SQL
+)
+startup_oid="$(tail -1 <<<"${startup_oid}")"
+opens=$(grep -c "cache_source: opened (oid=${startup_oid}," \
+    "${LOGFILE}" || true)
+if [ "${opens}" -ne 1 ]; then
+    echo "first ranked pass opened ${opens} memtable sources; expected 1" >&2
+    exit 1
+fi
+
 echo "Standalone snapshot test passed"

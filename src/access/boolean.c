@@ -312,7 +312,7 @@ tp_boolean_write_memtable_snapshot(
 
 	eval.term_present = palloc0(Max(state->term_count, 1) * sizeof(bool));
 	walker			  = tp_chain_walker_open_bounded(
-			   index, snapshot, CurrentMemoryContext);
+			   index, snapshot, CurrentMemoryContext, true);
 
 	while (tp_chain_walker_next(walker, &rec))
 	{

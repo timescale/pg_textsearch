@@ -46,6 +46,7 @@
 #define TP_INJECTION_COMPACTION_ALLOC_TOMBSTONE \
 	"pg-textsearch-compaction-alloc-tombstone"
 #define TP_INJECTION_MEMTABLE_EXTEND "pg-textsearch-memtable-extend"
+#define TP_INJECTION_SCORING_SOURCE	 "pg-textsearch-scoring-source"
 #define TP_INJECTION_INDEX_LOCK_EXCLUSIVE_WAITER \
 	"pg-textsearch-index-lock-exclusive-waiter"
 #define TP_INJECTION_TOMBSTONE_AFTER_UNLINK \

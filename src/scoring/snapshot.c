@@ -20,6 +20,7 @@
 typedef struct TpScoringIndex
 {
 	Oid					   index_oid;
+	RelFileLocator		   locator;
 	TpScoringSnapshot	   snapshot;
 	struct TpScoringIndex *next;
 } TpScoringIndex;
@@ -126,7 +127,11 @@ tp_scoring_snapshot_init(void)
 }
 
 TpScoringSnapshot *
-tp_scoring_snapshot_get(Relation index)
+tp_scoring_snapshot_get(
+		Relation		   index,
+		const char *const *query_terms,
+		int				   query_term_count,
+		TpDataSource	 **initial_source)
 {
 	MemoryContext		context = current_query_context != NULL
 										? current_query_context
@@ -140,6 +145,8 @@ tp_scoring_snapshot_get(Relation index)
 	int64				total_docs;
 	int64				total_len;
 
+	if (initial_source != NULL)
+		*initial_source = NULL;
 	for (statement = statements; statement; statement = statement->next)
 		if (statement->context == context)
 			break;
@@ -154,10 +161,11 @@ tp_scoring_snapshot_get(Relation index)
 		statements		= statement;
 	}
 	for (entry = statement->indexes; entry; entry = entry->next)
-		if (entry->index_oid == RelationGetRelid(index))
+		if (entry->index_oid == RelationGetRelid(index) &&
+			RelFileLocatorEquals(entry->locator, index->rd_locator))
 			return &entry->snapshot;
 
-	/* Keep the physical relation stable even between standalone calls. */
+	/* Exclude concurrent physical rewrites between standalone calls. */
 	LockRelationOid(RelationGetRelid(index), AccessShareLock);
 	state = tp_get_local_index_state(RelationGetRelid(index));
 	if (state == NULL)
@@ -166,6 +174,7 @@ tp_scoring_snapshot_get(Relation index)
 	old						 = MemoryContextSwitchTo(context);
 	entry					 = palloc0(sizeof(*entry));
 	entry->index_oid		 = RelationGetRelid(index);
+	entry->locator			 = index->rd_locator;
 	entry->snapshot.serial	 = ++next_serial;
 	entry->snapshot.recovery = RecoveryInProgress();
 	entry->snapshot.graph	 = tp_segment_graph_snapshot_create(index);
@@ -176,15 +185,16 @@ tp_scoring_snapshot_get(Relation index)
 			index,
 			&entry->snapshot.graph->memtable,
 			entry->snapshot.recovery,
-			&no_terms,
-			0);
+			initial_source != NULL ? query_terms : &no_terms,
+			initial_source != NULL ? query_term_count : 0);
 	total_docs = entry->snapshot.graph->metapage.total_docs;
 	total_len  = entry->snapshot.graph->metapage.total_len;
 	if (source != NULL)
 	{
 		total_docs += source->total_docs;
 		total_len += source->total_len;
-		tp_source_close(source);
+		if (initial_source == NULL)
+			tp_source_close(source);
 	}
 	entry->snapshot.total_docs	= Min(total_docs, PG_INT32_MAX);
 	entry->snapshot.avg_doc_len = total_docs > 0
@@ -193,5 +203,7 @@ tp_scoring_snapshot_get(Relation index)
 										: 0;
 	entry->next					= statement->indexes;
 	statement->indexes			= entry;
+	if (initial_source != NULL)
+		*initial_source = source;
 	return &entry->snapshot;
 }

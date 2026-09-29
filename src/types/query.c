@@ -875,7 +875,7 @@ bm25_text_bm25query_score(PG_FUNCTION_ARGS)
 					 errmsg("could not get index state for index OID %u",
 							RelationGetRelid(index_rel))));
 
-		scoring			 = tp_scoring_snapshot_get(index_rel);
+		scoring			 = tp_scoring_snapshot_get(index_rel, NULL, 0, NULL);
 		segment_snapshot = scoring->graph;
 
 		/*
@@ -903,7 +903,8 @@ bm25_text_bm25query_score(PG_FUNCTION_ARGS)
 					index_close(old_rel, AccessShareLock);
 					index_state = child_state;
 
-					scoring			 = tp_scoring_snapshot_get(index_rel);
+					scoring =
+							tp_scoring_snapshot_get(index_rel, NULL, 0, NULL);
 					segment_snapshot = scoring->graph;
 				}
 			}

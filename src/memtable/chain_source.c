@@ -338,7 +338,7 @@ walk_chain(
 	TpChainWalkerRecord rec;
 
 	if (snapshot != NULL)
-		walker = tp_chain_walker_open_bounded(rel, snapshot, src->mcxt);
+		walker = tp_chain_walker_open_bounded(rel, snapshot, src->mcxt, false);
 	else
 	{
 		TpIndexMetaPage metap = tp_get_metapage(rel);

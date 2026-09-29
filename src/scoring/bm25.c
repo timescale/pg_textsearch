@@ -11,6 +11,7 @@
 #include <storage/itemptr.h>
 #include <utils/memutils.h>
 
+#include "debug/injection.h"
 #include "index/metapage.h"
 #include "index/source.h"
 #include "index/state.h"
@@ -142,15 +143,21 @@ tp_score_documents(
 		return 0;
 	}
 
-	scoring		 = tp_scoring_snapshot_get(index_relation);
-	snapshot	 = scoring->graph;
-	memtable_src = tp_memtable_source_create_for_snapshot(
-			local_state,
+	scoring = tp_scoring_snapshot_get(
 			index_relation,
-			&snapshot->memtable,
-			scoring->recovery,
 			(const char *const *)query_terms,
-			query_term_count);
+			query_term_count,
+			&memtable_src);
+	snapshot = scoring->graph;
+	if (memtable_src == NULL)
+		memtable_src = tp_memtable_source_create_for_snapshot(
+				local_state,
+				index_relation,
+				&snapshot->memtable,
+				scoring->recovery,
+				(const char *const *)query_terms,
+				query_term_count);
+	TP_INJECTION_POINT(TP_INJECTION_SCORING_SOURCE);
 	k1			= snapshot->metapage.k1;
 	b			= snapshot->metapage.b;
 	total_docs	= scoring->total_docs;

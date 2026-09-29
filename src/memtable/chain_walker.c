@@ -405,7 +405,8 @@ TpChainWalker *
 tp_chain_walker_open_bounded(
 		Relation					   rel,
 		const TpMemtableChainSnapshot *snapshot,
-		MemoryContext				   mcxt)
+		MemoryContext				   mcxt,
+		bool						   copy_records)
 {
 	TpChainWalker *w;
 
@@ -417,7 +418,7 @@ tp_chain_walker_open_bounded(
 	w->bounded = true;
 	w->endpoint_blkno = snapshot->tail_blkno;
 	w->endpoint_off	  = snapshot->tail_free_offset;
-	w->copy_records	  = true;
+	w->copy_records	  = copy_records;
 	return w;
 }
 

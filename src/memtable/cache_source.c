@@ -372,6 +372,7 @@ tp_memtable_cache_source_create_internal(
 	TpMemtableCacheSource *cs;
 	TpMemtable			  *memtable;
 	TpLocalIndexState	  *lock_state_to_release;
+	bool				   matched_snapshot = false;
 
 	(void)query_terms;
 	(void)query_term_count;
@@ -404,12 +405,30 @@ tp_memtable_cache_source_create_internal(
 		return NULL;
 	}
 
+	if (snapshot != NULL)
+	{
+		LWLockAcquire(&memtable->apply_lock, LW_SHARED);
+		LWLockAcquire(&memtable->lock, LW_SHARED);
+		matched_snapshot =
+				memtable->cursor_next_blkno == snapshot->tail_blkno &&
+				memtable->cursor_next_off == snapshot->tail_free_offset &&
+				memtable->cursor_gen_spill_count ==
+						pg_atomic_read_u64(&state->shared->spill_generation) &&
+				memtable->string_hash_handle != DSHASH_HANDLE_INVALID &&
+				memtable->doc_lengths_handle != DSHASH_HANDLE_INVALID;
+		if (!matched_snapshot)
+		{
+			LWLockRelease(&memtable->lock);
+			LWLockRelease(&memtable->apply_lock);
+		}
+	}
+
 	/*
 	 * Run the apply protocol with per-index SHARED held.  On a
 	 * non-OK terminal outcome the cache cannot serve this query;
 	 * fall back to chain_source (signalled by NULL return).
 	 */
-	if (!catchup_cache(state, rel))
+	if (!matched_snapshot && !catchup_cache(state, rel))
 	{
 		if (lock_state_to_release != NULL)
 			tp_release_index_lock(lock_state_to_release);
@@ -421,19 +440,23 @@ tp_memtable_cache_source_create_internal(
 	cs->state			   = state;
 	cs->memtable		   = memtable;
 	cs->lock_state		   = lock_state_to_release;
-	cs->holding_cache_lock = false;
+	cs->holding_cache_lock = matched_snapshot;
+	cs->holding_apply_lock = matched_snapshot;
 	cs->string_table	   = NULL;
 	cs->doclength_table	   = NULL;
 
 	PG_TRY();
 	{
-		if (snapshot != NULL)
+		if (snapshot != NULL && !cs->holding_apply_lock)
 		{
 			LWLockAcquire(&memtable->apply_lock, LW_SHARED);
 			cs->holding_apply_lock = true;
 		}
-		LWLockAcquire(&memtable->lock, LW_SHARED);
-		cs->holding_cache_lock = true;
+		if (!cs->holding_cache_lock)
+		{
+			LWLockAcquire(&memtable->lock, LW_SHARED);
+			cs->holding_cache_lock = true;
+		}
 
 		/*
 		 * Re-check handle validity under cache.lock SHARED.
