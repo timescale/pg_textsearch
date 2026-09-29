@@ -212,10 +212,152 @@ inherit_snapshot_after=$(
         "${LOGFILE}" || true
 )
 inherit_snapshot_count=$((inherit_snapshot_after - inherit_snapshot_before))
-if [ "${inherit_snapshot_count}" -ne 1 ]; then
-    echo "inherited standalone scoring captured ${inherit_snapshot_count} graph snapshots; expected 1" \
+if [ "${inherit_snapshot_count}" -ne 2 ]; then
+    echo "inherited scoring captured ${inherit_snapshot_count} snapshots; expected parent and child" \
         >&2
     exit 1
 fi
+
+# A committed INSERT must not split an Incremental Sort tie group or
+# change standalone scores, including a term first scored after the INSERT.
+"${PSQL[@]}" <<'SQL'
+CREATE EXTENSION dblink;
+CREATE TABLE stable_docs (id int PRIMARY KEY, body text);
+CREATE INDEX stable_docs_idx ON stable_docs USING bm25(body)
+    WITH (text_config = 'simple');
+CREATE SEQUENCE stable_row;
+CREATE FUNCTION stable_insert_at(n bigint) RETURNS boolean
+LANGUAGE plpgsql VOLATILE AS $$
+BEGIN
+    IF nextval('stable_row') = n THEN
+        PERFORM dblink_exec(
+            format('host=%s port=%s dbname=%s user=%s',
+                   current_setting('unix_socket_directories'),
+                   current_setting('port'), current_database(), current_user),
+            'INSERT INTO stable_docs VALUES (4001, ''beta'')');
+    END IF;
+    RETURN true;
+END
+$$;
+SQL
+
+for use_cache in off on; do
+    for use_index in off on; do
+        for insert_at in 0 1 500 1500; do
+            "${PSQL[@]}" -v use_cache="${use_cache}" \
+                -v use_index="${use_index}" -v insert_at="${insert_at}" \
+                <<'SQL' >/dev/null
+SET jit = off;
+SET statement_timeout = '30s';
+SET pg_textsearch.memtable_cache_enabled = :'use_cache';
+SET client_min_messages = warning;
+SET enable_indexscan = :'use_index';
+SELECT set_config('enable_seqscan',
+                  CASE WHEN :'use_index' = 'on' THEN 'off' ELSE 'on' END,
+                  false);
+TRUNCATE stable_docs;
+INSERT INTO stable_docs
+SELECT g, 'alpha beta' FROM generate_series(3000, 1, -1) g;
+SELECT setval('stable_row', 1, false);
+CREATE TEMP TABLE stable_result AS
+SELECT array_agg(id ORDER BY id) AS ids
+FROM (
+    SELECT id, body <@> to_bm25query('alpha', 'stable_docs_idx') AS score
+    FROM stable_docs WHERE stable_insert_at(:insert_at)
+    ORDER BY score, id LIMIT 10
+) s;
+DO $$
+BEGIN
+    IF (SELECT ids FROM stable_result)
+       IS DISTINCT FROM ARRAY[1,2,3,4,5,6,7,8,9,10] THEN
+        RAISE EXCEPTION 'concurrent INSERT changed top-k: %',
+            (SELECT ids FROM stable_result);
+    END IF;
+END
+$$;
+SQL
+        done
+    done
+done
+
+"${PSQL[@]}" <<'SQL' >/dev/null
+SET client_min_messages = warning;
+SET enable_indexscan = off;
+SET jit = off;
+SET statement_timeout = '30s';
+TRUNCATE stable_docs;
+INSERT INTO stable_docs
+SELECT g, 'alpha beta' FROM generate_series(3000, 1, -1) g;
+SELECT setval('stable_row', 1, false);
+CREATE TEMP TABLE late_term_result AS
+SELECT count(DISTINCT body <@> to_bm25query(
+           CASE WHEN id > 2501 THEN 'alpha' ELSE 'beta' END,
+           'stable_docs_idx')) AS scores
+FROM stable_docs WHERE stable_insert_at(500);
+DO $$
+BEGIN
+    IF (SELECT scores FROM late_term_result) <> 1 THEN
+        RAISE EXCEPTION 'late term observed different corpus statistics';
+    END IF;
+END
+$$;
+
+-- A prepared execution must refresh statistics, not retain its last run.
+PREPARE stable_score AS
+SELECT body <@> to_bm25query('alpha', 'stable_docs_idx') AS score
+FROM stable_docs WHERE id = 1;
+EXECUTE stable_score \gset before_
+INSERT INTO stable_docs VALUES (4002, 'gamma');
+EXECUTE stable_score \gset after_
+SELECT :'before_score'::float8 <> :'after_score'::float8 AS refreshed \gset
+\if :refreshed
+\else
+    \quit 1
+\endif
+
+-- A suspended cursor keeps its generation across FETCH and nested SQL.
+BEGIN;
+DECLARE stable_cursor CURSOR FOR
+SELECT body <@> to_bm25query('alpha', 'stable_docs_idx') AS score
+FROM stable_docs WHERE id <= 3000;
+FETCH stable_cursor \gset first_
+SELECT dblink_exec(
+    format('host=%s port=%s dbname=%s user=%s',
+           current_setting('unix_socket_directories'),
+           current_setting('port'), current_database(), current_user),
+    'INSERT INTO stable_docs VALUES (4003, ''gamma'')');
+SELECT body <@> to_bm25query('alpha', 'stable_docs_idx')
+FROM stable_docs WHERE id = 1;
+FETCH stable_cursor \gset next_
+SELECT :'first_score'::float8 = :'next_score'::float8 AS stable \gset
+\if :stable
+\else
+    \quit 1
+\endif
+CLOSE stable_cursor;
+COMMIT;
+
+-- An error in nested execution must not leave a dangling snapshot cache.
+DO $$
+BEGIN
+    FOR attempt IN 1..3 LOOP
+        BEGIN
+            PERFORM body <@> to_bm25query('alpha', 'stable_docs_idx')
+            FROM stable_docs WHERE id = 1;
+            RAISE EXCEPTION 'discard this execution';
+        EXCEPTION WHEN raise_exception THEN
+            NULL;
+        END;
+        IF NOT EXISTS (
+            SELECT 1 FROM stable_docs
+            ORDER BY body <@> to_bm25query('alpha', 'stable_docs_idx')
+            LIMIT 1
+        ) THEN
+            RAISE EXCEPTION 'scoring failed after subtransaction rollback';
+        END IF;
+    END LOOP;
+END
+$$;
+SQL
 
 echo "Standalone snapshot test passed"

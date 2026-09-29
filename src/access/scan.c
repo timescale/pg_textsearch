@@ -558,14 +558,21 @@ tp_gettuple(IndexScanDesc scan, ScanDirection dir)
 			 */
 			if (!so->is_boolean_scan && !so->eof_reached &&
 				so->result_count > 0 &&
-				so->result_count >= so->max_results_used &&
-				so->max_results_used < TP_MAX_QUERY_LIMIT)
+				so->result_count >= so->max_results_used)
 			{
 				int old_count = so->result_count;
-				int new_limit = so->max_results_used * 2;
+				int new_limit;
+				int max_limit =
+						Min((Size)PG_INT32_MAX,
+							MaxAllocSize / sizeof(ItemPointerData));
 
-				if (new_limit > TP_MAX_QUERY_LIMIT)
-					new_limit = TP_MAX_QUERY_LIMIT;
+				if (so->max_results_used >= max_limit)
+					ereport(ERROR,
+							(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
+							 errmsg("BM25 result batch is too large")));
+				new_limit = so->max_results_used > max_limit / 2
+								  ? max_limit
+								  : so->max_results_used * 2;
 
 				so->limit = new_limit;
 				if (tp_execute_scoring_query(scan) &&

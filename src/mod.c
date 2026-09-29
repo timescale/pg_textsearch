@@ -66,6 +66,7 @@
 #include "memtable/log.h"
 #include "planner/hooks.h"
 #include "scoring/bm25.h"
+#include "scoring/snapshot.h"
 #include "segment/compaction.h"
 #include "segment/graph_snapshot.h"
 
@@ -500,9 +501,9 @@ _PG_init(void)
 			"Controls the maximum number of documents to process when no "
 			"LIMIT clause is present",
 			&tp_default_limit,
-			TP_DEFAULT_QUERY_LIMIT, /* default 1000 */
-			1,						/* min 1 */
-			TP_MAX_QUERY_LIMIT,		/* max 100k */
+			TP_DEFAULT_QUERY_LIMIT,		/* default 1000 */
+			1,							/* min 1 */
+			TP_MAX_INITIAL_QUERY_LIMIT, /* max initial batch 100k */
 			PGC_USERSET,
 			0,
 			NULL,
@@ -862,6 +863,7 @@ _PG_init(void)
 
 	/* Install planner hook for implicit index resolution */
 	tp_planner_hook_init();
+	tp_scoring_snapshot_init();
 
 	/* Install ProcessUtility hook for partitioned build tracking */
 	prev_process_utility_hook = ProcessUtility_hook;

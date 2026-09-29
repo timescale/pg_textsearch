@@ -54,8 +54,19 @@ rereading the metapage. Segment and memtable inputs therefore come from one
 complete old or new generation while Generic WAL replay changes publication.
 Ranked scoring pins recovery mode before acquiring the snapshot, so promotion
 during a pause cannot switch that generation to the primary cache path.
-Primary ranked and standalone paths otherwise retain their existing cache and
-per-index lock admission semantics.
+Ranked scans and standalone score expressions share one captured generation
+per physical index and executor, including larger-batch retries and cursor
+fetches. Corpus totals and term frequencies therefore stay consistent within
+that execution; a later statement captures fresh statistics. These are physical
+index statistics, not MVCC-filtered corpus statistics.
+
+A primary reader uses the memtable cache only when its applied endpoint
+matches the captured chain endpoint. It holds the cache apply lock in shared
+mode for that scoring call to prevent catch-up from changing the view.
+Otherwise it reads the bounded on-disk chain. No LWLock is held between rows
+or cursor fetches; the executor's heap snapshot protects retired pages from
+reclaim. Executor memory-context cleanup releases the captured generations,
+including on errors and nested execution.
 
 ## Memtable Cache
 

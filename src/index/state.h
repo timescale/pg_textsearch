@@ -78,7 +78,8 @@ typedef struct TpMemtable
 	/*
 	 * Serializes every path that mutates the cache (reader catchup,
 	 * cold build, spill catchup, tp_cache_clear).  Acquired AFTER the
-	 * per-index LWLock.  EXCL only.
+	 * per-index LWLock. Snapshot readers use SHARED while serving an
+	 * exact captured endpoint; mutations use EXCL.
 	 */
 	LWLock apply_lock;
 

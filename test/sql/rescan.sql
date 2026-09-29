@@ -265,9 +265,50 @@ LATERAL (
 ) t
 ORDER BY v.x, t.id;
 
-------------------------------------------------------------------------
--- Cleanup
-------------------------------------------------------------------------
+-- Filtered and invisible candidates must not impose a scan-wide limit.
+CREATE TABLE rescan_deep (
+    id int, tag int, content text
+) WITH (autovacuum_enabled = false);
+INSERT INTO rescan_deep
+SELECT g, 0, 'alpha beta' FROM generate_series(1, 100050) g;
+INSERT INTO rescan_deep
+SELECT 100050 + g, 1, 'alpha gamma gamma gamma gamma gamma gamma gamma'
+FROM generate_series(1, 5) g;
+CREATE INDEX rescan_deep_idx ON rescan_deep
+USING bm25(content) WITH (text_config = 'simple');
+ANALYZE rescan_deep;
+
+SELECT array_agg(id ORDER BY id) AS deep_filtered
+FROM (
+    SELECT id FROM rescan_deep WHERE tag = 1
+    ORDER BY content <@> to_bm25query('alpha', 'rescan_deep_idx')
+    LIMIT 10
+) s;
+
+DELETE FROM rescan_deep WHERE tag = 0;
+SELECT array_agg(id ORDER BY id) AS deep_deleted
+FROM (
+    SELECT id FROM rescan_deep
+    ORDER BY content <@> to_bm25query('alpha', 'rescan_deep_idx')
+    LIMIT 10
+) s;
+DROP TABLE rescan_deep;
+
+-- Incremental Sort must see a whole tie group, even beyond 100,000 rows.
+CREATE TABLE rescan_ties (id int, content text);
+INSERT INTO rescan_ties
+SELECT g, 'alpha beta' FROM generate_series(100055, 1, -1) g;
+CREATE INDEX rescan_ties_idx ON rescan_ties
+USING bm25(content) WITH (text_config = 'simple');
+SELECT array_agg(id ORDER BY id) AS deep_ties
+FROM (
+    SELECT id, content <@> to_bm25query('alpha', 'rescan_ties_idx')
+    FROM rescan_ties
+    ORDER BY content <@> to_bm25query('alpha', 'rescan_ties_idx'), id
+    LIMIT 10
+) s;
+DROP TABLE rescan_ties;
+
 DROP TABLE rescan_test CASCADE;
 DROP TABLE rescan_large CASCADE;
 DROP EXTENSION pg_textsearch CASCADE;

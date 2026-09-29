@@ -52,6 +52,11 @@ tp_memtable_search(
 	else
 		max_results = tp_default_limit;
 
+	if ((Size)max_results > MaxAllocSize / sizeof(ItemPointerData))
+		ereport(ERROR,
+				(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
+				 errmsg("BM25 result batch is too large")));
+
 	entry_count		  = query_vector->entry_count;
 	query_terms		  = palloc(entry_count * sizeof(char *));
 	query_frequencies = palloc(entry_count * sizeof(int32));

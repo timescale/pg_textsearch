@@ -92,7 +92,7 @@
 /* Memory and capacity limits */
 #define TP_QUERY_LIMITS_HASH_SIZE	   128
 #define TP_DEFAULT_QUERY_LIMIT		   1000
-#define TP_MAX_QUERY_LIMIT			   100000
+#define TP_MAX_INITIAL_QUERY_LIMIT	   100000
 #define TP_DEFAULT_SEGMENT_THRESHOLD   10000
 #define TP_DEFAULT_BULK_LOAD_THRESHOLD 100000 /* terms/xact trigger spill */
 

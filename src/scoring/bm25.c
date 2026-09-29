@@ -18,6 +18,7 @@
 #include "memtable/chain_source.h"
 #include "scoring/bm25.h"
 #include "scoring/bmw.h"
+#include "scoring/snapshot.h"
 #include "segment/graph_snapshot.h"
 #include "segment/segment.h"
 
@@ -117,8 +118,6 @@ tp_score_documents(
 		float4			 **result_scores)
 {
 	float4					avg_doc_len;
-	int64					total_docs64;
-	int64					total_len64;
 	int32					total_docs;
 	float4					k1;
 	float4					b;
@@ -126,7 +125,7 @@ tp_score_documents(
 	TpDataSource		   *memtable_src = NULL;
 	int						i;
 	int						result_count = 0;
-	bool					recovery;
+	TpScoringSnapshot	   *scoring;
 
 	/* Basic sanity checks */
 	Assert(local_state != NULL);
@@ -143,64 +142,24 @@ tp_score_documents(
 		return 0;
 	}
 
-	/*
-	 * Per issue #374: totals come from `metap` (persisted
-	 * segments) + the chain source (active memtable on disk).
-	 * The shmem atomic is still bumped on the primary for vacuum's
-	 * shrinkage protocol but is not authoritative for queries (it
-	 * would drift on standbys and freshly-opened backends).
-	 */
-	/*
-	 * Promotion may occur while snapshot creation is paused.  Keep source
-	 * selection in the recovery mode that owns this snapshot generation.
-	 */
-	recovery = RecoveryInProgress();
-	if (recovery)
-	{
-		snapshot	 = tp_segment_graph_snapshot_create(index_relation);
-		memtable_src = tp_memtable_chain_source_create_bounded(
-				index_relation,
-				&snapshot->memtable,
-				(const char *const *)query_terms,
-				query_term_count);
-	}
-	else
-	{
-		/*
-		 * The source owns per-index LW_SHARED for its lifetime, so opening
-		 * it before the roots are copied excludes a spill from publishing
-		 * between the two.  The reverse order can drop the spilled
-		 * documents from both halves of the snapshot.
-		 */
-		memtable_src = tp_memtable_source_create_for_read(
-				local_state,
-				index_relation,
-				(const char *const *)query_terms,
-				query_term_count);
-		snapshot = tp_segment_graph_snapshot_create(index_relation);
-	}
-	total_docs64 = (int64)snapshot->metapage.total_docs;
-	total_len64	 = (int64)snapshot->metapage.total_len;
-	k1			 = snapshot->metapage.k1;
-	b			 = snapshot->metapage.b;
-
-	if (memtable_src != NULL)
-	{
-		total_docs64 += memtable_src->total_docs;
-		total_len64 += memtable_src->total_len;
-	}
-
-	total_docs	= (total_docs64 > PG_INT32_MAX) ? PG_INT32_MAX
-												: (int32)total_docs64;
-	avg_doc_len = total_docs > 0
-						? (float4)((double)total_len64 / (double)total_docs)
-						: 0.0f;
+	scoring		 = tp_scoring_snapshot_get(index_relation);
+	snapshot	 = scoring->graph;
+	memtable_src = tp_memtable_source_create_for_snapshot(
+			local_state,
+			index_relation,
+			&snapshot->memtable,
+			scoring->recovery,
+			(const char *const *)query_terms,
+			query_term_count);
+	k1			= snapshot->metapage.k1;
+	b			= snapshot->metapage.b;
+	total_docs	= scoring->total_docs;
+	avg_doc_len = scoring->avg_doc_len;
 
 	if (total_docs <= 0 || avg_doc_len <= 0.0f)
 	{
 		if (memtable_src != NULL)
 			tp_source_close(memtable_src);
-		tp_segment_graph_snapshot_free(snapshot);
 		return 0;
 	}
 
@@ -223,7 +182,6 @@ tp_score_documents(
 		{
 			if (memtable_src != NULL)
 				tp_source_close(memtable_src);
-			tp_segment_graph_snapshot_free(snapshot);
 			return 0;
 		}
 
@@ -272,7 +230,6 @@ tp_score_documents(
 		*result_scores = scores;
 		if (memtable_src != NULL)
 			tp_source_close(memtable_src);
-		tp_segment_graph_snapshot_free(snapshot);
 		return result_count;
 	}
 
@@ -352,7 +309,6 @@ tp_score_documents(
 		*result_scores = scores;
 		if (memtable_src != NULL)
 			tp_source_close(memtable_src);
-		tp_segment_graph_snapshot_free(snapshot);
 		return result_count;
 	}
 }

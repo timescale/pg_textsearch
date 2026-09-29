@@ -60,6 +60,7 @@ OBJS = \
 	src/segment/fieldnorm.o \
 	src/scoring/bmw.o \
 	src/scoring/bm25.o \
+	src/scoring/snapshot.o \
 	src/types/array.o \
 	src/types/vector.o \
 	src/types/query.o \

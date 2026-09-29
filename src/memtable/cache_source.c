@@ -71,6 +71,7 @@ typedef struct TpMemtableCacheSource
 	 * before pfree.
 	 */
 	bool holding_cache_lock;
+	bool holding_apply_lock;
 } TpMemtableCacheSource;
 
 /* ---------- TpDataSourceOps implementations ---------- */
@@ -214,6 +215,12 @@ cache_close(TpDataSource *source)
 		cs->holding_cache_lock = false;
 	}
 
+	if (cs->holding_apply_lock)
+	{
+		LWLockRelease(&cs->memtable->apply_lock);
+		cs->holding_apply_lock = false;
+	}
+
 	if (cs->lock_state != NULL)
 	{
 		tp_release_index_lock(cs->lock_state);
@@ -354,12 +361,13 @@ catchup_cache(TpLocalIndexState *state, Relation rel)
 
 /* ---------- public constructors ---------- */
 
-TpDataSource *
-tp_memtable_cache_source_create(
-		TpLocalIndexState *state,
-		Relation		   rel,
-		const char *const *query_terms,
-		int				   query_term_count)
+static TpDataSource *
+tp_memtable_cache_source_create_internal(
+		TpLocalIndexState			  *state,
+		Relation					   rel,
+		const char *const			  *query_terms,
+		int							   query_term_count,
+		const TpMemtableChainSnapshot *snapshot)
 {
 	TpMemtableCacheSource *cs;
 	TpMemtable			  *memtable;
@@ -419,6 +427,11 @@ tp_memtable_cache_source_create(
 
 	PG_TRY();
 	{
+		if (snapshot != NULL)
+		{
+			LWLockAcquire(&memtable->apply_lock, LW_SHARED);
+			cs->holding_apply_lock = true;
+		}
 		LWLockAcquire(&memtable->lock, LW_SHARED);
 		cs->holding_cache_lock = true;
 
@@ -457,12 +470,26 @@ tp_memtable_cache_source_create(
 			dshash_detach(cs->doclength_table);
 		if (cs->holding_cache_lock)
 			LWLockRelease(&memtable->lock);
+		if (cs->holding_apply_lock)
+			LWLockRelease(&memtable->apply_lock);
 		if (lock_state_to_release != NULL)
 			tp_release_index_lock(lock_state_to_release);
 		pfree(cs);
 		PG_RE_THROW();
 	}
 	PG_END_TRY();
+
+	/*
+	 * Deferred reclaim prevents endpoint reuse while the executor's heap
+	 * snapshot lives. Freeze cache catch-up until this source is closed.
+	 */
+	if (snapshot != NULL &&
+		(memtable->cursor_next_blkno != snapshot->tail_blkno ||
+		 memtable->cursor_next_off != snapshot->tail_free_offset))
+	{
+		cache_close((TpDataSource *)cs);
+		return NULL;
+	}
 
 	if (tp_log_cache_state)
 		elog(LOG,
@@ -473,6 +500,46 @@ tp_memtable_cache_source_create(
 			 cs->base.total_len);
 
 	return (TpDataSource *)cs;
+}
+
+TpDataSource *
+tp_memtable_cache_source_create(
+		TpLocalIndexState *state,
+		Relation		   rel,
+		const char *const *query_terms,
+		int				   query_term_count)
+{
+	return tp_memtable_cache_source_create_internal(
+			state, rel, query_terms, query_term_count, NULL);
+}
+
+TpDataSource *
+tp_memtable_source_create_for_snapshot(
+		TpLocalIndexState			  *state,
+		Relation					   rel,
+		const TpMemtableChainSnapshot *snapshot,
+		bool						   recovery,
+		const char *const			  *query_terms,
+		int							   query_term_count)
+{
+	TpDataSource *source;
+
+	if (!BlockNumberIsValid(snapshot->head_blkno))
+		return NULL;
+	if (!recovery && tp_memtable_cache_enabled && !state->is_build_mode)
+	{
+		source = tp_memtable_cache_source_create_internal(
+				state, rel, query_terms, query_term_count, snapshot);
+		if (source != NULL)
+			return source;
+	}
+	if (tp_log_cache_state)
+		elog(LOG,
+			 "pg_textsearch cache_source: snapshot uses bounded chain "
+			 "(oid=%u)",
+			 RelationGetRelid(rel));
+	return tp_memtable_chain_source_create_bounded(
+			rel, snapshot, query_terms, query_term_count);
 }
 
 TpDataSource *

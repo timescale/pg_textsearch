@@ -497,7 +497,7 @@ tp_memtable_chain_source_create_internal(
 
 	/*
 	 * The ordinary path acquires the per-index LWLock in SHARED mode for
-	 * the whole scan.  The bounded recovery path instead relies on its
+	 * the whole scan.  The bounded path instead relies on its
 	 * copied endpoint and deferred reclaim, because WAL replay does not
 	 * acquire this extension lock.
 	 *

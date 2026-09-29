@@ -100,7 +100,7 @@ tp_boolean_query_requires_full_scan(TSQuery query)
  * which rows win, so results are identical to the un-seeded plan.
  *
  * Returns the (possibly seeded) limit: always >= user_limit and capped
- * at TP_MAX_QUERY_LIMIT.  With seeding disabled, no restriction clauses
+ * at TP_MAX_INITIAL_QUERY_LIMIT. With seeding disabled, no restriction clauses
  * (no Filter), or a degenerate selectivity estimate, returns user_limit
  * unchanged.
  */
@@ -131,8 +131,8 @@ tp_seed_limit_for_filter(PlannerInfo *root, IndexPath *path, int user_limit)
 		return user_limit;
 
 	seeded = ceil(tp_filtered_seed_margin * (double)user_limit / s);
-	if (seeded > (double)TP_MAX_QUERY_LIMIT)
-		seeded = (double)TP_MAX_QUERY_LIMIT;
+	if (seeded > (double)TP_MAX_INITIAL_QUERY_LIMIT)
+		seeded = (double)TP_MAX_INITIAL_QUERY_LIMIT;
 
 	if (seeded <= (double)user_limit)
 		return user_limit;

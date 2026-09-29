@@ -14,7 +14,8 @@
  * Concurrency contract (mirrors chain_source where possible):
  *
  *     per-index LWLock SHARED              (lifetime)
- *         └─► cache.apply_lock EXCL        (held only during apply/cold)
+ *         └─► cache.apply_lock             (EXCL for apply/cold;
+ *                                          SHARED for bounded reads)
  *             └─► cache.lock SHARED         (lifetime, held by served source)
  *                 └─► dshash bucket lock    (per-lookup)
  *                     └─► TpPostingList.lock (per-lookup)
@@ -39,6 +40,16 @@
 
 #include "index/source.h"
 #include "index/state.h"
+#include "memtable/chain_walker.h"
+
+/* Serve exactly the captured endpoint, falling back to the bounded chain. */
+extern TpDataSource *tp_memtable_source_create_for_snapshot(
+		TpLocalIndexState			  *state,
+		Relation					   rel,
+		const TpMemtableChainSnapshot *snapshot,
+		bool						   recovery,
+		const char *const			  *query_terms,
+		int							   query_term_count);
 
 /*
  * Construct a cache-backed data source for `rel`.

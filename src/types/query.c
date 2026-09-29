@@ -43,6 +43,7 @@
 #include "memtable/chain_source.h"
 #include "planner/hooks.h"
 #include "scoring/bm25.h"
+#include "scoring/snapshot.h"
 #include "segment/fieldnorm.h"
 #include "segment/graph_snapshot.h"
 #include "segment/io.h"
@@ -78,11 +79,11 @@ typedef struct TermIdfEntry
 
 typedef struct QueryScoreCache
 {
-	Oid			  index_oid;	 /* index this cache is for */
-	BlockNumber	  first_segment; /* segment chain head at cache time */
-	int32		  total_docs;	 /* total docs at cache time */
-	float4		  avg_doc_len;	 /* avg doc length at cache time */
-	int			  num_terms;	 /* number of cached terms */
+	Oid			  index_oid; /* index this cache is for */
+	uint64		  snapshot_serial;
+	int32		  total_docs;  /* total docs at cache time */
+	float4		  avg_doc_len; /* avg doc length at cache time */
+	int			  num_terms;   /* number of cached terms */
 	int			  terms_capacity;
 	MemoryContext context;
 	TermIdfEntry *terms;
@@ -160,19 +161,13 @@ cache_term_idf(
  * Check if the cache is valid for the current index state.
  */
 static bool
-cache_is_valid(
-		QueryScoreCache *cache,
-		Oid				 index_oid,
-		BlockNumber		 first_segment,
-		int32			 total_docs)
+cache_is_valid(QueryScoreCache *cache, Oid index_oid, uint64 snapshot_serial)
 {
 	if (!cache)
 		return false;
 	if (cache->index_oid != index_oid)
 		return false;
-	if (cache->first_segment != first_segment)
-		return false;
-	if (cache->total_docs != total_docs)
+	if (cache->snapshot_serial != snapshot_serial)
 		return false;
 	return true;
 }
@@ -726,139 +721,33 @@ calculate_term_score(
 	return term_score;
 }
 
-/*
- * Open a memtable source and a segment snapshot that describe one graph
- * generation.  capture_roots selects a full capture over a metadata-only
- * one; recovery must be sampled once by the caller so promotion mid-query
- * cannot mix a recovery-mode capture with a primary-mode one.
- */
-static void
-tp_standalone_sources_open(
-		TpLocalIndexState				 *index_state,
-		Relation						  index_rel,
-		bool							  recovery,
-		bool							  capture_roots,
-		TpDataSource *volatile			 *memtable_src,
-		TpSegmentGraphSnapshot *volatile *segment_snapshot,
-		TpLocalIndexState *volatile		 *locked_state)
-{
-	Assert(index_state != NULL);
-	Assert(memtable_src != NULL && *memtable_src == NULL);
-	Assert(segment_snapshot != NULL && *segment_snapshot == NULL);
-	Assert(locked_state != NULL && *locked_state == NULL);
-
-	if (recovery)
-	{
-		/*
-		 * WAL replay publishes spills without taking the per-index lock,
-		 * so no lock can hold the graph still on a standby.  Bound the
-		 * chain source to the snapshot's captured endpoint instead, so
-		 * both halves describe one generation.
-		 */
-		*segment_snapshot = capture_roots
-								  ? tp_segment_graph_snapshot_create(index_rel)
-								  : tp_segment_graph_snapshot_create_metadata(
-											index_rel);
-		*memtable_src	  = tp_memtable_chain_source_create_bounded(
-				index_rel, &(*segment_snapshot)->memtable, NULL, 0);
-	}
-	else
-	{
-		/*
-		 * Preserve primary admission and cache semantics: the source owns
-		 * LW_SHARED before roots are copied, excluding spill publication
-		 * across the pair.
-		 */
-		*memtable_src = tp_memtable_source_create_for_read(
-				index_state, index_rel, NULL, 0);
-
-		/*
-		 * An empty memtable yields no source and therefore no lock, so
-		 * take LW_SHARED here: the snapshot and any later upgrade must
-		 * observe the same graph generation.
-		 */
-		if (*memtable_src == NULL)
-		{
-			tp_acquire_index_lock(index_state, LW_SHARED);
-			*locked_state = index_state;
-		}
-		*segment_snapshot = capture_roots
-								  ? tp_segment_graph_snapshot_create(index_rel)
-								  : tp_segment_graph_snapshot_create_metadata(
-											index_rel);
-	}
-}
-
-/*
- * Release the source, snapshot and lock opened as one generation, so the
- * caller can reopen a different one.
- */
-static void
-tp_standalone_sources_close(
-		TpDataSource *volatile			 *memtable_src,
-		TpSegmentGraphSnapshot *volatile *segment_snapshot,
-		TpLocalIndexState *volatile		 *locked_state)
-{
-	if (*segment_snapshot != NULL)
-	{
-		tp_segment_graph_snapshot_free(*segment_snapshot);
-		*segment_snapshot = NULL;
-	}
-	if (*memtable_src != NULL)
-	{
-		tp_source_close(*memtable_src);
-		*memtable_src = NULL;
-	}
-	if (*locked_state != NULL)
-	{
-		tp_release_index_lock(*locked_state);
-		*locked_state = NULL;
-	}
-}
-
 static QueryScoreCache *
 tp_standalone_prepare_cache(
-		FunctionCallInfo		fcinfo,
-		Oid						index_oid,
-		TpDataSource		   *memtable_src,
-		TpSegmentGraphSnapshot *segment_snapshot,
-		TpIndexMetaPage		   *metap_out,
-		Oid					   *text_config_oid,
-		int32				   *total_docs,
-		float4				   *avg_doc_len)
+		FunctionCallInfo   fcinfo,
+		Oid				   index_oid,
+		TpScoringSnapshot *snapshot,
+		TpIndexMetaPage	  *metap_out,
+		Oid				  *text_config_oid,
+		int32			  *total_docs,
+		float4			  *avg_doc_len)
 {
 	TpIndexMetaPage	 metap;
 	QueryScoreCache *cache;
-	BlockNumber		 first_segment;
-	int64			 total_len;
 
-	Assert(segment_snapshot != NULL);
+	Assert(snapshot != NULL);
 	Assert(metap_out != NULL);
 	Assert(text_config_oid != NULL);
 	Assert(total_docs != NULL);
 	Assert(avg_doc_len != NULL);
 
-	metap			 = &segment_snapshot->metapage;
+	metap			 = &snapshot->graph->metapage;
 	*metap_out		 = metap;
 	*text_config_oid = metap->text_config_oid;
-	first_segment	 = metap->level_heads[0];
-	*total_docs		 = metap->total_docs;
-	total_len		 = metap->total_len;
-
-	if (memtable_src != NULL)
-	{
-		int64 sum = (int64)*total_docs + memtable_src->total_docs;
-
-		*total_docs = (sum > PG_INT32_MAX) ? PG_INT32_MAX : (int32)sum;
-		total_len += memtable_src->total_len;
-	}
-
-	*avg_doc_len = *total_docs > 0
-						 ? (float4)((double)total_len / (double)*total_docs)
-						 : 0.0f;
+	*total_docs		 = snapshot->total_docs;
+	*avg_doc_len	 = snapshot->avg_doc_len;
 
 	cache = (QueryScoreCache *)fcinfo->flinfo->fn_extra;
-	if (!cache_is_valid(cache, index_oid, first_segment, *total_docs))
+	if (!cache_is_valid(cache, index_oid, snapshot->serial))
 	{
 		MemoryContext cache_context;
 
@@ -871,7 +760,7 @@ tp_standalone_prepare_cache(
 		cache = (QueryScoreCache *)
 				MemoryContextAllocZero(cache_context, sizeof(QueryScoreCache));
 		cache->index_oid		 = index_oid;
-		cache->first_segment	 = first_segment;
+		cache->snapshot_serial	 = snapshot->serial;
 		cache->total_docs		 = *total_docs;
 		cache->avg_doc_len		 = *avg_doc_len;
 		cache->num_terms		 = 0;
@@ -901,26 +790,21 @@ bm25_text_bm25query_score(PG_FUNCTION_ARGS)
 	 * Reassigned inside PG_TRY and read by PG_CATCH, so they must survive
 	 * the longjmp.
 	 */
-	Relation volatile index_rel						  = NULL;
-	TpIndexMetaPage metap							  = NULL;
-	TpSegmentGraphSnapshot *volatile segment_snapshot = NULL;
-	Oid				   text_config_oid;
-	char			 **doc_terms	   = NULL;
-	int32			  *doc_frequencies = NULL;
-	int				   doc_term_count  = 0;
-	int				   raw_doc_length;
-	Datum			   query_tsvector_datum;
-	TSVector		   query_tsvector;
-	WordEntry		  *query_entries;
-	char			  *query_lexemes_start;
-	TpLocalIndexState *index_state;
-	TpDataSource *volatile memtable_src		 = NULL;
-	TpLocalIndexState *volatile locked_state = NULL;
-	/*
-	 * Sample once: promotion mid-query must not mix a recovery-mode
-	 * capture with a primary-mode one.
-	 */
-	const bool		 recovery = RecoveryInProgress();
+	Relation volatile index_rel	  = NULL;
+	TpIndexMetaPage			metap = NULL;
+	TpScoringSnapshot	   *scoring;
+	TpSegmentGraphSnapshot *segment_snapshot;
+	Oid						text_config_oid;
+	char				  **doc_terms		= NULL;
+	int32				   *doc_frequencies = NULL;
+	int						doc_term_count	= 0;
+	int						raw_doc_length;
+	Datum					query_tsvector_datum;
+	TSVector				query_tsvector;
+	WordEntry			   *query_entries;
+	char				   *query_lexemes_start;
+	TpLocalIndexState	   *index_state;
+	TpDataSource *volatile memtable_src = NULL;
 	float4			 avg_doc_len;
 	int32			 total_docs;
 	float8			 result = 0.0;
@@ -991,22 +875,14 @@ bm25_text_bm25query_score(PG_FUNCTION_ARGS)
 					 errmsg("could not get index state for index OID %u",
 							RelationGetRelid(index_rel))));
 
-		tp_standalone_sources_open(
-				index_state,
-				index_rel,
-				recovery,
-				false,
-				&memtable_src,
-				&segment_snapshot,
-				&locked_state);
+		scoring			 = tp_scoring_snapshot_get(index_rel);
+		segment_snapshot = scoring->graph;
 
 		/*
 		 * If a storage-less inheritance parent was selected, switch to its
-		 * first physical child and acquire that child's source before its
-		 * segment snapshot.
+		 * first physical child and use its scoring snapshot.
 		 */
-		if (!is_partitioned && segment_snapshot->metapage.total_docs == 0 &&
-			(memtable_src == NULL || memtable_src->total_docs == 0) &&
+		if (!is_partitioned && scoring->total_docs == 0 &&
 			indexed_colname != NULL)
 		{
 			Oid first_child_idx =
@@ -1021,30 +897,21 @@ bm25_text_bm25query_score(PG_FUNCTION_ARGS)
 				{
 					Relation old_rel = index_rel;
 
-					tp_standalone_sources_close(
-							&memtable_src, &segment_snapshot, &locked_state);
 					metap = NULL;
 
 					index_rel = index_open(first_child_idx, AccessShareLock);
 					index_close(old_rel, AccessShareLock);
 					index_state = child_state;
 
-					tp_standalone_sources_open(
-							index_state,
-							index_rel,
-							recovery,
-							false,
-							&memtable_src,
-							&segment_snapshot,
-							&locked_state);
+					scoring			 = tp_scoring_snapshot_get(index_rel);
+					segment_snapshot = scoring->graph;
 				}
 			}
 		}
 		cache = tp_standalone_prepare_cache(
 				fcinfo,
 				index_oid,
-				memtable_src,
-				segment_snapshot,
+				scoring,
 				&metap,
 				&text_config_oid,
 				&total_docs,
@@ -1061,11 +928,7 @@ bm25_text_bm25query_score(PG_FUNCTION_ARGS)
 		query_entries		= ARRPTR(query_tsvector);
 		query_lexemes_start = STRPTR(query_tsvector);
 
-		/*
-		 * Tokenize the document before opening segment roots.  Rows that
-		 * contain no uncached query term can score entirely from the IDF
-		 * cache and the lightweight metadata snapshot.
-		 */
+		/* Cache-hit rows need no memtable source or dictionary lookups. */
 		raw_doc_length = tp_tokenize_text(
 				text_arg,
 				text_config_oid,
@@ -1080,27 +943,13 @@ bm25_text_bm25query_score(PG_FUNCTION_ARGS)
 					doc_frequencies,
 					doc_term_count))
 		{
-			tp_standalone_sources_close(
-					&memtable_src, &segment_snapshot, &locked_state);
-			metap = NULL;
-
-			tp_standalone_sources_open(
+			memtable_src = tp_memtable_source_create_for_snapshot(
 					index_state,
 					index_rel,
-					recovery,
-					true,
-					&memtable_src,
-					&segment_snapshot,
-					&locked_state);
-			cache = tp_standalone_prepare_cache(
-					fcinfo,
-					index_oid,
-					memtable_src,
-					segment_snapshot,
-					&metap,
-					&text_config_oid,
-					&total_docs,
-					&avg_doc_len);
+					&segment_snapshot->memtable,
+					scoring->recovery,
+					NULL,
+					0);
 		}
 
 		/*
@@ -1179,14 +1028,6 @@ bm25_text_bm25query_score(PG_FUNCTION_ARGS)
 						}
 					}
 
-					/*
-					 * The snapshot was already upgraded to a full capture
-					 * above if any query term could miss the cache, so the
-					 * roots and the memtable source still describe one
-					 * generation here.  Re-capturing in this loop would
-					 * swap the snapshot while leaving the source bound to
-					 * the previous generation.
-					 */
 					Assert(segment_snapshot->roots_captured);
 
 					segment_doc_freq = tp_segment_roots_get_doc_freq(
@@ -1226,16 +1067,19 @@ bm25_text_bm25query_score(PG_FUNCTION_ARGS)
 		}
 
 		/* Clean up */
-		tp_standalone_sources_close(
-				&memtable_src, &segment_snapshot, &locked_state);
+		if (memtable_src != NULL)
+		{
+			tp_source_close(memtable_src);
+			memtable_src = NULL;
+		}
 		metap = NULL;
 		index_close(index_rel, AccessShareLock);
 		index_rel = NULL;
 	}
 	PG_CATCH();
 	{
-		tp_standalone_sources_close(
-				&memtable_src, &segment_snapshot, &locked_state);
+		if (memtable_src != NULL)
+			tp_source_close(memtable_src);
 		if (index_rel)
 			index_close(index_rel, AccessShareLock);
 		PG_RE_THROW();
