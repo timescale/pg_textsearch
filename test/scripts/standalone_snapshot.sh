@@ -311,7 +311,9 @@ EXECUTE stable_score \gset after_
 SELECT :'before_score'::float8 <> :'after_score'::float8 AS refreshed \gset
 \if :refreshed
 \else
-    \quit 1
+    DO $$ BEGIN
+        RAISE EXCEPTION 'prepared execution retained stale statistics';
+    END $$;
 \endif
 
 -- A suspended cursor keeps its generation across FETCH and nested SQL.
@@ -331,7 +333,9 @@ FETCH stable_cursor \gset next_
 SELECT :'first_score'::float8 = :'next_score'::float8 AS stable \gset
 \if :stable
 \else
-    \quit 1
+    DO $$ BEGIN
+        RAISE EXCEPTION 'cursor statistics changed across FETCH';
+    END $$;
 \endif
 CLOSE stable_cursor;
 COMMIT;
@@ -421,6 +425,47 @@ $$;
 DROP TABLE rewrite_docs;
 SQL
 done
+
+"${PSQL[@]}" <<'SQL' >/dev/null
+SET client_min_messages = warning;
+SET pg_textsearch.bulk_load_threshold = 0;
+SET pg_textsearch.memtable_pages_threshold = 0;
+SET enable_seqscan = off;
+CREATE TABLE rollback_docs (id int, body text);
+CREATE INDEX rollback_idx ON rollback_docs USING bm25(body)
+    WITH (text_config = 'simple', compaction = 'off');
+
+-- Equal-sized tails in different relfiles must not share a cache hit.
+BEGIN;
+REINDEX INDEX rollback_idx;
+INSERT INTO rollback_docs
+SELECT g, 'bravoterm' FROM generate_series(41, 60) g;
+SELECT count(*) = 20 AS warmed FROM (
+    SELECT id FROM rollback_docs
+    ORDER BY body <@> to_bm25query('bravoterm', 'rollback_idx')
+) q \gset
+\if :warmed
+\else
+    DO $$ BEGIN
+        RAISE EXCEPTION 'replacement cache query did not return 20 rows';
+    END $$;
+\endif
+ROLLBACK;
+
+INSERT INTO rollback_docs
+SELECT g, 'alphaterm' FROM generate_series(21, 40) g;
+SELECT count(*) = 20 AS restored_hits FROM (
+    SELECT id FROM rollback_docs
+    ORDER BY body <@> to_bm25query('alphaterm', 'rollback_idx')
+) q \gset
+\if :restored_hits
+\else
+    DO $$ BEGIN
+        RAISE EXCEPTION 'stale cache after REINDEX rollback';
+    END $$;
+\endif
+DROP TABLE rollback_docs;
+SQL
 
 startup_oid=$(
     "${PSQL[@]}" <<'SQL'

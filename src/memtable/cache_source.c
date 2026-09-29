@@ -407,12 +407,18 @@ tp_memtable_cache_source_create_internal(
 
 	if (snapshot != NULL)
 	{
+		bool empty_snapshot = !BlockNumberIsValid(snapshot->head_blkno);
+		bool locator_matches;
+		bool locator_mismatch;
+
 		LWLockAcquire(&memtable->apply_lock, LW_SHARED);
 		LWLockAcquire(&memtable->lock, LW_SHARED);
+		locator_matches = memtable->cursor_locator_valid &&
+						  RelFileLocatorEquals(
+								  memtable->cursor_locator, rel->rd_locator);
+		locator_mismatch = memtable->cursor_locator_valid && !locator_matches;
 		matched_snapshot =
-				memtable->cursor_locator_valid &&
-				RelFileLocatorEquals(
-						memtable->cursor_locator, rel->rd_locator) &&
+				!empty_snapshot && locator_matches &&
 				memtable->cursor_next_blkno == snapshot->tail_blkno &&
 				memtable->cursor_next_off == snapshot->tail_free_offset &&
 				memtable->cursor_gen_spill_count ==
@@ -423,6 +429,15 @@ tp_memtable_cache_source_create_internal(
 		{
 			LWLockRelease(&memtable->lock);
 			LWLockRelease(&memtable->apply_lock);
+		}
+		if (locator_mismatch || empty_snapshot)
+		{
+			/* Drain discarded-file cache bytes even for an empty chain. */
+			if (locator_mismatch)
+				(void)tp_cache_apply_to_tail(state, rel);
+			if (lock_state_to_release != NULL)
+				tp_release_index_lock(lock_state_to_release);
+			return NULL;
 		}
 	}
 

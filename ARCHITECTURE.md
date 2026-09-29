@@ -63,10 +63,11 @@ Snapshots also identify the physical relation file, so a same-backend
 `REINDEX` or `TRUNCATE` captures a new generation rather than reusing old
 block numbers.
 
-A primary reader uses the memtable cache only when its relation file and
-applied endpoint match the captured generation. It holds the cache apply lock
-in shared mode for that scoring call to prevent catch-up from changing the view.
-Otherwise it reads the bounded on-disk chain.
+A primary reader uses the memtable cache only when its physical relation file
+and applied endpoint match the captured chain. It holds the cache apply lock
+in shared mode for that scoring call to prevent catch-up from changing the
+view. Otherwise it reads the bounded on-disk chain. Reads discard caches from
+rolled-back relation files even when the restored chain is empty.
 Readers of an already matching cache share that lock without exclusive
 catch-up admission. The first ranked source also supplies the snapshot's
 corpus totals, avoiding a separate memtable walk.
