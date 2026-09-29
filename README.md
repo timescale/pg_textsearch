@@ -511,6 +511,7 @@ the orchestration infrastructure.
 
 pg_durable must be installed in the same database as the BM25 index.
 Use `manual` compaction for indexes outside `pg_durable.database`.
+This restriction is expected to be lifted in a future version of pg_durable.
 
 ```sql
 CREATE INDEX documents_bm25 ON documents USING bm25(content)
