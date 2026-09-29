@@ -41,6 +41,7 @@ unix_socket_directories = '${SOCKET_DIR}'
 listen_addresses = ''
 shared_preload_libraries = 'pg_textsearch'
 autovacuum = off
+logging_collector = off
 EOF
 
 if ! pg_ctl start -D "${DATA_DIR}" -l "${LOGFILE}" -w >/dev/null; then
@@ -111,7 +112,6 @@ FROM generate_series(1, 65) term_no \gset
 SELECT count(*)
 FROM docs
 WHERE body <@> to_bm25query(:'query_text', 'docs_bm25') < 0;
-SELECT pg_sleep(0.1);
 SQL
 )
 matches="$(head -1 <<<"${matches}")"
@@ -197,7 +197,6 @@ SELECT count(*)
 FROM inherited_docs
 WHERE body <@>
           to_bm25query('inheritcache', 'inherited_docs_bm25') < 0;
-SELECT pg_sleep(0.1);
 SQL
 )
 inherit_matches="$(head -1 <<<"${inherit_matches}")"

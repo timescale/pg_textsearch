@@ -3,7 +3,9 @@ SET client_min_messages = warning;
 CREATE EXTENSION pg_textsearch;
 CREATE EXTENSION injection_points;
 CREATE EXTENSION dblink;
-CREATE TABLE scoring_readers (id int, body text);
+CREATE TEMP TABLE scoring_sessions (name text PRIMARY KEY, pid int);
+CREATE TABLE scoring_readers (id int, body text)
+    WITH (autovacuum_enabled = false);
 CREATE INDEX scoring_readers_idx ON scoring_readers USING bm25(body)
     WITH (text_config = 'simple');
 INSERT INTO scoring_readers VALUES (1, 'alpha'), (2, 'needle');
@@ -14,12 +16,15 @@ id
 2
 (1 row)
 SELECT dblink_connect('reader', format(
-    'host=%s port=%s dbname=%s application_name=scoring_reader',
+    'host=%s port=%s dbname=%s',
     current_setting('unix_socket_directories'),
     current_setting('port'), current_database()));
 dblink_connect
 OK
 (1 row)
+INSERT INTO scoring_sessions
+SELECT 'reader', pid FROM dblink('reader', 'SELECT pg_backend_pid()')
+    AS t(pid int);
 SELECT dblink_exec('reader', 'SET enable_seqscan = off');
 dblink_exec
 SET
@@ -43,19 +48,28 @@ dblink_send_query
 1
 (1 row)
 DO $$
+DECLARE
+    deadline timestamptz := clock_timestamp() + interval '30 seconds';
 BEGIN
-    FOR attempt IN 1..500 LOOP
+    LOOP
         PERFORM pg_stat_clear_snapshot();
         IF EXISTS (
             SELECT 1 FROM pg_stat_activity
-            WHERE application_name = 'scoring_reader'
+            JOIN scoring_sessions USING (pid)
+            WHERE name = 'reader'
+              AND wait_event_type = 'InjectionPoint'
               AND wait_event = 'pg-textsearch-scoring-source'
         ) THEN
             RETURN;
         END IF;
+        IF dblink_is_busy('reader') = 0 THEN
+            RAISE EXCEPTION 'reader finished without reaching scoring pause';
+        END IF;
+        IF clock_timestamp() >= deadline THEN
+            RAISE EXCEPTION 'timed out waiting for scoring pause';
+        END IF;
         PERFORM pg_sleep(0.01);
     END LOOP;
-    RAISE EXCEPTION 'reader did not reach scoring pause';
 END
 $$;
 -- A reader of the unchanged cache must finish while scoring is paused.
@@ -66,6 +80,9 @@ SELECT dblink_connect('fast', format(
 dblink_connect
 OK
 (1 row)
+INSERT INTO scoring_sessions
+SELECT 'fast', pid FROM dblink('fast', 'SELECT pg_backend_pid()')
+    AS t(pid int);
 SELECT dblink_exec('fast', 'SET enable_seqscan = off');
 dblink_exec
 SET
@@ -78,9 +95,24 @@ dblink_send_query
 1
 (1 row)
 DO $$
+DECLARE
+    deadline timestamptz := clock_timestamp() + interval '30 seconds';
+    wait_type text;
+    wait_name text;
 BEGIN
-    FOR attempt IN 1..500 LOOP
+    LOOP
         EXIT WHEN dblink_is_busy('fast') = 0;
+        PERFORM pg_stat_clear_snapshot();
+        SELECT wait_event_type, wait_event INTO wait_type, wait_name
+        FROM pg_stat_activity JOIN scoring_sessions USING (pid)
+        WHERE name = 'fast';
+        -- Detect the regression by its lock wait, not elapsed time.
+        EXIT WHEN wait_type = 'LWLock'
+              AND wait_name = 'tapir_cache_apply_lock';
+        IF clock_timestamp() >= deadline THEN
+            RAISE EXCEPTION 'fast reader made no progress: %/%',
+                wait_type, wait_name;
+        END IF;
         PERFORM pg_sleep(0.01);
     END LOOP;
 END
@@ -115,6 +147,7 @@ SELECT dblink_disconnect('reader');
 dblink_disconnect
 OK
 (1 row)
+DROP TABLE scoring_sessions;
 DROP TABLE scoring_readers;
 DROP EXTENSION dblink;
 DROP EXTENSION injection_points;
