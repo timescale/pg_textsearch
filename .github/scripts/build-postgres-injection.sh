@@ -25,3 +25,4 @@ cd "${source_dir}"
 make -j"$(nproc)"
 make install
 make -C src/test/modules/injection_points install
+make -C contrib/dblink install

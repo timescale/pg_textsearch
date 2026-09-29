@@ -71,6 +71,8 @@ jobs:
         cd ~/$PG_SRC_DIR
         make install
         make -C src/test/modules/injection_points install
+        make -C contrib/dblink install
+        test -f "$HOME/$PG_INSTALL_DIR/share/extension/dblink.control"
         # On cache hits the build step is skipped, so re-run the
         # pg_walinspect build here (no-op when already built) and
         # always install it.

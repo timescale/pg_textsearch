@@ -290,6 +290,7 @@ jobs:
           grep -q -- '--enable-injection-points'
         test -f \
           "$PGPREFIX/share/extension/injection_points.control"
+        test -f "$PGPREFIX/share/extension/dblink.control"
 
     - name: Build and install pg_textsearch
       run: |
@@ -411,7 +412,7 @@ jobs:
       uses: actions/cache@v4
       with:
         path: ${{ env.PGPREFIX }}
-        key: pg19-${{ env.PG19_REF }}-injection-v1-${{ matrix.cc }}-${{ runner.os }}
+        key: pg19-${{ env.PG19_REF }}-injection-v2-${{ matrix.cc }}-${{ runner.os }}
 
     - name: Build PostgreSQL ${{ env.PG19_REF }} from source
       if: steps.pgcache.outputs.cache-hit != 'true'
@@ -425,6 +426,7 @@ jobs:
         make -j"$(nproc)"
         make install
         make -C src/test/modules/injection_points install
+        make -C contrib/dblink install
 
     - name: Verify injection-point build
       run: |
@@ -432,6 +434,8 @@ jobs:
           grep -q -- '--enable-injection-points'
         test -f \
           "$("$PGPREFIX/bin/pg_config" --sharedir)/extension/injection_points.control"
+        test -f \
+          "$("$PGPREFIX/bin/pg_config" --sharedir)/extension/dblink.control"
 
     - name: Build extension with ${{ matrix.cc }}
       run: |
@@ -673,6 +677,8 @@ jobs:
         cd ~/$PG_SRC_DIR
         make install
         make -C src/test/modules/injection_points install
+        make -C contrib/dblink install
+        test -f "$HOME/$PG_INSTALL_DIR/share/extension/dblink.control"
         ~/$PG_INSTALL_DIR/bin/pg_config --version
 
     - name: Verify sanitizers are enabled

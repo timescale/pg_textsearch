@@ -44,6 +44,7 @@ fi
 
 make -j"$(nproc)"
 make -C src/test/modules/injection_points -j"$(nproc)"
+make -C contrib/dblink -j"$(nproc)"
 
 if [[ "${build_walinspect}" == "true" ]]; then
 	make -C contrib/pg_walinspect -j"$(nproc)"
