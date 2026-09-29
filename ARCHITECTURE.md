@@ -97,6 +97,12 @@ TRUNCATE, and rollback must never resume a cursor in a replacement file.
 Chain-page counts are lazily recounted against that same file identity
 before spill threshold checks; shutdown spills skip a busy recount lock.
 
+Index drops free registry state only at commit, before relation locks are
+released. Transaction or savepoint rollback preserves allocations referenced
+by other backends; releasing a savepoint transfers pending cleanup to its
+parent. `PREPARE TRANSACTION` rejects pending index-drop cleanup, as it does
+initial index creation, because this ownership is backend-local.
+
 `pg_textsearch.memory_limit` has three budget tiers:
 
 - per-index per-record growth guard (`limit / 8`): reject a record whose

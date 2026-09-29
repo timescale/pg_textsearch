@@ -304,7 +304,10 @@ test-cross-database-registry:
 	@echo "Running cross-database registry regression tests (issue #464)..."
 	@cd test/scripts && ./cross_database_registry.sh
 
-test-shell: test-concurrency test-recovery test-segment test-cic test-multi-index test-reindex test-cross-database-registry
+test-drop-rollback:
+	@bash test/scripts/drop_index_rollback.sh
+
+test-shell: test-concurrency test-recovery test-segment test-cic test-multi-index test-reindex test-cross-database-registry test-drop-rollback
 	@echo "All shell-based tests completed"
 
 test-all: test test-shell test-replication
@@ -459,6 +462,7 @@ help:
 	@echo "  make test-reindex     - Run multi-backend reindex regression tests (issue #390)"
 	@echo "  make test-durable     - Run managed pg_durable compaction tests"
 	@echo "  make test-cross-database-registry - Run issue #464 registry regression"
+	@echo "  make test-drop-rollback - Run multi-backend DROP rollback regression"
 	@echo "  make expected     - Generate expected output files from test results"
 	@echo ""
 	@echo "Code formatting targets:"
@@ -493,7 +497,7 @@ help:
 	test-recovery test-segment test-stress test-cic test-chinese \
 	test-replication test-replication-extended \
 	test-logical-replication test-multi-index test-reindex \
-	test-cross-database-registry \
+	test-cross-database-registry test-drop-rollback \
 	test-shell test-all expected lint-format format format-check \
 	format-diff format-single coverage coverage-build coverage-clean \
 	coverage-report help

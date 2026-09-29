@@ -87,6 +87,12 @@ jobs:
         export PATH="/usr/lib/postgresql/${{ matrix.pg_version }}/bin:$PATH"
         make test-reindex
 
+    - name: Run DROP rollback regression
+      timeout-minutes: 5
+      run: |
+        export PATH="/usr/lib/postgresql/${{ matrix.pg_version }}/bin:$PATH"
+        make test-drop-rollback
+
     - name: Run regression tests
       timeout-minutes: 10
       run: |

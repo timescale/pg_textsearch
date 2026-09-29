@@ -393,6 +393,16 @@ typedef struct TpDropDatabaseContext
 /* Active DROP DATABASE invocation, including nested utility hooks. */
 static TpDropDatabaseContext *active_drop_database_context = NULL;
 
+typedef struct TpPendingIndexDrop
+{
+	struct TpPendingIndexDrop *next;
+	Oid						   index_oid;
+	SubTransactionId		   subid;
+} TpPendingIndexDrop;
+
+/* Allocated in TopTransactionContext; shared state survives until commit. */
+static TpPendingIndexDrop *tp_pending_index_drops = NULL;
+
 /* Shared memory size calculation */
 static void tp_shmem_request(void);
 
@@ -1296,8 +1306,19 @@ tp_object_access(
 					tp_registry_key(MyDatabaseId, objectId)))
 			return;
 
-		/* Cleanup shared memory and unregister from registry */
-		tp_cleanup_index_shared_memory(objectId);
+		/*
+		 * Other backends retain shared-state pointers across transactions.
+		 * A rollback must leave those allocations alive.
+		 */
+		{
+			TpPendingIndexDrop *drop = MemoryContextAlloc(
+					TopTransactionContext, sizeof(TpPendingIndexDrop));
+
+			drop->index_oid		   = objectId;
+			drop->subid			   = GetCurrentSubTransactionId();
+			drop->next			   = tp_pending_index_drops;
+			tp_pending_index_drops = drop;
+		}
 	}
 }
 
@@ -1374,10 +1395,19 @@ tp_xact_callback(XactEvent event, void *arg pg_attribute_unused())
 		/* Reset bulk load counters for next transaction */
 		tp_reset_bulk_load_counters();
 		tp_reset_managed_intents();
+		/* Commit is irrevocable, but relation locks are still held. */
+		while (tp_pending_index_drops != NULL)
+		{
+			TpPendingIndexDrop *drop = tp_pending_index_drops;
+
+			tp_pending_index_drops = drop->next;
+			tp_cleanup_index_shared_memory(drop->index_oid);
+		}
 		break;
 
 	case XACT_EVENT_ABORT:
 	case XACT_EVENT_PARALLEL_ABORT:
+		tp_pending_index_drops = NULL;
 		/* Remove shared state owned by an aborted initial CREATE INDEX. */
 		tp_cleanup_build_mode_on_abort();
 		/* Release all index locks held by this backend */
@@ -1388,6 +1418,17 @@ tp_xact_callback(XactEvent event, void *arg pg_attribute_unused())
 		break;
 
 	case XACT_EVENT_PRE_PREPARE:
+		if (tp_pending_index_drops != NULL)
+			ereport(ERROR,
+					(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+					 errmsg("cannot prepare a transaction that dropped a "
+							"pg_textsearch index"),
+					 errdetail(
+							 "Pending index shared-state cleanup is "
+							 "backend-local and cannot be serialized "
+							 "for two-phase commit."),
+					 errhint("Commit or roll back the DROP INDEX before "
+							 "preparing the transaction.")));
 		if (tp_has_initial_create_ownership())
 			ereport(ERROR,
 					(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
@@ -1438,14 +1479,34 @@ tp_subxact_callback(
 		SubTransactionId parentSubid,
 		void *arg		 pg_attribute_unused())
 {
+	TpPendingIndexDrop **link;
+
 	switch (event)
 	{
 	case SUBXACT_EVENT_ABORT_SUB:
+		for (link = &tp_pending_index_drops; *link != NULL;)
+		{
+			TpPendingIndexDrop *drop = *link;
+
+			if (drop->subid == mySubid)
+			{
+				*link = drop->next;
+				pfree(drop);
+			}
+			else
+				link = &drop->next;
+		}
 		tp_cleanup_subxact_abort(mySubid);
 		tp_abort_managed_intents(mySubid);
 		break;
 
 	case SUBXACT_EVENT_COMMIT_SUB:
+		for (TpPendingIndexDrop *drop = tp_pending_index_drops; drop != NULL;
+			 drop					  = drop->next)
+		{
+			if (drop->subid == mySubid)
+				drop->subid = parentSubid;
+		}
 		tp_promote_subxact_states(mySubid, parentSubid);
 		tp_promote_managed_intents(mySubid, parentSubid);
 		break;
