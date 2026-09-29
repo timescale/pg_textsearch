@@ -174,8 +174,7 @@ LIMIT 10;
 ```
 
 Post-filtered scans automatically grow their internal scoring batch until the
-`LIMIT` is filled or matches are exhausted. Deep scans can use more memory;
-allocation limits raise an error rather than silently truncate results.
+`LIMIT` is filled or matches are exhausted.
 
 ## Indexing
 
