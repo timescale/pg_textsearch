@@ -1,0 +1,46 @@
+-- Uses the existing test module installed in injection-enabled CI builds.
+-- This case itself does not require injection points.
+SET client_min_messages = warning;
+CREATE EXTENSION pg_textsearch;
+CREATE EXTENSION pg_textsearch_test;
+CREATE TABLE hint_copy_docs (id int, body text);
+INSERT INTO hint_copy_docs
+SELECT g, 'common' FROM generate_series(1, 1000) g;
+CREATE INDEX hint_copy_idx ON hint_copy_docs USING bm25(body)
+    WITH (text_config='english');
+ANALYZE hint_copy_docs;
+SET enable_seqscan = off;
+-- Validate zeroed padding, full datum copying and plan serialization.
+-- Use both implicit index resolution and an explicitly named index.
+SELECT pg_textsearch_test_query_hint_roundtrip($q$
+    SELECT id FROM hint_copy_docs WHERE id < 100
+    ORDER BY body <@> 'common'::bm25query LIMIT 10 OFFSET 2
+$q$, 12) AS typed_query_roundtrip;
+ typed_query_roundtrip 
+-----------------------
+ t
+(1 row)
+
+SELECT pg_textsearch_test_query_hint_roundtrip($q$
+    SELECT id FROM hint_copy_docs WHERE id < 100
+    ORDER BY body <@> to_bm25query('common', 'hint_copy_idx') LIMIT 20
+$q$, 20) AS explicit_query_roundtrip;
+ explicit_query_roundtrip 
+--------------------------
+ t
+(1 row)
+
+-- Exercise a large query value, where redundant datum copies cost more.
+SELECT pg_textsearch_test_query_hint_roundtrip(format($q$
+    SELECT id FROM hint_copy_docs WHERE id < 100
+    ORDER BY body <@> %L::bm25query LIMIT 10
+$q$, repeat('common ', 10000)), 10) AS large_query_roundtrip;
+ large_query_roundtrip 
+-----------------------
+ t
+(1 row)
+
+RESET enable_seqscan;
+DROP TABLE hint_copy_docs;
+DROP EXTENSION pg_textsearch_test;
+DROP EXTENSION pg_textsearch;

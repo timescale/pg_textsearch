@@ -72,5 +72,15 @@ LANGUAGE C VOLATILE STRICT PARALLEL RESTRICTED;
 COMMENT ON FUNCTION @extschema@.bm25_needs_compaction(regclass) IS
     'Report whether bm25_compact_step would run a pass on this index. A level that holds segments_per_level segments but cannot be reduced -- every candidate group exceeds max_segment_size -- reports false, so this is safe as a retry condition.';
 
+-- Session-local count of BM25 scoring passes.  Scan depth is invisible
+-- in query results (Filter + Limit + backoff produce the exact top-k
+-- either way), so this is the signal that a filtered top-k scan was
+-- seeded from its own filter rather than another scan's (issue #435).
+CREATE FUNCTION @extschema@.bm25_debug_scoring_passes(
+    reset boolean DEFAULT false)
+    RETURNS bigint
+    AS 'MODULE_PATHNAME', 'tp_debug_scoring_passes'
+    LANGUAGE C VOLATILE STRICT;
+
 ALTER OPERATOR FAMILY @extschema@.text_bm25_ops USING bm25
     ADD OPERATOR 1 pg_catalog.@@ (text, pg_catalog.tsquery);

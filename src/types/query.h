@@ -24,6 +24,15 @@
  * Flags for TpQuery
  */
 #define TPQUERY_FLAG_EXPLICIT_INDEX 0x01 /* Index was explicitly specified */
+#define TPQUERY_FLAG_SEED_HINT		0x02 /* Planner-only filtered-seed hint */
+#define TPQUERY_SEED_HINT_MAGIC		0x54505348U /* "TPSH" */
+
+typedef struct TpQuerySeedHint
+{
+	uint32 magic;
+	int64  k;
+	double selectivity;
+} TpQuerySeedHint;
 
 /*
  * tpquery data type structure
@@ -73,3 +82,6 @@ Oid	  get_tpquery_index_oid(TpQuery *tpquery);
 char *get_tpquery_text(TpQuery *tpquery);
 bool  tpquery_has_index(TpQuery *tpquery);
 bool  tpquery_is_explicit_index(TpQuery *tpquery);
+TpQuery *
+tpquery_copy_with_seed_hint(TpQuery *tpquery, int64 k, double selectivity);
+bool tpquery_get_seed_hint(TpQuery *tpquery, int64 *k, double *selectivity);

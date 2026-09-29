@@ -98,7 +98,7 @@ REGRESS = abort aerodocs basic binary_io bmw bmw_skip_advance boolean_queries bu
 INJECTION_REGRESS = scoring_injection merge_injection compaction_injection \
 	compaction_error_injection \
 	force_merge_injection segment_reclaim_injection \
-	vacuum_rebuild_injection
+	vacuum_rebuild_injection query_hint_roundtrip
 REGRESS_OPTS = --inputdir=test --outputdir=test
 
 PG_CONFIG ?= pg_config
@@ -139,7 +139,8 @@ install-test-injection test-injection-sql test-injection-shell:
 endif
 
 # SQL regression tests
-test: test-segment-io-limits test-mixed-update-query-benchmark
+test: test-segment-io-limits test-mixed-update-query-benchmark \
+	test-filtered-seed-benchmark
 	@echo "Running SQL regression tests..."
 	@$(pg_regress_installcheck) $(REGRESS_OPTS) $(REGRESS)
 
@@ -157,12 +158,17 @@ test-segment-io-limits:
 test-mixed-update-query-benchmark:
 	@./test/scripts/mixed_update_query_benchmark_test.sh
 
+test-filtered-seed-benchmark:
+	@bash test/scripts/filtered_seed_benchmark_test.sh
+
 test-durable:
 	@echo "Running managed pg_durable compaction tests..."
 	@cd test/scripts && ./durable_compaction.sh
 
-installcheck: test-segment-io-limits test-mixed-update-query-benchmark
-test-local: test-segment-io-limits test-mixed-update-query-benchmark
+installcheck: test-segment-io-limits test-mixed-update-query-benchmark \
+	test-filtered-seed-benchmark
+test-local: test-segment-io-limits test-mixed-update-query-benchmark \
+	test-filtered-seed-benchmark
 
 # Custom local test target with dedicated PostgreSQL instance
 test-local: install
@@ -475,6 +481,7 @@ help:
 
 .PHONY: \
 	test test-segment-io-limits test-mixed-update-query-benchmark \
+	test-filtered-seed-benchmark \
 	test-durable \
 	test-injection-sql test-injection-shell install-test-injection \
 	clean-test-dirs installcheck test-rls-locking test-concurrency \

@@ -45,6 +45,7 @@
 #include <utils/syscache.h>
 
 #include "compat.h"
+#include "index/limit.h"
 #include "planner/hooks.h"
 #include "scoring/bm25.h"
 #include "types/query.h"
@@ -107,20 +108,12 @@ typedef struct PlanningContext
 static PlanningContext *current_planning_context = NULL;
 
 /*
- * Flag to track if the current query has any BM25 operators.
- * Set during post_parse_analyze, used in planner_hook to skip expensive
- * plan tree walks for non-BM25 queries.
- */
-static bool query_has_bm25_operators = false;
-
-/*
  * Context for query tree mutation
  */
 typedef struct ResolveIndexContext
 {
 	Query		 *query;
 	BM25OidCache *oid_cache;
-	bool		  found_bm25_operator; /* Set to true if any BM25 op found */
 } ResolveIndexContext;
 
 /*
@@ -619,7 +612,7 @@ create_resolved_tpquery_const(Const *original, Oid index_oid)
 			original->consttype,
 			original->consttypmod,
 			original->constcollid,
-			VARSIZE(new_tpquery),
+			-1, /* bm25query is variable-length, including private hints */
 			PointerGetDatum(new_tpquery),
 			false,
 			false);
@@ -665,8 +658,6 @@ transform_tpquery_opexpr(OpExpr *opexpr, ResolveIndexContext *context)
 		opexpr->opno != oids->textarray_tpquery_operator_oid)
 		return NULL;
 
-	/* Mark that we found a BM25 operator for later optimization */
-	context->found_bm25_operator = true;
 	if (list_length(opexpr->args) != 2)
 		return NULL;
 
@@ -807,8 +798,6 @@ transform_text_text_opexpr(OpExpr *opexpr, ResolveIndexContext *context)
 	if (opexpr->opno != oids->text_text_operator_oid && !is_text_array_op)
 		return NULL;
 
-	/* Mark that we found a BM25 operator for later optimization */
-	context->found_bm25_operator = true;
 	if (list_length(opexpr->args) != 2)
 		return NULL;
 
@@ -980,9 +969,8 @@ resolve_indexes_in_query(Query *query)
 	if (!get_bm25_oids(&oid_cache))
 		return;
 
-	context.query				= query;
-	context.oid_cache			= &oid_cache;
-	context.found_bm25_operator = false;
+	context.query	  = query;
+	context.oid_cache = &oid_cache;
 
 	/* Process target list */
 	resolve_indexes_in_targetlist(query, &context);
@@ -998,13 +986,6 @@ resolve_indexes_in_query(Query *query)
 
 	/* Process subqueries */
 	resolve_indexes_in_subqueries(query);
-
-	/*
-	 * Track if this query has BM25 operators for the planner hook.
-	 * This avoids expensive plan tree walks for non-BM25 queries.
-	 */
-	if (context.found_bm25_operator)
-		query_has_bm25_operators = true;
 }
 
 /*
@@ -1021,9 +1002,6 @@ tp_post_parse_analyze_hook(
 		Query				   *query,
 		TP_JUMBLE_STATE *jstate pg_attribute_unused())
 {
-	/* Reset flag for this query - will be set if BM25 operators found */
-	query_has_bm25_operators = false;
-
 	/*
 	 * Skip index resolution if we're not in a valid transaction state.
 	 * This happens when a statement is parsed after an error in a
@@ -1481,6 +1459,31 @@ typedef struct CollectExplicitIndexContext
 	List		 *requirements; /* List of ExplicitIndexRequirement */
 } CollectExplicitIndexContext;
 
+/* Detect BM25 operators, including those in nested queries. */
+static bool
+has_bm25_operator_walker(Node *node, BM25OidCache *oids)
+{
+	if (node == NULL)
+		return false;
+
+	if (IsA(node, OpExpr))
+	{
+		OpExpr *opexpr = (OpExpr *)node;
+
+		if (opexpr->opno == oids->text_tpquery_operator_oid ||
+			opexpr->opno == oids->textarray_tpquery_operator_oid ||
+			opexpr->opno == oids->text_text_operator_oid ||
+			opexpr->opno == oids->textarray_text_operator_oid)
+			return true;
+	}
+
+	if (IsA(node, Query))
+		return query_tree_walker(
+				(Query *)node, has_bm25_operator_walker, oids, 0);
+
+	return expression_tree_walker(node, has_bm25_operator_walker, oids);
+}
+
 /*
  * Walker to find explicit index requirements in query expressions.
  */
@@ -1489,6 +1492,10 @@ collect_explicit_indexes_walker(
 		Node *node, CollectExplicitIndexContext *context)
 {
 	if (node == NULL)
+		return false;
+
+	/* Nested requirements must not constrain another query's index paths. */
+	if (IsA(node, Query))
 		return false;
 
 	if (IsA(node, OpExpr))
@@ -1584,7 +1591,7 @@ collect_explicit_index_requirements(Query *parse, BM25OidCache *oid_cache)
 	context.oid_cache	 = oid_cache;
 	context.requirements = NIL;
 
-	/* Walk the entire query tree */
+	/* Collect requirements at this query level only. */
 	query_tree_walker(parse, collect_explicit_indexes_walker, &context, 0);
 
 	return context.requirements;
@@ -1926,6 +1933,129 @@ validate_explicit_index_usage(Plan *plan, BM25OidCache *oids)
 #define TP_PLANNER_HOOK_PASS_EXTRA
 #endif
 
+static bool
+tp_limit_const_value(Node *node, int64 *value)
+{
+	Const *c;
+
+	if (node == NULL || !IsA(node, Const))
+		return false;
+	c = (Const *)node;
+	if (c->constisnull || c->consttype != INT8OID)
+		return false;
+	*value = DatumGetInt64(c->constvalue);
+	return true;
+}
+
+static bool
+tp_limit_k(Limit *limit, int64 *k)
+{
+	int64 count;
+	int64 offset = 0;
+
+	if (!tp_limit_const_value(limit->limitCount, &count) || count <= 0)
+		return false;
+	if (limit->limitOffset != NULL &&
+		!tp_limit_const_value(limit->limitOffset, &offset))
+		return false;
+	if (offset < 0)
+		return false;
+	if (count >= INT_MAX - offset)
+		return false;
+	*k = count + offset;
+	return true;
+}
+
+static void
+tp_attach_seed_hint(
+		IndexScan *scan, Limit *limit, List *rtable, BM25OidCache *oids)
+{
+	ListCell	  *lc;
+	int64		   k;
+	RangeTblEntry *rte;
+	Relation	   heap;
+	double		   selectivity = 0.0;
+
+	if (list_length(scan->indexorderby) != 1 || scan->indexqual != NIL ||
+		!tp_limit_k(limit, &k) || scan->scan.scanrelid <= 0)
+		return;
+	if (get_rel_relam(scan->indexid) != oids->bm25_am_oid)
+		return;
+	rte = rt_fetch(scan->scan.scanrelid, rtable);
+	if (rte == NULL || !OidIsValid(rte->relid))
+		return;
+	heap = table_open(rte->relid, AccessShareLock);
+	if (scan->scan.plan.qual != NIL && heap->rd_rel->reltuples > 0)
+		selectivity = scan->scan.plan.plan_rows / heap->rd_rel->reltuples;
+	table_close(heap, AccessShareLock);
+
+	foreach (lc, scan->indexorderby)
+	{
+		Node *expr = (Node *)lfirst(lc);
+		if (IsA(expr, OpExpr) && list_length(((OpExpr *)expr)->args) == 2)
+		{
+			Node *right = lsecond(((OpExpr *)expr)->args);
+			if (IsA(right, Const) &&
+				((Const *)right)->consttype == oids->tpquery_type_oid &&
+				!((Const *)right)->constisnull)
+			{
+				Const	*original = (Const *)right;
+				TpQuery *query	  = (TpQuery *)DatumGetPointer(
+						   original->constvalue);
+				TpQuery *hinted =
+						tpquery_copy_with_seed_hint(query, k, selectivity);
+
+				Const *replacement = makeConst(
+						original->consttype,
+						original->consttypmod,
+						original->constcollid,
+						-1,
+						PointerGetDatum(hinted),
+						false,
+						false);
+
+				replacement->location = original->location;
+				/* Original nodes may be shared; their context owns them. */
+				lsecond(((OpExpr *)expr)->args) = replacement;
+			}
+		}
+	}
+}
+
+static void
+tp_attach_seed_hints(Plan *plan, List *rtable, BM25OidCache *oids)
+{
+	ListCell *lc;
+	if (plan == NULL)
+		return;
+	if (IsA(plan, Limit) && plan->lefttree != NULL &&
+		IsA(plan->lefttree, IndexScan))
+		tp_attach_seed_hint(
+				(IndexScan *)plan->lefttree, (Limit *)plan, rtable, oids);
+	tp_attach_seed_hints(plan->lefttree, rtable, oids);
+	tp_attach_seed_hints(plan->righttree, rtable, oids);
+	switch (nodeTag(plan))
+	{
+	case T_Append:
+		foreach (lc, ((Append *)plan)->appendplans)
+			tp_attach_seed_hints(lfirst(lc), rtable, oids);
+		break;
+	case T_MergeAppend:
+		foreach (lc, ((MergeAppend *)plan)->mergeplans)
+			tp_attach_seed_hints(lfirst(lc), rtable, oids);
+		break;
+	case T_SubqueryScan:
+		tp_attach_seed_hints(((SubqueryScan *)plan)->subplan, rtable, oids);
+		break;
+	case T_CustomScan:
+		foreach (lc, ((CustomScan *)plan)->custom_plans)
+			tp_attach_seed_hints(lfirst(lc), rtable, oids);
+		break;
+	default:
+		break;
+	}
+}
+
 static PlannedStmt *
 tp_planner_hook(
 		Query					 *parse,
@@ -1938,6 +2068,7 @@ tp_planner_hook(
 	PlanningContext	 planning_context;
 	PlanningContext *saved_context;
 	List			*explicit_indexes;
+	bool			 query_has_bm25_operators;
 
 	/* Get BM25 OIDs - if extension not installed, just pass through */
 	if (!get_bm25_oids(&oid_cache))
@@ -1965,7 +2096,12 @@ tp_planner_hook(
 	 * without explicit index names, this avoids any overhead in the
 	 * set_rel_pathlist_hook.
 	 */
-	explicit_indexes = collect_explicit_index_requirements(parse, &oid_cache);
+	query_has_bm25_operators =
+			has_bm25_operator_walker((Node *)parse, &oid_cache);
+	explicit_indexes =
+			query_has_bm25_operators
+					? collect_explicit_index_requirements(parse, &oid_cache)
+					: NIL;
 
 	if (explicit_indexes != NIL)
 	{
@@ -2012,7 +2148,7 @@ tp_planner_hook(
 	 * Post-process the plan if it may have BM25 index scans.
 	 *
 	 * Performance optimization: Only check for BM25 IndexScans if the
-	 * post_parse_analyze hook found BM25 operators. This avoids expensive
+	 * current query contains BM25 operators. This avoids expensive
 	 * syscache lookups in plan_has_bm25_indexscan() for non-BM25 queries.
 	 */
 	if (query_has_bm25_operators && result->planTree != NULL &&
@@ -2028,6 +2164,21 @@ tp_planner_hook(
 		validate_explicit_index_usage(result->planTree, &oid_cache);
 
 		replace_scores_in_plan(result->planTree, &oid_cache);
+	}
+
+	/*
+	 * Inspect the actual plan, including separately stored SubPlans.
+	 * A saved query can be planned after another statement has reset the
+	 * post-parse flag, so that flag cannot gate hint attachment.
+	 */
+	if (result->planTree != NULL)
+	{
+		ListCell *lc;
+
+		tp_attach_seed_hints(result->planTree, result->rtable, &oid_cache);
+		foreach (lc, result->subplans)
+			tp_attach_seed_hints(
+					(Plan *)lfirst(lc), result->rtable, &oid_cache);
 	}
 
 	return result;

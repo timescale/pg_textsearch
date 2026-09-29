@@ -16,6 +16,9 @@ Performance benchmarks for the pg_textsearch BM25 full-text search extension.
 
 # Run all benchmarks
 ./runner/run_benchmark.sh all
+
+# Measure the filtered-seed top-K optimization (synthetic, no download)
+./run_filtered_seed.sh
 ```
 
 ## Datasets
@@ -37,6 +40,21 @@ Performance benchmarks for the pg_textsearch BM25 full-text search extension.
 - **Purpose:** Real-world document lengths and vocabulary
 - **Source:** [Wikimedia Dumps](https://dumps.wikimedia.org/)
 - **Time:** Varies significantly by size
+
+### Filtered-Seed Top-K (Synthetic, Self-Contained)
+- **Size:** Configurable, default 200K synthetic documents
+- **Purpose:** Measure `pg_textsearch.filtered_seed` on filtered top-k
+  queries (`WHERE <filter> ORDER BY <score> LIMIT k`), where an
+  unseeded scan pays executor backoff re-drives
+- **Script:** `./run_filtered_seed.sh [ndocs]`
+- **Time:** ~10 seconds at the default size; no download needed
+- **Method:** Toggles the GUC over identical data and queries. Reports
+  median latency and, where `bm25_debug_scoring_passes` exists, scoring
+  passes. Drops cells unless every arm uses the BM25 index; result
+  parity is covered separately by the `filtered_seed` regression
+- **Note:** Compare only the *seed on* columns across versions. The
+  *seed off* baseline is not stable across the #435 change, because the
+  `LIMIT` binding became per-scan even with seeding disabled
 
 ## Benchmark Runner
 

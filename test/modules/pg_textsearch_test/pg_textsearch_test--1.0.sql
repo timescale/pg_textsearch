@@ -21,6 +21,11 @@ RETURNS void
 AS 'MODULE_PATHNAME', 'pg_textsearch_test_attach_reclaim_horizon_hold'
 LANGUAGE C STRICT PARALLEL UNSAFE;
 
+CREATE FUNCTION pg_textsearch_test_query_hint_roundtrip(query text, k bigint)
+RETURNS boolean
+AS 'MODULE_PATHNAME', 'pg_textsearch_test_query_hint_roundtrip'
+LANGUAGE C STRICT PARALLEL UNSAFE;
+
 CREATE FUNCTION pg_textsearch_test_attach_legacy_segment(total_tokens bigint)
 RETURNS void
 AS 'MODULE_PATHNAME', 'pg_textsearch_test_attach_legacy_segment'
