@@ -5042,6 +5042,7 @@ tp_process_utility(
 			MemoryContextAllocZero(TopMemoryContext, sizeof(*utility_context));
 	initialize_utility_context(utility_context, pstmt->utilityStmt);
 	current_utility_context = utility_context;
+	tp_build_progress_set_owner(utility_context);
 
 	PG_TRY();
 	{
@@ -5087,6 +5088,7 @@ tp_process_utility(
 		}
 
 		current_utility_context = utility_context->previous;
+		tp_build_progress_set_owner(utility_context->previous);
 		list_free(utility_context->altered_relids);
 		list_free(utility_context->hierarchy_relids);
 		pfree(utility_context);
@@ -5099,6 +5101,7 @@ tp_process_utility(
 			utility_context->build_progress_started = false;
 			tp_build_progress_abort();
 		}
+		tp_build_progress_set_owner(utility_context->previous);
 		if (utility_context->rls_ddl_lock_acquired)
 		{
 			release_rls_ddl_lock(

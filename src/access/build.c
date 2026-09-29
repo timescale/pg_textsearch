@@ -68,12 +68,14 @@
 typedef struct TpBuildProgress
 {
 	struct TpBuildProgress *previous;
+	const void			   *owner;
 	int						partition_count;
 	uint64					total_docs;
 	uint64					total_len;
 } TpBuildProgress;
 
-static TpBuildProgress *build_progress = NULL;
+static TpBuildProgress *build_progress		 = NULL;
+static const void	   *build_progress_owner = NULL;
 
 typedef struct TpPreparedSpill
 {
@@ -88,6 +90,12 @@ typedef struct TpPreparedSpill
 } TpPreparedSpill;
 
 void
+tp_build_progress_set_owner(const void *owner)
+{
+	build_progress_owner = owner;
+}
+
+void
 tp_build_progress_begin(void)
 {
 	MemoryContext	 old_context;
@@ -98,6 +106,7 @@ tp_build_progress_begin(void)
 	MemoryContextSwitchTo(old_context);
 
 	progress->previous = build_progress;
+	progress->owner	   = build_progress_owner;
 	build_progress	   = progress;
 }
 
@@ -110,7 +119,14 @@ tp_build_progress_end(void)
 	if (progress == NULL)
 		return;
 
+	Assert(progress->owner == build_progress_owner);
 	build_progress = progress->previous;
+
+	if (progress->partition_count == 0)
+	{
+		pfree(progress);
+		return;
+	}
 
 	if (progress->total_docs > 0)
 		avg_len = (double)progress->total_len / (double)progress->total_docs;
@@ -141,8 +157,39 @@ tp_build_progress_abort(void)
 	if (progress == NULL)
 		return;
 
+	Assert(progress->owner == build_progress_owner);
 	build_progress = progress->previous;
 	pfree(progress);
+}
+
+static TpBuildProgress *
+current_build_progress(void)
+{
+	if (build_progress != NULL &&
+		build_progress->owner == build_progress_owner)
+		return build_progress;
+
+	return NULL;
+}
+
+static void
+record_or_report_build_completion(
+		TpBuildProgress *progress, uint64 total_docs, uint64 total_len)
+{
+	if (progress != NULL)
+	{
+		progress->total_docs += total_docs;
+		progress->total_len += total_len;
+		progress->partition_count++;
+	}
+	else
+	{
+		elog(NOTICE,
+			 "BM25 index build completed: " UINT64_FORMAT
+			 " documents, avg_length=%.2f",
+			 total_docs,
+			 total_docs > 0 ? (float4)(total_len / (double)total_docs) : 0.0);
+	}
 }
 
 /*
@@ -1573,13 +1620,15 @@ tp_build(Relation heap, Relation index, IndexInfo *indexInfo)
 	uint64			   total_docs = 0;
 	uint64			   total_len  = 0;
 	TpLocalIndexState *index_state;
+	TpBuildProgress	  *progress;
 	bool			   is_text_array;
 
 	tp_check_bm25_build_allowed(heap);
 	tp_rls_note_bm25_build();
 
 	/* Show "started" for first partition only (suppresses duplicates) */
-	if (build_progress == NULL || build_progress->partition_count == 0)
+	progress = current_build_progress();
+	if (progress == NULL || progress->partition_count == 0)
 		elog(NOTICE,
 			 "BM25 index build started for relation %s",
 			 RelationGetRelationName(index));
@@ -1613,7 +1662,7 @@ tp_build(Relation heap, Relation index, IndexInfo *indexInfo)
 			index, &text_config_name, &text_config_oid, &k1, &b);
 
 	/* Log configuration (only for first partition when active) */
-	if (build_progress == NULL || build_progress->partition_count == 0)
+	if (progress == NULL || progress->partition_count == 0)
 	{
 		if (text_config_name)
 			elog(NOTICE,
@@ -1675,8 +1724,7 @@ tp_build(Relation heap, Relation index, IndexInfo *indexInfo)
 			 * Warn if table is very large but parallelism is limited.
 			 * Suppress during partitioned builds to reduce noise.
 			 */
-			if (build_progress == NULL &&
-				reltuples >= TP_WARN_FEW_WORKERS_TUPLES &&
+			if (progress == NULL && reltuples >= TP_WARN_FEW_WORKERS_TUPLES &&
 				nworkers <= TP_WARN_FEW_WORKERS_MIN)
 			{
 				elog(NOTICE,
@@ -1728,26 +1776,24 @@ tp_build(Relation heap, Relation index, IndexInfo *indexInfo)
 						RelationGetRelid(heap),
 						/* reuse_if_exists */ false);
 
-				if (build_progress != NULL)
-				{
-					metabuf = ReadBuffer(index, TP_METAPAGE_BLKNO);
-					LockBuffer(metabuf, BUFFER_LOCK_SHARE);
-					mpage = BufferGetPage(metabuf);
-					metap = (TpIndexMetaPage)PageGetContents(mpage);
+				metabuf = ReadBuffer(index, TP_METAPAGE_BLKNO);
+				LockBuffer(metabuf, BUFFER_LOCK_SHARE);
+				mpage = BufferGetPage(metabuf);
+				metap = (TpIndexMetaPage)PageGetContents(mpage);
 
-					build_progress->total_docs += (uint64)metap->total_docs;
-					build_progress->total_len += (uint64)metap->total_len;
-					build_progress->partition_count++;
+				record_or_report_build_completion(
+						progress,
+						(uint64)metap->total_docs,
+						(uint64)metap->total_len);
 
-					UnlockReleaseBuffer(metabuf);
-				}
+				UnlockReleaseBuffer(metabuf);
 			}
 
 			return par_result;
 		}
 
-		if (build_progress == NULL &&
-			reltuples >= TP_WARN_NO_PARALLEL_TUPLES && nworkers == 0)
+		if (progress == NULL && reltuples >= TP_WARN_NO_PARALLEL_TUPLES &&
+			nworkers == 0)
 		{
 			/*
 			 * Large table but no parallel workers available.
@@ -1884,22 +1930,7 @@ tp_build(Relation heap, Relation index, IndexInfo *indexInfo)
 		result->heap_tuples	 = reltuples;
 		result->index_tuples = total_docs;
 
-		if (build_progress != NULL)
-		{
-			/* Accumulate stats for aggregated summary */
-			build_progress->total_docs += total_docs;
-			build_progress->total_len += total_len;
-			build_progress->partition_count++;
-		}
-		else
-		{
-			elog(NOTICE,
-				 "BM25 index build completed: " UINT64_FORMAT
-				 " documents, avg_length=%.2f",
-				 total_docs,
-				 total_docs > 0 ? (float4)(total_len / (double)total_docs)
-								: 0.0);
-		}
+		record_or_report_build_completion(progress, total_docs, total_len);
 
 		/*
 		 * Release the per-index lock before finalizing.

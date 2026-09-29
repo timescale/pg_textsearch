@@ -60,6 +60,12 @@ ORDER BY content <@> to_bm25query('database', 'parallel_test_1worker_idx')) sub;
          100000
 (1 row)
 
+REINDEX INDEX parallel_test_1worker_idx;
+NOTICE:  BM25 index build started for relation parallel_test_1worker_idx
+NOTICE:  Using text search configuration: english
+NOTICE:  Using index options: k1=1.20, b=0.75
+NOTICE:  parallel index build: launched 1 of 1 requested workers
+NOTICE:  BM25 index build completed: 100000 documents, avg_length=6.00
 --------------------------------------------------------------------------------
 -- Test 3: Two workers (common case)
 --------------------------------------------------------------------------------
