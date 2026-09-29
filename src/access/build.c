@@ -83,6 +83,8 @@ typedef struct TpPreparedSpill
 	TpDocMapBuilder *docmap;
 	uint64			 docs_delta;
 	uint64			 len_delta;
+	BlockNumber		 root;
+	bool			 published;
 } TpPreparedSpill;
 
 void
@@ -171,6 +173,7 @@ tp_prepare_spill(
 		TpPreparedSpill	  *spill)
 {
 	memset(spill, 0, sizeof(*spill));
+	spill->root = InvalidBlockNumber;
 
 	/*
 	 * Open a chain source.  This idempotently re-acquires the
@@ -197,15 +200,21 @@ tp_prepare_spill(
 }
 
 static void
-tp_finish_spill(
+tp_build_prepared_spill(Relation index_rel, TpPreparedSpill *spill)
+{
+	Assert(!BlockNumberIsValid(spill->root));
+	spill->root = tp_write_segment(
+			index_rel, spill->terms, spill->num_terms, spill->docmap);
+}
+
+static void
+tp_publish_prepared_spill(
 		TpLocalIndexState *index_state,
 		Relation		   index_rel,
 		TpPreparedSpill	  *spill,
 		BlockNumber		  *out_segment_root,
 		uint32			   segment_capacity)
 {
-	BlockNumber root;
-
 	{
 		TpIndexMetaPage metap = tp_get_metapage(index_rel);
 
@@ -215,12 +224,6 @@ tp_finish_spill(
 					 errmsg("bm25 segment count limit reached at level 0")));
 		pfree(metap);
 	}
-
-	root = tp_write_segment(
-			index_rel, spill->terms, spill->num_terms, spill->docmap);
-
-	if (out_segment_root != NULL)
-		*out_segment_root = root;
 
 	/*
 	 * Finalize first, then mark dead - crash-safe ordering.
@@ -244,11 +247,10 @@ tp_finish_spill(
 		chain_head = metap->memtable_head_blkno;
 		pfree(metap);
 
-		TP_INJECTION_POINT(TP_INJECTION_SPILL_BEFORE_FINALIZE);
 		tp_spill_finalize(
 				index_state,
 				index_rel,
-				root,
+				spill->root,
 				spill->docs_delta,
 				spill->len_delta,
 				segment_capacity);
@@ -265,11 +267,6 @@ tp_finish_spill(
 			tp_memtable_mark_chain_dead(index_rel, chain_head, horizon);
 	}
 
-	/* Free dictionary + docmap (chain source no longer needed). */
-	tp_free_dictionary(spill->terms, spill->num_terms);
-	tp_docmap_destroy(spill->docmap);
-	tp_source_close(spill->source);
-
 	/*
 	 * Reset chain_page_count: the chain is empty after
 	 * tp_spill_finalize.  Caller holds LW_EXCLUSIVE so no
@@ -277,6 +274,28 @@ tp_finish_spill(
 	 * pre-spill chain extension was published.
 	 */
 	pg_atomic_write_u32(&index_state->shared->chain_page_count, 0);
+	spill->published = true;
+	if (out_segment_root != NULL)
+		*out_segment_root = spill->root;
+}
+
+static void
+tp_cleanup_prepared_spill(Relation index_rel, TpPreparedSpill *spill)
+{
+	if (BlockNumberIsValid(spill->root) && !spill->published)
+		tp_discard_unpublished_segment(index_rel, spill->root);
+
+	if (spill->terms != NULL)
+		tp_free_dictionary(spill->terms, spill->num_terms);
+	if (spill->docmap != NULL)
+		tp_docmap_destroy(spill->docmap);
+	if (spill->source != NULL)
+		tp_source_close(spill->source);
+
+	spill->source = NULL;
+	spill->terms  = NULL;
+	spill->docmap = NULL;
+	spill->root	  = InvalidBlockNumber;
 }
 
 bool
@@ -286,6 +305,8 @@ tp_do_spill(
 		BlockNumber		  *out_segment_root)
 {
 	TpPreparedSpill spill;
+	volatile bool	prepared = false;
+	volatile bool	success	 = false;
 
 	if (out_segment_root != NULL)
 		*out_segment_root = InvalidBlockNumber;
@@ -298,17 +319,36 @@ tp_do_spill(
 	if (RecoveryInProgress())
 		return false;
 
-	if (!tp_prepare_spill(index_state, index_rel, &spill))
-		return false;
+	PG_TRY();
+	{
+		tp_acquire_index_lock(index_state, LW_EXCLUSIVE);
+		prepared = tp_prepare_spill(index_state, index_rel, &spill);
+		tp_release_index_lock(index_state);
+		if (prepared)
+		{
+			tp_build_prepared_spill(index_rel, &spill);
+			TP_INJECTION_POINT(TP_INJECTION_SPILL_BEFORE_FINALIZE);
+			tp_acquire_index_lock(index_state, LW_EXCLUSIVE);
+			tp_publish_prepared_spill(
+					index_state,
+					index_rel,
+					&spill,
+					out_segment_root,
+					tp_injected_segment_count_limit());
+			tp_release_index_lock(index_state);
+			success = true;
+		}
+	}
+	PG_FINALLY();
+	{
+		if (index_state->lock_held)
+			tp_release_index_lock(index_state);
+		if (prepared)
+			tp_cleanup_prepared_spill(index_rel, &spill);
+	}
+	PG_END_TRY();
 
-	tp_finish_spill(
-			index_state,
-			index_rel,
-			&spill,
-			out_segment_root,
-			tp_injected_segment_count_limit());
-
-	return true;
+	return success;
 }
 
 /*
@@ -468,7 +508,8 @@ tp_spill_memtable_if_needed_internal(
 		uint32			   min_pages,
 		int				   flags)
 {
-	bool spilled = false;
+	bool		  spilled		= false;
+	volatile bool gate_acquired = false;
 
 	/* Standby is read-only; spill is primary-only. */
 	if (RecoveryInProgress())
@@ -498,17 +539,16 @@ tp_spill_memtable_if_needed_internal(
 
 	PG_TRY();
 	{
-		bool acquired;
-
 		if (flags & TP_SPILL_NOWAIT)
-			acquired = tp_try_acquire_index_lock(index_state, LW_EXCLUSIVE);
+			gate_acquired = tp_try_acquire_memtable_write_lock(
+					index_state, LW_EXCLUSIVE);
 		else
 		{
-			tp_acquire_index_lock(index_state, LW_EXCLUSIVE);
-			acquired = true;
+			tp_acquire_memtable_write_lock(index_state, LW_EXCLUSIVE);
+			gate_acquired = true;
 		}
 
-		if (acquired &&
+		if (gate_acquired &&
 			pg_atomic_read_u32(&index_state->shared->chain_page_count) >=
 					min_pages)
 			spilled = tp_do_spill(index_state, index, NULL);
@@ -517,6 +557,8 @@ tp_spill_memtable_if_needed_internal(
 	{
 		if (index_state->lock_held)
 			tp_release_index_lock(index_state);
+		if (gate_acquired)
+			tp_release_memtable_write_lock(index_state);
 		tp_compaction_publication_unlock(index, ShareLock);
 	}
 	PG_END_TRY();
@@ -741,7 +783,7 @@ tp_spill_memtable(PG_FUNCTION_ARGS)
 
 	/* Keep spill publication outside compaction's prepare/publish window. */
 	tp_compaction_publication_lock(index_rel, ShareLock);
-	tp_acquire_index_lock(index_state, LW_EXCLUSIVE);
+	tp_acquire_memtable_write_lock(index_state, LW_EXCLUSIVE);
 	PG_TRY();
 	{
 		/*
@@ -756,6 +798,7 @@ tp_spill_memtable(PG_FUNCTION_ARGS)
 	{
 		if (index_state->lock_held)
 			tp_release_index_lock(index_state);
+		tp_release_memtable_write_lock(index_state);
 		tp_compaction_publication_unlock(index_rel, ShareLock);
 	}
 	PG_END_TRY();
@@ -821,8 +864,8 @@ tp_force_merge(PG_FUNCTION_ARGS)
 	 */
 	{
 		TpLocalIndexState *index_state = tp_get_local_index_state(index_oid);
-		TpPreparedSpill	   spill;
-		bool			   has_memtable;
+		volatile bool	   publication_locked = false;
+		volatile bool	   gate_locked		  = false;
 
 		if (index_state == NULL)
 			ereport(ERROR,
@@ -834,12 +877,15 @@ tp_force_merge(PG_FUNCTION_ARGS)
 		tp_compaction_lock(index_rel);
 		PG_TRY();
 		{
-			tp_acquire_index_lock(index_state, LW_EXCLUSIVE);
-			has_memtable = tp_prepare_spill(index_state, index_rel, &spill);
-			if (has_memtable)
-				tp_finish_spill(
-						index_state, index_rel, &spill, NULL, PG_UINT16_MAX);
-			tp_release_index_lock(index_state);
+			tp_compaction_publication_lock(index_rel, ShareLock);
+			publication_locked = true;
+			tp_acquire_memtable_write_lock(index_state, LW_EXCLUSIVE);
+			gate_locked = true;
+			(void)tp_do_spill(index_state, index_rel, NULL);
+			tp_release_memtable_write_lock(index_state);
+			gate_locked = false;
+			tp_compaction_publication_unlock(index_rel, ShareLock);
+			publication_locked = false;
 
 			tp_force_compact(index_state, index_rel);
 
@@ -850,6 +896,10 @@ tp_force_merge(PG_FUNCTION_ARGS)
 		{
 			if (index_state->lock_held)
 				tp_release_index_lock(index_state);
+			if (gate_locked)
+				tp_release_memtable_write_lock(index_state);
+			if (publication_locked)
+				tp_compaction_publication_unlock(index_rel, ShareLock);
 			tp_compaction_unlock(index_rel);
 		}
 		PG_END_TRY();
@@ -2016,6 +2066,7 @@ tp_insert(
 		 * on the tail.  Spill holds LW_EXCLUSIVE to fence
 		 * inserts during the chain-reset step.
 		 */
+		tp_acquire_memtable_write_lock(index_state, LW_SHARED);
 		tp_acquire_index_lock(index_state, LW_SHARED);
 
 		/* Validate TID before appending to the chain */
@@ -2035,6 +2086,7 @@ tp_insert(
 
 		/* Release lock before spill check */
 		tp_release_index_lock(index_state);
+		tp_release_memtable_write_lock(index_state);
 
 		/*
 		 * Auto-spill check runs outside the lock — may
