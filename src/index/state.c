@@ -26,15 +26,19 @@
 #include <storage/dsm.h>
 #include <storage/dsm_registry.h>
 #include <storage/ipc.h>
+#include <storage/lmgr.h>
+#include <storage/lock.h>
 #include <utils/builtins.h>
 #include <utils/dsa.h>
 #include <utils/hsearch.h>
 #include <utils/memutils.h>
 #include <utils/rel.h>
 #include <utils/snapmgr.h>
+#include <utils/wait_event.h>
 
 #include "access/am.h"
 #include "constants.h"
+#include "debug/injection.h"
 #include "index/metapage.h"
 #include "index/registry.h"
 #include "index/source.h"
@@ -73,26 +77,32 @@ tp_shutdown_spill_one(LocalStateCacheEntry *entry)
 	if (entry->local_state == NULL)
 		return;
 
+	if (!ConditionalLockRelationOid(entry->index_oid, RowExclusiveLock))
+		return;
+
 	PG_TRY();
 	{
-		index_rel = try_index_open(entry->index_oid, RowExclusiveLock);
+		index_rel = try_index_open(entry->index_oid, NoLock);
 		if (index_rel != NULL)
 		{
-			tp_spill_memtable_if_needed(
+			tp_spill_memtable_without_compaction_if_needed(
 					index_rel, entry->local_state, TP_MIN_SPILL_PAGES);
-			index_close(index_rel, RowExclusiveLock);
+			index_close(index_rel, NoLock);
 			index_rel = NULL;
 		}
 	}
 	PG_CATCH();
 	{
 		/* Don't leak the per-index LWLock to racing shutdown hooks */
-		tp_release_index_lock(entry->local_state);
+		if (entry->local_state->lock_held)
+			tp_release_index_lock(entry->local_state);
 		FlushErrorState();
 		if (index_rel != NULL)
-			index_close(index_rel, RowExclusiveLock);
+			index_close(index_rel, NoLock);
 	}
 	PG_END_TRY();
+
+	UnlockRelationOid(entry->index_oid, RowExclusiveLock);
 }
 
 /*
@@ -384,6 +394,13 @@ tp_create_shared_index_state(Oid index_oid, Oid heap_oid, bool reuse_if_exists)
 	 */
 	LWLockInitialize(
 			&shared_state->lock, tp_tranche_id(TP_TRANCHE_INDEX_LOCK));
+	pg_atomic_init_u32(&shared_state->exclusive_waiters, 0);
+	ConditionVariableInit(&shared_state->exclusive_waiters_cv);
+	LWLockInitialize(
+			&shared_state->memtable_write_lock,
+			tp_tranche_id(TP_TRANCHE_MEMTABLE_WRITE_LOCK));
+	pg_atomic_init_u32(&shared_state->memtable_write_exclusive_waiters, 0);
+	ConditionVariableInit(&shared_state->memtable_write_exclusive_waiters_cv);
 	pg_atomic_init_u64(&shared_state->spill_generation, 0);
 	memtable_dp = dsa_allocate(dsa, sizeof(TpMemtable));
 	if (!DsaPointerIsValid(memtable_dp))
@@ -528,6 +545,13 @@ tp_create_build_index_state(Oid index_oid, Oid heap_oid)
 	 */
 	LWLockInitialize(
 			&shared_state->lock, tp_tranche_id(TP_TRANCHE_INDEX_LOCK));
+	pg_atomic_init_u32(&shared_state->exclusive_waiters, 0);
+	ConditionVariableInit(&shared_state->exclusive_waiters_cv);
+	LWLockInitialize(
+			&shared_state->memtable_write_lock,
+			tp_tranche_id(TP_TRANCHE_MEMTABLE_WRITE_LOCK));
+	pg_atomic_init_u32(&shared_state->memtable_write_exclusive_waiters, 0);
+	ConditionVariableInit(&shared_state->memtable_write_exclusive_waiters_cv);
 	pg_atomic_init_u64(&shared_state->spill_generation, 0);
 
 	/* Check if index already registered (rebuild case) */
@@ -1239,8 +1263,37 @@ tp_acquire_index_lock(TpLocalIndexState *local_state, LWLockMode mode)
 		local_state->lock_held = false;
 	}
 
-	/* Acquire the lock */
-	LWLockAcquire(&local_state->shared->lock, mode);
+	if (mode == LW_SHARED)
+	{
+		ConditionVariablePrepareToSleep(
+				&local_state->shared->exclusive_waiters_cv);
+		while (pg_atomic_read_u32(&local_state->shared->exclusive_waiters) !=
+			   0)
+			ConditionVariableSleep(
+					&local_state->shared->exclusive_waiters_cv,
+					PG_WAIT_EXTENSION);
+		ConditionVariableCancelSleep();
+	}
+	else
+	{
+		pg_atomic_fetch_add_u32(&local_state->shared->exclusive_waiters, 1);
+		TP_INJECTION_POINT(TP_INJECTION_INDEX_LOCK_EXCLUSIVE_WAITER);
+	}
+
+	PG_TRY();
+	{
+		LWLockAcquire(&local_state->shared->lock, mode);
+	}
+	PG_FINALLY();
+	{
+		if (mode == LW_EXCLUSIVE &&
+			pg_atomic_sub_fetch_u32(
+					&local_state->shared->exclusive_waiters, 1) == 0)
+			ConditionVariableBroadcast(
+					&local_state->shared->exclusive_waiters_cv);
+	}
+	PG_END_TRY();
+
 	local_state->lock_held = true;
 	local_state->lock_mode = mode;
 
@@ -1248,6 +1301,63 @@ tp_acquire_index_lock(TpLocalIndexState *local_state, LWLockMode mode)
 	 * The LWLockAcquire provides acquire semantics (memory barrier),
 	 * ensuring we see all writes from the previous lock holder.
 	 */
+}
+
+/*
+ * Conditionally acquire the per-index lock.  Exclusive attempts
+ * register as waiters for the duration of the attempt so new shared
+ * acquisitions cannot bypass them.
+ */
+bool
+tp_try_acquire_index_lock(TpLocalIndexState *local_state, LWLockMode mode)
+{
+	bool acquired = false;
+
+	Assert(local_state != NULL);
+	Assert(local_state->shared != NULL);
+	Assert(mode == LW_SHARED || mode == LW_EXCLUSIVE);
+
+	if (local_state->lock_held)
+	{
+		if (local_state->lock_mode == LW_EXCLUSIVE ||
+			(local_state->lock_mode == LW_SHARED && mode == LW_SHARED))
+			return true;
+
+		return false;
+	}
+
+	if (mode == LW_SHARED)
+	{
+		if (pg_atomic_read_u32(&local_state->shared->exclusive_waiters) != 0)
+			return false;
+
+		acquired = LWLockConditionalAcquire(&local_state->shared->lock, mode);
+	}
+	else
+	{
+		pg_atomic_fetch_add_u32(&local_state->shared->exclusive_waiters, 1);
+		PG_TRY();
+		{
+			acquired =
+					LWLockConditionalAcquire(&local_state->shared->lock, mode);
+		}
+		PG_FINALLY();
+		{
+			if (pg_atomic_sub_fetch_u32(
+						&local_state->shared->exclusive_waiters, 1) == 0)
+				ConditionVariableBroadcast(
+						&local_state->shared->exclusive_waiters_cv);
+		}
+		PG_END_TRY();
+	}
+
+	if (!acquired)
+		return false;
+
+	local_state->lock_held = true;
+	local_state->lock_mode = mode;
+
+	return true;
 }
 
 /*
@@ -1285,6 +1395,93 @@ tp_release_index_lock(TpLocalIndexState *local_state)
 	LWLockRelease(&local_state->shared->lock);
 	local_state->lock_held = false;
 	local_state->lock_mode = 0;
+}
+
+void
+tp_acquire_memtable_write_lock(TpLocalIndexState *local_state, LWLockMode mode)
+{
+	TpSharedIndexState *shared;
+
+	Assert(local_state != NULL);
+	Assert(local_state->shared != NULL);
+	Assert(mode == LW_SHARED || mode == LW_EXCLUSIVE);
+	shared = local_state->shared;
+
+	if (mode == LW_SHARED)
+	{
+		ConditionVariablePrepareToSleep(
+				&shared->memtable_write_exclusive_waiters_cv);
+		while (pg_atomic_read_u32(&shared->memtable_write_exclusive_waiters) !=
+			   0)
+			ConditionVariableSleep(
+					&shared->memtable_write_exclusive_waiters_cv,
+					PG_WAIT_EXTENSION);
+		ConditionVariableCancelSleep();
+	}
+	else
+		pg_atomic_fetch_add_u32(&shared->memtable_write_exclusive_waiters, 1);
+
+	PG_TRY();
+	{
+		LWLockAcquire(&shared->memtable_write_lock, mode);
+	}
+	PG_FINALLY();
+	{
+		if (mode == LW_EXCLUSIVE &&
+			pg_atomic_sub_fetch_u32(
+					&shared->memtable_write_exclusive_waiters, 1) == 0)
+			ConditionVariableBroadcast(
+					&shared->memtable_write_exclusive_waiters_cv);
+	}
+	PG_END_TRY();
+}
+
+bool
+tp_try_acquire_memtable_write_lock(
+		TpLocalIndexState *local_state, LWLockMode mode)
+{
+	TpSharedIndexState *shared;
+	bool				acquired;
+
+	Assert(local_state != NULL);
+	Assert(local_state->shared != NULL);
+	Assert(mode == LW_SHARED || mode == LW_EXCLUSIVE);
+	shared = local_state->shared;
+
+	if (mode == LW_SHARED)
+	{
+		if (pg_atomic_read_u32(&shared->memtable_write_exclusive_waiters) != 0)
+			return false;
+		return LWLockConditionalAcquire(&shared->memtable_write_lock, mode);
+	}
+
+	pg_atomic_fetch_add_u32(&shared->memtable_write_exclusive_waiters, 1);
+	PG_TRY();
+	{
+		acquired =
+				LWLockConditionalAcquire(&shared->memtable_write_lock, mode);
+	}
+	PG_FINALLY();
+	{
+		if (pg_atomic_sub_fetch_u32(
+					&shared->memtable_write_exclusive_waiters, 1) == 0)
+			ConditionVariableBroadcast(
+					&shared->memtable_write_exclusive_waiters_cv);
+	}
+	PG_END_TRY();
+	return acquired;
+}
+
+void
+tp_release_memtable_write_lock(TpLocalIndexState *local_state)
+{
+	if (local_state == NULL || local_state->shared == NULL)
+		return;
+	if (!LWLockHeldByMe(&local_state->shared->memtable_write_lock))
+		return;
+	if (InterruptHoldoffCount == 0)
+		HOLD_INTERRUPTS();
+	LWLockRelease(&local_state->shared->memtable_write_lock);
 }
 
 /*
@@ -1350,22 +1547,17 @@ tp_bulk_load_spill_check(void)
 			continue;
 
 		/*
-		 * Open the relation before taking the per-index LWLock: relation
-		 * and catalog access can block, and must stay outside the
-		 * per-index lock ordering domain.  No per-index lock is held on
-		 * entry because per-operation locking releases after each insert.
+		 * Open the relation before the spill helper takes either the
+		 * maintenance lock or the per-index LWLock.  No per-index lock is
+		 * held on entry because per-operation locking releases after each
+		 * insert.
 		 */
 		index_rel = try_index_open(
 				local_state->shared->index_oid, RowExclusiveLock);
 		if (index_rel == NULL)
 			continue;
 
-		tp_acquire_index_lock(local_state, LW_EXCLUSIVE);
-
-		/* Unified spill path. */
-		(void)tp_do_spill(local_state, index_rel, NULL);
-
-		tp_release_index_lock(local_state);
+		tp_spill_memtable_if_needed(index_rel, local_state, 0);
 		index_close(index_rel, RowExclusiveLock);
 	}
 }

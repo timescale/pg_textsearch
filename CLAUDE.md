@@ -33,31 +33,20 @@ consider a dedicated `pg_textsearch` schema for cleaner namespace management.
   and running the same test. Even if it does reproduce on main, it
   still needs to be investigated and fixed, not ignored.
 
-- **Physical replication**: In-place and publication mutations are WAL-logged
-  via `GenericXLog`; newly written segment pages use `log_newpage_buffer()`
-  when WAL is required. There is no custom resource manager; pg_textsearch
-  does not register an rmgr. Stock PostgreSQL replay reconstructs every page
-  on a streaming standby or during crash recovery — including the on-disk
-  memtable chain pages, segment pages, and the metapage. This is what lets
-  PostgreSQL's single-page WAL-redo helper (and any other no-extension-load
-  replay context) work without loading `pg_textsearch.so`.
-  **Read [ARCHITECTURE.md](ARCHITECTURE.md#storage-and-wal) before
-  changing the write/read/spill flow.** Closes #345, #349, #350,
-  #374.
+- **Physical replication**: every page mutation is WAL-logged with stock
+  records (`GenericXLog`, `log_newpage_buffer()`, and the btree page-reuse
+  conflict record). pg_textsearch registers no custom rmgr, so stock replay
+  reconstructs every page without loading `pg_textsearch.so`.
+  **Read [ARCHITECTURE.md](ARCHITECTURE.md#storage-and-wal) before changing
+  the write/read/spill flow.**
 
-- **Standby-safe segment reclaim (#380)**: A segment merge does not
-  free the displaced source pages to the FSM immediately. Doing so is
-  safe on the primary but unsafe for in-flight hot-standby queries,
-  because there is no custom rmgr to resolve recovery conflicts during
-  replay. Instead, displaced pages are *parked* in a WAL-logged
-  (`GenericXLog`) tombstone chain off the metapage (`pending_free_head`),
-  stamped with the merge's `FullTransactionId`. They return to the FSM
-  only once a later VACUUM (or the next merge) observes that the stamp
-  precedes `GetOldestNonRemovableTransactionId` — the standby-safe
-  reclaim horizon. **`hot_standby_feedback = on` is required** on hot
-  standbys serving queries, so their oldest snapshot holds the
-  primary's horizon back until they finish reading the pages. Observe
-  the parked count with `bm25_pending_free_pages(index_name)`.
+- **Standby-safe segment reclaim**: displaced segment pages are parked in a
+  WAL-logged tombstone chain off the metapage and returned to the FSM only
+  once a later VACUUM or merge observes that the reclaim horizon has passed
+  their stamp. **`hot_standby_feedback = on` is required** on hot standbys
+  serving queries. Observe the parked count with
+  `bm25_pending_free_pages(index_name)`.
+  See [ARCHITECTURE.md](ARCHITECTURE.md#deferred-reclaim).
 
 ## Core Architecture
 
@@ -111,7 +100,7 @@ make                   # build extension
 make install           # install to Postgres
 make test              # run SQL regression tests only
 make installcheck      # run SQL regression tests
-make test-all          # run all tests (SQL + shell scripts)
+make test-all          # run SQL, default shell, and replication tests
 
 # Run a single test
 $(pg_config --pgxs | xargs dirname)/../../src/test/regress/pg_regress \
@@ -122,7 +111,7 @@ make test-concurrency  # multi-session concurrency tests
 make test-recovery     # crash recovery tests
 make test-segment      # multi-backend segment tests
 make test-stress       # long-running stress tests
-make test-shell        # run all shell-based tests
+make test-shell        # run default shell tests (excludes replication)
 make test-local        # run tests with dedicated Postgres instance
 make expected          # generate expected output from test results
 ```
@@ -152,13 +141,13 @@ make format-single FILE=path/to/file.c  # format specific file
 | `pg_textsearch.log_bmw_stats` | Log BMW blocks scanned/skipped | false |
 | `pg_textsearch.bulk_load_threshold` | Terms/xact to trigger spill (0 = disable) | 100000 |
 | `pg_textsearch.memtable_pages_threshold` | Chain pages before auto-spill (0 = disable) | 64 |
+| `pg_textsearch.allow_rls` | Allow BM25 indexes on RLS-protected tables (superuser-only) | on |
 | `pg_textsearch.segments_per_level` | Segments before compaction | 8 |
 | `pg_textsearch.max_segment_size` | Conservative size budget for newly merged multi-source segments (1-4095MB) | 4095MB |
-| `pg_textsearch.compaction_request_function` | Schema-qualified function taking one `regclass`, invoked for indexes set to `compaction = 'background'` | (empty) |
+| `pg_textsearch.background_compaction_schedule` | Default cron schedule captured by indexes entering managed background mode | `*/5 * * * *` |
 | `pg_textsearch.compress_segments` | Enable compression for new segment blocks | true |
 | `pg_textsearch.filtered_seed` | Seed the BM25 internal top-K from estimated filter selectivity so filtered top-k queries (`WHERE ... ORDER BY score LIMIT k`) avoid executor backoff re-drives. Results identical. | true |
 | `pg_textsearch.filtered_seed_margin` | Seed = `ceil(margin * LIMIT / selectivity)`. Higher captures the true top-k in one scoring pass more often, at the cost of scoring deeper. Range [1, 1000] | 3.0 |
-| `pg_textsearch.debug_panic_after_spill_finalize` | Trigger PANIC after spill finalize (testing only, superuser-only) | false |
 | `pg_textsearch.memtable_cache_enabled` | Serve query reads from the in-memory memtable cache instead of the on-disk chain (chain remains source of truth; standbys always use the chain) | true |
 | `pg_textsearch.log_cache_state` | Log in-memory cache apply outcomes (OK / BUDGET_EXCEEDED / cold_build / RETRY / ABORT / fall back to chain) | false |
 | `pg_textsearch.memory_limit` | Approximate shared-memory budget (KB, `PGC_SIGHUP`) for the in-memory memtable cache. Three tiers: per-index per-record growth guard (`limit/8`) → BUDGET_EXCEEDED + chain fallback before a record crosses it; global soft cap (`limit/2`) → best-effort eviction of the largest non-caller cache; the global `limit` is an approximate admission threshold → catch-up or cold-build fallback when the entry-time estimate is already at the limit. Admitted or concurrent work may increase estimated usage past the limit. `0` = unlimited. | 2 GB |
@@ -171,7 +160,8 @@ make format-single FILE=path/to/file.c  # format specific file
 | `text_config` | Postgres text search configuration | (required) |
 | `k1` | BM25 term frequency saturation | 1.2 |
 | `b` | BM25 length normalization | 0.75 |
-| `compaction` | Spill-time compaction: `inline`, `background` (dispatch a callback at pre-commit), or `off`. Alterable with `ALTER INDEX ... SET` | inline |
+| `compaction` | Spill-time compaction: `inline`, managed pg_durable `background`, or `manual`. Alterable with `ALTER INDEX ... SET` | inline |
+| `compaction_schedule` | Optional per-index cron schedule for background mode | global GUC |
 
 ## Test Structure
 
@@ -238,6 +228,11 @@ documents instead of rebuilding segments. This is O(dead_docs) instead
 of O(all_docs). Dead docs are filtered during BMW scoring and
 physically removed during segment merge.
 
+The serial cleanup pass holds the maintenance object lock, but not the
+per-index LWLock, while scanning the full index fork for reclaimable DEAD
+memtable pages. This serializes force-merge truncation without blocking
+spills or later readers behind an O(index-pages) shared lock.
+
 **Stale statistics after VACUUM**: After VACUUM marks docs dead, the
 segment's `total_docs`, `total_tokens`, and per-term `doc_freq` are
 not updated. This means BM25 IDF calculations use slightly stale
@@ -295,20 +290,27 @@ See [RELEASING.md](RELEASING.md) for release instructions.
   segments, and an existing segment that already exceeds the budget
   remains an uncombinable singleton. Published sources stay immutable
   while replacements are built; displaced pages enter deferred reclaim
-  (see #380) rather than becoming immediately reusable.
+  (see #380) rather than becoming immediately reusable. Waits for index
+  maintenance when another session holds it.
 - `bm25_level_counts(idx regclass)` - Segments held at each of the eight
   LSM levels
-- `bm25_needs_compaction(idx regclass)` - Whether any level holds at
-  least `segments_per_level` segments. Advisory only: a level whose
-  segments all exceed `max_segment_size` cannot be reduced but still
-  counts as full, so this must not be used on its own as a loop
-  condition. Drive loops from `bm25_compact_step()`'s return value.
-- `bm25_compact(idx regclass)` - Run compaction passes to completion
-  under one per-index exclusive lock. Requires index ownership. A
+- `bm25_needs_compaction(idx regclass)` - Whether `bm25_compact_step()`
+  would run a pass. Runs the same selection without publishing, so a
+  level that is full of over-budget segments reports false; safe as a
+  loop condition. Never waits: reports true when another session holds
+  index maintenance.
+- `bm25_compact(idx regclass)` - Run compaction passes to completion,
+  releasing same-index maintenance admission between passes so a long
+  cascade does not starve a queued VACUUM. Requires index ownership. A
   published pass is a physical change and is **not** undone by ROLLBACK.
+  Waits for index maintenance when another session holds it; the
+  maintenance lock is private to this extension, so waiting cannot deadlock
+  with a concurrent `REINDEX INDEX CONCURRENTLY`.
 - `bm25_compact_step(idx regclass)` - Run at most one pass and report
   whether one ran, letting a caller spread a cascade over several
-  transactions. Requires index ownership.
+  transactions. Requires index ownership. Waits on the same terms as
+  `bm25_compact()`, so a `false` return always means "no reducible debt",
+  never "maintenance was busy".
 - `bm25_pending_free_pages(index_name)` - Count displaced segment pages
   currently parked in the deferred-free tombstone chain (issue #380),
   awaiting standby-safe FSM reclaim

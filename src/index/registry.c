@@ -44,18 +44,19 @@ static dsa_area *tapir_dsa = NULL;
 #define TP_TRANCHE_SLOT(name) [TP_TRANCHE_##name - TP_TRANCHE_FIRST]
 
 static const char *const tp_tranche_names[TP_TRANCHE_COUNT] = {
-		TP_TRANCHE_SLOT(STRING)			  = "tapir_string",
-		TP_TRANCHE_SLOT(POSTING)		  = "tapir_posting",
-		TP_TRANCHE_SLOT(CORPUS)			  = "tapir_corpus",
-		TP_TRANCHE_SLOT(DOC_LENGTHS)	  = "tapir_doc_lengths",
-		TP_TRANCHE_SLOT(INDEX_LOCK)		  = "tapir_index_lock",
-		TP_TRANCHE_SLOT(BUILD_DSA)		  = "tapir_build_dsa",
-		TP_TRANCHE_SLOT(GLOBAL_DSA)		  = "tapir_global_dsa",
-		TP_TRANCHE_SLOT(REGISTRY)		  = "tapir_registry",
-		TP_TRANCHE_SLOT(POSTING_LOCK)	  = "tapir_posting_lock",
-		TP_TRANCHE_SLOT(CACHE_APPLY_LOCK) = "tapir_cache_apply_lock",
-		TP_TRANCHE_SLOT(CACHE_LOCK)		  = "tapir_cache_lock",
-		TP_TRANCHE_SLOT(EVICTION_MUTEX)	  = "tapir_eviction_mutex",
+		TP_TRANCHE_SLOT(STRING)				 = "tapir_string",
+		TP_TRANCHE_SLOT(POSTING)			 = "tapir_posting",
+		TP_TRANCHE_SLOT(CORPUS)				 = "tapir_corpus",
+		TP_TRANCHE_SLOT(DOC_LENGTHS)		 = "tapir_doc_lengths",
+		TP_TRANCHE_SLOT(INDEX_LOCK)			 = "tapir_index_lock",
+		TP_TRANCHE_SLOT(BUILD_DSA)			 = "tapir_build_dsa",
+		TP_TRANCHE_SLOT(GLOBAL_DSA)			 = "tapir_global_dsa",
+		TP_TRANCHE_SLOT(REGISTRY)			 = "tapir_registry",
+		TP_TRANCHE_SLOT(POSTING_LOCK)		 = "tapir_posting_lock",
+		TP_TRANCHE_SLOT(CACHE_APPLY_LOCK)	 = "tapir_cache_apply_lock",
+		TP_TRANCHE_SLOT(CACHE_LOCK)			 = "tapir_cache_lock",
+		TP_TRANCHE_SLOT(EVICTION_MUTEX)		 = "tapir_eviction_mutex",
+		TP_TRANCHE_SLOT(MEMTABLE_WRITE_LOCK) = "tapir_memtable_write_lock",
 };
 
 #undef TP_TRANCHE_SLOT

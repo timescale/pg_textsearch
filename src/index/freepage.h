@@ -20,6 +20,11 @@
  * pointing at a live page) is skipped rather than overwritten — the
  * same recyclability discipline PostgreSQL's B-tree uses via
  * _bt_page_recyclable.
+ *
+ * Pages that were visible to standby readers also require
+ * tp_log_page_reuse_conflict() before the free stamp.  Its stock btree WAL
+ * record cancels snapshots that outlived feedback or a replication
+ * disconnect before later WAL can overwrite the page.
  */
 #pragma once
 
@@ -46,6 +51,17 @@ typedef struct TpFreePageData
 
 /* True iff `page` carries the recyclable free-page stamp. */
 extern bool tp_page_is_recyclable(Page page);
+
+/*
+ * Emit PostgreSQL's stock btree conflict-only WAL record before a page whose
+ * contents may still be read by an old standby snapshot is reused.  Redo does
+ * not inspect the page; it only cancels snapshots at or before `horizon`.
+ * Generic WAL carries no conflict horizon, and a custom rmgr would make replay
+ * depend on loading this library.  pg_waldump reports these as
+ * Btree/REUSE_PAGE.
+ */
+extern void tp_log_page_reuse_conflict(
+		Relation index, BlockNumber block, FullTransactionId horizon);
 
 /*
  * WAL-stamp `blk` as a recyclable free page, then return it to the
@@ -88,10 +104,11 @@ extern Buffer tp_fsm_claim_free_buffer(Relation index);
 extern BlockNumber tp_fsm_claim_free_block(Relation index);
 
 /*
- * Claim a recyclable free page via tp_fsm_claim_free_block, falling
- * back to extending the relation (a zero-filled P_NEW page) when the
- * FSM offers none.  Always returns a valid block number.  Shared by
- * the block-oriented allocators (segment and tombstone pages) that
- * reopen the block later under their own lock.
+ * Claim a recyclable free page via tp_fsm_claim_free_block, falling back
+ * to ExtendBufferedRel when the FSM offers none -- the same extension API
+ * as the memtable allocator, so the two cannot reserve the same block.
+ * Always returns a valid block number.  Shared by the block-oriented
+ * allocators (segment and tombstone pages) that reopen the block later
+ * under their own lock.
  */
 extern BlockNumber tp_fsm_claim_or_extend_block(Relation index);

@@ -58,8 +58,9 @@ STRICT_UNSPILLED="${STRICT_UNSPILLED:-0}"
 # Representative default matrix: one release per distinct on-disk
 # format combination.  0.5.0 = metapage v5 (legacy/REINDEX tier);
 # 0.5.1 = metapage v6 + segment v3; 1.0.0 = v6 + segment v4;
-# 1.2.0 = v6 + segment v5; 1.3.0 = metapage v7 (native on-disk L0).
-OLD_VERSIONS="${OLD_VERSIONS:-0.5.0 0.5.1 1.0.0 1.2.0 1.3.0}"
+# 1.2.0 = v6 + segment v5; 1.3.0 = metapage v7 (native on-disk L0);
+# 1.4.0 = metapage v8 before indexes recorded zero-lexeme documents.
+OLD_VERSIONS="${OLD_VERSIONS:-0.5.0 0.5.1 1.0.0 1.2.0 1.3.0 1.4.0}"
 if [ "$#" -gt 0 ]; then OLD_VERSIONS="$*"; fi
 
 # Cluster ops must not run as root.  When invoked as root (e.g. inside
@@ -267,6 +268,149 @@ run_legacy() { # $1=version
   [ "$reidx" = "$truth" ] || fail "$v(legacy): REINDEX did not restore recall ($reidx/$truth)"
 }
 
+run_boolean_completeness_upgrade() {
+  fresh_cluster || { fail "1.4.0/boolean: cluster init failed"; return; }
+  start_pg || { fail "1.4.0/boolean: old server failed to start"; return; }
+  createdb_upg
+  runsql "CREATE EXTENSION pg_textsearch;
+    CREATE TABLE d(id serial primary key, c text NOT NULL);
+    INSERT INTO d(c) VALUES ('alpha'), (''), ('the');
+    CREATE INDEX i ON d USING bm25(c) WITH (text_config='english');"
+  stop_pg
+
+  build_install_current || { fail "current build/install failed"; return; }
+  start_pg || { fail "1.4.0/boolean: NEW server failed to start"; return; }
+  runsql "ALTER EXTENSION pg_textsearch UPDATE TO '1.5.0-dev';"
+
+  local out err_f
+  out="$(mktemp)"; err_f="$(mktemp)"
+  run_capture "SET enable_seqscan=off;
+    SELECT count(*) FROM d
+    WHERE c @@ to_tsquery('english', '!missing');" "$out" "$err_f"
+  if grep -qi 'REINDEX' "$err_f" && [ "$(tr -d '[:space:]' <"$out")" = "1" ]; then
+    log "  [1.4.0/boolean] incomplete index warned and continued"
+  else
+    fail "1.4.0/boolean: expected warning and count 1, got stdout=[$(cat "$out")] stderr=[$(head -1 "$err_f")]"
+  fi
+  rm -f "$out" "$err_f"
+
+  out="$(mktemp)"; err_f="$(mktemp)"
+  run_capture "SET enable_seqscan=off;
+    SELECT count(*) FROM d
+    WHERE c @@ to_tsquery('english', 'alpha & !missing');" "$out" "$err_f"
+  if grep -qi 'REINDEX' "$err_f"; then
+    fail "1.4.0/boolean: positively anchored query emitted upgrade warning"
+  fi
+  [ "$(tr -d '[:space:]' <"$out")" = "1" ] ||
+    fail "1.4.0/boolean: anchored query count != 1"
+  rm -f "$out" "$err_f"
+
+  out="$(mktemp)"; err_f="$(mktemp)"
+  run_capture "SET enable_seqscan=off;
+    SELECT count(*) FROM d
+    WHERE c @@ to_tsquery('english', 'alpha | !missing');" "$out" "$err_f"
+  if grep -qi 'REINDEX' "$err_f" && [ "$(tr -d '[:space:]' <"$out")" = "1" ]; then
+    log "  [1.4.0/boolean] mixed negative query warned and continued"
+  else
+    fail "1.4.0/boolean: expected mixed negative warning and count 1, got stdout=[$(cat "$out")] stderr=[$(head -1 "$err_f")]"
+  fi
+  rm -f "$out" "$err_f"
+
+  runsql "REINDEX INDEX i;"
+  out="$(mktemp)"; err_f="$(mktemp)"
+  run_capture "SET enable_seqscan=off;
+    SELECT count(*) FROM d
+    WHERE c @@ to_tsquery('english', '!missing');" "$out" "$err_f"
+  if grep -qi 'REINDEX' "$err_f"; then
+    fail "1.4.0/boolean: rebuilt index still emitted upgrade warning"
+  fi
+  local count
+  count="$(tr -d '[:space:]' <"$out")"
+  rm -f "$out" "$err_f"
+  stop_pg
+  log "  [1.4.0/boolean] post-REINDEX count=$count"
+  [ "$count" = "3" ] || fail "1.4.0/boolean: post-REINDEX count $count != 3"
+}
+
+run_v8_tombstone_compaction_upgrade() {
+  fresh_cluster || { fail "1.4.0/v8-tombstone: cluster init failed"; return; }
+  echo "max_prepared_transactions = 1" >>"$DATA_DIR/postgresql.conf"
+  start_pg || { fail "1.4.0/v8-tombstone: old server failed to start"; return; }
+  createdb_upg
+  runsql "CREATE EXTENSION pg_textsearch;
+    CREATE TABLE d(id serial primary key, c text)
+      WITH (autovacuum_enabled = false);
+    CREATE INDEX i ON d USING bm25(c) WITH (text_config='english');"
+  runsql "BEGIN;
+    SELECT txid_current();
+    PREPARE TRANSACTION 'v8_tombstone_horizon';"
+  runsql "
+    SET pg_textsearch.segments_per_level = 64;
+    DO \$\$
+    DECLARE
+      batch integer;
+    BEGIN
+      FOR batch IN 0..7 LOOP
+        INSERT INTO d(c)
+        SELECT CASE WHEN (g % 12) = 0
+          THEN 'alpha beta gamma qwxsentinel doc ' || g
+          ELSE 'alpha beta gamma common filler doc ' || g END
+        FROM generate_series(batch * 120 + 1, batch * 120 + 120) g;
+        PERFORM bm25_spill_index('i');
+      END LOOP;
+      PERFORM bm25_force_merge('i');
+      FOR batch IN 8..9 LOOP
+        INSERT INTO d(c)
+        SELECT CASE WHEN (g % 12) = 0
+          THEN 'alpha beta gamma qwxsentinel doc ' || g
+          ELSE 'alpha beta gamma common filler doc ' || g END
+        FROM generate_series(batch * 120 + 1, batch * 120 + 120) g;
+        PERFORM bm25_spill_index('i');
+      END LOOP;
+    END
+    \$\$;"
+
+  local truth pre old_pending
+  truth="$(scalar "$TRUTH_Q")"
+  pre="$(scalar "$RECALL_Q")"
+  old_pending="$(scalar "SELECT bm25_pending_free_pages('i');")"
+  stop_pg
+
+  build_install_current || { fail "current build/install failed"; return; }
+  start_pg || {
+    fail "1.4.0/v8-tombstone: NEW server failed to start"
+    return
+  }
+  runsql "ALTER EXTENSION pg_textsearch UPDATE TO '1.5.0-dev';"
+
+  local before compact_result after post out err_f
+  before="$(scalar "SELECT bm25_pending_free_pages('i');")"
+  out="$BASE_DIR/v8-compact.out"
+  err_f="$BASE_DIR/v8-compact.err"
+  run_capture "SET pg_textsearch.segments_per_level = 2;
+    SELECT bm25_compact_step('i'::regclass);" "$out" "$err_f"
+  compact_result="$(tr -d '[:space:]' <"$out")"
+  after="$(scalar "SELECT bm25_pending_free_pages('i');")"
+  post="$(scalar "$RECALL_Q")"
+  runsql "ROLLBACK PREPARED 'v8_tombstone_horizon';"
+  stop_pg
+
+  log "  [1.4.0/v8-tombstone] truth=$truth pre=$pre old_pending=$old_pending before=$before compact=$compact_result after=$after post=$post"
+
+  [ "$pre" = "$truth" ] ||
+    fail "1.4.0/v8-tombstone: OLD-binary recall $pre != truth $truth"
+  [ "$old_pending" -gt 0 ] ||
+    fail "1.4.0/v8-tombstone: old force-merge did not park pages"
+  [ "$before" = "$old_pending" ] ||
+    fail "1.4.0/v8-tombstone: binary upgrade changed pending pages ($old_pending -> $before)"
+  [ "$compact_result" = "t" ] ||
+    fail "1.4.0/v8-tombstone: compaction did not publish: $(head -1 "$err_f")"
+  [ "$post" = "$truth" ] ||
+    fail "1.4.0/v8-tombstone: post-compaction recall $post != truth $truth"
+  [ "$after" -gt "$before" ] ||
+    fail "1.4.0/v8-tombstone: compaction did not add pending pages ($before -> $after)"
+}
+
 # ------------------------------------------------------------------ #
 # Main
 # ------------------------------------------------------------------ #
@@ -281,6 +425,18 @@ for v in $OLD_VERSIONS; do
   if is_legacy "$v"; then
     run_legacy "$v"
   else
+    if [ "$v" = "1.4.0" ]; then
+      run_v8_tombstone_compaction_upgrade
+      build_install_old "$v" || {
+        fail "$v: could not reinstall old binary after V8 tombstone test"
+        continue
+      }
+      run_boolean_completeness_upgrade
+      build_install_old "$v" || {
+        fail "$v: could not reinstall old binary after Boolean upgrade test"
+        continue
+      }
+    fi
     shapes="single_seg two_seg multi_seg memtable_unspilled"
     last_shape="${shapes##* }"
     for st in $shapes; do

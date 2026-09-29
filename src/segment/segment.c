@@ -19,6 +19,7 @@
 #include <stdio.h>
 #include <storage/bufmgr.h>
 #include <storage/bufpage.h>
+#include <storage/indexfsm.h>
 #include <storage/lock.h>
 #include <unistd.h>
 #include <utils/lsyscache.h>
@@ -27,10 +28,12 @@
 #include <utils/timestamp.h>
 
 #include "debug/dump.h"
+#include "debug/injection.h"
 #include "index/freepage.h"
 #include "index/metapage.h"
 #include "index/state.h"
 #include "segment/alive_bitset.h"
+#include "segment/compaction.h"
 #include "segment/compression.h"
 #include "segment/dictionary.h"
 #include "segment/docmap.h"
@@ -93,6 +96,47 @@ tp_segment_read_dict_entry(
 	}
 }
 
+bool
+tp_segment_read_next(Relation index, BlockNumber root, BlockNumber *next)
+{
+	BlockNumber nblocks = RelationGetNumberOfBlocks(index);
+	Buffer		buffer;
+	Page		page;
+	uint32		magic;
+	uint32		version;
+
+	Assert(next != NULL);
+	if (root >= nblocks)
+		return false;
+
+	buffer = ReadBuffer(index, root);
+	LockBuffer(buffer, BUFFER_LOCK_SHARE);
+	page = BufferGetPage(buffer);
+	memcpy(&magic, PageGetContents(page), sizeof(magic));
+	memcpy(&version,
+		   (char *)PageGetContents(page) + sizeof(magic),
+		   sizeof(version));
+
+	if (magic != TP_SEGMENT_MAGIC || version < TP_SEGMENT_FORMAT_VERSION_3 ||
+		version > TP_SEGMENT_FORMAT_VERSION)
+	{
+		UnlockReleaseBuffer(buffer);
+		ereport(ERROR,
+				(errcode(ERRCODE_INDEX_CORRUPTED),
+				 errmsg("invalid segment header at block %u", root)));
+	}
+
+	if (version <= TP_SEGMENT_FORMAT_VERSION_3)
+		*next = ((TpSegmentHeaderV3 *)PageGetContents(page))->next_segment;
+	else if (version == TP_SEGMENT_FORMAT_VERSION_4)
+		*next = ((TpSegmentHeaderV4 *)PageGetContents(page))->next_segment;
+	else
+		*next = ((TpSegmentHeader *)PageGetContents(page))->next_segment;
+
+	UnlockReleaseBuffer(buffer);
+	return true;
+}
+
 /*
  * Open segment for reading.
  * If load_ctids is true, preloads all CTID arrays into memory (expensive).
@@ -125,11 +169,15 @@ tp_segment_open_ex(Relation index, BlockNumber root_block, bool load_ctids)
 		return NULL;
 
 	/* Allocate reader structure */
-	reader						 = palloc0(sizeof(TpSegmentReader));
-	reader->index				 = index;
-	reader->root_block			 = root_block;
-	reader->current_buffer		 = InvalidBuffer;
-	reader->current_logical_page = UINT32_MAX;
+	reader							  = palloc0(sizeof(TpSegmentReader));
+	reader->index					  = index;
+	reader->root_block				  = root_block;
+	reader->current_buffer			  = InvalidBuffer;
+	reader->current_logical_page	  = UINT32_MAX;
+	reader->ctid_pages_buffer		  = InvalidBuffer;
+	reader->ctid_pages_logical_page	  = UINT32_MAX;
+	reader->ctid_offsets_buffer		  = InvalidBuffer;
+	reader->ctid_offsets_logical_page = UINT32_MAX;
 
 	/* Read header from root block */
 	header_buf = ReadBuffer(index, root_block);
@@ -416,15 +464,19 @@ tp_segment_open_from_buffile(BufFile *file, uint64 base_offset)
 	TpSegmentReader *reader;
 	TpSegmentHeader *header;
 
-	reader						 = palloc0(sizeof(TpSegmentReader));
-	reader->index				 = NULL;
-	reader->root_block			 = InvalidBlockNumber;
-	reader->current_buffer		 = InvalidBuffer;
-	reader->current_logical_page = UINT32_MAX;
-	reader->header_buffer		 = InvalidBuffer;
-	reader->page_map			 = NULL;
-	reader->num_pages			 = 0;
-	reader->nblocks				 = 0;
+	reader							  = palloc0(sizeof(TpSegmentReader));
+	reader->index					  = NULL;
+	reader->root_block				  = InvalidBlockNumber;
+	reader->current_buffer			  = InvalidBuffer;
+	reader->current_logical_page	  = UINT32_MAX;
+	reader->ctid_pages_buffer		  = InvalidBuffer;
+	reader->ctid_pages_logical_page	  = UINT32_MAX;
+	reader->ctid_offsets_buffer		  = InvalidBuffer;
+	reader->ctid_offsets_logical_page = UINT32_MAX;
+	reader->header_buffer			  = InvalidBuffer;
+	reader->page_map				  = NULL;
+	reader->num_pages				  = 0;
+	reader->nblocks					  = 0;
 
 	/* Set BufFile fields */
 	reader->buffile		 = file;
@@ -463,6 +515,81 @@ tp_segment_open_from_buffile(BufFile *file, uint64 base_offset)
 	return reader;
 }
 
+void
+tp_segment_enable_ctid_lookup_cache(TpSegmentReader *reader)
+{
+	uint32 capacity;
+
+	Assert(reader != NULL);
+
+	if (reader->cached_ctid_pages != NULL ||
+		reader->lookup_ctid_pages != NULL || reader->header->num_docs == 0)
+		return;
+
+	/* Keep both arrays within roughly one PostgreSQL block. */
+	capacity =
+			Min(reader->header->num_docs,
+				(uint32)(BLCKSZ /
+						 (sizeof(BlockNumber) + sizeof(OffsetNumber))));
+	reader->lookup_ctid_pages	 = palloc(capacity * sizeof(BlockNumber));
+	reader->lookup_ctid_offsets	 = palloc(capacity * sizeof(OffsetNumber));
+	reader->lookup_ctid_capacity = capacity;
+}
+
+static void
+tp_segment_read_cached_page(
+		TpSegmentReader *reader,
+		uint64			 logical_offset,
+		void			*dest,
+		uint32			 len,
+		Buffer			*cached_buffer,
+		uint32			*cached_logical_page)
+{
+	uint32 logical_page = (uint32)(logical_offset / SEGMENT_DATA_PER_PAGE);
+	uint32 page_offset	= (uint32)(logical_offset % SEGMENT_DATA_PER_PAGE);
+	Page   page;
+
+	if (reader->buffile != NULL || page_offset + len > SEGMENT_DATA_PER_PAGE)
+	{
+		tp_segment_read(reader, logical_offset, dest, len);
+		return;
+	}
+
+	if (*cached_logical_page != logical_page)
+	{
+		BlockNumber physical;
+
+		if (BufferIsValid(*cached_buffer))
+		{
+			ReleaseBuffer(*cached_buffer);
+			*cached_buffer = InvalidBuffer;
+		}
+
+		if (logical_page >= reader->num_pages)
+			elog(ERROR,
+				 "Invalid logical page %u (max %u), logical_offset=%" PRIu64,
+				 logical_page,
+				 reader->num_pages > 0 ? reader->num_pages - 1 : 0,
+				 logical_offset);
+
+		physical = reader->page_map[logical_page];
+		if (physical >= reader->nblocks)
+			elog(ERROR,
+				 "Invalid physical block %u for logical page %u (nblocks=%u)",
+				 physical,
+				 logical_page,
+				 reader->nblocks);
+
+		*cached_buffer		 = ReadBuffer(reader->index, physical);
+		*cached_logical_page = logical_page;
+	}
+
+	LockBuffer(*cached_buffer, BUFFER_LOCK_SHARE);
+	page = BufferGetPage(*cached_buffer);
+	memcpy(dest, (char *)page + SizeOfPageHeaderData + page_offset, len);
+	LockBuffer(*cached_buffer, BUFFER_LOCK_UNLOCK);
+}
+
 /*
  * Look up a single CTID by doc_id.
  * Used for deferred CTID resolution when CTIDs weren't preloaded.
@@ -493,20 +620,57 @@ tp_segment_lookup_ctid(
 		return;
 	}
 
+	if (reader->lookup_ctid_pages != NULL)
+	{
+		if (reader->lookup_ctid_count == 0 ||
+			doc_id < reader->lookup_ctid_start ||
+			doc_id >= reader->lookup_ctid_start + reader->lookup_ctid_count)
+		{
+			reader->lookup_ctid_start = doc_id;
+			reader->lookup_ctid_count =
+					Min(reader->lookup_ctid_capacity,
+						reader->header->num_docs - doc_id);
+
+			tp_segment_read(
+					reader,
+					reader->header->ctid_pages_offset +
+							(uint64)doc_id * sizeof(BlockNumber),
+					reader->lookup_ctid_pages,
+					reader->lookup_ctid_count * sizeof(BlockNumber));
+			tp_segment_read(
+					reader,
+					reader->header->ctid_offsets_offset +
+							(uint64)doc_id * sizeof(OffsetNumber),
+					reader->lookup_ctid_offsets,
+					reader->lookup_ctid_count * sizeof(OffsetNumber));
+		}
+
+		doc_id -= reader->lookup_ctid_start;
+		ItemPointerSet(
+				ctid_out,
+				reader->lookup_ctid_pages[doc_id],
+				reader->lookup_ctid_offsets[doc_id]);
+		return;
+	}
+
 	/* Read page number (4 bytes) from ctid_pages array */
-	tp_segment_read(
+	tp_segment_read_cached_page(
 			reader,
 			reader->header->ctid_pages_offset + doc_id * sizeof(BlockNumber),
 			&page,
-			sizeof(BlockNumber));
+			sizeof(BlockNumber),
+			&reader->ctid_pages_buffer,
+			&reader->ctid_pages_logical_page);
 
 	/* Read offset (2 bytes) from ctid_offsets array */
-	tp_segment_read(
+	tp_segment_read_cached_page(
 			reader,
 			reader->header->ctid_offsets_offset +
 					doc_id * sizeof(OffsetNumber),
 			&offset,
-			sizeof(OffsetNumber));
+			sizeof(OffsetNumber),
+			&reader->ctid_offsets_buffer,
+			&reader->ctid_offsets_logical_page);
 
 	ItemPointerSet(ctid_out, page, offset);
 }
@@ -526,6 +690,12 @@ tp_segment_close(TpSegmentReader *reader)
 		if (BufferIsValid(reader->current_buffer))
 			ReleaseBuffer(reader->current_buffer);
 
+		if (BufferIsValid(reader->ctid_pages_buffer))
+			ReleaseBuffer(reader->ctid_pages_buffer);
+
+		if (BufferIsValid(reader->ctid_offsets_buffer))
+			ReleaseBuffer(reader->ctid_offsets_buffer);
+
 		if (BufferIsValid(reader->header_buffer))
 			ReleaseBuffer(reader->header_buffer);
 
@@ -541,6 +711,10 @@ tp_segment_close(TpSegmentReader *reader)
 		pfree(reader->cached_ctid_pages);
 	if (reader->cached_ctid_offsets)
 		pfree(reader->cached_ctid_offsets);
+	if (reader->lookup_ctid_pages)
+		pfree(reader->lookup_ctid_pages);
+	if (reader->lookup_ctid_offsets)
+		pfree(reader->lookup_ctid_offsets);
 
 	pfree(reader);
 }
@@ -807,6 +981,8 @@ tp_segment_writer_allocate_page(TpSegmentWriter *writer)
 	tp_segment_writer_grow_pages(writer);
 	new_page = allocate_segment_page(writer->index);
 	writer->pages[writer->pages_allocated++] = new_page;
+	tp_compaction_allocation_injection_point(
+			TP_COMPACTION_ALLOCATION_OUTPUT_DATA);
 	return new_page;
 }
 
@@ -815,7 +991,12 @@ tp_segment_writer_allocate_page(TpSegmentWriter *writer)
  * This function is also used by segment_merge.c for merged segments.
  */
 static BlockNumber
-write_page_index_internal(Relation index, BlockNumber *pages, uint32 num_pages)
+write_page_index_internal(
+		Relation	  index,
+		BlockNumber	 *pages,
+		uint32		  num_pages,
+		BlockNumber **owned_pages,
+		uint32		 *owned_count)
 {
 	BlockNumber index_root = InvalidBlockNumber;
 	BlockNumber prev_block = InvalidBlockNumber;
@@ -833,11 +1014,23 @@ write_page_index_internal(Relation index, BlockNumber *pages, uint32 num_pages)
 							 entries_per_page;
 
 	/* Allocate index pages incrementally */
-	BlockNumber *index_pages = palloc(num_index_pages * sizeof(BlockNumber));
+	BlockNumber *index_pages;
 	uint32		 i;
 
+	Assert(owned_pages != NULL);
+	Assert(owned_count != NULL);
+	*owned_pages = NULL;
+	*owned_count = 0;
+
+	index_pages	 = palloc(num_index_pages * sizeof(BlockNumber));
+	*owned_pages = index_pages;
 	for (i = 0; i < num_index_pages; i++)
+	{
 		index_pages[i] = allocate_segment_page(index);
+		(*owned_count)++;
+		tp_compaction_allocation_injection_point(
+				TP_COMPACTION_ALLOCATION_PAGE_INDEX);
+	}
 
 	/*
 	 * Write index pages in reverse order (so we can chain them).
@@ -889,14 +1082,53 @@ write_page_index_internal(Relation index, BlockNumber *pages, uint32 num_pages)
 			index_root = index_pages[i];
 	}
 
-	pfree(index_pages);
 	return index_root;
 }
 
 BlockNumber
 write_page_index(Relation index, BlockNumber *pages, uint32 num_pages)
 {
-	return write_page_index_internal(index, pages, num_pages);
+	volatile BlockNumber root		  = InvalidBlockNumber;
+	BlockNumber *volatile owned_pages = NULL;
+	volatile uint32 owned_count		  = 0;
+
+	PG_TRY();
+	{
+		root = write_page_index_internal(
+				index,
+				pages,
+				num_pages,
+				(BlockNumber **)&owned_pages,
+				(uint32 *)&owned_count);
+	}
+	PG_CATCH();
+	{
+		if (owned_count > 0)
+		{
+			tp_segment_free_pages(index, owned_pages, owned_count);
+			IndexFreeSpaceMapVacuum(index);
+		}
+		if (owned_pages != NULL)
+			pfree(owned_pages);
+		PG_RE_THROW();
+	}
+	PG_END_TRY();
+
+	if (owned_pages != NULL)
+		pfree(owned_pages);
+	return (BlockNumber)root;
+}
+
+BlockNumber
+write_page_index_tracked(
+		Relation	  index,
+		BlockNumber	 *pages,
+		uint32		  num_pages,
+		BlockNumber **owned_pages,
+		uint32		 *owned_count)
+{
+	return write_page_index_internal(
+			index, pages, num_pages, owned_pages, owned_count);
 }
 
 /*
@@ -1023,8 +1255,6 @@ tp_write_segment(
 	/* Initialize the writer to avoid garbage values */
 	memset(&writer, 0, sizeof(TpSegmentWriter));
 
-	if (num_terms == 0)
-		return InvalidBlockNumber;
 	validate_terms(terms, num_terms);
 
 	/* Initialize writer with incremental page allocation */
@@ -1496,6 +1726,7 @@ tp_write_segment(
 	 */
 	{
 		GenericXLogState *xlog_state;
+		uint64			  legacy_total_tokens;
 
 		header_buf = ReadBuffer(index, header_block);
 		LockBuffer(header_buf, BUFFER_LOCK_EXCLUSIVE);
@@ -1504,20 +1735,52 @@ tp_write_segment(
 		header_page = GenericXLogRegisterBuffer(xlog_state, header_buf, 0);
 
 		existing_header = (TpSegmentHeader *)PageGetContents(header_page);
-		existing_header->strings_offset		 = header.strings_offset;
-		existing_header->entries_offset		 = header.entries_offset;
-		existing_header->postings_offset	 = header.postings_offset;
-		existing_header->skip_index_offset	 = header.skip_index_offset;
-		existing_header->fieldnorm_offset	 = header.fieldnorm_offset;
-		existing_header->ctid_pages_offset	 = header.ctid_pages_offset;
-		existing_header->ctid_offsets_offset = header.ctid_offsets_offset;
-		existing_header->alive_bitset_offset = header.alive_bitset_offset;
-		existing_header->alive_count		 = header.alive_count;
-		existing_header->num_docs			 = header.num_docs;
-		existing_header->total_tokens		 = header.total_tokens;
-		existing_header->data_size			 = header.data_size;
-		existing_header->num_pages			 = header.num_pages;
-		existing_header->page_index			 = header.page_index;
+		if (tp_injected_legacy_segment(&legacy_total_tokens))
+		{
+			TpSegmentHeaderV4 legacy = {
+					.magic				 = header.magic,
+					.version			 = TP_SEGMENT_FORMAT_VERSION_4,
+					.created_at			 = header.created_at,
+					.num_pages			 = header.num_pages,
+					.data_size			 = header.data_size,
+					.level				 = header.level,
+					.next_segment		 = header.next_segment,
+					.dictionary_offset	 = header.dictionary_offset,
+					.strings_offset		 = header.strings_offset,
+					.entries_offset		 = header.entries_offset,
+					.postings_offset	 = header.postings_offset,
+					.skip_index_offset	 = header.skip_index_offset,
+					.fieldnorm_offset	 = header.fieldnorm_offset,
+					.ctid_pages_offset	 = header.ctid_pages_offset,
+					.ctid_offsets_offset = header.ctid_offsets_offset,
+					.num_terms			 = header.num_terms,
+					.num_docs			 = header.num_docs,
+					.total_tokens		 = legacy_total_tokens,
+					.page_index			 = header.page_index,
+			};
+
+			memcpy(existing_header, &legacy, sizeof(legacy));
+		}
+		else
+		{
+			uint64 v5_total_tokens = tp_injected_v5_segment_total_len(
+					header.total_tokens);
+
+			existing_header->strings_offset		 = header.strings_offset;
+			existing_header->entries_offset		 = header.entries_offset;
+			existing_header->postings_offset	 = header.postings_offset;
+			existing_header->skip_index_offset	 = header.skip_index_offset;
+			existing_header->fieldnorm_offset	 = header.fieldnorm_offset;
+			existing_header->ctid_pages_offset	 = header.ctid_pages_offset;
+			existing_header->ctid_offsets_offset = header.ctid_offsets_offset;
+			existing_header->alive_bitset_offset = header.alive_bitset_offset;
+			existing_header->alive_count		 = header.alive_count;
+			existing_header->num_docs			 = header.num_docs;
+			existing_header->total_tokens		 = v5_total_tokens;
+			existing_header->data_size			 = header.data_size;
+			existing_header->num_pages			 = header.num_pages;
+			existing_header->page_index			 = header.page_index;
+		}
 
 		GenericXLogFinish(xlog_state);
 		UnlockReleaseBuffer(header_buf);
@@ -1526,8 +1789,10 @@ tp_write_segment(
 	FlushRelationBuffers(index);
 
 	/* Clean up writer-owned state. Caller frees terms[] and docmap. */
-	pfree(string_offsets);
-	pfree(term_blocks);
+	if (string_offsets)
+		pfree(string_offsets);
+	if (term_blocks)
+		pfree(term_blocks);
 	if (writer.pages)
 		pfree(writer.pages);
 

@@ -30,6 +30,7 @@ typedef struct TpPostingData
  * Both memtable and segment implement this interface.
  */
 typedef struct TpDataSource TpDataSource;
+typedef void (*TpDocumentCallback)(ItemPointer ctid, void *arg);
 
 typedef struct TpDataSourceOps
 {
@@ -61,6 +62,12 @@ typedef struct TpDataSourceOps
 	uint32 (*get_doc_freq)(TpDataSource *source, const char *term);
 
 	/*
+	 * Invoke callback once for every document known to the source.
+	 */
+	void (*foreach_document)(
+			TpDataSource *source, TpDocumentCallback callback, void *arg);
+
+	/*
 	 * Close and free the data source.
 	 */
 	void (*close)(TpDataSource *source);
@@ -84,6 +91,8 @@ struct TpDataSource
 	((src)->ops->get_doc_length((src), (ctid)))
 #define tp_source_get_doc_freq(src, term) \
 	((src)->ops->get_doc_freq((src), (term)))
+#define tp_source_foreach_document(src, callback, arg) \
+	((src)->ops->foreach_document((src), (callback), (arg)))
 #define tp_source_close(src) ((src)->ops->close((src)))
 
 /*

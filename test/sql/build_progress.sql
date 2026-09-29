@@ -94,6 +94,10 @@ CREATE TABLE progress_nested_part_b
     FOR VALUES FROM (10) TO (20);
 CREATE TABLE progress_nested_side (content text);
 CREATE TABLE progress_nested_reindex_side (content text);
+INSERT INTO progress_nested_docs VALUES
+    (1, 'apple'), (11, 'apple banana'), (12, 'apple banana cherry');
+INSERT INTO progress_nested_side VALUES ('kiwi kiwi kiwi kiwi');
+INSERT INTO progress_nested_reindex_side VALUES ('plum plum plum plum plum');
 CREATE INDEX progress_nested_reindex_idx
     ON progress_nested_reindex_side USING bm25(content)
     WITH (text_config = 'english');
@@ -136,6 +140,8 @@ CREATE TABLE progress_reindex_part_a
 CREATE TABLE progress_reindex_part_b
     PARTITION OF progress_reindex_docs
     FOR VALUES FROM (10) TO (20);
+INSERT INTO progress_reindex_docs VALUES
+    (1, 'apple'), (11, 'apple banana'), (12, 'apple banana cherry');
 
 SET progress_test.nested_action = reindex;
 CREATE INDEX progress_reindex_outer_idx

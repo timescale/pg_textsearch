@@ -32,6 +32,8 @@ OBJS = \
 	src/access/build_context.o \
 	src/access/build_parallel.o \
 	src/access/compaction_api.o \
+	src/access/boolean.o \
+	src/access/rls.o \
 	src/access/scan.o \
 	src/access/vacuum.o \
 	src/memtable/arena.o \
@@ -46,6 +48,7 @@ OBJS = \
 	src/memtable/scan.o \
 	src/memtable/stringtable.o \
 	src/segment/segment.o \
+	src/segment/graph_snapshot.o \
 	src/segment/dictionary.o \
 	src/segment/scan.o \
 	src/segment/merge.o \
@@ -60,6 +63,7 @@ OBJS = \
 	src/types/array.o \
 	src/types/vector.o \
 	src/types/query.o \
+	src/index/compaction_job.o \
 	src/index/compaction_request.o \
 	src/index/state.o \
 	src/index/registry.o \
@@ -70,6 +74,7 @@ OBJS = \
 	src/index/source.o \
 	src/planner/hooks.o \
 	src/planner/cost.o \
+	src/debug/injection.o \
 	src/debug/dump.o
 
 # Shared library target
@@ -88,24 +93,54 @@ PG_CPPFLAGS += -Wno-unknown-warning-option -Wno-clobbered -Wno-packed-not-aligne
 # PG_CPPFLAGS += -DDEBUG_DUMP_INDEX
 
 # Test configuration
-REGRESS = abort aerodocs basic binary_io bmw bmw_skip_advance build_progress bulk_load cache_apply cache_memory_cap cache_source cache_spill catalog_stats chain_source compaction compaction_request compression concurrent_build coverage deletion vacuum vacuum_bitmap vacuum_extended vacuum_rebuild dropped empty explicit_index expression_index filtered_seed force_merge implicit index inheritance large_documents limits lock manyterms memory memtable_append memtable_page memtable_spill memtable_spill_dead memtable_reclaim merge mixed parallel_build parallel_bmw partitioned partitioned_many partial_index pgstats queries quoted_identifiers rescan schema scoring1 scoring2 scoring3 scoring4 scoring5 scoring6 security security_acl segment segment_integrity segment_reclaim tombstone_reuse tombstone_recover strings temp_table text_array text_config unsupported updates vector vector_v1_rejected unlogged_index wand
+REGRESS = abort aerodocs basic binary_io bmw bmw_skip_advance boolean_queries build_progress bulk_load cache_apply cache_memory_cap cache_source cache_spill catalog_stats chain_source compaction compaction_request compression concurrent_build coverage deletion vacuum vacuum_bitmap vacuum_extended vacuum_rebuild dropped empty explicit_index expression_index filtered_seed force_merge implicit index inheritance large_documents limits lock manyterms memory memtable_append memtable_page memtable_spill memtable_spill_dead memtable_reclaim merge mixed parallel_build parallel_bmw partitioned partitioned_many partial_index pgstats queries quoted_identifiers rescan rls schema scoring1 scoring2 scoring3 scoring4 scoring5 scoring6 security security_acl segment segment_integrity segment_reclaim tombstone_reuse tombstone_recover strings temp_table text_array text_config unsupported updates vector vector_v1_rejected unlogged_index wand
+INJECTION_REGRESS = merge_injection compaction_injection \
+	compaction_error_injection \
+	force_merge_injection segment_reclaim_injection \
+	vacuum_rebuild_injection
 REGRESS_OPTS = --inputdir=test --outputdir=test
 
 PG_CONFIG ?= pg_config
 PGXS := $(shell $(PG_CONFIG) --pgxs)
 include $(PGXS)
 
+# Makefile.global (included by PGXS) reports how the server was
+# configured.  The injection tests and the helper module that drives
+# them only exist for a --enable-injection-points server.
+ifeq ($(enable_injection_points),yes)
+REGRESS += $(INJECTION_REGRESS)
+
+install: install-test-injection
+
+install-test-injection:
+	@# PGXS does not encode PG_CONFIG in object dependencies, so stale
+	@# objects from another server version would silently be reused.
+	@$(MAKE) -C test/modules/pg_textsearch_test \
+		PG_CONFIG="$(PG_CONFIG)" clean
+	@$(MAKE) -C test/modules/pg_textsearch_test PG_CONFIG="$(PG_CONFIG)"
+	@$(MAKE) -C test/modules/pg_textsearch_test \
+		PG_CONFIG="$(PG_CONFIG)" install
+
+test-injection-sql:
+	@$(pg_regress_installcheck) $(REGRESS_OPTS) $(INJECTION_REGRESS)
+
+test-injection-shell:
+	@cd test/scripts && ./inline_compaction_locking.sh injection
+	@cd test/scripts && ./crash_safety_spill.sh
+	@cd test/scripts && ./nonblocking_compaction.sh
+	@cd test/scripts && ./nonblocking_spill.sh
+	@cd test/scripts && ./compaction_recovery.sh
+	@cd test/scripts && ./parallel_vacuum.sh injection
+	@cd test/scripts && ./standby_reclaim.sh
+else
+install-test-injection test-injection-sql test-injection-shell:
+	@echo "PostgreSQL injection points are disabled; skipping $@"
+endif
+
 # SQL regression tests
-test: test-compaction-ownercheck test-compaction-request-source \
-	test-segment-io-limits
+test: test-segment-io-limits test-mixed-update-query-benchmark
 	@echo "Running SQL regression tests..."
 	@$(pg_regress_installcheck) $(REGRESS_OPTS) $(REGRESS)
-
-test-compaction-ownercheck:
-	@./test/scripts/compaction_ownercheck_source.sh
-
-test-compaction-request-source:
-	@./test/scripts/compaction_request_source.sh
 
 test-segment-io-limits:
 	@set -e; tmp_dir="$$(mktemp -d)"; \
@@ -118,11 +153,15 @@ test-segment-io-limits:
 		-o "$$tmp_dir/segment_io_limits_test"; \
 	"$$tmp_dir/segment_io_limits_test"
 
-# Run source-level guards with every regression entry point.
-installcheck: test-compaction-ownercheck test-compaction-request-source \
-	test-segment-io-limits
-test-local: test-compaction-ownercheck test-compaction-request-source \
-	test-segment-io-limits
+test-mixed-update-query-benchmark:
+	@./test/scripts/mixed_update_query_benchmark_test.sh
+
+test-durable:
+	@echo "Running managed pg_durable compaction tests..."
+	@cd test/scripts && ./durable_compaction.sh
+
+installcheck: test-segment-io-limits test-mixed-update-query-benchmark
+test-local: test-segment-io-limits test-mixed-update-query-benchmark
 
 # Custom local test target with dedicated PostgreSQL instance
 test-local: install
@@ -148,11 +187,30 @@ clean-test-dirs:
 	@rm -rf tmp_check_shared coverage-html coverage.info
 	@find . -name "*.gcda" -delete 2>/dev/null || true
 	@find . -name "*.gcno" -delete 2>/dev/null || true
+	@$(MAKE) -C test/modules/pg_textsearch_test \
+		PG_CONFIG="$(PG_CONFIG)" clean >/dev/null 2>&1 || true
 
 # Shell script test targets (assume extension is already installed)
-test-concurrency:
+test-rls-locking:
+	@echo "Running RLS DDL locking tests..."
+	@cd test/scripts && ./rls_ddl_locking.sh
+
+test-nonblocking-compaction:
+	@cd test/scripts && ./nonblocking_compaction.sh
+
+test-nonblocking-spill:
+	@cd test/scripts && ./nonblocking_spill.sh
+
+test-standalone-snapshot:
+	@cd test/scripts && ./standalone_snapshot.sh
+
+test-concurrency: test-rls-locking
 	@echo "Running concurrency tests..."
+	@cd test/scripts && ./standalone_snapshot.sh
+	@cd test/scripts && ./inline_compaction_locking.sh
+	@cd test/scripts && ./parallel_vacuum.sh
 	@cd test/scripts && ./concurrency.sh
+	@cd test/scripts && ./boolean_concurrent_merge.sh
 	@cd test/scripts && ./partial_concurrent_read.sh
 	@cd test/scripts && ./concurrent_duplicate_read.sh
 	@cd test/scripts && ./vacuum_concurrent_merge.sh
@@ -161,7 +219,6 @@ test-recovery:
 	@echo "Running crash recovery tests..."
 	@cd test/scripts && ./recovery.sh
 	@cd test/scripts && ./shutdown_spill.sh
-	@cd test/scripts && ./standby_reclaim.sh
 	@cd test/scripts && ./compaction_recovery.sh
 
 test-segment:
@@ -187,7 +244,9 @@ test-chinese:
 # Replication tests (not in test-shell: each spawns two Postgres instances)
 test-replication:
 	@echo "Running physical replication tests..."
-	@cd test/scripts && ./replication.sh
+	@cd test/scripts && TMPDIR=.. REPL_HOST=127.0.0.1 \
+	    REPL_SOCKET_DIR= ./replication.sh
+	@cd test/scripts && ./standby_reclaim.sh
 
 test-logical-replication:
 	@echo "Running logical replication tests..."
@@ -207,6 +266,7 @@ test-replication-extended:
 	    replication_spill_paths.sh \
 	    replication_memtable_dead_reclaim.sh \
 	    replication_segment_reclaim.sh \
+	    standby_reclaim.sh \
 	    wal_audit.sh"; \
 	failed=""; \
 	for s in $$scripts; do \
@@ -233,7 +293,7 @@ test-reindex:
 test-shell: test-concurrency test-recovery test-segment test-cic test-multi-index test-reindex
 	@echo "All shell-based tests completed"
 
-test-all: test test-shell
+test-all: test test-shell test-replication
 	@echo "All tests (SQL regression + shell scripts) completed successfully"
 
 # Generate expected output files from current test results
@@ -371,11 +431,11 @@ help:
 	@echo ""
 	@echo "Testing targets:"
 	@echo "  make test         - Run source guard and SQL regression tests"
-	@echo "  make test-compaction-ownercheck - Check compaction ownership ordering"
 	@echo "  make installcheck - Run SQL regression tests"
 	@echo "  make test-local   - Run tests with dedicated PostgreSQL instance"
-	@echo "  make test-all     - Run all tests (SQL regression + shell scripts)"
-	@echo "  make test-shell   - Run shell-based tests (all shell scripts)"
+	@echo "  make test-all     - Run SQL, default shell, and replication tests"
+	@echo "  make test-shell   - Run default shell tests (excludes replication)"
+	@echo "  make test-nonblocking-compaction - Run compaction overlap tests (needs injection points)"
 	@echo "  make test-concurrency - Run concurrency tests"
 	@echo "  make test-recovery    - Run crash recovery tests"
 	@echo "  make test-segment     - Run multi-backend segment tests"
@@ -383,6 +443,7 @@ help:
 	@echo "  make test-cic         - Run CREATE INDEX CONCURRENTLY tests"
 	@echo "  make test-chinese     - Run Chinese tokenization test (needs zhparser)"
 	@echo "  make test-reindex     - Run multi-backend reindex regression tests (issue #390)"
+	@echo "  make test-durable     - Run managed pg_durable compaction tests"
 	@echo "  make expected     - Generate expected output files from test results"
 	@echo ""
 	@echo "Code formatting targets:"
@@ -406,4 +467,16 @@ help:
 	@echo "  make test-all"
 	@echo "  make format"
 
-.PHONY: test test-compaction-ownercheck test-compaction-request-source test-segment-io-limits clean-test-dirs installcheck test-concurrency test-recovery test-segment test-stress test-cic test-chinese test-replication test-replication-extended test-logical-replication test-multi-index test-reindex test-shell test-all expected lint-format format format-check format-diff format-single coverage coverage-build coverage-clean coverage-report help
+.PHONY: \
+	test test-segment-io-limits test-mixed-update-query-benchmark \
+	test-durable \
+	test-injection-sql test-injection-shell install-test-injection \
+	clean-test-dirs installcheck test-rls-locking test-concurrency \
+	test-standalone-snapshot test-nonblocking-compaction \
+	test-nonblocking-spill \
+	test-recovery test-segment test-stress test-cic test-chinese \
+	test-replication test-replication-extended \
+	test-logical-replication test-multi-index test-reindex \
+	test-shell test-all expected lint-format format format-check \
+	format-diff format-single coverage coverage-build coverage-clean \
+	coverage-report help

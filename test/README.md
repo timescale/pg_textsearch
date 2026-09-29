@@ -23,8 +23,8 @@ The Makefile defines these entry points:
 
 | Target | Coverage |
 | --- | --- |
-| `make test` | SQL regression suite and source guards |
-| `make installcheck` | Standard PGXS regression run and source guards |
+| `make test` | SQL regression suite |
+| `make installcheck` | Standard PGXS regression run |
 | `make test-local` | Install and test in a temporary cluster on port 55433 |
 | `make test-shell` | Concurrency, recovery, segment, CIC, multi-index, and reindex |
 | `make test-all` | `make test` plus `make test-shell` |
@@ -38,11 +38,32 @@ The Makefile defines these entry points:
 | `make test-cic` | `CREATE INDEX CONCURRENTLY` |
 | `make test-multi-index` | Multi-index, user, and schema behavior |
 | `make test-reindex` | Multi-backend reindex invalidation |
+| `make test-injection-sql` | Behavior-specific SQL regressions requiring injection points |
+| `make test-injection-shell` | Crash and concurrency injection-point tests |
 | `make test-chinese` | Optional zhparser regression |
 
 `make test-shell` is the standard shell suite. Replication and stress targets
 are separate because they create additional PostgreSQL instances or run for an
 extended period.
+
+## Injection Points
+
+Injection-point tests require PostgreSQL configured with
+`--enable-injection-points`. The Makefile detects this through
+`enable_injection_points` and, when it is set, adds the injection
+regressions to `REGRESS` and installs the `pg_textsearch_test` helper
+extension as part of `make install`. On ordinary packaged PostgreSQL
+builds, these tests are omitted.
+
+Scripts that mix injection-point cases with ordinary ones — such as
+`standby_reclaim.sh`, `compaction_recovery.sh`, and
+`vacuum_concurrent_merge.sh` — skip only the cases that need a
+deterministic pause, so they stay useful on packaged builds.
+`nonblocking_compaction.sh` needs injection points throughout and skips
+entirely.
+
+CI builds PostgreSQL 17, 18, and 19 with injection points enabled and caches
+the installed prefixes. The sanitizer builds use the same configure option.
 
 ## Sanitizers
 
