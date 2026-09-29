@@ -211,7 +211,10 @@ test-nonblocking-spill:
 test-standalone-snapshot:
 	@cd test/scripts && ./standalone_snapshot.sh
 
-test-concurrency: test-rls-locking
+test-memtable-stale-tail:
+	@cd test/scripts && ./memtable_stale_tail.sh
+
+test-concurrency: test-rls-locking test-memtable-stale-tail
 	@echo "Running concurrency tests..."
 	@cd test/scripts && ./standalone_snapshot.sh
 	@cd test/scripts && ./inline_compaction_locking.sh
@@ -486,7 +489,7 @@ help:
 	test-injection-sql test-injection-shell install-test-injection \
 	clean-test-dirs installcheck test-rls-locking test-concurrency \
 	test-standalone-snapshot test-nonblocking-compaction \
-	test-nonblocking-spill \
+	test-nonblocking-spill test-memtable-stale-tail \
 	test-recovery test-segment test-stress test-cic test-chinese \
 	test-replication test-replication-extended \
 	test-logical-replication test-multi-index test-reindex \

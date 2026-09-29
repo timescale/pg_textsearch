@@ -35,6 +35,12 @@ snapshots and does not inspect btree storage. pg_textsearch has no custom WAL
 resource manager. The on-disk chain is authoritative through crash recovery
 and physical replication.
 
+An append retries if another writer has extended its candidate tail. If
+rereading the metapage returns that same stale tail, the index is corrupt:
+extension publishes the old tail's link and the new tail pointer atomically.
+The write raises an index-corruption error with a `REINDEX` hint rather than
+spinning while holding the per-index lock.
+
 Queries compose postings from the memtable and all published segments. Each
 live heap TID occurs in at most one published segment. Segment-local numeric
 `doc_id` values may repeat across segments. This disjointness permits merge and

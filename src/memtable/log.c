@@ -487,6 +487,8 @@ tp_memtable_append(
 {
 	TpLocalIndexState *index_state;
 	Oid				   index_oid;
+	BlockNumber		   stale_tail_blkno = InvalidBlockNumber;
+	BlockNumber		   stale_next_blkno = InvalidBlockNumber;
 
 	Assert(rel != NULL);
 	Assert(ctid != NULL);
@@ -528,6 +530,22 @@ tp_memtable_append(
 		tail_blkno = memtable_read_tail_blkno(rel);
 
 		/*
+		 * An extend publishes old_tail.next and meta.tail under both
+		 * buffer locks in one WAL record.  With spill excluded, a stale
+		 * tail cannot remain current after re-reading the metapage.
+		 */
+		if (tail_blkno != InvalidBlockNumber && tail_blkno == stale_tail_blkno)
+			ereport(ERROR,
+					(errcode(ERRCODE_INDEX_CORRUPTED),
+					 errmsg("pg_textsearch index \"%s\" is corrupted: "
+							"metapage memtable tail is block %u, but that "
+							"page already links to block %u",
+							RelationGetRelationName(rel),
+							tail_blkno,
+							stale_next_blkno),
+					 errhint("REINDEX the index.")));
+
+		/*
 		 * Oversized record path.  Routes both the bootstrap
 		 * (tail_blkno==Invalid) and extend cases through the
 		 * shared fragment writer.
@@ -556,7 +574,8 @@ tp_memtable_append(
 
 				if (tp_memtable_page_get_next(tailpage) != InvalidBlockNumber)
 				{
-					/* Stale tail.  Retry. */
+					stale_tail_blkno = tail_blkno;
+					stale_next_blkno = tp_memtable_page_get_next(tailpage);
 					UnlockReleaseBuffer(tailbuf);
 					continue;
 				}
@@ -620,6 +639,8 @@ tp_memtable_append(
 			 * new tail.  Each retry observes one completed
 			 * extend by another backend.
 			 */
+			stale_tail_blkno = tail_blkno;
+			stale_next_blkno = tp_memtable_page_get_next(tailpage);
 			UnlockReleaseBuffer(tailbuf);
 			continue;
 		}
