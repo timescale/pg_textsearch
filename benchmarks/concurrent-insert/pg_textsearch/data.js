@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790581661709,
+  "lastUpdate": 1790667461868,
   "repoUrl": "https://github.com/timescale/pg_textsearch",
   "entries": {
     "Concurrent INSERT (pg_textsearch)": [
@@ -11040,6 +11040,68 @@ window.BENCHMARK_DATA = {
           {
             "name": "pg_textsearch INSERT latency (c=8)",
             "value": 0.764,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tjgreen@gmail.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "b628890d90a7aa571c01f54b6d21193d6e383e6a",
+          "message": "Harden BM25 build progress tracking (#493)\n\n## Summary\n\n- start aggregate progress only after PostgreSQL creates an actual BM25\nindex object, avoiding false completion notices for `IF NOT EXISTS`\nno-ops\n- keep nested utility commands from replacing or contaminating an outer\npartitioned build's aggregate, including nested `CREATE INDEX` and\n`REINDEX`\n- discard active progress state when later utility processing fails,\nwhile retaining state across internal commits such as `CREATE INDEX\nCONCURRENTLY`\n- add focused regression coverage for actual-object activation, abort\ncleanup, nested DDL, and partition aggregation\n\nThis is the orthogonal build-progress tracking work extracted from #492.\n\n## Testing\n\n- PostgreSQL 17 full regression suite: 80/80 passed\n- formatting and regression-diff checks passed\n\n---------\n\nCo-authored-by: Todd J. Green <1738591+tjgreen42@users.noreply.github.com>",
+          "timestamp": "2026-09-29T05:21:48Z",
+          "url": "https://github.com/timescale/pg_textsearch/commit/b628890d90a7aa571c01f54b6d21193d6e383e6a"
+        },
+        "date": 1790667417483,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "pg_textsearch INSERT TPS (c=1)",
+            "value": 2493.237308,
+            "unit": "tps"
+          },
+          {
+            "name": "pg_textsearch INSERT latency (c=1)",
+            "value": 0.401,
+            "unit": "ms"
+          },
+          {
+            "name": "pg_textsearch INSERT TPS (c=2)",
+            "value": 4588.277643,
+            "unit": "tps"
+          },
+          {
+            "name": "pg_textsearch INSERT latency (c=2)",
+            "value": 0.436,
+            "unit": "ms"
+          },
+          {
+            "name": "pg_textsearch INSERT TPS (c=4)",
+            "value": 7285.968953,
+            "unit": "tps"
+          },
+          {
+            "name": "pg_textsearch INSERT latency (c=4)",
+            "value": 0.549,
+            "unit": "ms"
+          },
+          {
+            "name": "pg_textsearch INSERT TPS (c=8)",
+            "value": 10800.259217,
+            "unit": "tps"
+          },
+          {
+            "name": "pg_textsearch INSERT latency (c=8)",
+            "value": 0.741,
             "unit": "ms"
           }
         ]
