@@ -119,8 +119,10 @@ per-index lock.
 Threshold spill, explicit spill, VACUUM's deferred spill, shutdown spill, and
 force-merge pre-spill use the same lifecycle.
 
-Shutdown's no-wait path conditionally acquires both the publication barrier
-and writer/spill gate. It skips spill if either is busy.
+Shutdown's no-wait path conditionally acquires the publication barrier,
+writer/spill gate, and per-index lock in both phases. It skips if any is busy,
+discarding unpublished output if publication cannot acquire the index lock.
+Buffer, WAL, and I/O work may still wait after admission.
 
 The compaction policy still runs only after spill publication and after all
 spill locks have been released.
@@ -133,6 +135,8 @@ the existing segment cleanup path.
 
 An error after publication follows the existing physical-maintenance
 semantics: the published spill is not undone by transaction rollback.
+The cleanup ownership flag is set at WAL publication, before fallible cache
+cleanup and chain retirement.
 
 Cleanup paths release each lock only if the current operation acquired it.
 They do not depend on transaction-end LWLock cleanup for normal control flow.
@@ -148,6 +152,14 @@ The change is not successful unless a fresh run meets all of these conditions:
 - at least 250 updates per second;
 - no writer zero-progress interval longer than 30 seconds.
 
+The full run with spill and reclaim changes reached 1,711 mixed QPS and
+277 updates/s, with a maximum writer completion gap of 1.11 seconds. Reader
+index-lock samples fell from 3,487 to 74 across four isolated sampled seconds.
+The 1,900-QPS target was not met. The run completed 2.7 times as many updates
+per second as the inline baseline; equal-write-load performance remains
+unmeasured, and resource contention is a hypothesis rather than a proven
+explanation for the entire shortfall.
+
 Deterministic injection coverage supports, but does not replace, the
 benchmark. It verifies that:
 
@@ -155,6 +167,8 @@ benchmark. It verifies that:
   is paused;
 - a concurrent writer waits on `tapir_memtable_write_lock`;
 - cancellation before publication leaves the old chain queryable;
+- an error after publication preserves the live segment;
+- shutdown spill avoids blocking index-lock acquisition in both phases;
 - successful publication exposes all documents exactly once.
 
 Build, SQL regression, spill recovery, concurrency, and formatting checks are

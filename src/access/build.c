@@ -166,11 +166,25 @@ tp_buildphasename(int64 phase)
 	}
 }
 
+static void
+tp_check_spill_capacity(Relation index_rel, uint32 segment_capacity)
+{
+	TpIndexMetaPage metap		= tp_get_metapage(index_rel);
+	bool			at_capacity = metap->level_counts[0] >= segment_capacity;
+
+	pfree(metap);
+	if (at_capacity)
+		ereport(ERROR,
+				(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
+				 errmsg("bm25 segment count limit reached at level 0")));
+}
+
 static bool
 tp_prepare_spill(
 		TpLocalIndexState *index_state,
 		Relation		   index_rel,
-		TpPreparedSpill	  *spill)
+		TpPreparedSpill	  *spill,
+		uint32			   segment_capacity)
 {
 	memset(spill, 0, sizeof(*spill));
 	spill->root = InvalidBlockNumber;
@@ -185,6 +199,8 @@ tp_prepare_spill(
 			tp_memtable_chain_source_create(index_state, index_rel, NULL, 0);
 	if (spill->source == NULL)
 		return false;
+
+	tp_check_spill_capacity(index_rel, segment_capacity);
 
 	spill->docs_delta = (uint64)spill->source->total_docs;
 	spill->len_delta  = (uint64)spill->source->total_len;
@@ -215,15 +231,7 @@ tp_publish_prepared_spill(
 		BlockNumber		  *out_segment_root,
 		uint32			   segment_capacity)
 {
-	{
-		TpIndexMetaPage metap = tp_get_metapage(index_rel);
-
-		if (metap->level_counts[0] >= segment_capacity)
-			ereport(ERROR,
-					(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
-					 errmsg("bm25 segment count limit reached at level 0")));
-		pfree(metap);
-	}
+	tp_check_spill_capacity(index_rel, segment_capacity);
 
 	/*
 	 * Finalize first, then mark dead - crash-safe ordering.
@@ -253,9 +261,8 @@ tp_publish_prepared_spill(
 				spill->root,
 				spill->docs_delta,
 				spill->len_delta,
-				segment_capacity);
-
-		TP_INJECTION_POINT(TP_INJECTION_AFTER_SPILL_FINALIZE);
+				segment_capacity,
+				&spill->published);
 
 		/*
 		 * Sample only after the unpublication WAL is inserted.  Every
@@ -267,14 +274,6 @@ tp_publish_prepared_spill(
 			tp_memtable_mark_chain_dead(index_rel, chain_head, horizon);
 	}
 
-	/*
-	 * Reset chain_page_count: the chain is empty after
-	 * tp_spill_finalize.  Caller holds LW_EXCLUSIVE so no
-	 * concurrent insert can have bumped this since the
-	 * pre-spill chain extension was published.
-	 */
-	pg_atomic_write_u32(&index_state->shared->chain_page_count, 0);
-	spill->published = true;
 	if (out_segment_root != NULL)
 		*out_segment_root = spill->root;
 }
@@ -298,15 +297,34 @@ tp_cleanup_prepared_spill(Relation index_rel, TpPreparedSpill *spill)
 	spill->root	  = InvalidBlockNumber;
 }
 
-bool
+static bool
+tp_acquire_spill_index_lock(TpLocalIndexState *index_state, bool nowait)
+{
+	if (nowait)
+		return tp_try_acquire_index_lock(index_state, LW_EXCLUSIVE);
+	tp_acquire_index_lock(index_state, LW_EXCLUSIVE);
+	return true;
+}
+
+/*
+ * Caller holds publication ShareLock and the exclusive writer/spill gate,
+ * but not the per-index lock. Return the published root before compaction.
+ */
+static bool
 tp_do_spill(
 		TpLocalIndexState *index_state,
 		Relation		   index_rel,
-		BlockNumber		  *out_segment_root)
+		BlockNumber		  *out_segment_root,
+		uint32			   segment_capacity,
+		bool			   nowait)
 {
 	TpPreparedSpill *spill;
-	volatile bool	 prepared = false;
-	volatile bool	 success  = false;
+	volatile bool	 success = false;
+
+	Assert(!index_state->lock_held);
+	Assert(!LWLockHeldByMe(&index_state->shared->lock));
+	Assert(LWLockHeldByMeInMode(
+			&index_state->shared->memtable_write_lock, LW_EXCLUSIVE));
 
 	if (out_segment_root != NULL)
 		*out_segment_root = InvalidBlockNumber;
@@ -323,31 +341,36 @@ tp_do_spill(
 	spill->root = InvalidBlockNumber;
 	PG_TRY();
 	{
-		tp_acquire_index_lock(index_state, LW_EXCLUSIVE);
-		prepared = tp_prepare_spill(index_state, index_rel, spill);
-		tp_release_index_lock(index_state);
-		if (prepared)
+		if (tp_acquire_spill_index_lock(index_state, nowait))
 		{
-			tp_build_prepared_spill(index_rel, spill);
-			TP_INJECTION_POINT(TP_INJECTION_SPILL_BEFORE_FINALIZE);
-			CHECK_FOR_INTERRUPTS();
-			tp_acquire_index_lock(index_state, LW_EXCLUSIVE);
-			tp_publish_prepared_spill(
-					index_state,
-					index_rel,
-					spill,
-					out_segment_root,
-					tp_injected_segment_count_limit());
+			bool prepared = tp_prepare_spill(
+					index_state, index_rel, spill, segment_capacity);
+
 			tp_release_index_lock(index_state);
-			success = true;
+			if (prepared)
+			{
+				tp_build_prepared_spill(index_rel, spill);
+				TP_INJECTION_POINT(TP_INJECTION_SPILL_BEFORE_FINALIZE);
+				CHECK_FOR_INTERRUPTS();
+				if (tp_acquire_spill_index_lock(index_state, nowait))
+				{
+					tp_publish_prepared_spill(
+							index_state,
+							index_rel,
+							spill,
+							out_segment_root,
+							segment_capacity);
+					tp_release_index_lock(index_state);
+					success = true;
+				}
+			}
 		}
 	}
 	PG_FINALLY();
 	{
 		if (index_state->lock_held)
 			tp_release_index_lock(index_state);
-		if (prepared)
-			tp_cleanup_prepared_spill(index_rel, spill);
+		tp_cleanup_prepared_spill(index_rel, spill);
 	}
 	PG_END_TRY();
 
@@ -502,8 +525,8 @@ tp_make_room_for_spill(
  * even at a full level 0, where it reports the capacity limit.  VACUUM needs
  * this because it identifies dead documents from published segments alone.
  *
- * TP_SPILL_NOWAIT makes the spill skip rather than block, so the
- * shutdown hook never waits on a busy index.
+ * TP_SPILL_NOWAIT skips busy publication, writer-gate, and per-index locks.
+ * Buffer, WAL, and I/O work may still wait after admission.
  */
 static bool
 tp_spill_memtable_if_needed_internal(
@@ -555,7 +578,12 @@ tp_spill_memtable_if_needed_internal(
 		if (gate_acquired &&
 			pg_atomic_read_u32(&index_state->shared->chain_page_count) >=
 					min_pages)
-			spilled = tp_do_spill(index_state, index, NULL);
+			spilled = tp_do_spill(
+					index_state,
+					index,
+					NULL,
+					tp_injected_segment_count_limit(),
+					(flags & TP_SPILL_NOWAIT) != 0);
 	}
 	PG_FINALLY();
 	{
@@ -796,7 +824,12 @@ tp_spill_memtable(PG_FUNCTION_ARGS)
 		 * immediately folds that segment into L1.
 		 */
 		segment_root = InvalidBlockNumber;
-		spilled		 = tp_do_spill(index_state, index_rel, &segment_root);
+		spilled		 = tp_do_spill(
+				 index_state,
+				 index_rel,
+				 &segment_root,
+				 tp_injected_segment_count_limit(),
+				 false);
 	}
 	PG_FINALLY();
 	{
@@ -885,7 +918,8 @@ tp_force_merge(PG_FUNCTION_ARGS)
 			publication_locked = true;
 			tp_acquire_memtable_write_lock(index_state, LW_EXCLUSIVE);
 			gate_locked = true;
-			(void)tp_do_spill(index_state, index_rel, NULL);
+			(void)tp_do_spill(
+					index_state, index_rel, NULL, PG_UINT16_MAX, false);
 			tp_release_memtable_write_lock(index_state);
 			gate_locked = false;
 			tp_compaction_publication_unlock(index_rel, ShareLock);

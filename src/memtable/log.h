@@ -120,6 +120,8 @@ extern BlockNumber tp_memtable_append(
  * operation. Normal spills pass the configured test limit; force compaction
  * passes the persisted uint16 limit so lowering the test limit cannot block
  * its mandatory spill.
+ * `published` is set at the WAL publication boundary, before cache cleanup
+ * or other fallible work, so error cleanup cannot discard the live segment.
  */
 extern void tp_spill_finalize(
 		TpLocalIndexState *state,
@@ -127,7 +129,8 @@ extern void tp_spill_finalize(
 		BlockNumber		   new_segment_root,
 		uint64			   docs_delta,
 		uint64			   len_delta,
-		uint32			   segment_capacity);
+		uint32			   segment_capacity,
+		bool			  *published);
 
 /*
  * WAL-stamp every page in the memtable chain rooted at `head` as

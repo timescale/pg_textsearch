@@ -251,6 +251,45 @@ cancel_blocks_after_retry=$(sql -c "
     fail "spill retry extended from ${cancel_blocks_after_error} to ${cancel_blocks_after_retry} blocks instead of reusing discarded output"
 
 sql -c "
+    CREATE TABLE published_docs (id integer PRIMARY KEY, body text NOT NULL);
+    CREATE INDEX published_idx ON published_docs USING bm25(body)
+        WITH (text_config = 'english', compaction = 'manual');
+    INSERT INTO published_docs
+    SELECT gs, 'publishedterm document ' || gs
+    FROM generate_series(1, 500) gs;" >/dev/null
+
+if sql -c "
+    SELECT injection_points_set_local();
+    SELECT injection_points_attach(
+        'pg-textsearch-after-spill-finalize', 'error');
+    SELECT bm25_spill_index('published_idx');" \
+    >"${CLIENT_DIR}/published_error.log" 2>&1; then
+    fail "post-publication error did not fire"
+fi
+grep -q 'error triggered for injection point' \
+    "${CLIENT_DIR}/published_error.log" ||
+    fail "post-publication spill failed for an unexpected reason"
+
+published_graph=$(sql -c "
+    SELECT bm25_level_counts('published_idx'::regclass)::text;")
+[ "${published_graph}" = "{1,0,0,0,0,0,0,0}" ] ||
+    fail "post-publication error lost the segment"
+[ "$(sql -c "
+    SELECT COALESCE(sum(n_records), 0)
+    FROM bm25_memtable_chain('published_idx');")" = "0" ] ||
+    fail "post-publication error left the old chain published"
+published_ids=$(sql -c "
+    SET enable_seqscan = off;
+    SELECT string_agg(id::text, ',' ORDER BY id)
+    FROM (
+        SELECT id FROM published_docs
+        ORDER BY body <@> to_bm25query('publishedterm', 'published_idx')
+        LIMIT 500
+    ) ranked;")
+[ "${published_ids}" = "$(seq -s, 1 500)" ] ||
+    fail "post-publication error damaged the published segment"
+
+sql -c "
     CREATE TABLE reclaim_docs (id integer PRIMARY KEY, body text NOT NULL);
     CREATE INDEX reclaim_idx ON reclaim_docs USING bm25(body)
         WITH (text_config = 'english', compaction = 'manual');" >/dev/null
@@ -322,5 +361,90 @@ grep -qx '800' "${CLIENT_DIR}/reclaim_reader.log" ||
 sql -c "SELECT injection_points_wakeup(
     '${POINT_TOMBSTONE_AFTER_UNLINK}');" >/dev/null
 wait_for_exit "${reclaim_client}" 20 "reclaim compaction"
+
+sql -c "
+    CREATE EXTENSION pg_textsearch_test;
+    CREATE TABLE capacity_docs (id integer, body text);
+    CREATE INDEX capacity_idx ON capacity_docs USING bm25(body)
+        WITH (text_config = 'english', compaction = 'manual');
+    INSERT INTO capacity_docs VALUES (0, 'capacityterm');
+    SELECT bm25_spill_index('capacity_idx');
+    INSERT INTO capacity_docs
+    SELECT gs, 'capacityterm document ' || gs
+    FROM generate_series(1, 500) gs;
+    SELECT pg_textsearch_test_attach_segment_limit(1);
+    DO \$\$
+    DECLARE
+        before_bytes bigint := pg_relation_size('capacity_idx');
+    BEGIN
+        BEGIN
+            PERFORM bm25_spill_index('capacity_idx');
+            RAISE EXCEPTION 'full L0 spill unexpectedly succeeded';
+        EXCEPTION WHEN program_limit_exceeded THEN
+            NULL;
+        END;
+        IF pg_relation_size('capacity_idx') <> before_bytes THEN
+            RAISE EXCEPTION 'full L0 spill allocated unreachable output';
+        END IF;
+    END
+    \$\$;
+    SELECT injection_points_detach(
+        'pg-textsearch-segment-count-limit');" >/dev/null
+
+# A shutdown spill must not enter the blocking acquisition at either phase.
+for phase in freeze publish; do
+    sql -c "
+        CREATE TABLE shutdown_${phase}_docs (id integer, body text);
+        CREATE INDEX shutdown_${phase}_idx
+            ON shutdown_${phase}_docs USING bm25(body)
+            WITH (text_config = 'english', compaction = 'manual');
+        INSERT INTO shutdown_${phase}_docs
+        SELECT gs, 'shutdownterm document ' || gs
+        FROM generate_series(1, 500) gs;" >/dev/null
+
+    point='pg-textsearch-index-lock-exclusive-waiter'
+    if [ "${phase}" = publish ]; then
+        point="${POINT_SPILL_BEFORE_FINALIZE}"
+    fi
+    PGAPPNAME=shutdown-target sql -c "
+        SELECT count(*) FROM (
+            SELECT 1 FROM shutdown_${phase}_docs
+            ORDER BY body <@> to_bm25query(
+                'shutdownterm', 'shutdown_${phase}_idx')
+            LIMIT 1
+        ) ranked;
+        SELECT pg_sleep(60);" >"${CLIENT_DIR}/shutdown_${phase}.log" 2>&1 &
+    shutdown_client=$!
+    shutdown_backend=$(backend_pid shutdown-target)
+    wait_for_wait_event "${shutdown_backend}" PgSleep
+    sql -c "SELECT injection_points_attach('${point}', 'wait');" >/dev/null
+
+    sql -c "SELECT pg_terminate_backend(${shutdown_backend}, 5000);" \
+        >"${CLIENT_DIR}/terminate_${phase}.log" 2>&1 &
+    terminate_client=$!
+    if [ "${phase}" = publish ]; then
+        wait_for_injection "${shutdown_backend}"
+        sql -c "
+            SELECT injection_points_attach(
+                'pg-textsearch-index-lock-exclusive-waiter', 'wait');
+            SELECT injection_points_wakeup(
+                '${POINT_SPILL_BEFORE_FINALIZE}');" >/dev/null
+    fi
+    wait_for_exit "${terminate_client}" 7 "shutdown ${phase} termination"
+    grep -qx 't' "${CLIENT_DIR}/terminate_${phase}.log" ||
+        fail "shutdown ${phase} used a blocking index acquisition"
+    if wait "${shutdown_client}"; then
+        fail "terminated shutdown ${phase} client unexpectedly succeeded"
+    fi
+    sql -c "SELECT injection_points_detach('${point}');" >/dev/null
+    if [ "${phase}" = publish ]; then
+        sql -c "SELECT injection_points_detach(
+            'pg-textsearch-index-lock-exclusive-waiter');" >/dev/null
+    fi
+    [ "$(sql -c "
+        SELECT bm25_level_counts('shutdown_${phase}_idx'::regclass)::text;
+    ")" = "{1,0,0,0,0,0,0,0}" ] ||
+        fail "shutdown ${phase} did not publish its uncontended spill"
+done
 
 echo "nonblocking spill test passed"

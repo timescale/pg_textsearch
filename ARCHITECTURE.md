@@ -150,8 +150,11 @@ three phases:
    generation.
 
 An error before publication discards the unreachable segment and leaves the
-old chain published. Shutdown's no-wait spill skips when either the
-publication barrier or writer/spill gate is busy.
+old chain published. Ownership transfers at WAL publication, before cache
+cleanup or chain retirement; a later error must not discard the live segment.
+Shutdown's no-wait spill skips busy publication, writer-gate, and per-index
+locks. If the publication-phase index lock is busy, it discards the unpublished
+output. Buffer, WAL, and I/O work may still wait after admission.
 
 The `compaction` index option controls spill-time behavior:
 

@@ -1279,7 +1279,7 @@ tp_vacuumcleanup(IndexVacuumInfo *info, IndexBulkDeleteResult *stats)
 		 * next_page links), so it must run under LW_EXCLUSIVE, not
 		 * LW_SHARED.  tp_tombstone_drain takes/releases the lock per
 		 * drained tombstone (own_lock=true) so concurrent reads never
-		 * wait more than a single unlink plus its page frees.
+		 * wait only for the unlink, not its subsequent page frees.
 		 */
 		{
 			uint32 drained = tp_tombstone_drain(
