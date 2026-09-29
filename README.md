@@ -499,11 +499,6 @@ initialized in the current database, and granted to the index owner. The owner
 must have `LOGIN`; a superuser owner also requires
 `pg_durable.enable_superuser_instances = on`.
 
-Runtime spill construction keeps the old memtable chain queryable, so ranked
-readers continue while the spilling writer builds the new L0 segment.
-Deferred segment pages are likewise returned to the FSM after their tombstone
-batch is unlinked, without holding the reader-facing index lock.
-
 Each physical index has one managed workflow scoped to its captured owner. The
 index owner, or a role PostgreSQL permits to act as that owner, may enable
 background mode. A separate insert-only writer may later trigger a spill, but
