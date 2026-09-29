@@ -599,20 +599,42 @@ quiesce_durable_worker() {
 }
 
 signal_node_is_waiting() {
-    local instance_id=$1
+    local instance_id=$1 signal_name=${2:-}
 
+    # A running node is published before its signal subscription is durable.
     sql_super -c "SELECT EXISTS (
-        SELECT 1 FROM df.instance_nodes('${instance_id}')
-        WHERE node_type = 'SIGNAL'
-          AND inferred_status = 'running');"
+        SELECT 1 FROM df.instance_nodes('${instance_id}') n
+        JOIN _duroxide.history h
+          ON n.status_details::jsonb->>'execution_id' =
+             h.instance_id || '::' || h.execution_id
+        WHERE n.node_type = 'SIGNAL'
+          AND n.inferred_status = 'running'
+          AND ('${signal_name}' = '' OR
+               n.query::jsonb->>'signal_name' = '${signal_name}')
+          AND h.event_data::jsonb->>'type' = 'ExternalSubscribed'
+          AND h.event_data::jsonb->>'name' =
+              n.query::jsonb->>'signal_name'
+          AND NOT EXISTS (
+              SELECT 1 FROM _duroxide.history later
+              WHERE later.instance_id = h.instance_id
+                AND later.execution_id = h.execution_id
+                AND later.event_id > h.event_id
+                AND ((later.event_data::jsonb->>'type' = 'ExternalEvent'
+                      AND later.event_data::jsonb->>'name' =
+                          n.query::jsonb->>'signal_name')
+                     OR (later.event_data::jsonb->>'type' =
+                         'ExternalSubscribedCancelled'
+                         AND later.event_data::jsonb->>'source_event_id' =
+                             h.event_id::text))));"
 }
 
 wait_for_signal_node() {
-    local instance_id=$1 timeout=$2
+    local instance_id=$1 timeout=$2 signal_name=${3:-}
     local waited=0
 
     while [ "${waited}" -lt "${timeout}" ]; do
-        if [ "$(signal_node_is_waiting "${instance_id}")" = "t" ]; then
+        if [ "$(signal_node_is_waiting \
+            "${instance_id}" "${signal_name}")" = "t" ]; then
             return 0
         fi
         sleep 1
@@ -11783,8 +11805,10 @@ test_signal_wait_readiness() {
         sleep 1
     done
     assert_eq "signal-readiness fixture reaches both waits" "2" "${waiting}"
+    wait_for_signal_node "${instance_id}" 30
     assert_eq "active signal wait is ready" "t" \
         "$(signal_node_is_waiting "${instance_id}")"
+    wait_for_signal_node "${instance_id}" 30 advance
     sql_as durable_owner -c \
         "SELECT df.signal('${instance_id}', 'advance', '{}');" >/dev/null
     for _ in $(seq 1 30); do
