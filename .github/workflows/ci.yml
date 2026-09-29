@@ -1050,6 +1050,14 @@ jobs:
         make test-durable \
           PG_CONFIG=/usr/lib/postgresql/17/bin/pg_config
 
+    - name: Upload managed compaction failure diagnostics
+      if: failure()
+      uses: actions/upload-artifact@v4
+      with:
+        name: coverage-managed-compaction-logs
+        path: test/tmp_durable_compaction_logs/
+        if-no-files-found: ignore
+
     - name: Run hypertable tests (exercises CustomScan code paths)
       timeout-minutes: 5
       run: |
