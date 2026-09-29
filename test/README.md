@@ -95,6 +95,12 @@ workflow runs on `main`; pull-request sanitizer coverage is consolidated in
 Keep fixtures deterministic and include only output that the test intends to
 verify.
 
+Use temporary tables for single-session tests that require immediate VACUUM
+cleanup or page reuse. Their reclaim horizon is session-local, so unrelated
+transactions and standby feedback cannot retain dead tuples or pages. Keep
+shared-buffer, WAL, and standby-reclaim coverage in permanent-table tests
+such as `segment_reclaim_injection.sql` and `standby_reclaim.sh`.
+
 ## Debugging Failures
 
 Inspect `test/regression.diffs` first, then compare the generated file under

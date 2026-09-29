@@ -1,15 +1,14 @@
 -- Deferred, standby-safe reclaim of displaced segment pages (#380).
 -- A merge must PARK displaced pages in the tombstone chain rather than
--- freeing them immediately; a later VACUUM (once the global xid horizon
+-- freeing them immediately; a later VACUUM (once the reclaim horizon
 -- has advanced past the merge stamp) reclaims them.
 --
--- autovacuum is disabled on the table so the only drain is the explicit
--- VACUUM below, keeping the parked-page observations deterministic.
+-- Temporary relations isolate the reclaim horizon from other backends
+-- and standby feedback, and prevent autovacuum from draining the pages.
+-- WAL and standby safety are covered by standby_reclaim.sh.
 CREATE EXTENSION IF NOT EXISTS pg_textsearch;
-CREATE TABLE reclaim_docs (id int, body text)
-    WITH (autovacuum_enabled = false);
-CREATE TABLE reclaim_control (id int, body text)
-    WITH (autovacuum_enabled = false);
+CREATE TEMP TABLE reclaim_docs (id int, body text);
+CREATE TEMP TABLE reclaim_control (id int, body text);
 INSERT INTO reclaim_docs
 SELECT g, 'alpha beta gamma delta term' || (g % 50)
 FROM generate_series(1, 2000) g;
@@ -122,7 +121,7 @@ t
 (1 row)
 \pset format aligned
 DROP TABLE reclaim_control;
--- Advance the global xid horizon past the merge stamp so the parked
+-- Advance the session's xid horizon past the merge stamp so the parked
 -- pages become reclaimable, then VACUUM to drain them.
 SELECT txid_current() IS NOT NULL AS t1;
  t1 
@@ -279,11 +278,10 @@ t
 -- Force merge may truncate only pages that reclaim has already stamped
 -- recyclable. Build a free-page pool below a one-page memtable at EOF, then
 -- let force merge spill into that pool. The retired memtable page remains
--- protected by dead_fxid and must survive until VACUUM emits conflict WAL and
--- stamps it TP_FREE_PAGE_MAGIC.
+-- protected by dead_fxid and must survive until VACUUM stamps it
+-- TP_FREE_PAGE_MAGIC.
 \pset format unaligned
-CREATE TABLE truncate_docs (id int, body text)
-    WITH (autovacuum_enabled = false);
+CREATE TEMP TABLE truncate_docs (id int, body text);
 INSERT INTO truncate_docs
 SELECT g, 'truncate alpha beta gamma ' || g || ' ' ||
        repeat(md5(g::text), 4)

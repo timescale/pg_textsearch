@@ -149,7 +149,8 @@ DROP TABLE stats_size CASCADE;
 -- Stats after VACUUM: reltuples should decrease after deletes
 -- ============================================================
 
-CREATE TABLE stats_vacuum (
+-- Isolate physical cleanup from other backends and standby feedback.
+CREATE TEMP TABLE stats_vacuum (
     id SERIAL PRIMARY KEY,
     content TEXT
 );
@@ -192,7 +193,8 @@ DROP TABLE stats_vacuum CASCADE;
 -- Stats after REINDEX: should reflect current row count
 -- ============================================================
 
-CREATE TABLE stats_reindex (
+-- An unrelated snapshot must not keep the deleted rows recently dead.
+CREATE TEMP TABLE stats_reindex (
     id SERIAL PRIMARY KEY,
     content TEXT,
     category TEXT
