@@ -410,6 +410,9 @@ tp_memtable_cache_source_create_internal(
 		LWLockAcquire(&memtable->apply_lock, LW_SHARED);
 		LWLockAcquire(&memtable->lock, LW_SHARED);
 		matched_snapshot =
+				memtable->cursor_locator_valid &&
+				RelFileLocatorEquals(
+						memtable->cursor_locator, rel->rd_locator) &&
 				memtable->cursor_next_blkno == snapshot->tail_blkno &&
 				memtable->cursor_next_off == snapshot->tail_free_offset &&
 				memtable->cursor_gen_spill_count ==
@@ -547,15 +550,15 @@ tp_memtable_source_create_for_snapshot(
 {
 	TpDataSource *source;
 
-	if (!BlockNumberIsValid(snapshot->head_blkno))
-		return NULL;
-	if (!recovery && tp_memtable_cache_enabled && !state->is_build_mode)
+	if (!recovery && tp_memtable_cache_enabled)
 	{
 		source = tp_memtable_cache_source_create_internal(
 				state, rel, query_terms, query_term_count, snapshot);
 		if (source != NULL)
 			return source;
 	}
+	if (!BlockNumberIsValid(snapshot->head_blkno))
+		return NULL;
 	if (tp_log_cache_state)
 		elog(LOG,
 			 "pg_textsearch cache_source: snapshot uses bounded chain "

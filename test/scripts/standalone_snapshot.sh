@@ -395,6 +395,29 @@ END
 $$;
 SELECT rewrite_and_score();
 DROP FUNCTION rewrite_and_score();
+
+-- Equal-sized replacement records reuse the same cache endpoint, but not
+-- the same relation file. Rollback must reject the replacement's cache.
+SET enable_seqscan = off;
+BEGIN;
+TRUNCATE rewrite_docs;
+INSERT INTO rewrite_docs VALUES ('zeta');
+SELECT body FROM rewrite_docs
+ORDER BY body <@> to_bm25query('zeta', 'rewrite_idx') LIMIT 1;
+ROLLBACK;
+DO $$
+DECLARE
+    hits int;
+BEGIN
+    SELECT count(*) INTO hits FROM (
+        SELECT 1 FROM rewrite_docs
+        ORDER BY body <@> to_bm25query('beta', 'rewrite_idx') LIMIT 1
+    ) s;
+    IF hits <> 1 THEN
+        RAISE EXCEPTION 'rollback reused the replacement file cache';
+    END IF;
+END
+$$;
 DROP TABLE rewrite_docs;
 SQL
 done

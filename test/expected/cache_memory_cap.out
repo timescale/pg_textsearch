@@ -226,7 +226,7 @@ SELECT count(*) AS parallel_reindex_hits FROM (
 ) q;
  parallel_reindex_hits 
 -----------------------
-                100000
+                100025
 (1 row)
 
 SELECT bm25_cache_global_estimated_bytes()
