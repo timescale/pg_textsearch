@@ -37,7 +37,8 @@ The Makefile defines these entry points:
 | `make test-logical-replication` | Logical replication |
 | `make test-cic` | `CREATE INDEX CONCURRENTLY` |
 | `make test-multi-index` | Multi-index, user, and schema behavior |
-| `make test-reindex` | Multi-backend reindex invalidation |
+| `make test-reindex` | Rebuild, rollback, and prepared-transaction caches |
+| `make test-cross-database-registry` | Database isolation and DROP cleanup |
 | `make test-injection-sql` | Behavior-specific SQL regressions requiring injection points |
 | `make test-injection-shell` | Crash and concurrency injection-point tests |
 | `make test-chinese` | Optional zhparser regression |

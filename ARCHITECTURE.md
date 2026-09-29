@@ -64,6 +64,14 @@ disposable. Writes update only the on-disk chain. Readers lazily build or catch
 up the cache; generation mismatches, spills, eviction, or memory pressure can
 drop it without affecting correctness. Standbys read the on-disk chain.
 
+Registry entries are keyed by database and index OID. Rebuilds preserve the
+shared allocation and its locks so existing backends retain valid wrappers.
+A successful build clears the cache in place and advances its generation.
+Cache cursors also record the relation's physical file identity: REINDEX,
+TRUNCATE, and rollback must never resume a cursor in a replacement file.
+Chain-page counts are lazily recounted against that same file identity
+before spill threshold checks; shutdown spills skip a busy recount lock.
+
 `pg_textsearch.memory_limit` has three budget tiers:
 
 - per-index per-record growth guard (`limit / 8`): reject a record whose

@@ -242,6 +242,7 @@ NOTICE:  BM25 index build started for relation cache_reindex_parallel_idx
 NOTICE:  Using text search configuration: english
 NOTICE:  Using index options: k1=1.20, b=0.75
 NOTICE:  parallel index build: launched 1 of 1 requested workers
+NOTICE:  BM25 index build completed: 100025 documents, avg_length=4.00
 -- Finalization itself must drain the old cache. Checking before DROP
 -- distinguishes in-place REINDEX cleanup from eventual relation teardown.
 SELECT bm25_cache_global_estimated_bytes()

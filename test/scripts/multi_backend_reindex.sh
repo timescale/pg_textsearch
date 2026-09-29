@@ -13,6 +13,7 @@
 #   * VACUUM FULL <table>
 #   * CLUSTER <table> USING <pkey>
 #   * REINDEX INDEX <bm25_index>   (index relfilenode only; heap intact)
+#   * TRUNCATE followed by inserts with a different record layout (#515)
 #
 # On v1.2.0 (in-memory memtable in DSA) the first backend's
 # local_state_cache (`src/index/state.c`, `tp_get_local_index_state`)
@@ -1968,6 +1969,69 @@ inserts were not correctly indexed in the new file."
     log "✅ ${test_name}: no stale CTIDs after rewrite"
 }
 
+run_warm_cache_rewrite_test() {
+    local action="$1"
+    local rewrite_file="${DATA_DIR}/warm_cache_rewrite.sql"
+    local output
+    local marker
+    local query_term=search
+
+    log "Test: warm memtable cache across ${action} (#515)"
+    run_sql_quiet "
+        CREATE TABLE cursor_docs (id integer, content text);
+        CREATE INDEX cursor_idx ON cursor_docs USING bm25(content)
+            WITH (text_config='simple');
+        INSERT INTO cursor_docs
+        SELECT g, 'search token' || g FROM generate_series(1, 1000) g;
+    "
+
+    if [ "${action}" = reindex ]; then
+        cat >"${rewrite_file}" <<'SQL'
+SET pg_textsearch.compress_segments = off;
+REINDEX INDEX cursor_idx;
+SQL
+    else
+        query_term=replacement42
+        cat >"${rewrite_file}" <<'SQL'
+TRUNCATE cursor_docs;
+INSERT INTO cursor_docs
+SELECT g, 'search token' || g || ' ' ||
+       (SELECT string_agg('replacement' || n, ' ' ORDER BY n)
+        FROM generate_series(0, 59) n)
+FROM generate_series(1, 1000) g;
+SQL
+    fi
+
+    # Keep the reader connection alive across the other backend's rewrite.
+    if ! output=$(PGHOST="${SOCKET_DIR}" PGPORT="${TEST_PORT}" \
+        PGDATABASE="${TEST_DB}" psql -X -qAt -v ON_ERROR_STOP=1 2>&1 <<EOF
+SET pg_textsearch.memtable_cache_enabled = on;
+SET enable_seqscan = off;
+SELECT 'before=' || count(*) FROM (
+    SELECT id FROM cursor_docs
+    ORDER BY content <@> to_bm25query('search', 'cursor_idx')
+    LIMIT 10
+) s;
+\! psql -X -q -v ON_ERROR_STOP=1 -f "${rewrite_file}" && echo rewrite-ok
+SELECT 'after=' || count(*) FROM (
+    SELECT id FROM cursor_docs
+    ORDER BY content <@> to_bm25query('${query_term}', 'cursor_idx')
+    LIMIT 10
+) s;
+EOF
+    ); then
+        error "Warm-cache ${action} failed: ${output}"
+    fi
+
+    for marker in before=10 rewrite-ok after=10; do
+        if ! grep -qx "${marker}" <<<"${output}"; then
+            error "Warm-cache ${action} missing ${marker}: ${output}"
+        fi
+    done
+    run_sql_quiet "DROP TABLE cursor_docs;"
+    log "Warm-cache ${action}: reader uses the replacement index file"
+}
+
 main() {
     log "Starting pg_textsearch multi-backend reindex test (#390)..."
 
@@ -1976,6 +2040,8 @@ main() {
 
     setup_test_db
 
+    run_warm_cache_rewrite_test reindex
+    run_warm_cache_rewrite_test truncate
     run_cache_locator_top_level_rollback_test
     run_cache_locator_savepoint_rollback_test
     run_cache_locator_prepared_rollback_test
