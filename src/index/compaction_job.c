@@ -857,6 +857,20 @@ tp_lookup_job_objects(
 	Oid save_userid;
 	int save_sec_context;
 
+	if (tp_library_is_preloaded("pg_durable"))
+	{
+		const char *configured_database =
+				GetConfigOption("pg_durable.database", true, false);
+		char *database_name = get_database_name(MyDatabaseId);
+
+		if (configured_database != NULL && database_name != NULL &&
+			strcmp(configured_database, database_name) != 0)
+			tp_durable_not_initialized(
+					"pg_durable.database does not name the current database");
+		if (database_name != NULL)
+			pfree(database_name);
+	}
+
 	durable_oid = get_extension_oid("pg_durable", true);
 	if (!OidIsValid(durable_oid) ||
 		!tp_extension_lookup(durable_oid, &durable_owner, NULL))
