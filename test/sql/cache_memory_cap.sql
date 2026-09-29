@@ -106,10 +106,137 @@ SELECT count(*) AS b_hits FROM (
     LIMIT 100
 ) q;
 
--- Cleanup
-RESET pg_textsearch.memtable_cache_enabled;
+-- Remove the original test indexes before taking a baseline for the
+-- REINDEX accounting regression.  The baseline is intentionally
+-- relative because the global counter belongs to shared memory.
 DROP INDEX cache_cap_a_idx;
 DROP INDEX cache_cap_b_idx;
 DROP TABLE cache_cap_a;
 DROP TABLE cache_cap_b;
+
+SELECT bm25_cache_global_estimated_bytes()
+    AS reindex_original_baseline \gset
+
+-- Keep one populated cache alive across both REINDEX cycles.  This
+-- proves each replaced index releases only its own accounting rather
+-- than relying on the global counter reaching zero.
+CREATE TABLE cache_reindex_control (id int, body text);
+CREATE INDEX cache_reindex_control_idx ON cache_reindex_control
+    USING bm25 (body) WITH (text_config = 'english');
+INSERT INTO cache_reindex_control
+SELECT g, 'control retained ' || g FROM generate_series(1, 10) g;
+SELECT count(*) AS retained_control_hits FROM (
+    SELECT 1 FROM cache_reindex_control
+    ORDER BY body <@>
+        to_bm25query('control', 'cache_reindex_control_idx')
+) q;
+SELECT bm25_cache_global_estimated_bytes()
+           - :reindex_original_baseline
+    AS retained_control_bytes \gset
+SELECT :retained_control_bytes > 0 AS retained_control_charged;
+
+-- Exercise the parallel REINDEX completion path separately.  The
+-- analyzed row count and worker settings match parallel_build.sql so
+-- both the initial build and REINDEX request one parallel worker.
+SET min_parallel_table_scan_size = 0;
+SET maintenance_work_mem = '256MB';
+SET max_parallel_maintenance_workers = 1;
+
+CREATE TABLE cache_reindex_parallel (id int, body text);
+INSERT INTO cache_reindex_parallel
+SELECT g, 'parallel database document ' || g
+FROM generate_series(1, 100000) g;
+ANALYZE cache_reindex_parallel;
+CREATE INDEX cache_reindex_parallel_idx ON cache_reindex_parallel
+    USING bm25 (body) WITH (text_config = 'english');
+
+-- Add an unflushed runtime tail after the parallel build, then force
+-- that tail into the cache so REINDEX replaces a charged entry.
+INSERT INTO cache_reindex_parallel
+SELECT g, 'parallel database tail ' || g
+FROM generate_series(100001, 100025) g;
+SELECT count(*) AS parallel_reindex_hits FROM (
+    SELECT 1 FROM cache_reindex_parallel
+    ORDER BY body <@>
+        to_bm25query('database', 'cache_reindex_parallel_idx')
+) q;
+SELECT bm25_cache_global_estimated_bytes()
+           > :reindex_original_baseline + :retained_control_bytes
+           AS parallel_runtime_cache_charged;
+
+REINDEX INDEX cache_reindex_parallel_idx;
+-- Finalization itself must drain the old cache. Checking before DROP
+-- distinguishes in-place REINDEX cleanup from eventual relation teardown.
+SELECT bm25_cache_global_estimated_bytes()
+           = :reindex_original_baseline + :retained_control_bytes
+           AS parallel_reindex_drained_before_drop \gset
+\echo parallel_reindex_drained_before_drop=:parallel_reindex_drained_before_drop
+DROP TABLE cache_reindex_parallel;
+
+SELECT bm25_cache_global_estimated_bytes()
+           = :reindex_original_baseline + :retained_control_bytes
+           AS parallel_reindex_released,
+       bm25_cache_global_estimated_bytes()
+           > :reindex_original_baseline + :retained_control_bytes
+           AS parallel_reindex_exceeds_retained;
+
+-- Cycle 1: segment spill, unflushed tail, cache-building scan,
+-- REINDEX, and drop.
+CREATE TABLE cache_reindex_test (id int, body text);
+CREATE INDEX cache_reindex_test_idx ON cache_reindex_test
+    USING bm25 (body) WITH (text_config = 'english');
+INSERT INTO cache_reindex_test
+SELECT g, 'databases original ' || g FROM generate_series(1, 50) g;
+SELECT bm25_spill_index('cache_reindex_test_idx');
+INSERT INTO cache_reindex_test
+SELECT g, 'databases tail ' || g FROM generate_series(51, 75) g;
+SELECT count(*) FROM (
+    SELECT 1 FROM cache_reindex_test
+    ORDER BY body <@> to_bm25query('databases', 'cache_reindex_test_idx')
+) q;
+REINDEX INDEX cache_reindex_test_idx;
+SELECT bm25_cache_global_estimated_bytes()
+           = :reindex_original_baseline + :retained_control_bytes
+           AS serial_reindex_drained_before_drop \gset
+\echo serial_reindex_drained_before_drop=:serial_reindex_drained_before_drop
+DROP TABLE cache_reindex_test;
+
+SELECT bm25_cache_global_estimated_bytes()
+           = :reindex_original_baseline + :retained_control_bytes
+           AS reindex_cycle_1_released,
+       bm25_cache_global_estimated_bytes()
+           > :reindex_original_baseline + :retained_control_bytes
+           AS reindex_cycle_1_exceeds_retained;
+
+-- Repeat the complete cycle to show that each registry replacement
+-- leaks another cache charge on the unfixed code.
+CREATE TABLE cache_reindex_test (id int, body text);
+CREATE INDEX cache_reindex_test_idx ON cache_reindex_test
+    USING bm25 (body) WITH (text_config = 'english');
+INSERT INTO cache_reindex_test
+SELECT g, 'databases original ' || g FROM generate_series(1, 50) g;
+SELECT bm25_spill_index('cache_reindex_test_idx');
+INSERT INTO cache_reindex_test
+SELECT g, 'databases tail ' || g FROM generate_series(51, 75) g;
+SELECT count(*) FROM (
+    SELECT 1 FROM cache_reindex_test
+    ORDER BY body <@> to_bm25query('databases', 'cache_reindex_test_idx')
+) q;
+REINDEX INDEX cache_reindex_test_idx;
+DROP TABLE cache_reindex_test;
+
+SELECT bm25_cache_global_estimated_bytes()
+           = :reindex_original_baseline + :retained_control_bytes
+           AS reindex_cycle_2_released,
+       bm25_cache_global_estimated_bytes()
+           > :reindex_original_baseline + :retained_control_bytes
+           AS reindex_cycle_2_exceeds_retained;
+
+DROP TABLE cache_reindex_control;
+SELECT bm25_cache_global_estimated_bytes() = :reindex_original_baseline
+           AS control_drop_restored_baseline,
+       bm25_cache_global_estimated_bytes() > :reindex_original_baseline
+           AS control_drop_exceeds_baseline;
+
+RESET pg_textsearch.memtable_cache_enabled;
 DROP EXTENSION pg_textsearch CASCADE;

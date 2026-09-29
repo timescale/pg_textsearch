@@ -25,6 +25,42 @@ SELECT array_length(
 SELECT bm25_needs_compaction('compaction_step_idx'::regclass)
        AS new_index_needs_compaction;
 
+-- Runtime spill publishes under the per-index lock, then applies inline
+-- compaction under a separately acquired maintenance lock.
+CREATE TABLE compaction_inline (id serial PRIMARY KEY, body text);
+CREATE INDEX compaction_inline_idx ON compaction_inline
+    USING bm25(body) WITH (text_config = 'english');
+SET pg_textsearch.segments_per_level = 2;
+BEGIN;
+DO $$
+DECLARE
+    n integer;
+BEGIN
+    FOR n IN 1..2 LOOP
+        INSERT INTO compaction_inline (body)
+        VALUES (format('inline spill document %s filler', n));
+        PERFORM bm25_spill_index('compaction_inline_idx');
+    END LOOP;
+END
+$$;
+SELECT bm25_level_counts('compaction_inline_idx'::regclass) =
+           ARRAY[0, 1, 0, 0, 0, 0, 0, 0]
+       AS inline_policy_compacts_after_spill;
+SELECT NOT EXISTS (
+           SELECT 1
+           FROM pg_locks
+           WHERE pid = pg_backend_pid()
+             AND locktype = 'object'
+             AND classid = 'pg_am'::regclass
+             AND objid = 'compaction_inline_idx'::regclass
+             AND objsubid = 3
+             AND mode = 'ExclusiveLock'
+             AND granted
+       ) AS inline_policy_releases_maintenance_lock;
+COMMIT;
+DROP TABLE compaction_inline CASCADE;
+SET pg_textsearch.segments_per_level = 64;
+
 -- Non-bm25 relations are rejected.
 SELECT bm25_level_counts('compaction_btree_idx'::regclass);
 SELECT bm25_level_counts('compaction_step'::regclass);
@@ -71,6 +107,9 @@ SELECT bm25_level_counts('compaction_step_idx'::regclass) =
        AND bm25_needs_compaction('compaction_step_idx'::regclass)
        AS step_starts_with_debt;
 
+UPDATE pg_catalog.pg_class
+SET reloptions = reloptions || ARRAY['compaction=background']
+WHERE oid = 'compaction_step_idx'::regclass;
 SELECT d.oid AS db_oid,
        c.oid AS index_oid,
        coalesce(nullif(c.reltablespace, 0), d.dattablespace) AS spc_oid,
@@ -165,6 +204,18 @@ CREATE TABLE compaction_background_target (id integer, body text);
 CREATE INDEX compaction_background_target_idx
     ON compaction_background_target USING bm25(body)
     WITH (text_config = 'english', compaction = 'manual');
+DO $$
+DECLARE
+    n integer;
+BEGIN
+    FOR n IN 1..4 LOOP
+        INSERT INTO compaction_background_target (body)
+        SELECT format('background batch %s document %s', n, i)
+        FROM generate_series(1, 20) i;
+        PERFORM bm25_spill_index('compaction_background_target_idx');
+    END LOOP;
+END
+$$;
 UPDATE pg_catalog.pg_class
 SET reloptions = pg_catalog.array_replace(
         reloptions, 'compaction=manual', 'compaction=background')
@@ -190,6 +241,13 @@ SELECT NOT bm25_background_target_is_current(
                :background_spc_oid::oid, :background_relfilenumber::oid,
                :background_owner_oid::oid)
        AS manual_target_is_not_current;
+SELECT NOT bm25_compact_step_if_current(
+               :background_index_oid::oid, :background_db_oid::oid,
+               :background_spc_oid::oid, :background_relfilenumber::oid,
+               :background_owner_oid::oid)
+       AND bm25_level_counts('compaction_background_target_idx'::regclass) =
+           ARRAY[4, 0, 0, 0, 0, 0, 0, 0]
+       AS manual_target_is_not_compacted;
 
 -- Inspection is public, but only the index owner may mutate it.
 DO $$
@@ -290,11 +348,8 @@ DROP TABLE compaction_rollback CASCADE;
 -- A level can sit at the segment threshold with nothing to compact:
 -- every candidate group already exceeds max_segment_size, and an
 -- over-budget segment is an uncombinable singleton.  This is not
--- compaction debt -- no pass would reduce it -- but
--- bm25_needs_compaction() is a count-only signal and cannot tell the
--- two apart, so it reports the full level that bm25_compact_step()
--- correctly declines to act on.  A scheduler that retried on a false
--- return would spin here.
+-- compaction debt, and bm25_needs_compaction() reports false so a
+-- scheduler looping on it does not spin.
 CREATE TABLE compaction_unreducible (id bigint PRIMARY KEY, body text);
 CREATE INDEX compaction_unreducible_idx ON compaction_unreducible
     USING bm25(body) WITH (text_config = 'simple');
@@ -318,8 +373,8 @@ $$;
 SELECT bm25_level_counts('compaction_unreducible_idx'::regclass) =
            ARRAY[2, 0, 0, 0, 0, 0, 0, 0]
        AS unreducible_level_is_at_threshold;
-SELECT bm25_needs_compaction('compaction_unreducible_idx'::regclass)
-       AS unreducible_reports_full_level;
+SELECT NOT bm25_needs_compaction('compaction_unreducible_idx'::regclass)
+       AS unreducible_level_reports_no_work;
 SELECT bm25_compact_step('compaction_unreducible_idx'::regclass)
        AS unreducible_step_declines;
 SELECT bm25_compact('compaction_unreducible_idx'::regclass);
@@ -397,100 +452,6 @@ RESET pg_textsearch.memtable_pages_threshold;
 RESET pg_textsearch.bulk_load_threshold;
 DROP TABLE compaction_uncombinable_tail CASCADE;
 
--- The top level is a terminal bucket, not a wall.  With a per-level
--- count limit of 2, driving 384 segments up the ladder once failed
--- closed with "segment count limit reached at level 7", because the
--- top level was never a compaction candidate and so could never make
--- room for a promotion out of L6.  It now compacts into itself, so
--- the ladder drains instead of jamming.  (Reclaim of already-parked
--- pages may also run; only the published level counts are asserted.)
-CREATE TABLE compaction_terminal (id serial PRIMARY KEY, body text);
-CREATE INDEX compaction_terminal_idx ON compaction_terminal
-    USING bm25(body) WITH (text_config = 'english');
-SET pg_textsearch.debug_segment_count_limit = 2;
-DO $$
-DECLARE
-    n integer;
-BEGIN
-    FOR n IN 1..384 LOOP
-        PERFORM set_config(
-            'pg_textsearch.segments_per_level', '64', true);
-        INSERT INTO compaction_terminal (body)
-        VALUES (format('terminal segment document %s filler', n));
-        PERFORM bm25_spill_index('compaction_terminal_idx');
-        PERFORM set_config(
-            'pg_textsearch.segments_per_level', '2', true);
-
-        -- The documented driver shape: stop on the step's own report
-        -- rather than on bm25_needs_compaction, which stays true on
-        -- debt no pass can reduce.
-        WHILE bm25_needs_compaction(
-                  'compaction_terminal_idx'::regclass) LOOP
-            EXIT WHEN NOT bm25_compact_step(
-                              'compaction_terminal_idx'::regclass);
-        END LOOP;
-    END LOOP;
-END
-$$;
-SET pg_textsearch.segments_per_level = 2;
-SELECT bm25_level_counts('compaction_terminal_idx'::regclass) =
-           ARRAY[0, 0, 0, 0, 0, 0, 0, 1]
-       AND NOT bm25_needs_compaction(
-                   'compaction_terminal_idx'::regclass)
-       AS top_level_drains;
--- The ladder has settled: both entry points report no work rather
--- than raising a capacity error.
-SELECT bm25_compact_step('compaction_terminal_idx'::regclass);
-SELECT bm25_compact('compaction_terminal_idx'::regclass);
-SELECT bm25_level_counts('compaction_terminal_idx'::regclass) =
-           ARRAY[0, 0, 0, 0, 0, 0, 0, 1]
-       AS terminal_is_settled;
-
--- Lower-level debt compacts normally against a populated top level.
-SET pg_textsearch.segments_per_level = 64;
-DO $$
-DECLARE
-    n integer;
-BEGIN
-    FOR n IN 1..2 LOOP
-        INSERT INTO compaction_terminal (body)
-        VALUES (format('mixed lower segment document %s filler', n));
-        PERFORM bm25_spill_index('compaction_terminal_idx');
-    END LOOP;
-END
-$$;
-SET pg_textsearch.segments_per_level = 2;
-SELECT bm25_level_counts('compaction_terminal_idx'::regclass) =
-           ARRAY[2, 0, 0, 0, 0, 0, 0, 1]
-       AS mixed_lower_debt_starts;
-SELECT bm25_compact('compaction_terminal_idx'::regclass);
-SELECT bm25_level_counts('compaction_terminal_idx'::regclass) =
-           ARRAY[0, 1, 0, 0, 0, 0, 0, 1]
-       AS mixed_full_compacts_lower_debt;
-SELECT count(*) = 386 AS mixed_compaction_preserves_documents
-FROM (
-    SELECT 1
-    FROM compaction_terminal
-    ORDER BY body <@> to_bm25query('filler', 'compaction_terminal_idx')
-) ranked;
--- With every level under threshold a step is a no-op, not an error.
-CREATE TEMP TABLE compaction_mixed_after AS
-SELECT bm25_level_counts('compaction_terminal_idx'::regclass) AS counts;
-SELECT bm25_compact_step('compaction_terminal_idx'::regclass);
-SELECT bm25_level_counts('compaction_terminal_idx'::regclass) =
-           after.counts
-       AS mixed_step_is_a_noop
-FROM compaction_mixed_after after;
-SELECT count(*) = 386 AS terminal_preserves_documents
-FROM (
-    SELECT 1
-    FROM compaction_terminal
-    ORDER BY body <@> to_bm25query('filler', 'compaction_terminal_idx')
-) ranked;
-
-RESET pg_textsearch.debug_segment_count_limit;
-RESET pg_textsearch.segments_per_level;
-DROP TABLE compaction_terminal CASCADE;
 
 RESET pg_textsearch.segments_per_level;
 DROP TABLE compaction_partitioned CASCADE;

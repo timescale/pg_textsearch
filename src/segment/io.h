@@ -15,6 +15,76 @@
 
 #include "segment/segment.h"
 
+/* Shared overflow guards for segment writers. */
+
+/* uint32 length, term bytes, and uint32 dictionary offset. */
+static inline uint64
+tp_string_pool_entry_size(uint32 term_len)
+{
+	return (uint64)sizeof(uint32) + term_len + sizeof(uint32);
+}
+
+#define TP_MAX_STRING_POOL_BYTES ((uint64)PG_UINT32_MAX + 1)
+
+/* uint32 offsets can address every byte in a 4 GiB string pool. */
+static inline bool
+tp_string_pool_offset_overflows(uint64 string_pos, uint64 entry_size)
+{
+	return string_pos > (uint64)PG_UINT32_MAX ||
+		   entry_size > TP_MAX_STRING_POOL_BYTES - string_pos;
+}
+
+#define TP_MAX_DICTIONARY_TERMS \
+	((uint32)((uint64)PG_UINT32_MAX / sizeof(TpDictEntry) + 1))
+#define TP_MAX_GROWABLE_CAPACITY (PG_UINT32_MAX - 1)
+
+static inline bool
+tp_dictionary_offsets_fit(uint32 num_terms)
+{
+	return num_terms <= TP_MAX_DICTIONARY_TERMS;
+}
+
+static inline uint64
+tp_dictionary_size(uint32 num_terms)
+{
+	return (uint64)num_terms * sizeof(TpDictEntry);
+}
+
+static inline bool
+tp_document_count_fits(uint64 num_docs)
+{
+	return num_docs <= TP_MAX_GROWABLE_CAPACITY;
+}
+
+static inline uint64
+tp_posting_block_count(uint64 postings)
+{
+	return postings / TP_BLOCK_SIZE + (postings % TP_BLOCK_SIZE != 0);
+}
+
+/*
+ * Double a uint32 capacity without wrapping, stopping at
+ * PG_UINT32_MAX - 1.
+ */
+static inline uint32
+tp_grow_capacity(uint32 capacity, uint32 initial, const char *what)
+{
+	if (capacity == 0)
+		return initial;
+
+	if (capacity >= TP_MAX_GROWABLE_CAPACITY)
+		ereport(ERROR,
+				(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
+				 errmsg("pg_textsearch: too many %s in segment (max %u)",
+						what,
+						TP_MAX_GROWABLE_CAPACITY)));
+
+	if (capacity > TP_MAX_GROWABLE_CAPACITY / 2)
+		return TP_MAX_GROWABLE_CAPACITY;
+
+	return capacity * 2;
+}
+
 /*
  * Segment reader context
  */
@@ -45,6 +115,19 @@ typedef struct TpSegmentReader
 	BlockNumber	 *cached_ctid_pages;   /* Page numbers (4 bytes/doc) */
 	OffsetNumber *cached_ctid_offsets; /* Tuple offsets (2 bytes/doc) */
 	uint32		  cached_num_docs;	   /* Number of docs cached */
+
+	/* Bounded window for repeated ordered CTID lookups. */
+	BlockNumber	 *lookup_ctid_pages;
+	OffsetNumber *lookup_ctid_offsets;
+	uint32		  lookup_ctid_start;
+	uint32		  lookup_ctid_count;
+	uint32		  lookup_ctid_capacity;
+
+	/* Independent page pins for sparse lookups in the split CTID arrays. */
+	Buffer ctid_pages_buffer;
+	uint32 ctid_pages_logical_page;
+	Buffer ctid_offsets_buffer;
+	uint32 ctid_offsets_logical_page;
 
 	/* BufFile-backed reading (for temp file segments, NULL for normal) */
 	BufFile *buffile;
@@ -94,18 +177,21 @@ extern void tp_segment_writer_finish(TpSegmentWriter *writer);
 extern TpSegmentReader *
 tp_segment_open_ex(Relation index, BlockNumber root, bool load_ctids);
 extern TpSegmentReader *tp_segment_open(Relation index, BlockNumber root);
+extern bool
+tp_segment_read_next(Relation index, BlockNumber root, BlockNumber *next);
 extern TpSegmentReader			   *
 tp_segment_open_from_buffile(BufFile *file, uint64 base_offset);
 extern void tp_segment_read(
 		TpSegmentReader *reader,
 		uint64			 logical_offset,
 		void			*dest,
-		uint32			 len);
+		uint64			 len);
 extern void tp_segment_close(TpSegmentReader *reader);
 
 /* Lazy CTID lookup for deferred resolution */
 extern void tp_segment_lookup_ctid(
 		TpSegmentReader *reader, uint32 doc_id, ItemPointerData *ctid_out);
+extern void tp_segment_enable_ctid_lookup_cache(TpSegmentReader *reader);
 
 /* Zero-copy reader functions */
 typedef struct TpSegmentDirectAccess
@@ -138,6 +224,12 @@ extern void tp_dump_segment_to_output(
 /* Page index writing (used by segment_merge.c) */
 extern BlockNumber
 write_page_index(Relation index, BlockNumber *pages, uint32 num_pages);
+extern BlockNumber write_page_index_tracked(
+		Relation	  index,
+		BlockNumber	 *pages,
+		uint32		  num_pages,
+		BlockNumber **owned_pages,
+		uint32		 *owned_count);
 
 /* Page reclamation for segment compaction */
 extern uint32 tp_segment_collect_pages(
@@ -166,6 +258,7 @@ typedef struct TpSegmentPostingIterator
 	/* Zero-copy block access (preferred path) */
 	TpSegmentDirectAccess block_access;
 	bool				  has_block_access;
+	bool force_copy; /* Avoid retained pins across many iterators */
 
 	/* Block postings pointer - points to either direct data or fallback buf */
 	TpBlockPosting *block_postings;
@@ -186,11 +279,25 @@ typedef struct TpSegmentPostingIterator
 	TpSegmentPosting output_posting;
 } TpSegmentPostingIterator;
 
+typedef struct TpSegmentPrefixCandidates
+{
+	TpSegmentPostingIterator *iterators;
+	uint8					 *doc_bitmap;
+	uint32					  iterator_count;
+	uint64					  estimate;
+} TpSegmentPrefixCandidates;
+
 /* Segment posting iterator functions */
 extern bool tp_segment_posting_iterator_init(
 		TpSegmentPostingIterator *iter,
 		TpSegmentReader			 *reader,
 		const char				 *term);
+extern void tp_segment_prefix_candidates_init(
+		TpSegmentReader			  *reader,
+		const char				  *prefix,
+		int						   prefix_length,
+		uint32					   max_iterators,
+		TpSegmentPrefixCandidates *candidates);
 extern bool
 tp_segment_posting_iterator_load_block(TpSegmentPostingIterator *iter);
 extern bool tp_segment_posting_iterator_next(

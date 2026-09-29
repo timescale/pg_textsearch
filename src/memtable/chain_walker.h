@@ -17,12 +17,13 @@
  *     incrementally catches the cache up to the current chain
  *     tail by resuming from a stored cursor position.
  *
- * Concurrency: matches chain_source's contract.  Caller MUST
- * hold the per-index LWLock SHARED (or stronger) so spill
- * cannot race the walk.  The walker takes chain page buffer
- * SHARED one page at a time; multiple records on the same
- * page are read under one buffer-lock acquisition and
- * released at the page boundary.
+ * Concurrency: ordinary walkers match chain_source's contract,
+ * so the caller MUST hold the per-index LWLock SHARED (or
+ * stronger).  A bounded walker may run after that lock is
+ * released because its endpoint was captured while the lock was
+ * held and retired pages remain protected by the caller's scan
+ * snapshot.  Bounded walkers also copy each inline vector and
+ * release the page buffer before returning it.
  *
  * Cursor semantics.  Each call to tp_chain_walker_next() that
  * returns true populates out->next_blkno / out->next_off with
@@ -35,24 +36,31 @@
  * stays synchronized because the walker follows logical links,
  * never block-number comparisons.
  *
- * Lifetime of out->vector_bytes: for inline records, the
- * pointer is into the buffer page the walker currently holds
- * SHARED; valid until the next call to tp_chain_walker_next()
- * or tp_chain_walker_close().  For FRAGMENT records, the
- * reassembled payload is palloc'd in the MemoryContext the
- * caller passed at _open() time, and survives walker advance
- * (caller is responsible for any pfree).
+ * Lifetime of out->vector_bytes: for ordinary walkers, inline
+ * records point into the buffer page held SHARED until the next
+ * call or close.  Bounded walkers copy inline records and release
+ * the page before returning.  Fragment payloads are always
+ * reassembled into caller-owned memory.  In both allocated cases
+ * owns_vector is true and the caller is responsible for pfree.
  */
 #pragma once
 
 #include <postgres.h>
 
 #include <storage/block.h>
+#include <storage/buf.h>
 #include <storage/itemptr.h>
 #include <utils/memutils.h>
 #include <utils/rel.h>
 
 typedef struct TpChainWalker TpChainWalker;
+
+typedef struct TpMemtableChainSnapshot
+{
+	BlockNumber head_blkno;
+	BlockNumber tail_blkno;
+	uint16		tail_free_offset;
+} TpMemtableChainSnapshot;
 
 /*
  * One record yielded by the walker.
@@ -88,6 +96,7 @@ typedef struct TpChainWalkerRecord
 	 * assert-mode validation via USE_ASSERT_CHECKING.
 	 */
 	bool is_fragment;
+	bool owns_vector;
 
 	BlockNumber next_blkno;
 	uint16		next_off;
@@ -115,6 +124,21 @@ extern TpChainWalker *tp_chain_walker_open(
 		BlockNumber	  start_blkno,
 		uint16		  start_off,
 		MemoryContext mcxt);
+
+/*
+ * Capture an endpoint from a tail buffer the caller already holds locked.
+ * Passing InvalidBuffer captures an empty chain.  This helper never acquires
+ * or releases a buffer lock.
+ */
+extern bool tp_memtable_chain_snapshot_capture_locked(
+		Buffer					 tail_buffer,
+		BlockNumber				 head_blkno,
+		BlockNumber				 tail_blkno,
+		TpMemtableChainSnapshot *snapshot);
+extern TpChainWalker *tp_chain_walker_open_bounded(
+		Relation					   rel,
+		const TpMemtableChainSnapshot *snapshot,
+		MemoryContext				   mcxt);
 
 /*
  * Advance the walker by one record.  On true, *out is populated

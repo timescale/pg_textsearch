@@ -13,6 +13,12 @@ Modern ranked text search for Postgres.
 - Fast top-k queries with Block-Max WAND
 - Parallel index builds for large tables
 
+## PostgreSQL Version Compatibility
+
+pg_textsearch supports PostgreSQL 17 and 18. PostgreSQL 19 (beta) is
+supported on a best-effort basis while it is in beta; its CI is allowed
+to fail and prebuilt binaries are not published for it yet.
+
 ## Installation
 
 pg_textsearch supports PostgreSQL 17 and 18.
@@ -92,6 +98,42 @@ ORDER BY content <@> to_bm25query('database system', 'docs_idx')
 LIMIT 5;
 ```
 
+Supported operations:
+- `text <@> 'query'` - Score text against a query (index auto-detected)
+- `text <@> bm25query` - Score text with explicit index specification
+
+### Boolean Filtering
+
+Use PostgreSQL's `@@` operator and `tsquery` syntax to filter through a BM25
+index:
+
+```sql
+SELECT * FROM documents
+WHERE content @@ to_tsquery('english', 'postgres & (search | database) & !mysql');
+```
+
+Supported `tsquery` features include `&` (AND), `|` (OR), `!` (NOT), phrase
+operators such as `<->`, prefix matching with `:*`, and weight restrictions.
+Phrase and weight checks may be rechecked against the table row after the
+index finds candidates.
+
+The `default_text_search_config` used to parse the left-hand `text` value must
+match the index configuration:
+
+```sql
+SET default_text_search_config = 'english';
+```
+
+If that setting changes after a Boolean prepared statement has switched to a
+generic plan, `DEALLOCATE` and prepare the statement again. A newly planned
+query can choose the correct sequential fallback, while the cached plan is
+rejected to avoid incorrect index results.
+
+Combining Boolean filtering with BM25 ranking is supported, but is not yet
+optimized as a single index scan. PostgreSQL currently evaluates the filter,
+calculates standalone scores for the matching rows, and then sorts them. This
+is most effective when the Boolean filter matches relatively few rows.
+
 ### Verifying Index Usage
 
 ```sql
@@ -150,8 +192,8 @@ Option | Default | Description
 [`text_config`](https://www.postgresql.org/docs/current/textsearch-configuration.html) | required | PostgreSQL text search configuration
 `k1` | 1.2 | Term frequency saturation (0.1-10.0)
 `b` | 0.75 | Length normalization (0.0-1.0)
-`compaction` | inline | Spill-time compaction: `inline`, managed pg_durable `background`, or `manual`; see [Background Compaction](#background-compaction)
-`compaction_schedule` | global default | Optional cron schedule captured when the index enters background mode
+`compaction` | inline | Spill-time compaction: `inline`, `background`, or `manual`; see [Background Compaction](#background-compaction)
+`compaction_schedule` | `pg_textsearch.background_compaction_schedule` | Optional cron schedule captured when the index enters background mode
 
 ```sql
 CREATE INDEX ON documents USING bm25(content) WITH (text_config='english', k1=1.5, b=0.8);
@@ -319,13 +361,26 @@ REINDEX INDEX docs_idx;
 ### Compaction
 
 With the default `inline` policy, compaction of levels that reach the configured
-threshold occurs as part of the write transaction that triggers the spill.
-These functions provide manual and scheduled control:
+threshold occurs synchronously in the write transaction that triggers the
+spill. Readers and other memtable writers can continue while merged output is
+built, because the long build holds no per-index LWLock. This is reader
+non-blocking, not foreground-writer non-blocking: the invoking writer still
+spends the time required to build and publish the merge. Compaction is
+skipped, and left to the next spill, when another session is reindexing,
+vacuuming, or compacting the index.
+
+These functions provide manual and scheduled control. They wait when another
+session holds index maintenance:
 
 ```sql
 SELECT bm25_force_merge('docs_idx');
 SELECT bm25_compact('docs_idx'::regclass);
 SELECT bm25_compact_step('docs_idx'::regclass);
+```
+
+These report compaction state without waiting for maintenance:
+
+```sql
 SELECT bm25_needs_compaction('docs_idx'::regclass);
 SELECT bm25_level_counts('docs_idx'::regclass);
 ```
@@ -337,8 +392,8 @@ processes at most one pass.
 
 - Long merge work checks for cancellation, but published replacements remain
   physical and are not undone by `ROLLBACK`.
-- Drive maintenance loops from `bm25_compact_step()`'s return value, not
-  `bm25_needs_compaction()`, which is advisory.
+- `bm25_needs_compaction()` reports whether `bm25_compact_step()` would run a
+  pass, so either can drive a maintenance loop.
 - Mutating functions require index ownership and do not operate on partitioned
   parent indexes or during recovery.
 
@@ -346,7 +401,9 @@ See [ARCHITECTURE.md](ARCHITECTURE.md#spill-and-compaction) for sizing,
 publication, locking, and page-reclaim details.
 
 Hot standbys serving queries must set `hot_standby_feedback = on` so active
-snapshots delay physical page reuse on the primary.
+snapshots delay physical page reuse on the primary. If a standby disconnects
+while an old snapshot remains active, stock PostgreSQL recovery-conflict WAL
+cancels that snapshot before reclaimed segment pages can be reused on replay.
 
 ### Settings
 
@@ -359,6 +416,7 @@ Setting | Default | Description
 `pg_textsearch.background_compaction_schedule` | `*/5 * * * *` | Default cron schedule captured by indexes entering managed background mode
 `pg_textsearch.bulk_load_threshold` | 100000 | Terms per transaction before auto-spill (0 = disable)
 `pg_textsearch.memtable_pages_threshold` | 64 | Chain pages before auto-spill (0 = disable)
+`pg_textsearch.allow_rls` | on | Allow BM25 indexes on RLS-protected tables; superuser-only
 `pg_textsearch.memtable_cache_enabled` | on | Cache memtable data in shared memory for faster queries
 `pg_textsearch.memory_limit` | 2GB | Approximate shared-memory budget for the memtable cache across all indexes; changes take effect after a configuration reload without a restart (0 = no limit)
 
@@ -400,6 +458,18 @@ WHERE am.amname = 'bm25';
 
 ## Limitations
 
+### Row-Level Security
+
+BM25 corpus statistics include all indexed rows, including rows hidden by RLS.
+A user who already knows a term can infer frequency information affected by
+inaccessible rows, though the index does not reveal unknown terms. This is
+analogous to [Elastic's security limitation](https://www.elastic.co/docs/deploy-manage/security/limitations).
+
+`pg_textsearch.allow_rls` defaults to `on`. Set it to `off` as a superuser to
+reject creating or rebuilding BM25 indexes on RLS-protected tables and
+enabling RLS where BM25 indexes already exist. This does not disable
+combinations that already exist when the setting is changed.
+
 ### Phrase Queries
 
 <!-- TODO: Revisit this workaround after https://github.com/timescale/pg_textsearch/pull/480 merges. -->
@@ -422,40 +492,37 @@ LIMIT 10;
 
 ### Background Compaction
 
-The default `inline` policy compacts synchronously during memtable spills.
-Managed `background` mode uses
-[pg_durable](https://github.com/microsoft/pg_durable) 0.2.8 or newer rather
-than a worker built into pg_textsearch. pg_durable must be installed, listed
-in `shared_preload_libraries`, initialized for the current database, and
-granted to the index owner. The owner must have `LOGIN`; a superuser owner
-also requires `pg_durable.enable_superuser_instances = on`.
+The default `inline` policy compacts during memtable spills, skipping the pass
+when another session is using or maintaining the index.
+Managed `background` mode uses [pg_durable](https://github.com/microsoft/pg_durable)
+0.2.8 or newer rather than a built-in worker. pg_durable must be preloaded,
+initialized in the current database, and granted to the index owner. The owner
+must have `LOGIN`; a superuser owner also requires
+`pg_durable.enable_superuser_instances = on`.
+
+Each physical index has one managed workflow scoped to its captured owner. The
+index owner, or a role PostgreSQL permits to act as that owner, may enable
+background mode. A separate insert-only writer may later trigger a spill, but
+pg_textsearch submits the workflow and calls `df.signal` under the index
+owner's identity. The compaction SQL nodes reached through either a spill
+signal or the cron backstop execute in pg_durable connections authenticated as
+the index owner, not as the DML writer; pg_durable's worker role provides only
+the orchestration infrastructure.
 
 pg_durable must be installed in the same database as the BM25 index.
-pg_durable can execute a workflow's SQL in another target database, but its
-submission and control APIs exist only in the configured database.
-pg_textsearch does not use dblink or postgres_fdw to bridge that boundary.
-Use `manual` compaction for indexes in other databases.
+Use `manual` compaction for indexes outside `pg_durable.database`.
 
 ```sql
 CREATE INDEX documents_bm25 ON documents USING bm25(content)
 WITH (
     text_config = 'english',
-    compaction = 'background',
-    compaction_schedule = '*/5 * * * *'
+    compaction = 'background'
 );
 ```
 
-Each physical index gets one owner-scoped workflow. It runs an immediate
-stepped cascade, then waits for either a spill signal or the captured schedule.
-Each merge batch runs in its own transaction. Transient SQL failures are
-recorded without terminating the workflow; the same workflow retries the
-startup cascade or handles a later signal or schedule tick.
-
-Use `manual` when pg_durable is not desired and invoke `bm25_compact()` or
-`bm25_compact_step()` from an external scheduler. Background mode is rejected
-for temporary indexes because another backend cannot open them.
-
-Change modes or refresh the captured default schedule with `ALTER INDEX`:
+Change modes with `ALTER INDEX`. Resetting `compaction_schedule` uses the
+current `pg_textsearch.background_compaction_schedule` default. Set the
+per-index option only when the default schedule is unsuitable.
 
 ```sql
 ALTER INDEX documents_bm25 SET (compaction = 'background');
@@ -463,9 +530,10 @@ ALTER INDEX documents_bm25 RESET (compaction_schedule);
 ALTER INDEX documents_bm25 SET (compaction = 'manual');
 ```
 
-Reapplying background mode captures the current global default only when the
-index has no explicit `compaction_schedule`; reset that reloption to return to
-the default.
+Use `manual` with an external scheduler when pg_durable is unavailable or not
+desired and foreground compaction causes unacceptable write transaction
+stalls. The legacy `off` value remains accepted as an alias for `manual`.
+Temporary indexes do not support background mode.
 
 See [ARCHITECTURE.md](ARCHITECTURE.md#managed-background-compaction) for
 workflow lifecycle and safety details.

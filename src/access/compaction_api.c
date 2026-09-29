@@ -194,6 +194,43 @@ tp_level_counts(PG_FUNCTION_ARGS)
 	PG_RETURN_ARRAYTYPE_P(result);
 }
 
+PG_FUNCTION_INFO_V1(tp_needs_compaction);
+
+Datum
+tp_needs_compaction(PG_FUNCTION_ARGS)
+{
+	Oid				   indexoid = PG_GETARG_OID(0);
+	Relation		   index_rel;
+	TpLocalIndexState *index_state;
+	bool			   available;
+
+	index_rel	= tp_open_bm25_index(indexoid, AccessShareLock, false);
+	index_state = tp_get_local_index_state(indexoid);
+	if (index_state == NULL)
+	{
+		char *relname = pstrdup(RelationGetRelationName(index_rel));
+
+		relation_close(index_rel, AccessShareLock);
+		ereport(ERROR,
+				(errcode(ERRCODE_INTERNAL_ERROR),
+				 errmsg("could not get index state for \"%s\"", relname)));
+	}
+
+	PG_TRY();
+	{
+		available = tp_compaction_pass_available(index_state, index_rel);
+	}
+	PG_FINALLY();
+	{
+		if (index_state->lock_held)
+			tp_release_index_lock(index_state);
+		relation_close(index_rel, AccessShareLock);
+	}
+	PG_END_TRY();
+
+	PG_RETURN_BOOL(available);
+}
+
 PG_FUNCTION_INFO_V1(tp_compact_index);
 
 Datum
@@ -202,6 +239,7 @@ tp_compact_index(PG_FUNCTION_ARGS)
 	Oid				   indexoid = PG_GETARG_OID(0);
 	Relation		   index_rel;
 	TpLocalIndexState *index_state;
+	volatile bool	   pass_ran;
 
 	if (RecoveryInProgress())
 		ereport(ERROR,
@@ -224,14 +262,28 @@ tp_compact_index(PG_FUNCTION_ARGS)
 				 errmsg("could not get index state for \"%s\"", relname)));
 	}
 
-	tp_acquire_index_lock(index_state, LW_EXCLUSIVE);
 	PG_TRY();
 	{
-		tp_maybe_compact_level(index_state, index_rel, 0);
+		do
+		{
+			tp_compaction_lock(index_rel);
+			PG_TRY(_pass);
+			{
+				pass_ran = tp_compact_step(index_state, index_rel);
+			}
+			PG_FINALLY(_pass);
+			{
+				if (index_state->lock_held)
+					tp_release_index_lock(index_state);
+				tp_compaction_unlock(index_rel);
+			}
+			PG_END_TRY(_pass);
+
+			CHECK_FOR_INTERRUPTS();
+		} while (pass_ran);
 	}
 	PG_FINALLY();
 	{
-		tp_release_index_lock(index_state);
 		relation_close(index_rel, RowExclusiveLock);
 	}
 	PG_END_TRY();
@@ -270,14 +322,16 @@ tp_compact_index_step(PG_FUNCTION_ARGS)
 				 errmsg("could not get index state for \"%s\"", relname)));
 	}
 
-	tp_acquire_index_lock(index_state, LW_EXCLUSIVE);
+	tp_compaction_lock(index_rel);
 	PG_TRY();
 	{
 		pass_ran = tp_compact_step(index_state, index_rel);
 	}
 	PG_FINALLY();
 	{
-		tp_release_index_lock(index_state);
+		if (index_state->lock_held)
+			tp_release_index_lock(index_state);
+		tp_compaction_unlock(index_rel);
 		relation_close(index_rel, RowExclusiveLock);
 	}
 	PG_END_TRY();
@@ -297,41 +351,64 @@ tp_compact_index_step_if_current(PG_FUNCTION_ARGS)
 			.relfilenumber	= PG_GETARG_OID(3),
 			.owner_oid		= PG_GETARG_OID(4),
 	};
-	Relation		   index_rel;
-	TpLocalIndexState *index_state;
-	bool			   pass_ran;
+	Relation index_rel;
+	TpLocalIndexState *volatile index_state = NULL;
+	volatile bool pass_ran;
 
 	if (RecoveryInProgress())
 		ereport(ERROR,
 				(errcode(ERRCODE_READ_ONLY_SQL_TRANSACTION),
 				 errmsg("cannot compact a bm25 index during recovery")));
 
-	index_rel = tp_open_current_bm25_target(
-			&target, RowExclusiveLock, true, false);
+	index_rel =
+			tp_open_current_bm25_target(&target, RowExclusiveLock, true, true);
 	if (index_rel == NULL)
 		PG_RETURN_BOOL(false);
 
 	PreventCommandIfReadOnly("bm25 index compaction");
 
-	index_state = tp_get_local_index_state(target.index_oid);
-	if (index_state == NULL)
+	/*
+	 * A dispatched worker defers instead of queueing: the schedule brings
+	 * it back, and a blocked worker would hold its slot and transaction
+	 * open for the length of an unrelated VACUUM or compaction.
+	 */
+	if (!tp_try_compaction_lock(index_rel))
 	{
-		char *relname = pstrdup(RelationGetRelationName(index_rel));
-
 		relation_close(index_rel, RowExclusiveLock);
-		ereport(ERROR,
-				(errcode(ERRCODE_INTERNAL_ERROR),
-				 errmsg("could not get index state for \"%s\"", relname)));
+		PG_RETURN_BOOL(false);
 	}
 
-	tp_acquire_index_lock(index_state, LW_EXCLUSIVE);
 	PG_TRY();
 	{
-		pass_ran = tp_compact_step(index_state, index_rel);
+		Relation current_rel;
+
+		/*
+		 * ALTER OWNER, ALTER INDEX, or REINDEX may complete between the
+		 * captured target and admission.  Reopen without taking another
+		 * relation lock so relcache invalidations are processed, then
+		 * repeat the complete physical-target check.
+		 */
+		current_rel = tp_open_current_bm25_target(&target, NoLock, true, true);
+		if (current_rel == NULL)
+			pass_ran = false;
+		else
+		{
+			relation_close(current_rel, NoLock);
+			index_state = tp_get_local_index_state(target.index_oid);
+			if (index_state == NULL)
+				ereport(ERROR,
+						(errcode(ERRCODE_INTERNAL_ERROR),
+						 errmsg("could not get index state for \"%s\"",
+								RelationGetRelationName(index_rel))));
+
+			pass_ran = tp_compact_step(index_state, index_rel);
+		}
 	}
 	PG_FINALLY();
 	{
-		tp_release_index_lock(index_state);
+		if (index_state != NULL && index_state->lock_held)
+			tp_release_index_lock(index_state);
+		tp_compaction_unlock(index_rel);
 		relation_close(index_rel, RowExclusiveLock);
 	}
 	PG_END_TRY();

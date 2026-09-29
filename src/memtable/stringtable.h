@@ -87,5 +87,5 @@ extern void tp_cache_apply_document(
 		int				   term_count,
 		int32			   doc_length);
 
-/* LWLock tranche for string table locking */
-#define TP_STRING_HASH_TRANCHE_ID LWTRANCHE_FIRST_USER_DEFINED
+/* LWLock tranche for string table locking (part of the fixed block) */
+#define TP_STRING_HASH_TRANCHE_ID TP_TRANCHE_STRING

@@ -132,7 +132,7 @@ tp_string_table_create(dsa_area *area)
 	params.hash_function	= tp_string_hash_function;
 	params.compare_function = tp_string_compare_function;
 	params.copy_function	= tp_string_copy_function;
-	params.tranche_id		= TP_STRING_HASH_TRANCHE_ID;
+	params.tranche_id		= tp_tranche_id(TP_STRING_HASH_TRANCHE_ID);
 
 	/* Create the dshash table */
 	return dshash_create(area, &params, area);
@@ -154,7 +154,7 @@ tp_string_table_attach(dsa_area *area, dshash_table_handle handle)
 	params.hash_function	= tp_string_hash_function;
 	params.compare_function = tp_string_compare_function;
 	params.copy_function	= tp_string_copy_function;
-	params.tranche_id		= TP_STRING_HASH_TRANCHE_ID;
+	params.tranche_id		= tp_tranche_id(TP_STRING_HASH_TRANCHE_ID);
 
 	/* Attach to the dshash table */
 	return dshash_attach(area, &params, handle, area);
@@ -331,24 +331,12 @@ tp_get_or_create_posting_list(TpLocalIndexState *local_state, const char *term)
 	/*
 	 * The string hash table must already be initialized
 	 * by tp_ensure_string_table_initialized (called under
-	 * LW_EXCLUSIVE). In build mode it's created lazily
-	 * since there's no concurrency.
+	 * LW_EXCLUSIVE).
 	 */
 	if (memtable->string_hash_handle == DSHASH_HANDLE_INVALID)
-	{
-		if (!local_state->is_build_mode)
-			elog(ERROR,
-				 "String hash table not initialized "
-				 "(call tp_ensure_string_table_initialized "
-				 "first)");
-
-		/* Build mode: create lazily (single-threaded) */
-		string_table = tp_string_table_create(local_state->dsa);
-		if (!string_table)
-			elog(ERROR, "Failed to create string hash table");
-		memtable->string_hash_handle = dshash_get_hash_table_handle(
-				string_table);
-	}
+		elog(ERROR,
+			 "String hash table not initialized "
+			 "(call tp_ensure_string_table_initialized first)");
 	else
 	{
 		string_table = tp_string_table_attach(

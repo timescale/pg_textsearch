@@ -123,6 +123,7 @@ extern void merge_source_close(TpMergeSource *source);
 extern int	merge_find_min_source(TpMergeSource *sources, int num_sources);
 extern void merged_term_add_segment_ref(
 		TpMergedTerm *term, int segment_idx, TpDictEntry *entry);
+extern void tp_validate_merged_terms(TpMergedTerm *terms, uint32 num_terms);
 
 /*
  * Posting merge operations

@@ -14,6 +14,7 @@
  */
 #include <postgres.h>
 
+#include <access/genam.h>
 #include <fmgr.h>
 #include <funcapi.h>
 #include <lib/dshash.h>
@@ -177,6 +178,20 @@ cache_get_doc_freq(TpDataSource *source, const char *term)
 }
 
 static void
+cache_foreach_document(
+		TpDataSource *source, TpDocumentCallback callback, void *arg)
+{
+	TpMemtableCacheSource *cs = (TpMemtableCacheSource *)source;
+	dshash_seq_status	   seq;
+	TpDocLengthEntry	  *entry;
+
+	dshash_seq_init(&seq, cs->doclength_table, false);
+	while ((entry = (TpDocLengthEntry *)dshash_seq_next(&seq)) != NULL)
+		callback(&entry->ctid, arg);
+	dshash_seq_term(&seq);
+}
+
+static void
 cache_close(TpDataSource *source)
 {
 	TpMemtableCacheSource *cs = (TpMemtableCacheSource *)source;
@@ -209,11 +224,12 @@ cache_close(TpDataSource *source)
 }
 
 static const TpDataSourceOps cache_source_ops = {
-		.get_postings	= cache_get_postings,
-		.free_postings	= cache_free_postings,
-		.get_doc_length = cache_get_doc_length,
-		.get_doc_freq	= cache_get_doc_freq,
-		.close			= cache_close,
+		.get_postings	  = cache_get_postings,
+		.free_postings	  = cache_free_postings,
+		.get_doc_length	  = cache_get_doc_length,
+		.get_doc_freq	  = cache_get_doc_freq,
+		.foreach_document = cache_foreach_document,
+		.close			  = cache_close,
 };
 
 /* ---------- helpers ---------- */
@@ -475,9 +491,7 @@ tp_memtable_source_create_for_read(
 	 * Gate on the GUC and on contexts where the cache cannot be
 	 * trusted to keep up with the chain.  Standbys never apply
 	 * cache mutations (no shared-memory bumps from WAL replay),
-	 * so they must always read the chain directly.  Build mode
-	 * uses a private DSA and bypasses posting-list locks; the
-	 * cache invariants do not hold there.  In all of these
+	 * so they must always read the chain directly.  In these
 	 * cases fall through to chain_source unconditionally.
 	 */
 	if (!tp_memtable_cache_enabled)
@@ -500,17 +514,6 @@ tp_memtable_source_create_for_read(
 		return tp_memtable_chain_source_create(
 				state, rel, query_terms, query_term_count);
 	}
-	if (state->is_build_mode)
-	{
-		if (tp_log_cache_state)
-			elog(LOG,
-				 "pg_textsearch cache_source: disabled_by_build, "
-				 "using chain (oid=%u)",
-				 state->shared->index_oid);
-		return tp_memtable_chain_source_create(
-				state, rel, query_terms, query_term_count);
-	}
-
 	src = tp_memtable_cache_source_create(
 			state, rel, query_terms, query_term_count);
 	if (src != NULL)

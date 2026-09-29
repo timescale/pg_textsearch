@@ -101,11 +101,11 @@ tp_alive_bitset_mark_dead(TpAliveBitset *bitset, uint32 doc_id)
 	Assert(doc_id < bitset->num_docs);
 
 	/*
-	 * Defense in depth for non-assert builds: a doc_id past num_docs is a
-	 * stale id -- e.g. a segment shrunk by a concurrent merge between
-	 * VACUUM's identify and mark phases (callers must hold the per-index
-	 * lock to prevent this; see tp_bulkdelete).  Never write out of
-	 * bounds if one slips through.
+	 * Defense in depth for non-assert builds: a doc_id past num_docs is
+	 * stale -- e.g. a segment shrunk by a concurrent merge between VACUUM's
+	 * identify and mark phases.  Callers serialize source replacement with
+	 * the maintenance object lock, but the per-index lock is not held across
+	 * bitmap updates.
 	 */
 	if (doc_id >= bitset->num_docs)
 		return false;

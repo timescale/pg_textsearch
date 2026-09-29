@@ -7,13 +7,13 @@
 #include <postgres.h>
 
 #include <access/genam.h>
-#include <access/generic_xlog.h>
 #include <access/heapam.h>
 #include <access/transam.h>
 #include <catalog/index.h>
 #include <catalog/namespace.h>
 #include <commands/progress.h>
 #include <commands/vacuum.h>
+#include <common/int.h>
 #include <executor/executor.h>
 #include <fmgr.h>
 #include <lib/dshash.h>
@@ -26,19 +26,24 @@
 #include <utils/builtins.h>
 #include <utils/fmgrprotos.h>
 #include <utils/hsearch.h>
+#include <utils/lsyscache.h>
 #include <utils/regproc.h>
 #include <utils/rel.h>
 #include <utils/snapmgr.h>
+#include <utils/timestamp.h>
 
 #include "access/am.h"
 #include "access/build_context.h"
+#include "debug/injection.h"
 #include "index/freepage.h"
 #include "index/metapage.h"
 #include "index/state.h"
 #include "memtable/page.h"
 #include "segment/alive_bitset.h"
+#include "segment/compaction.h"
+#include "segment/dictionary.h"
+#include "segment/graph_snapshot.h"
 #include "segment/io.h"
-#include "segment/merge.h"
 #include "segment/segment.h"
 #include "segment/tombstone.h"
 
@@ -50,15 +55,27 @@
 typedef struct TpVacuumSegmentInfo
 {
 	BlockNumber root_block;
-	BlockNumber next_segment;
 	uint32		level;
 	uint32		num_docs;	  /* segment header num_docs */
 	uint64		total_tokens; /* segment header total_tokens */
 	uint32	   *dead_doc_ids; /* Array of dead doc_ids */
 	uint32		dead_count;
 	bool		affected;
-	bool		is_v5; /* true if segment has alive bitset */
+	bool		is_v5;		   /* true if segment has alive bitset */
+	bool		already_empty; /* V5 header already has no live docs */
 } TpVacuumSegmentInfo;
+
+/*
+ * Build a quoted, schema-qualified index name for a REINDEX errhint, so the
+ * hint stays pasteable for mixed-case names and independent of search_path.
+ */
+static char *
+tp_vacuum_reindex_hint_name(Relation index)
+{
+	return quote_qualified_identifier(
+			get_namespace_name(RelationGetNamespace(index)),
+			RelationGetRelationName(index));
+}
 
 /*
  * Convert a 32-bit xid (known to be in the allowable range when
@@ -92,8 +109,13 @@ tp_full_xid_from_allowable_at(FullTransactionId nextFullXid, TransactionId xid)
 FullTransactionId
 tp_reclaim_horizon(Relation heaprel)
 {
-	TransactionId oldest = GetOldestNonRemovableTransactionId(heaprel);
+	TransactionId oldest;
 
+	/* A test may pin the horizon so no parked page is yet recyclable. */
+	if (tp_injected_reclaim_horizon_held())
+		return FirstNormalFullTransactionId;
+
+	oldest = GetOldestNonRemovableTransactionId(heaprel);
 	return tp_full_xid_from_allowable_at(ReadNextFullTransactionId(), oldest);
 }
 
@@ -223,16 +245,21 @@ tp_collect_reachable_chain_blocks(Relation indexrel)
  * have no alive-bitset so their alive count equals num_docs.
  */
 static uint64
-tp_count_live_docs(Relation index, TpIndexMetaPage metap)
+tp_count_live_docs(
+		Relation index, const TpSegmentGraphSnapshot *segment_snapshot)
 {
 	uint64 alive = 0;
 
 	for (int level = 0; level < TP_MAX_LEVELS; level++)
 	{
-		BlockNumber seg = metap->level_heads[level];
+		const BlockNumber *roots;
+		uint32			   root_count;
 
-		while (seg != InvalidBlockNumber)
+		roots = tp_segment_graph_snapshot_level(
+				segment_snapshot, level, &root_count);
+		for (uint32 root_idx = 0; root_idx < root_count; root_idx++)
 		{
+			BlockNumber		 seg	= roots[root_idx];
 			TpSegmentReader *reader = tp_segment_open(index, seg);
 
 			if (!reader || !reader->header)
@@ -245,7 +272,6 @@ tp_count_live_docs(Relation index, TpIndexMetaPage metap)
 			alive += (reader->header->alive_bitset_offset > 0)
 						   ? reader->header->alive_count
 						   : reader->header->num_docs;
-			seg = reader->header->next_segment;
 			tp_segment_close(reader);
 		}
 	}
@@ -253,70 +279,80 @@ tp_count_live_docs(Relation index, TpIndexMetaPage metap)
 }
 
 /*
- * Apply the invariant total_docs = Σ segment.num_docs (and its
- * total_len counterpart) on the metapage after Phase 3 has
- * rebuilt or dropped segments.  Subtraction is clamped at zero
- * so a stale shrinkage value (e.g. from pre-fix L0 headers
- * carrying inflated total_tokens) cannot underflow.  See
- * TpIndexMetaPageData.total_docs in metapage.h for the invariant.
+ * Sum exact term frequencies from a current-format segment.
+ * This is an exceptional consistency check, so it favors a complete
+ * posting walk over trusting the header value under investigation.
  */
-static void
-tp_apply_vacuum_shrinkage(
-		Relation index, uint64 docs_shrinkage, uint64 tokens_shrinkage)
+static uint64
+tp_vacuum_measure_current_segment_tokens(
+		Relation index, BlockNumber root_block)
 {
-	Buffer			  mbuf;
-	GenericXLogState *xlog_state;
-	Page			  mpage;
-	TpIndexMetaPage	  mp;
+	TpSegmentReader *reader;
+	TpDictionary	 dictionary;
+	uint32			*string_offsets;
+	uint64			 total_tokens = 0;
 
-	if (docs_shrinkage == 0 && tokens_shrinkage == 0)
-		return;
+	reader = tp_segment_open_ex(index, root_block, false);
+	if (reader == NULL || reader->header == NULL)
+		ereport(ERROR,
+				(errcode(ERRCODE_DATA_CORRUPTED),
+				 errmsg("could not open current segment at block %u",
+						root_block)));
 
-	mbuf = ReadBuffer(index, TP_METAPAGE_BLKNO);
-	LockBuffer(mbuf, BUFFER_LOCK_EXCLUSIVE);
+	if (reader->header->num_terms == 0)
+	{
+		tp_segment_close(reader);
+		return 0;
+	}
 
-	xlog_state = GenericXLogStart(index);
-	mpage	   = GenericXLogRegisterBuffer(xlog_state, mbuf, 0);
-	/* Upgrade legacy metapage before applying shrinkage. */
-	tp_metapage_upgrade_to_current(index, mpage);
-	mp = (TpIndexMetaPage)PageGetContents(mpage);
+	tp_segment_read(
+			reader,
+			reader->header->dictionary_offset,
+			&dictionary,
+			sizeof(dictionary.num_terms));
+	if (dictionary.num_terms != reader->header->num_terms)
+		ereport(ERROR,
+				(errcode(ERRCODE_DATA_CORRUPTED),
+				 errmsg("current segment dictionary count is inconsistent")));
 
-	mp->total_docs = (mp->total_docs >= docs_shrinkage)
-						   ? mp->total_docs - docs_shrinkage
-						   : 0;
-	mp->total_len  = (mp->total_len >= tokens_shrinkage)
-						   ? mp->total_len - tokens_shrinkage
-						   : 0;
+	string_offsets = palloc(sizeof(uint32) * dictionary.num_terms);
+	tp_segment_read(
+			reader,
+			reader->header->dictionary_offset + sizeof(dictionary.num_terms),
+			string_offsets,
+			sizeof(uint32) * dictionary.num_terms);
 
-	GenericXLogFinish(xlog_state);
-	UnlockReleaseBuffer(mbuf);
-}
+	for (uint32 i = 0; i < dictionary.num_terms; i++)
+	{
+		TpSegmentPostingIterator iterator;
+		TpSegmentPosting		*posting;
+		char					*term;
 
-/*
- * Spill memtable to an L0 segment.  Caller passes a minimum
- * chain-page count below which the spill is a no-op — used by
- * VACUUM cleanup and the shutdown hook to avoid producing runt
- * L0 segments on lightly-loaded indexes.  The pre-lock read is
- * a fast bailout; if it races with an insert, the worst case
- * is a harmless no-op inside tp_do_spill().
- */
-void
-tp_spill_memtable_if_needed(
-		Relation index, TpLocalIndexState *index_state, uint32 min_pages)
-{
-	/* Standby is read-only; spill is primary-only. */
-	if (RecoveryInProgress())
-		return;
+		term = tp_segment_read_term_at_index(
+				reader, reader->header, string_offsets, i);
+		if (!tp_segment_posting_iterator_init(&iterator, reader, term))
+			ereport(ERROR,
+					(errcode(ERRCODE_DATA_CORRUPTED),
+					 errmsg("could not read current segment term")));
 
-	if (!index_state || !index_state->shared)
-		return;
+		while (tp_segment_posting_iterator_next(&iterator, &posting))
+		{
+			if (pg_add_u64_overflow(
+						total_tokens,
+						(uint64)posting->frequency,
+						&total_tokens))
+				ereport(ERROR,
+						(errcode(ERRCODE_DATA_CORRUPTED),
+						 errmsg("current segment token statistics overflow")));
+		}
 
-	if (pg_atomic_read_u32(&index_state->shared->chain_page_count) < min_pages)
-		return;
+		tp_segment_posting_iterator_free(&iterator);
+		pfree(term);
+	}
 
-	tp_acquire_index_lock(index_state, LW_EXCLUSIVE);
-	tp_do_spill(index_state, index, NULL);
-	tp_release_index_lock(index_state);
+	pfree(string_offsets);
+	tp_segment_close(reader);
+	return total_tokens;
 }
 
 /*
@@ -326,12 +362,13 @@ tp_spill_memtable_if_needed(
  */
 static TpVacuumSegmentInfo *
 tp_vacuum_identify_affected(
-		Relation				index,
-		TpIndexMetaPage			metap,
-		IndexBulkDeleteCallback callback,
-		void				   *callback_state,
-		int					   *num_segments_out,
-		int64				   *total_dead_out)
+		Relation					  index,
+		const TpSegmentGraphSnapshot *segment_snapshot,
+		IndexBulkDeleteCallback		  callback,
+		void						 *callback_state,
+		bool						  scan_ctids,
+		int							 *num_segments_out,
+		int64						 *total_dead_out)
 {
 	TpVacuumSegmentInfo *segments;
 	/* Keep both CTID scratch arrays within roughly one PostgreSQL block. */
@@ -339,9 +376,10 @@ tp_vacuum_identify_affected(
 												  sizeof(OffsetNumber));
 	BlockNumber	 *ctid_pages;
 	OffsetNumber *ctid_offsets;
-	int			  capacity	 = 32;
-	int			  count		 = 0;
-	int64		  total_dead = 0;
+	int			  capacity				= 32;
+	int			  count					= 0;
+	int64		  total_dead			= 0;
+	bool		  identification_paused = false;
 
 	segments	 = palloc(capacity * sizeof(TpVacuumSegmentInfo));
 	ctid_pages	 = palloc(ctid_batch_capacity * sizeof(BlockNumber));
@@ -349,12 +387,16 @@ tp_vacuum_identify_affected(
 
 	for (int level = 0; level < TP_MAX_LEVELS; level++)
 	{
-		BlockNumber seg = metap->level_heads[level];
+		const BlockNumber *roots;
+		uint32			   root_count;
 
-		while (seg != InvalidBlockNumber)
+		roots = tp_segment_graph_snapshot_level(
+				segment_snapshot, level, &root_count);
+		for (uint32 root_idx = 0; root_idx < root_count; root_idx++)
 		{
 			TpSegmentReader *reader;
 			uint32			 seg_dead = 0;
+			BlockNumber		 seg	  = roots[root_idx];
 
 			reader = tp_segment_open_ex(index, seg, false);
 			if (!reader || !reader->header)
@@ -364,14 +406,19 @@ tp_vacuum_identify_affected(
 				break;
 			}
 
-			/* Check each CTID against the callback */
+			/*
+			 * Check each CTID against the callback.  A caller that cannot
+			 * report a dead CTID skips the walk: dead counts stay zero and
+			 * every other field recorded below comes from the segment
+			 * header, so scanning would cost O(num_docs) for nothing.
+			 */
 			{
 				uint32 *dead_ids   = NULL;
 				uint32	dead_cap   = 0;
 				bool	has_bitset = (reader->header->alive_bitset_offset > 0);
 
 				for (uint32 batch_start = 0;
-					 batch_start < reader->header->num_docs;
+					 scan_ctids && batch_start < reader->header->num_docs;
 					 batch_start += ctid_batch_capacity)
 				{
 					uint32 batch_count =
@@ -429,6 +476,16 @@ tp_vacuum_identify_affected(
 							seg_dead++;
 						}
 					}
+
+					if (!identification_paused)
+					{
+						if (IsInParallelMode() && !IsParallelWorker())
+							TP_INJECTION_POINT(
+									TP_INJECTION_PARALLEL_VACUUM_LEADER_ESTIMATE);
+						TP_INJECTION_POINT(
+								TP_INJECTION_COMPACTION_SOURCE_ESTIMATE);
+						identification_paused = true;
+					}
 				}
 
 				/* Record segment info */
@@ -440,7 +497,6 @@ tp_vacuum_identify_affected(
 				}
 
 				segments[count].root_block	 = seg;
-				segments[count].next_segment = reader->header->next_segment;
 				segments[count].level		 = level;
 				segments[count].num_docs	 = reader->header->num_docs;
 				segments[count].total_tokens = reader->header->total_tokens;
@@ -449,12 +505,14 @@ tp_vacuum_identify_affected(
 				segments[count].affected	 = (seg_dead > 0);
 				segments[count].is_v5 =
 						(reader->header->alive_bitset_offset > 0);
+				segments[count].already_empty = segments[count].is_v5 &&
+												reader->header->alive_count ==
+														0;
 			}
 
 			total_dead += seg_dead;
 			count++;
 
-			seg = reader->header->next_segment;
 			tp_segment_close(reader);
 		}
 	}
@@ -476,6 +534,10 @@ tp_vacuum_identify_affected(
  *
  * Returns the new segment's root block, or InvalidBlockNumber if
  * all docs were dead (segment should be removed from chain).
+ *
+ * *old_total_len only accounts for dead docs when
+ * measure_dead_tokens is set; otherwise they are skipped without
+ * being fetched.
  */
 static BlockNumber
 tp_vacuum_rebuild_segment(
@@ -485,6 +547,8 @@ tp_vacuum_rebuild_segment(
 		uint32 level			pg_attribute_unused(),
 		IndexBulkDeleteCallback callback,
 		void				   *callback_state,
+		bool					measure_dead_tokens,
+		uint64				   *old_total_len,
 		uint64				   *new_total_docs,
 		uint64				   *new_total_len)
 {
@@ -501,6 +565,7 @@ tp_vacuum_rebuild_segment(
 	MemoryContext	 per_doc_ctx;
 	MemoryContext	 old_ctx;
 	uint64			 docs_added = 0;
+	uint64			 old_len	= 0;
 	uint64			 len_added	= 0;
 
 	/* Get text config from metapage */
@@ -517,6 +582,8 @@ tp_vacuum_rebuild_segment(
 	{
 		if (reader)
 			tp_segment_close(reader);
+		if (old_total_len)
+			*old_total_len = 0;
 		*new_total_docs = 0;
 		if (new_total_len)
 			*new_total_len = 0;
@@ -555,13 +622,20 @@ tp_vacuum_rebuild_segment(
 		int32		   *frequencies;
 		int				term_count;
 		int				doc_length;
+		bool			is_dead;
 
 		tp_segment_lookup_ctid(reader, i, &ctid);
 		if (!ItemPointerIsValid(&ctid))
 			continue;
 
-		/* Skip dead CTIDs */
-		if (callback(&ctid, callback_state))
+		is_dead = callback(&ctid, callback_state);
+
+		/*
+		 * A dead doc contributes nothing to the replacement segment, so
+		 * fetching and tokenizing it is only worthwhile when the caller
+		 * needs *old_total_len to split an unknowable legacy aggregate.
+		 */
+		if (is_dead && !measure_dead_tokens)
 			continue;
 
 		/* Fetch heap tuple */
@@ -611,7 +685,8 @@ tp_vacuum_rebuild_segment(
 
 		MemoryContextSwitchTo(old_ctx);
 
-		if (term_count > 0)
+		old_len += doc_length;
+		if (!is_dead)
 		{
 			tp_build_context_add_document(
 					build_ctx,
@@ -643,6 +718,8 @@ tp_vacuum_rebuild_segment(
 	tp_build_context_destroy(build_ctx);
 	MemoryContextDelete(per_doc_ctx);
 
+	if (old_total_len)
+		*old_total_len = old_len;
 	*new_total_docs = docs_added;
 	if (new_total_len)
 		*new_total_len = len_added;
@@ -650,170 +727,45 @@ tp_vacuum_rebuild_segment(
 }
 
 /*
- * Replace or remove a segment in a level's chain.
- *
- * If new_root is valid, replaces old_root with new_root in the
- * chain. If new_root is InvalidBlockNumber, removes old_root from
- * the chain entirely.
- *
- * Updates the metapage level_heads/level_counts as needed.
- *
- * Parks old segment pages in the deferred-free tombstone chain so they are
- * not recycled until a later VACUUM observes that the replacement horizon is
- * past every active snapshot.
+ * Hand one rebuilt legacy source to the shared prepared-publication engine.
+ * The compaction layer owns output linking, page collection, tombstones,
+ * prefix validation, and publication.
  */
 static void
 tp_vacuum_replace_segment(
-		Relation	index,
-		uint32		level,
-		BlockNumber old_root,
-		BlockNumber new_root,
-		BlockNumber prev_root)
+		TpLocalIndexState *index_state,
+		Relation		   index,
+		uint32			   level,
+		BlockNumber		   old_root,
+		BlockNumber		   new_root,
+		uint64			   docs_shrinkage,
+		uint64			   tokens_shrinkage,
+		uint64			   tokens_growth,
+		bool			   parallel_context)
 {
-	Buffer			  metabuf;
-	BlockNumber		 *old_pages;
-	uint32			  old_page_count;
-	BlockNumber		  old_next;
-	FullTransactionId vacuum_fxid;
-	BlockNumber		  batch_head = InvalidBlockNumber;
+	TpSegmentReplacementReclaimMode reclaim_mode =
+			parallel_context ? TP_SEGMENT_REPLACEMENT_RECLAIM_NEXT_XID
+							 : TP_SEGMENT_REPLACEMENT_RECLAIM_CURRENT_XID;
 
-	/*
-	 * Read old segment's next_segment pointer before we free it.
-	 * We need this to fix up chain pointers.
-	 */
-	{
-		TpSegmentReader *old_reader;
-
-		old_reader = tp_segment_open(index, old_root);
-		old_next   = old_reader->header->next_segment;
-		tp_segment_close(old_reader);
-	}
-
-	/* Collect old segment pages for deferred reclaim. */
-	old_page_count = tp_segment_collect_pages(index, old_root, &old_pages);
-	vacuum_fxid	   = ReadNextFullTransactionId();
-	if (old_pages && old_page_count > 0)
-	{
-		/*
-		 * VACUUM holds only LW_SHARED here, so tombstone pages must not
-		 * allocate from the FSM and race concurrent inserts.
-		 */
-		batch_head = tp_tombstone_enqueue_extend(
-				index,
-				old_pages,
-				old_page_count,
-				vacuum_fxid,
-				tp_tombstone_read_head(index));
-	}
-
-	/*
-	 * Update chain pointers atomically via GenericXLog.
-	 * Up to 3 buffers: metapage, new segment, prev segment.
-	 */
-	{
-		GenericXLogState *xlog_state;
-		Page			  meta_copy;
-		TpIndexMetaPage	  meta_ptr;
-		Buffer			  new_buf  = InvalidBuffer;
-		Buffer			  prev_buf = InvalidBuffer;
-
-		metabuf = ReadBuffer(index, TP_METAPAGE_BLKNO);
-		LockBuffer(metabuf, BUFFER_LOCK_EXCLUSIVE);
-
-		xlog_state = GenericXLogStart(index);
-		meta_copy  = GenericXLogRegisterBuffer(xlog_state, metabuf, 0);
-		/* Upgrade legacy metapage before writing pending_free_head. */
-		tp_metapage_upgrade_to_current(index, meta_copy);
-		meta_ptr = (TpIndexMetaPage)PageGetContents(meta_copy);
-
-		/* Set new segment's next_segment and level */
-		if (new_root != InvalidBlockNumber)
-		{
-			Page			 new_page;
-			TpSegmentHeader *new_header;
-
-			new_buf = ReadBuffer(index, new_root);
-			LockBuffer(new_buf, BUFFER_LOCK_EXCLUSIVE);
-			new_page = GenericXLogRegisterBuffer(xlog_state, new_buf, 0);
-			/* Ensure pd_lower covers content for GenericXLog */
-			((PageHeader)new_page)->pd_lower = BLCKSZ;
-			new_header = (TpSegmentHeader *)PageGetContents(new_page);
-			new_header->next_segment = old_next;
-			new_header->level		 = level;
-		}
-
-		if (prev_root == InvalidBlockNumber)
-		{
-			/* old_root was the head of this level */
-			if (new_root != InvalidBlockNumber)
-				meta_ptr->level_heads[level] = new_root;
-			else
-			{
-				meta_ptr->level_heads[level] = old_next;
-				meta_ptr->level_counts[level]--;
-			}
-		}
-		else
-		{
-			/* Update prev's next_segment pointer. */
-			Page		prev_page;
-			char	   *prev_content;
-			uint32		prev_version;
-			BlockNumber new_next;
-
-			prev_buf = ReadBuffer(index, prev_root);
-			LockBuffer(prev_buf, BUFFER_LOCK_EXCLUSIVE);
-			prev_page = GenericXLogRegisterBuffer(xlog_state, prev_buf, 0);
-			/* Ensure pd_lower covers content for GenericXLog */
-			((PageHeader)prev_page)->pd_lower = BLCKSZ;
-
-			new_next = (new_root != InvalidBlockNumber) ? new_root : old_next;
-
-			/*
-			 * The previous segment may still be on an older on-disk
-			 * format.  V3 uses uint32 offsets and places next_segment
-			 * at byte 28; V4/V5 use uint64 offsets with 4 bytes of
-			 * padding before data_size, placing next_segment at byte
-			 * 36.  Write at the offset matching the on-disk version
-			 * so we don't clobber adjacent fields.  magic/version
-			 * live at the same bytes in every version, so reading
-			 * version via the V5 struct is safe.
-			 */
-			prev_content = PageGetContents(prev_page);
-			prev_version = ((TpSegmentHeader *)prev_content)->version;
-			if (prev_version <= TP_SEGMENT_FORMAT_VERSION_3)
-				((TpSegmentHeaderV3 *)prev_content)->next_segment = new_next;
-			else
-				((TpSegmentHeader *)prev_content)->next_segment = new_next;
-
-			if (new_root == InvalidBlockNumber)
-				meta_ptr->level_counts[level]--;
-		}
-
-		if (batch_head != InvalidBlockNumber)
-			meta_ptr->pending_free_head = batch_head;
-
-		GenericXLogFinish(xlog_state);
-		if (BufferIsValid(prev_buf))
-			UnlockReleaseBuffer(prev_buf);
-		if (BufferIsValid(new_buf))
-			UnlockReleaseBuffer(new_buf);
-		UnlockReleaseBuffer(metabuf);
-	}
-
-	/* Old pages are parked in the tombstone chain and drained later. */
-	if (old_pages)
-		pfree(old_pages);
+	tp_publish_prepared_segment_replacement(
+			index_state,
+			index,
+			level,
+			old_root,
+			new_root,
+			docs_shrinkage,
+			tokens_shrinkage,
+			tokens_growth,
+			reclaim_mode);
 }
 
 /*
  * Apply dead doc marks to a V5 segment's alive bitset.
  *
- * Loads the bitset, marks dead docs, writes back via
- * GenericXLog.  Returns the new alive_count, or 0 if all
- * docs are dead (caller should drop the segment).
+ * Loads the bitset, marks dead docs, and writes it back via GenericXLog.
+ * Empty segments stay published until serial cleanup compacts their prefix.
  */
-static uint32
+static void
 tp_vacuum_mark_dead(
 		Relation	index,
 		BlockNumber root_block,
@@ -822,35 +774,29 @@ tp_vacuum_mark_dead(
 {
 	TpSegmentReader *reader;
 	TpAliveBitset	*bitset;
-	uint32			 alive;
 
 	reader = tp_segment_open_ex(index, root_block, false);
 	if (!reader || !reader->header)
 	{
 		if (reader)
 			tp_segment_close(reader);
-		return 0;
+		return;
 	}
 
 	bitset = tp_alive_bitset_load(reader);
 	if (!bitset)
 	{
 		tp_segment_close(reader);
-		return 0;
+		return;
 	}
 
 	for (uint32 i = 0; i < dead_count; i++)
 		tp_alive_bitset_mark_dead(bitset, dead_doc_ids[i]);
 
-	alive = bitset->alive_count;
-
-	if (alive > 0)
-		tp_alive_bitset_write(bitset, reader, index);
+	tp_alive_bitset_write(bitset, reader, index);
 
 	tp_alive_bitset_free(bitset);
 	tp_segment_close(reader);
-
-	return alive;
 }
 
 /*
@@ -864,21 +810,45 @@ tp_vacuum_mark_dead(
  *
  * Also called during CREATE INDEX CONCURRENTLY validation with a
  * callback that returns false for all CTIDs (just collecting TIDs).
- * That path is a no-op: no dead CTIDs means no segments are marked
- * affected, so we skip directly to returning stats.
+ * That path is normally a no-op; inconsistent legacy statistics still
+ * trigger the same full legacy rebase used by VACUUM.
  */
-IndexBulkDeleteResult *
-tp_bulkdelete(
+static bool
+tp_vacuum_no_dead_callback(ItemPointer itemptr, void *state)
+{
+	(void)itemptr;
+	(void)state;
+	return false;
+}
+
+static IndexBulkDeleteResult *
+tp_bulkdelete_internal(
 		IndexVacuumInfo		   *info,
 		IndexBulkDeleteResult  *stats,
 		IndexBulkDeleteCallback callback,
-		void				   *callback_state)
+		void				   *callback_state,
+		bool					spill_memtable,
+		bool					scan_ctids)
 {
-	TpIndexMetaPage		 metap;
-	TpLocalIndexState	*index_state;
-	TpVacuumSegmentInfo *segments;
-	int					 num_segments;
-	int64				 total_dead;
+	TpIndexMetaPage			metap;
+	TpSegmentGraphSnapshot *segment_snapshot;
+	TpLocalIndexState	   *index_state;
+	TpVacuumSegmentInfo	   *segments;
+	int						num_segments;
+	int64					total_dead;
+	uint64					current_segment_tokens;
+	uint64					header_total_tokens;
+	uint64					legacy_source_tokens_remaining;
+	uint64					snapshot_total_len;
+	uint32					legacy_segment_count;
+	uint32					legacy_segments_remaining;
+	volatile bool			index_lock_held = false;
+	bool parallel_context = IsInParallelMode() || IsParallelWorker();
+	bool header_totals_match_metap;
+	bool rebuild_all_legacy		 = false;
+	bool current_tokens_overflow = false;
+	bool needs_empty_cleanup	 = false;
+	bool memtable_spilled		 = false;
 
 	if (stats == NULL)
 		stats = (IndexBulkDeleteResult *)palloc0(
@@ -909,215 +879,303 @@ tp_bulkdelete(
 	}
 
 	/*
-	 * Phase 1: Spill memtable so all data is in segments.  Pass
-	 * min_postings=1 to preserve existing "spill anything non-empty"
-	 * behavior for the bulkdelete path.
+	 * Phase 1: Normal bulk deletion spills the memtable so all data is in
+	 * segments.  Phase 2 identifies dead documents from published segments
+	 * alone, so the chain must be empty on return -- a spill that cannot
+	 * run reports the level-0 capacity limit rather than stranding dead
+	 * records.  Cleanup-only validation leaves a small memtable in place;
+	 * segment statistics exclude it and can be checked independently.
 	 */
 	index_state = tp_get_local_index_state(RelationGetRelid(info->index));
-	if (index_state != NULL)
-		tp_spill_memtable_if_needed(info->index, index_state, 1);
-
+	if (index_state == NULL)
+		ereport(ERROR,
+				(errcode(ERRCODE_INTERNAL_ERROR),
+				 errmsg("could not get index state for \"%s\"",
+						RelationGetRelationName(info->index))));
 	/*
-	 * Hold the per-index LWLock in shared mode across Phase 2 (identify)
-	 * and Phase 3 (mark / replace).  A concurrent spill / merge /
-	 * compaction takes LW_EXCLUSIVE to mutate level_heads and free
-	 * segment pages via the FSM, so without this lock a segment we
-	 * identify in Phase 2 can be shrunk or have its blocks recycled
-	 * before Phase 3 reopens it by block number -- yielding an
-	 * "invalid segment header" error or, when a shrunk segment still
-	 * passes the header magic check, an out-of-bounds alive-bitset
-	 * write from a now-stale doc_id (tp_alive_bitset_mark_dead).  See
-	 * tp_vacuumcleanup, which holds the same lock for the same reason.
+	 * Serialize source-derived maintenance before taking the per-index
+	 * lock.  Compaction releases its LW_SHARED selection lock while it
+	 * derives replacement output, so this heavyweight lock is what keeps
+	 * VACUUM from changing selected alive bits or replacing a source until
+	 * compaction publishes.
 	 *
-	 * Acquire after Phase 1's spill (which takes LW_EXCLUSIVE itself) to
-	 * avoid a shared->exclusive upgrade, and before re-reading the
-	 * metapage so the level_heads snapshot we walk stays stable.  Inserts
-	 * and scans also hold this lock LW_SHARED, so they neither block nor
-	 * are blocked by this walk; only the exclusive spill/merge/compaction
-	 * recyclers are excluded.  VACUUM's own Phase-3 replacement/drop path
-	 * parks displaced segment pages in the tombstone chain instead of
-	 * returning them to the FSM here, so concurrent LW_SHARED scans cannot
-	 * see those pages recycled out from under a metapage snapshot.
+	 * Acquire before Phase 1's required spill.  That spill must succeed,
+	 * and at a full level 0 it can only do so by compacting first.  The
+	 * make-room path uses conditional admission, so entering it without
+	 * maintenance would turn a busy maintenance lock into a spurious
+	 * level-0 capacity error instead of the wait VACUUM is entitled to.
+	 * Holding it here makes that conditional acquisition our own and
+	 * lets the compaction proceed.  LW_SHARED is held only while copying
+	 * the published graph; the maintenance lock keeps those source
+	 * segments immutable during the callback walk, bitmap updates,
+	 * legacy rebuilds, and page collection, while concurrent spills may
+	 * safely prepend an L0 prefix.
 	 */
-	if (index_state != NULL)
+	tp_compaction_lock(info->index);
+	PG_TRY();
+	{
+		if (spill_memtable)
+			memtable_spilled = tp_spill_memtable_if_needed_deferred(
+					info->index, index_state, 1);
+
 		tp_acquire_index_lock(index_state, LW_SHARED);
+		index_lock_held = true;
 
-	/* Re-read metapage after spill (now under the shared lock) */
-	pfree(metap);
-	metap = tp_get_metapage(info->index);
-	if (!metap)
-	{
-		stats->num_pages		= 1;
-		stats->num_index_tuples = 0;
-		stats->tuples_removed	= 0;
-		if (index_state != NULL)
-			tp_release_index_lock(index_state);
-		return stats;
-	}
-
-	/* Phase 2: Identify affected segments */
-	segments = tp_vacuum_identify_affected(
-			info->index,
-			metap,
-			callback,
-			callback_state,
-			&num_segments,
-			&total_dead);
-
-	if (total_dead == 0)
-	{
-		/* No dead tuples -- nothing to rebuild */
-		stats->num_pages		= 1;
-		stats->num_index_tuples = (double)metap->total_docs;
-		stats->tuples_removed	= 0;
-		stats->pages_deleted	= 0;
+		/* Snapshot the published roots after spill and maintenance admission.
+		 */
 		pfree(metap);
-		pfree(segments);
-		if (index_state != NULL)
-			tp_release_index_lock(index_state);
-		return stats;
-	}
+		segment_snapshot = tp_segment_graph_snapshot_create(info->index);
+		metap			 = &segment_snapshot->metapage;
+		tp_release_index_lock(index_state);
+		index_lock_held = false;
 
-	elog(DEBUG1,
-		 "Tapir VACUUM: %lld dead tuples across %d segments",
-		 (long long)total_dead,
-		 num_segments);
-
-	/*
-	 * Phase 3: Mark dead docs or rebuild affected segments.  Track
-	 * segment-header shrinkage so we can restore the invariant
-	 * total_docs = Σ segment.num_docs (see metapage.h).  V5 bitset
-	 * flips that leave survivors do not change the segment header's
-	 * num_docs / total_tokens, so they contribute zero shrinkage.
-	 */
-	{
-		uint64 docs_shrinkage	= 0;
-		uint64 tokens_shrinkage = 0;
-
-		for (int level = 0; level < TP_MAX_LEVELS; level++)
+		/* Phase 2: Identify affected segments. */
+		segments = tp_vacuum_identify_affected(
+				info->index,
+				segment_snapshot,
+				callback,
+				callback_state,
+				scan_ctids,
+				&num_segments,
+				&total_dead);
+		header_total_tokens	   = 0;
+		current_segment_tokens = 0;
+		legacy_segment_count   = 0;
+		snapshot_total_len = tp_injected_vacuum_total_len(metap->total_len);
+		header_totals_match_metap = true;
+		for (int i = 0; i < num_segments; i++)
 		{
-			BlockNumber prev = InvalidBlockNumber;
+			if (pg_add_u64_overflow(
+						header_total_tokens,
+						segments[i].total_tokens,
+						&header_total_tokens))
+				header_totals_match_metap = false;
+			if (segments[i].is_v5)
+			{
+				if (pg_add_u64_overflow(
+							current_segment_tokens,
+							segments[i].total_tokens,
+							&current_segment_tokens))
+				{
+					header_totals_match_metap = false;
+					current_tokens_overflow	  = true;
+				}
+			}
+			else
+				legacy_segment_count++;
+		}
+		if (header_total_tokens != metap->total_len)
+			header_totals_match_metap = false;
+		if (current_tokens_overflow)
+			ereport(ERROR,
+					(errcode(ERRCODE_DATA_CORRUPTED),
+					 errmsg("current segment token statistics overflow"),
+					 errhint("Run REINDEX INDEX %s to rebuild the index.",
+							 tp_vacuum_reindex_hint_name(info->index))));
+		if (snapshot_total_len < current_segment_tokens ||
+			(legacy_segment_count == 0 && !header_totals_match_metap))
+			ereport(ERROR,
+					(errcode(ERRCODE_DATA_CORRUPTED),
+					 errmsg("index token statistics are inconsistent"),
+					 errhint("Run REINDEX INDEX %s to rebuild the index.",
+							 tp_vacuum_reindex_hint_name(info->index))));
 
+		legacy_source_tokens_remaining = 0;
+		legacy_segments_remaining	   = 0;
+		if (!header_totals_match_metap && legacy_segment_count > 0)
+		{
 			for (int i = 0; i < num_segments; i++)
 			{
-				if ((int)segments[i].level != level)
+				uint64 measured_tokens;
+
+				if (!segments[i].is_v5)
 					continue;
 
-				if (segments[i].affected)
-				{
-					if (segments[i].is_v5)
-					{
-						/*
-						 * V5 segment: flip bits in alive
-						 * bitset.
-						 */
-						uint32 alive = tp_vacuum_mark_dead(
-								info->index,
-								segments[i].root_block,
-								segments[i].dead_doc_ids,
-								segments[i].dead_count);
+				measured_tokens = tp_vacuum_measure_current_segment_tokens(
+						info->index, segments[i].root_block);
+				if (measured_tokens != segments[i].total_tokens)
+					ereport(ERROR,
+							(errcode(ERRCODE_DATA_CORRUPTED),
+							 errmsg("current segment token statistics are "
+									"inconsistent"),
+							 errhint("Run REINDEX INDEX %s to rebuild the "
+									 "index.",
+									 tp_vacuum_reindex_hint_name(
+											 info->index))));
+			}
 
-						if (alive == 0)
-						{
-							/*
-							 * All docs dead -- drop segment.
-							 */
-							tp_vacuum_replace_segment(
-									info->index,
-									level,
-									segments[i].root_block,
-									InvalidBlockNumber,
-									prev);
-							docs_shrinkage += segments[i].num_docs;
-							tokens_shrinkage += segments[i].total_tokens;
-							/* prev stays the same */
-						}
+			/*
+			 * Individual legacy contributions are unknowable once their
+			 * aggregate disagrees with the metapage.  Rebuild every legacy
+			 * source and distribute the known aggregate contribution across
+			 * their replacements so the final total is exact.
+			 */
+			rebuild_all_legacy			   = true;
+			legacy_source_tokens_remaining = snapshot_total_len -
+											 current_segment_tokens;
+			legacy_segments_remaining = legacy_segment_count;
+			for (int i = 0; i < num_segments; i++)
+			{
+				if (!segments[i].is_v5)
+					segments[i].affected = true;
+			}
+		}
+
+		for (int i = 0; i < num_segments; i++)
+		{
+			if (segments[i].already_empty)
+			{
+				needs_empty_cleanup = true;
+				break;
+			}
+		}
+
+		if (total_dead == 0 && !needs_empty_cleanup && !rebuild_all_legacy)
+		{
+			stats->num_pages		= 1;
+			stats->num_index_tuples = (double)metap->total_docs;
+			stats->tuples_removed	= 0;
+			stats->pages_deleted	= 0;
+			pfree(segments);
+			tp_segment_graph_snapshot_free(segment_snapshot);
+			goto bulkdelete_done;
+		}
+
+		tp_segment_graph_snapshot_free(segment_snapshot);
+
+		/*
+		 * Phase 3: mark dead docs or rebuild selected legacy segments.
+		 * V5 mutations need only their segment-buffer locks.  Legacy
+		 * replacements prepare their output and page list unlocked, then
+		 * validate and publish in a brief exclusive section.
+		 */
+		for (int level = 0; level < TP_MAX_LEVELS; level++)
+		{
+			for (int i = 0; i < num_segments; i++)
+			{
+				if ((int)segments[i].level != level || !segments[i].affected)
+					continue;
+
+				if (segments[i].is_v5)
+				{
+					/*
+					 * Persist an all-zero bitmap in both serial and
+					 * parallel VACUUM.  Serial amvacuumcleanup removes
+					 * one empty-bearing prefix through the normal
+					 * prepared compaction publication path.
+					 */
+					(void)tp_vacuum_mark_dead(
+							info->index,
+							segments[i].root_block,
+							segments[i].dead_doc_ids,
+							segments[i].dead_count);
+				}
+				else
+				{
+					BlockNumber new_root;
+					uint64		old_tokens = 0;
+					uint64		source_tokens;
+					uint64		new_docs		 = 0;
+					uint64		new_tokens		 = 0;
+					uint64		docs_shrinkage	 = 0;
+					uint64		tokens_shrinkage = 0;
+					uint64		tokens_growth	 = 0;
+
+					new_root = tp_vacuum_rebuild_segment(
+							info->index,
+							info->heaprel,
+							segments[i].root_block,
+							level,
+							callback,
+							callback_state,
+							rebuild_all_legacy,
+							&old_tokens,
+							&new_docs,
+							&new_tokens);
+
+					if (segments[i].num_docs > new_docs)
+						docs_shrinkage = segments[i].num_docs - new_docs;
+					if (rebuild_all_legacy)
+					{
+						Assert(legacy_segments_remaining > 0);
+						if (legacy_segments_remaining == 1)
+							source_tokens = legacy_source_tokens_remaining;
 						else
-						{
-							prev = segments[i].root_block;
-						}
+							source_tokens =
+									Min(old_tokens,
+										legacy_source_tokens_remaining);
+						legacy_source_tokens_remaining -= source_tokens;
+						legacy_segments_remaining--;
 					}
 					else
 					{
 						/*
-						 * Pre-V5 segment: rebuild into V5.
+						 * Inconsistent header totals either trigger the
+						 * legacy rebase above or raise before reaching
+						 * here, so the header total is authoritative.
 						 */
-						BlockNumber new_root;
-						uint64		new_docs   = 0;
-						uint64		new_tokens = 0;
-
-						new_root = tp_vacuum_rebuild_segment(
-								info->index,
-								info->heaprel,
-								segments[i].root_block,
-								level,
-								callback,
-								callback_state,
-								&new_docs,
-								&new_tokens);
-
-						tp_vacuum_replace_segment(
-								info->index,
-								level,
-								segments[i].root_block,
-								new_root,
-								prev);
-
-						/*
-						 * Clamp to zero: new_tokens is a raw
-						 * re-tokenization sum, while
-						 * segments[i].total_tokens comes from a
-						 * pre-V5 header that may have been written
-						 * with a quantized (merge) or cumulative
-						 * (pre-fix L0 spill) value.  Underflow here
-						 * would wrap into a huge positive shrinkage
-						 * before the tp_apply_vacuum_shrinkage clamp
-						 * sees it.  num_docs has no comparable
-						 * corruption path, but clamping both keeps
-						 * the code symmetric.
-						 */
-						if (segments[i].num_docs > new_docs)
-							docs_shrinkage += segments[i].num_docs - new_docs;
-						if (segments[i].total_tokens > new_tokens)
-							tokens_shrinkage += segments[i].total_tokens -
-												new_tokens;
-
-						if (new_root != InvalidBlockNumber)
-							prev = new_root;
+						Assert(header_totals_match_metap);
+						source_tokens = segments[i].total_tokens;
 					}
-				}
-				else
-				{
-					prev = segments[i].root_block;
+					if (source_tokens > new_tokens)
+						tokens_shrinkage = source_tokens - new_tokens;
+					else
+						tokens_growth = new_tokens - source_tokens;
+
+					tp_vacuum_replace_segment(
+							index_state,
+							info->index,
+							level,
+							segments[i].root_block,
+							new_root,
+							docs_shrinkage,
+							tokens_shrinkage,
+							tokens_growth,
+							parallel_context);
 				}
 			}
 		}
+		Assert(legacy_segments_remaining == 0);
+		Assert(legacy_source_tokens_remaining == 0);
 
-		tp_apply_vacuum_shrinkage(
-				info->index, docs_shrinkage, tokens_shrinkage);
+		/*
+		 * tp_vacuumcleanup will set num_index_tuples to the actual live
+		 * count; only tuples_removed needs to carry through from here.
+		 */
+		stats->num_pages	  = 1;
+		stats->tuples_removed = (double)total_dead;
+		stats->pages_deleted  = 0;
+
+		for (int i = 0; i < num_segments; i++)
+		{
+			if (segments[i].dead_doc_ids)
+				pfree(segments[i].dead_doc_ids);
+		}
+		pfree(segments);
+
+	bulkdelete_done:;
 	}
-
-	/* Identify + mark complete; drop the shared lock. */
-	if (index_state != NULL)
-		tp_release_index_lock(index_state);
-
-	/*
-	 * tp_vacuumcleanup will set num_index_tuples to the actual live
-	 * count; only tuples_removed needs to carry through from here.
-	 */
-	stats->num_pages	  = 1;
-	stats->tuples_removed = (double)total_dead;
-	stats->pages_deleted  = 0;
-
-	pfree(metap);
-	for (int i = 0; i < num_segments; i++)
+	PG_FINALLY();
 	{
-		if (segments[i].dead_doc_ids)
-			pfree(segments[i].dead_doc_ids);
+		if (index_lock_held)
+			tp_release_index_lock(index_state);
+		tp_compaction_unlock(info->index);
 	}
-	pfree(segments);
+	PG_END_TRY();
 
+	tp_apply_compaction_policy(index_state, info->index, memtable_spilled);
 	return stats;
+}
+
+IndexBulkDeleteResult *
+tp_bulkdelete(
+		IndexVacuumInfo		   *info,
+		IndexBulkDeleteResult  *stats,
+		IndexBulkDeleteCallback callback,
+		void				   *callback_state)
+{
+	return tp_bulkdelete_internal(
+			info, stats, callback, callback_state, true, true);
 }
 
 /*
@@ -1126,14 +1184,16 @@ tp_bulkdelete(
 IndexBulkDeleteResult *
 tp_vacuumcleanup(IndexVacuumInfo *info, IndexBulkDeleteResult *stats)
 {
-	TpIndexMetaPage	   metap;
-	TpLocalIndexState *index_state;
-	int				   freed_pages;
+	TpSegmentGraphSnapshot *segment_snapshot;
+	TpLocalIndexState	   *index_state;
+	int						freed_pages;
+	volatile bool			maintenance_locked = false;
+	volatile bool			index_lock_held	   = false;
 
 	/* Initialize stats if not provided */
 	if (stats == NULL)
-		stats = (IndexBulkDeleteResult *)palloc0(
-				sizeof(IndexBulkDeleteResult));
+		stats = tp_bulkdelete_internal(
+				info, NULL, tp_vacuum_no_dead_callback, NULL, false, false);
 
 	/*
 	 * Spill the memtable so the on-disk memtable chain doesn't
@@ -1145,27 +1205,33 @@ tp_vacuumcleanup(IndexVacuumInfo *info, IndexBulkDeleteResult *stats)
 	 * runt L0 segment away.
 	 */
 	index_state = tp_get_local_index_state(RelationGetRelid(info->index));
-	if (index_state != NULL)
-		tp_spill_memtable_if_needed(
-				info->index, index_state, TP_MIN_SPILL_PAGES);
+	if (index_state == NULL)
+		ereport(ERROR,
+				(errcode(ERRCODE_INTERNAL_ERROR),
+				 errmsg("could not get index state for \"%s\"",
+						RelationGetRelationName(info->index))));
+	tp_spill_memtable_if_needed(info->index, index_state, TP_MIN_SPILL_PAGES);
 
 	/*
-	 * Acquire the per-index LWLock in shared mode *before* reading the
-	 * metapage so the level_heads snapshot we walk in tp_count_live_docs
-	 * stays valid: concurrent spills / compactions take LW_EXCLUSIVE to
-	 * mutate level_heads and free segment pages via the FSM, so a snapshot
-	 * read outside the lock could leave us opening a block a merge has
-	 * already recycled ("invalid segment header").  Acquire after the
-	 * spill above (which takes LW_EXCLUSIVE itself) to avoid a
-	 * shared->exclusive upgrade.
+	 * Maintenance stabilizes segment payloads while cleanup removes at most
+	 * one empty-bearing prefix and counts live documents.  Parallel VACUUM
+	 * cannot assign the reclaim XID needed by physical cleanup, so it leaves
+	 * zeroed segments for a later serial pass.
 	 */
-	if (index_state != NULL)
-		tp_acquire_index_lock(index_state, LW_SHARED);
-
-	/* Get current index statistics from metapage (under the shared lock) */
-	metap = tp_get_metapage(info->index);
-	if (metap)
+	tp_compaction_lock(info->index);
+	maintenance_locked = true;
+	PG_TRY();
 	{
+		if (!IsInParallelMode() && !IsParallelWorker())
+			(void)tp_compact_empty_step(index_state, info->index);
+
+		tp_acquire_index_lock(index_state, LW_SHARED);
+		index_lock_held = true;
+
+		segment_snapshot = tp_segment_graph_snapshot_create(info->index);
+		tp_release_index_lock(index_state);
+		index_lock_held = false;
+
 		stats->num_pages = 1;
 		/*
 		 * reltuples tracks live docs, which can be less than
@@ -1175,29 +1241,26 @@ tp_vacuumcleanup(IndexVacuumInfo *info, IndexBulkDeleteResult *stats)
 		 * regardless of whether tp_bulkdelete ran or this is a
 		 * no-deletes maintenance round.
 		 *
-		 * The per-index LWLock acquired above is held across the walk
-		 * so concurrent spills / compactions can't recycle a page we're
-		 * about to tp_segment_open.
+		 * The maintenance lock keeps compaction and another VACUUM from
+		 * replacing snapshot sources.  A concurrent spill may prepend L0
+		 * but cannot invalidate the copied roots, so the per-index lock is
+		 * not held across this walk.
 		 */
 		stats->num_index_tuples = (double)
-				tp_count_live_docs(info->index, metap);
-		if (index_state != NULL)
-			tp_release_index_lock(index_state);
+				tp_count_live_docs(info->index, segment_snapshot);
+		tp_segment_graph_snapshot_free(segment_snapshot);
 
 		/*
 		 * Return DEAD memtable orphan blocks to the index FSM once
 		 * their dead_fxid is older than the global visibility horizon.
-		 * LW_SHARED is enough: only already-unlinked DEAD pages are
-		 * touched; live inserts/scans hold the same lock and mutate
-		 * the metapage chain, not these blocks.  Spill (LW_EXCLUSIVE)
-		 * waits until this scan finishes.
+		 * Maintenance remains held so force-merge truncation cannot race
+		 * the captured fork size or page inspection.  No per-index lock is
+		 * held: concurrent inserts and spill publication remain available.
 		 */
-		if (index_state != NULL)
-			tp_acquire_index_lock(index_state, LW_SHARED);
 		freed_pages =
 				tp_reclaim_dead_memtable_pages(info->index, info->heaprel);
-		if (index_state != NULL)
-			tp_release_index_lock(index_state);
+		tp_compaction_unlock(info->index);
+		maintenance_locked = false;
 
 		if (stats->pages_deleted == 0 && stats->tuples_removed == 0 &&
 			freed_pages == 0)
@@ -1216,9 +1279,8 @@ tp_vacuumcleanup(IndexVacuumInfo *info, IndexBulkDeleteResult *stats)
 		 * next_page links), so it must run under LW_EXCLUSIVE, not
 		 * LW_SHARED.  tp_tombstone_drain takes/releases the lock per
 		 * drained tombstone (own_lock=true) so concurrent reads never
-		 * wait more than a single unlink plus its page frees.
+		 * wait only for the unlink, not its subsequent page frees.
 		 */
-		if (index_state != NULL)
 		{
 			uint32 drained = tp_tombstone_drain(
 					info->index,
@@ -1232,25 +1294,15 @@ tp_vacuumcleanup(IndexVacuumInfo *info, IndexBulkDeleteResult *stats)
 				IndexFreeSpaceMapVacuum(info->index);
 			}
 		}
-
-		pfree(metap);
 	}
-	else
+	PG_FINALLY();
 	{
-		if (index_state != NULL)
+		if (index_lock_held)
 			tp_release_index_lock(index_state);
-
-		elog(WARNING,
-			 "Tapir vacuum cleanup: couldn't read metapage "
-			 "for index %s",
-			 RelationGetRelationName(info->index));
-
-		if (stats->num_pages == 0 && stats->num_index_tuples == 0)
-		{
-			stats->num_pages		= 1;
-			stats->num_index_tuples = 0;
-		}
+		if (maintenance_locked)
+			tp_compaction_unlock(info->index);
 	}
+	PG_END_TRY();
 
 	return stats;
 }
@@ -1260,14 +1312,25 @@ tp_vacuumcleanup(IndexVacuumInfo *info, IndexBulkDeleteResult *stats)
  * and recycle blocks whose dead_fxid is older than the visibility
  * horizon for `heaprel` (FullTransactionId compare).  Does not
  * WAL-log page bodies or clear DEAD flags; reuse overwrites via
- * tp_memtable_alloc_page.  Caller holds per-index LW_SHARED (or
- * stronger); excludes spill via LW_EXCLUSIVE incompatibility.
+ * tp_memtable_alloc_page.  Caller holds the per-index maintenance
+ * object lock to exclude compaction/force-merge truncation, but does
+ * not hold the per-index LWLock across this O(index-pages) scan.
  *
  * Crash-safety guard: we build a set of blocks reachable from the
  * current memtable chain and skip freeing any page in that set.
  * This prevents corruption if a crash between tp_spill_finalize and
  * tp_memtable_mark_chain_dead left pages stamped DEAD but still
  * reachable via metap.head.  See tp_collect_reachable_chain_blocks.
+ *
+ * A concurrent spill can make the reachable snapshot conservative:
+ * pages reachable before publication remain in the set and are
+ * retained for a later VACUUM.  Live and newly allocated pages are
+ * never DEAD, and each inspection is serialized by the page buffer
+ * lock.  If the snapshot observes the post-spill head, dead_fxid still
+ * prevents reuse while an older primary or feedback-protected standby
+ * snapshot can reference the retired chain.  Before each page is free
+ * stamped, stock conflict-only WAL cancels standby snapshots that outlived
+ * feedback or a replication disconnect.
  */
 int
 tp_reclaim_dead_memtable_pages(Relation indexrel, Relation heaprel)
@@ -1278,6 +1341,7 @@ tp_reclaim_dead_memtable_pages(Relation indexrel, Relation heaprel)
 	TransactionId	  oldest;
 	FullTransactionId oldest_fxid;
 	HTAB			 *reachable;
+	bool			  reclaim_paused = false;
 
 	oldest = GetOldestNonRemovableTransactionId(heaprel);
 	oldest_fxid =
@@ -1296,6 +1360,11 @@ tp_reclaim_dead_memtable_pages(Relation indexrel, Relation heaprel)
 		TpMemtablePageHeader *hdr;
 
 		CHECK_FOR_INTERRUPTS();
+		if (!reclaim_paused)
+		{
+			TP_INJECTION_POINT(TP_INJECTION_VACUUM_MEMTABLE_RECLAIM);
+			reclaim_paused = true;
+		}
 
 		buf = ReadBuffer(indexrel, blk);
 		LockBuffer(buf, BUFFER_LOCK_SHARE);
@@ -1316,6 +1385,8 @@ tp_reclaim_dead_memtable_pages(Relation indexrel, Relation heaprel)
 			hash_search(reachable, &blk, HASH_FIND, &found);
 			if (!found)
 			{
+				FullTransactionId dead_fxid = hdr->dead_fxid;
+
 				/*
 				 * Release the SHARE lock before returning the page to
 				 * the FSM: tp_record_free_index_page re-locks
@@ -1327,6 +1398,7 @@ tp_reclaim_dead_memtable_pages(Relation indexrel, Relation heaprel)
 				 * between the release and the stamp.
 				 */
 				UnlockReleaseBuffer(buf);
+				tp_log_page_reuse_conflict(indexrel, blk, dead_fxid);
 				tp_record_free_index_page(indexrel, blk);
 				reclaimed_pages++;
 				continue;

@@ -70,6 +70,20 @@ NOTICE:  BM25 index build started for relation chain_source_idx
 NOTICE:  Using text search configuration: english
 NOTICE:  Using index options: k1=1.20, b=0.75
 NOTICE:  BM25 index build completed: 0 documents, avg_length=0.00
+-- A non-NULL zero-length query-term list requests document
+-- metadata without materializing any term postings.
+\pset tuples_only on
+SELECT bm25_test_chain_source('chain_source_idx', 'documents_only');
+ OK
+
+\pset tuples_only off
+DROP INDEX chain_source_idx;
+CREATE INDEX chain_source_idx ON chain_source_t
+    USING bm25 (body) WITH (text_config = 'english');
+NOTICE:  BM25 index build started for relation chain_source_idx
+NOTICE:  Using text search configuration: english
+NOTICE:  Using index options: k1=1.20, b=0.75
+NOTICE:  BM25 index build completed: 0 documents, avg_length=0.00
 -- Records spill across multiple memtable pages: chain walk
 -- aggregates all docs into one term entry.
 SELECT bm25_test_chain_source('chain_source_idx', 'multi_page_chain');

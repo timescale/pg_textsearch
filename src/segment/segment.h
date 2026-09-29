@@ -88,17 +88,21 @@ typedef struct TpDocLength
 	uint32			reserved; /* 4 bytes padding */
 } TpDocLength;
 
-/* Look up doc_freq for a term from segments (for operator scoring) */
-extern uint32 tp_segment_get_doc_freq(
-		Relation index, BlockNumber first_segment, const char *term);
+/* Look up doc_freq for a term from explicit segment roots. */
+extern uint32 tp_segment_roots_get_doc_freq(
+		Relation		   index,
+		const BlockNumber *roots,
+		uint32			   root_count,
+		const char		  *term);
 
-/* Batch lookup doc_freq for multiple terms - opens each segment once */
-extern void tp_batch_get_segment_doc_freq(
-		Relation	index,
-		BlockNumber first_segment,
-		char	  **terms,
-		int			term_count,
-		uint32	   *doc_freqs);
+/* Batch lookup doc_freq for multiple terms - opens each root once. */
+extern void tp_batch_get_segment_roots_doc_freq(
+		Relation		   index,
+		const BlockNumber *roots,
+		uint32			   root_count,
+		char			 **terms,
+		int				   term_count,
+		uint32			  *doc_freqs);
 
 /*
  * Mark a segment buffer dirty and immediately emit a full-page WAL image when

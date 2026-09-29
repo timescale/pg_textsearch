@@ -97,6 +97,57 @@ psql -p 5433 -v data_dir="'$PWD/datasets/msmarco/data'" \
 psql -p 5433 -f datasets/msmarco/queries.sql
 ```
 
+### Run Concurrent Queries and Updates
+
+The mixed update/query benchmark reproduces a workload with continuous
+top-10 disjunction queries and one client targeting 1,000 indexed updates per
+second. It runs a read-only phase followed by an identical query phase with
+updates, records reader and writer throughput, and samples PostgreSQL wait
+events once per second.
+
+The defaults target the MS MARCO v2 schema and run each measured phase for ten
+minutes with 32 query clients:
+
+```bash
+PGPORT=5433 \
+./datasets/msmarco/mixed-update-query/run.sh
+```
+
+To run against the original 8.8 million-passage MS MARCO schema:
+
+```bash
+PGPORT=5433 \
+TABLE=msmarco_passages \
+INDEX=msmarco_bm25_idx \
+QUERY_TABLE=msmarco_queries \
+./datasets/msmarco/mixed-update-query/run.sh
+```
+
+Relation settings can be schema-qualified, for example
+`TABLE=benchmarks.msmarco_passages` and
+`INDEX=benchmarks.msmarco_bm25_idx`.
+
+Use shorter phases for a smoke run:
+
+```bash
+PGPORT=5433 DURATION=30 WARMUP=10 READ_CLIENTS=4 \
+UPDATE_TARGETS=1000 \
+./datasets/msmarco/mixed-update-query/run.sh
+```
+
+The writer toggles a trailing `pgtsupdate` token in the selected source rows,
+so run against a disposable database or restore the corpus after benchmarking.
+
+Results are written below
+`benchmarks/results/mixed-update-query/<timestamp>/`. `metadata.env` records
+the resolved non-secret connection and workload settings. `summary.tsv`
+contains read-only and mixed query QPS, average and p99 latency, completed
+updates, update TPS, and update latency. `waits.tsv` contains sampled reader
+and writer wait events, and `wait_summary.tsv` aggregates them. `warmup.log`,
+`read_only.out`, `mixed_reader.out`, and `mixed_writer.out` preserve pgbench
+output. The `read_only_pgbench.*`, `mixed_reader_pgbench.*`, and
+`mixed_writer_pgbench.*` files are per-transaction pgbench logs.
+
 ## Metrics Collected
 
 ### Index Build

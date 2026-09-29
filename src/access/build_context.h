@@ -64,12 +64,12 @@ typedef struct TpBuildContext
 	uint64 total_len; /* Sum of document lengths */
 
 	/* Budget for flush decisions */
-	Size budget; /* Max arena bytes before flush */
+	Size budget; /* Max tracked bytes before flush */
 } TpBuildContext;
 
 /*
  * Create a new build context.
- * budget: max arena bytes before caller should flush (0 = no limit).
+ * budget: max tracked bytes before caller should flush (0 = no limit).
  */
 extern TpBuildContext *tp_build_context_create(Size budget);
 
@@ -99,9 +99,18 @@ extern uint32 tp_build_context_add_document(
 static inline bool
 tp_build_context_should_flush(TpBuildContext *ctx)
 {
+	Size docs_usage;
+	Size total_usage;
+
 	if (ctx->budget == 0)
 		return false;
-	return tp_arena_mem_usage(ctx->arena) >= ctx->budget;
+
+	docs_usage = mul_size(
+			ctx->docs_capacity,
+			add_size(sizeof(*ctx->fieldnorms), sizeof(*ctx->ctids)));
+	total_usage = add_size(tp_arena_mem_usage(ctx->arena), docs_usage);
+
+	return total_usage >= ctx->budget;
 }
 
 /*

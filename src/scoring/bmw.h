@@ -16,6 +16,7 @@
 
 #include "index/source.h"
 #include "index/state.h"
+#include "segment/graph_snapshot.h"
 #include "segment/segment.h"
 
 /*
@@ -132,18 +133,19 @@ typedef struct TpBMWStats
  * Returns number of results (up to max_results).
  */
 extern int tp_score_single_term_bmw(
-		TpLocalIndexState *local_state,
-		Relation		   index,
-		TpDataSource	  *memtable_src,
-		const char		  *term,
-		float4			   idf,
-		float4			   k1,
-		float4			   b,
-		float4			   avg_doc_len,
-		int				   max_results,
-		ItemPointerData	  *result_ctids,
-		float4			  *result_scores,
-		TpBMWStats		  *stats);
+		TpLocalIndexState			 *local_state,
+		Relation					  index,
+		const TpSegmentGraphSnapshot *snapshot,
+		TpDataSource				 *memtable_src,
+		const char					 *term,
+		float4						  idf,
+		float4						  k1,
+		float4						  b,
+		float4						  avg_doc_len,
+		int							  max_results,
+		ItemPointerData				 *result_ctids,
+		float4						 *result_scores,
+		TpBMWStats					 *stats);
 
 /*
  * Score documents using multi-term Block-Max WAND.
@@ -158,20 +160,21 @@ extern int tp_score_single_term_bmw(
  * Returns number of results (up to max_results).
  */
 extern int tp_score_multi_term_bmw(
-		TpLocalIndexState *local_state,
-		Relation		   index,
-		TpDataSource	  *memtable_src,
-		char			 **terms,
-		int				   term_count,
-		int32			  *query_freqs,
-		float4			  *idfs,
-		float4			   k1,
-		float4			   b,
-		float4			   avg_doc_len,
-		int				   max_results,
-		ItemPointerData	  *result_ctids,
-		float4			  *result_scores,
-		TpBMWStats		  *stats);
+		TpLocalIndexState			 *local_state,
+		Relation					  index,
+		const TpSegmentGraphSnapshot *snapshot,
+		TpDataSource				 *memtable_src,
+		char						**terms,
+		int							  term_count,
+		int32						 *query_freqs,
+		float4						 *idfs,
+		float4						  k1,
+		float4						  b,
+		float4						  avg_doc_len,
+		int							  max_results,
+		ItemPointerData				 *result_ctids,
+		float4						 *result_scores,
+		TpBMWStats					 *stats);
 
 /*
  * Compute block maximum BM25 score from skip entry metadata.

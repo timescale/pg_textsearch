@@ -111,13 +111,32 @@ CREATE INDEX inh_parent_bm25 ON inh_parent USING bm25(content)
 CREATE INDEX inh_child_bm25 ON inh_child USING bm25(content)
     WITH (text_config='english');
 
--- Query via parent index — should fall back to child index
--- This exercises find_first_child_bm25_index in query.c
+-- Query via parent index — should fall back to child index.
+-- ORDER BY makes this an index scan, which resolves the parent in the
+-- planner, so it does not reach find_first_child_bm25_index.
 SELECT content,
        content <@> to_bm25query('fox', 'inh_parent_bm25') AS score
 FROM inh_parent
 ORDER BY content <@> to_bm25query('fox', 'inh_parent_bm25')
 LIMIT 3;
+
+-- Standalone scoring against the storage-less parent.  Deliberately no
+-- ORDER BY: that is what forces the standalone path (the documented
+-- exception for tests whose target *is* standalone scoring), which is
+-- the only caller of find_first_child_bm25_index.  Scoring every row
+-- exercises the parent -> first-child hop, which swaps the relation,
+-- the index state, the segment snapshot and the memtable source
+-- together; non-matching rows score 0.
+-- The plan assertion guards against this silently becoming an index
+-- scan, which is how the query above stopped covering this path.
+EXPLAIN (COSTS OFF)
+SELECT content, content <@> to_bm25query('fox', 'inh_parent_bm25')
+FROM inh_parent;
+
+SELECT content, round((content <@>
+           to_bm25query('fox', 'inh_parent_bm25'))::numeric, 4) AS score
+FROM inh_parent
+ORDER BY content;
 
 -- Cleanup
 DROP TABLE inh_child CASCADE;

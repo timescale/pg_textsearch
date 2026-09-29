@@ -17,6 +17,7 @@
 #include <utils/rel.h>
 
 #include "constants.h"
+#include "debug/injection.h"
 #include "index/metapage.h"
 
 /*
@@ -59,6 +60,7 @@ tp_init_metapage(Page page, Oid text_config_oid)
 	metap->memtable_head_blkno = InvalidBlockNumber;
 	metap->memtable_tail_blkno = InvalidBlockNumber;
 	metap->pending_free_head   = InvalidBlockNumber;
+	metap->capabilities		   = TP_METAPAGE_ALL_DOCUMENTS_INDEXED;
 
 	/* Update page header to reflect that we've used space for metapage */
 	phdr		   = (PageHeader)page;
@@ -75,52 +77,18 @@ tp_check_level_count_increment(TpIndexMetaPage metap, uint32 level)
 				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
 				 errmsg("invalid bm25 segment level %u", level)));
 
-	if (metap->level_counts[level] >= tp_max_segments_per_level)
+	if (metap->level_counts[level] >= tp_injected_segment_count_limit())
 		ereport(ERROR,
 				(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
 				 errmsg("bm25 segment count limit reached at level %u",
 						level)));
 }
 
-/*
- * Get Tapir index metapage
- */
-TpIndexMetaPage
-tp_get_metapage(Relation index)
+static void
+tp_validate_metapage_version(Relation index, TpIndexMetaPage metap)
 {
-	Buffer			buf;
-	Page			page;
-	TpIndexMetaPage metap;
-	TpIndexMetaPage result;
-
-	/* Validate input relation */
-	if (!RelationIsValid(index))
-		elog(ERROR, "invalid relation passed to tp_get_metapage");
-
-	buf = ReadBuffer(index, TP_METAPAGE_BLKNO);
-	if (!BufferIsValid(buf))
-	{
-		elog(ERROR,
-			 "failed to read metapage buffer for BM25 index \"%s\"",
-			 RelationGetRelationName(index));
-	}
-
-	LockBuffer(buf, BUFFER_LOCK_SHARE);
-	page = BufferGetPage(buf);
-
-	metap = (TpIndexMetaPage)PageGetContents(page);
-	if (!metap)
-	{
-		UnlockReleaseBuffer(buf);
-		elog(ERROR,
-			 "failed to get metapage contents for BM25 index \"%s\"",
-			 RelationGetRelationName(index));
-	}
-
 	/* Validate magic number */
 	if (metap->magic != TP_METAPAGE_MAGIC)
-	{
-		UnlockReleaseBuffer(buf);
 		elog(ERROR,
 			 "Tapir index metapage is corrupted for index \"%s\": expected "
 			 "magic "
@@ -128,13 +96,14 @@ tp_get_metapage(Relation index)
 			 RelationGetRelationName(index),
 			 TP_METAPAGE_MAGIC,
 			 metap->magic);
-	}
 
 	/*
 	 * Check version compatibility.
 	 *
-	 * v7 (current) is the on-disk memtable redesign (issue
-	 * #374).  v6 is read-compatible (issue #383): the layout is
+	 * v9 appends capability flags.  v8 and v7 are read-compatible;
+	 * v7 is the on-disk memtable redesign (issue #374), while v8
+	 * adds pending_free_head.  v6 is read-compatible (issue #383):
+	 * the layout is
 	 * byte-identical up through level_counts[]; v7 only appends
 	 * memtable_head_blkno and memtable_tail_blkno.  We accept
 	 * v6 here and normalize the missing fields to
@@ -160,24 +129,34 @@ tp_get_metapage(Relation index)
 	 * REINDEX as before.
 	 */
 	if (metap->version != TP_METAPAGE_VERSION &&
+		metap->version != TP_METAPAGE_VERSION_V8 &&
 		metap->version != TP_METAPAGE_VERSION_V7 &&
 		metap->version != TP_METAPAGE_VERSION_V6)
 	{
-		uint32 found_version = metap->version;
-
-		UnlockReleaseBuffer(buf);
 		ereport(ERROR,
 				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 				 errmsg("incompatible pg_textsearch index version for "
 						"\"%s\": found %u, expected %u",
 						RelationGetRelationName(index),
-						found_version,
+						metap->version,
 						TP_METAPAGE_VERSION),
 				 errhint("This index was created by a previous release of "
 						 "pg_textsearch and uses an incompatible on-disk "
 						 "format.  Run REINDEX INDEX %s to rebuild it.",
 						 RelationGetRelationName(index))));
 	}
+}
+
+TpIndexMetaPage
+tp_metapage_copy_from_page(Relation index, Page page)
+{
+	TpIndexMetaPage metap = (TpIndexMetaPage)PageGetContents(page);
+	TpIndexMetaPage result;
+
+	Assert(RelationIsValid(index));
+	Assert(page != NULL);
+
+	tp_validate_metapage_version(index, metap);
 
 	/*
 	 * Note: a v6 metapage with a non-Invalid _unused_docid_page
@@ -197,16 +176,22 @@ tp_get_metapage(Relation index)
 	 * offsets are unrelated (PageInit zero-fill, NOT
 	 * InvalidBlockNumber = 0xFFFFFFFF).
 	 */
-	result = (TpIndexMetaPage)palloc(sizeof(TpIndexMetaPageData));
+	result = palloc0(sizeof(TpIndexMetaPageData));
 	if (metap->version == TP_METAPAGE_VERSION)
 	{
 		memcpy(result, metap, sizeof(TpIndexMetaPageData));
+	}
+	else if (metap->version == TP_METAPAGE_VERSION_V8)
+	{
+		memcpy(result, metap, TP_INDEX_METAPAGE_DATA_SIZE_V8);
+		result->capabilities = 0;
 	}
 	else if (metap->version == TP_METAPAGE_VERSION_V7)
 	{
 		/* v7 has memtable head/tail but no pending_free_head. */
 		memcpy(result, metap, TP_INDEX_METAPAGE_DATA_SIZE_V7);
 		result->pending_free_head = InvalidBlockNumber;
+		result->capabilities	  = 0;
 	}
 	else
 	{
@@ -215,8 +200,34 @@ tp_get_metapage(Relation index)
 		result->memtable_head_blkno = InvalidBlockNumber;
 		result->memtable_tail_blkno = InvalidBlockNumber;
 		result->pending_free_head	= InvalidBlockNumber;
+		result->capabilities		= 0;
 	}
 
+	return result;
+}
+
+/*
+ * Get Tapir index metapage
+ */
+TpIndexMetaPage
+tp_get_metapage(Relation index)
+{
+	Buffer			buf;
+	Page			page;
+	TpIndexMetaPage result;
+
+	if (!RelationIsValid(index))
+		elog(ERROR, "invalid relation passed to tp_get_metapage");
+
+	buf = ReadBuffer(index, TP_METAPAGE_BLKNO);
+	if (!BufferIsValid(buf))
+		elog(ERROR,
+			 "failed to read metapage buffer for BM25 index \"%s\"",
+			 RelationGetRelationName(index));
+
+	LockBuffer(buf, BUFFER_LOCK_SHARE);
+	page   = BufferGetPage(buf);
+	result = tp_metapage_copy_from_page(index, page);
 	UnlockReleaseBuffer(buf);
 	return result;
 }
@@ -252,8 +263,8 @@ tp_metapage_read_memtable_tail(Page page)
 }
 
 /*
- * In-place v6 -> v7 upgrade (issue #383).  See header for
- * caller contract.  No-op when the page is already v7.
+ * In-place upgrade of read-compatible metapages.  See header for
+ * caller contract.  No-op when the page is already current.
  */
 void
 tp_metapage_upgrade_to_current(Relation index, Page page)
@@ -264,10 +275,11 @@ tp_metapage_upgrade_to_current(Relation index, Page page)
 	metap = (TpIndexMetaPage)PageGetContents(page);
 
 	if (metap->version == TP_METAPAGE_VERSION)
-		return; /* already v8 */
+		return;
 
 	if (metap->version != TP_METAPAGE_VERSION_V6 &&
-		metap->version != TP_METAPAGE_VERSION_V7)
+		metap->version != TP_METAPAGE_VERSION_V7 &&
+		metap->version != TP_METAPAGE_VERSION_V8)
 		ereport(ERROR,
 				(errcode(ERRCODE_DATA_CORRUPTED),
 				 errmsg("pg_textsearch: cannot upgrade metapage "
@@ -319,8 +331,10 @@ tp_metapage_upgrade_to_current(Relation index, Page page)
 		 */
 	}
 
-	/* Common to v6 and v7: introduce the deferred-free chain head. */
-	metap->pending_free_head = InvalidBlockNumber;
+	if (metap->version < TP_METAPAGE_VERSION_V8)
+		metap->pending_free_head = InvalidBlockNumber;
+
+	metap->capabilities = 0;
 
 	metap->version = TP_METAPAGE_VERSION;
 

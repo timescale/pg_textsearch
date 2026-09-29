@@ -40,6 +40,16 @@ DROP INDEX chain_source_idx;
 CREATE INDEX chain_source_idx ON chain_source_t
     USING bm25 (body) WITH (text_config = 'english');
 
+-- A non-NULL zero-length query-term list requests document
+-- metadata without materializing any term postings.
+\pset tuples_only on
+SELECT bm25_test_chain_source('chain_source_idx', 'documents_only');
+\pset tuples_only off
+
+DROP INDEX chain_source_idx;
+CREATE INDEX chain_source_idx ON chain_source_t
+    USING bm25 (body) WITH (text_config = 'english');
+
 -- Records spill across multiple memtable pages: chain walk
 -- aggregates all docs into one term entry.
 SELECT bm25_test_chain_source('chain_source_idx', 'multi_page_chain');
