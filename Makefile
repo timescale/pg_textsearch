@@ -128,6 +128,7 @@ test-injection-shell:
 	@cd test/scripts && ./inline_compaction_locking.sh injection
 	@cd test/scripts && ./crash_safety_spill.sh
 	@cd test/scripts && ./nonblocking_compaction.sh
+	@cd test/scripts && ./nonblocking_spill.sh
 	@cd test/scripts && ./compaction_recovery.sh
 	@cd test/scripts && ./parallel_vacuum.sh injection
 	@cd test/scripts && ./standby_reclaim.sh

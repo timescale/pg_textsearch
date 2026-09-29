@@ -529,7 +529,7 @@ test_vacuum_reclaim_does_not_gate_readers() {
     local spill_output="${ERR_DIR}/reclaim_spill.log"
     local reader_output="${ERR_DIR}/reclaim_reader.log"
     local compactor_output="${ERR_DIR}/reclaim_compactor.log"
-    local vacuum_pid spill_pid reader_pid compactor_pid
+    local vacuum_pid spill_pid spill_drain_pid reader_pid compactor_pid
     local vacuum_backend spill_backend compactor_backend
     local oid reader_result lock_proof=f deadline
 
@@ -567,7 +567,9 @@ test_vacuum_reclaim_does_not_gate_readers() {
     spill_pid=$!
     spill_backend=$(client_backend_pid "${spill_output}" "reclaim spill")
     wait_for_injection "${spill_backend}" "${POINT_EXCLUSIVE_WAITER}"
-    release_injection "${spill_backend}" "${POINT_EXCLUSIVE_WAITER}"
+    drain_injection "${spill_backend}" "${POINT_EXCLUSIVE_WAITER}" \
+        "${spill_pid}" &
+    spill_drain_pid=$!
 
     PGAPPNAME=pgts-reclaim-reader \
         PGOPTIONS="-c statement_timeout=5000 -c lock_timeout=4000" \
@@ -585,6 +587,7 @@ test_vacuum_reclaim_does_not_gate_readers() {
 
     wait_success "${spill_pid}" 5 "exclusive spill during reclaim" \
         "${spill_output}"
+    wait "${spill_drain_pid}"
     wait_success "${reader_pid}" 5 "later ranked reader during reclaim" \
         "${reader_output}"
     reader_result=$(tail -n 1 "${reader_output}")
@@ -644,6 +647,7 @@ test_vacuum_identification_does_not_gate_readers() {
     local reader_output="${ERR_DIR}/identify_reader.log"
     local vacuum_pid
     local spill_pid
+    local spill_drain_pid
     local reader_pid
     local vacuum_backend
     local spill_backend
@@ -684,7 +688,9 @@ test_vacuum_identification_does_not_gate_readers() {
     spill_pid=$!
     spill_backend=$(client_backend_pid "${spill_output}" "identification spill")
     wait_for_injection "${spill_backend}" "${POINT_EXCLUSIVE_WAITER}"
-    release_injection "${spill_backend}" "${POINT_EXCLUSIVE_WAITER}"
+    drain_injection "${spill_backend}" "${POINT_EXCLUSIVE_WAITER}" \
+        "${spill_pid}" &
+    spill_drain_pid=$!
     assert_still_paused "${vacuum_backend}" "${POINT_SOURCE_ESTIMATE}" \
         "${vacuum_pid}" "identification VACUUM"
 
@@ -715,6 +721,7 @@ test_vacuum_identification_does_not_gate_readers() {
     wait_success "${vacuum_pid}" 15 "identification VACUUM" \
         "${vacuum_output}"
     wait_success "${spill_pid}" 15 "identification spill" "${spill_output}"
+    wait "${spill_drain_pid}"
 }
 
 test_vacuum_waits_for_force_merge() {

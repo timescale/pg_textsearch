@@ -236,11 +236,19 @@ cancel_ranked_count=$(sql -c "
 [ "${cancel_ranked_count}" = "500" ] ||
     fail "failed spill made chain documents unqueryable"
 
+cancel_blocks_after_error=$(sql -c "
+    SELECT pg_relation_size('spill_cancel_idx'::regclass, 'main') /
+           current_setting('block_size')::integer;")
 sql -c "SELECT bm25_spill_index('spill_cancel_idx');" >/dev/null
 cancel_graph=$(sql -c "
     SELECT bm25_level_counts('spill_cancel_idx'::regclass)::text;")
+cancel_blocks_after_retry=$(sql -c "
+    SELECT pg_relation_size('spill_cancel_idx'::regclass, 'main') /
+           current_setting('block_size')::integer;")
 [ "${cancel_graph}" = "{1,0,0,0,0,0,0,0}" ] ||
     fail "spill after cancellation did not publish one segment"
+[ "${cancel_blocks_after_retry}" = "${cancel_blocks_after_error}" ] ||
+    fail "spill retry extended from ${cancel_blocks_after_error} to ${cancel_blocks_after_retry} blocks instead of reusing discarded output"
 
 sql -c "
     CREATE TABLE reclaim_docs (id integer PRIMARY KEY, body text NOT NULL);
