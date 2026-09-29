@@ -762,29 +762,33 @@ tp_segment_posting_iterator_seek(
  * Sum doc_freq for a term across all segments.
  */
 uint32
-tp_segment_get_doc_freq(
-		Relation index, BlockNumber first_segment, const char *term)
+tp_segment_roots_get_doc_freq(
+		Relation		   index,
+		const BlockNumber *roots,
+		uint32			   root_count,
+		const char		  *term)
 {
-	BlockNumber		 current	 = first_segment;
 	TpSegmentReader *reader		 = NULL;
 	uint32			 doc_freq	 = 0;
 	char			*term_buffer = NULL;
 	uint32			 buffer_size = 0;
 
-	while (current != InvalidBlockNumber)
+	for (uint32 root_idx = 0; root_idx < root_count; root_idx++)
 	{
 		TpSegmentHeader *header;
 		TpDictionary	 dict_header;
 		int				 left, right;
 
-		reader = tp_segment_open(index, current);
+		reader = tp_segment_open(index, roots[root_idx]);
 		if (!reader)
-			break;
+			ereport(ERROR,
+					(errcode(ERRCODE_INDEX_CORRUPTED),
+					 errmsg("could not open BM25 segment %u",
+							roots[root_idx])));
 
 		header = reader->header;
 		if (header->num_terms == 0 || header->dictionary_offset == 0)
 		{
-			current = header->next_segment;
 			tp_segment_close(reader);
 			continue;
 		}
@@ -862,7 +866,6 @@ tp_segment_get_doc_freq(
 			}
 		}
 
-		current = header->next_segment;
 		tp_segment_close(reader);
 	}
 
@@ -873,7 +876,7 @@ tp_segment_get_doc_freq(
 }
 
 /*
- * Batch lookup doc_freq for multiple terms across a segment chain.
+ * Batch lookup doc_freq for multiple terms across explicit segment roots.
  * Opens each segment ONCE and looks up all terms, avoiding
  * O(terms * segments) segment opens.
  *
@@ -881,18 +884,18 @@ tp_segment_get_doc_freq(
  * counts). This function ADDS segment doc_freqs to existing values.
  */
 void
-tp_batch_get_segment_doc_freq(
-		Relation	index,
-		BlockNumber first_segment,
-		char	  **terms,
-		int			term_count,
-		uint32	   *doc_freqs)
+tp_batch_get_segment_roots_doc_freq(
+		Relation		   index,
+		const BlockNumber *roots,
+		uint32			   root_count,
+		char			 **terms,
+		int				   term_count,
+		uint32			  *doc_freqs)
 {
-	BlockNumber current		= first_segment;
-	char	   *term_buffer = NULL;
-	uint32		buffer_size = 0;
+	char  *term_buffer = NULL;
+	uint32 buffer_size = 0;
 
-	while (current != InvalidBlockNumber)
+	for (uint32 root_idx = 0; root_idx < root_count; root_idx++)
 	{
 		TpSegmentReader *reader;
 		TpSegmentHeader *header;
@@ -900,15 +903,17 @@ tp_batch_get_segment_doc_freq(
 		int				 term_idx;
 
 		/* Open segment ONCE for all terms */
-		reader = tp_segment_open(index, current);
+		reader = tp_segment_open(index, roots[root_idx]);
 		if (!reader)
-			break;
+			ereport(ERROR,
+					(errcode(ERRCODE_INDEX_CORRUPTED),
+					 errmsg("could not open BM25 segment %u",
+							roots[root_idx])));
 
 		header = reader->header;
 
 		if (header->num_terms == 0 || header->dictionary_offset == 0)
 		{
-			current = header->next_segment;
 			tp_segment_close(reader);
 			continue;
 		}
@@ -993,8 +998,6 @@ tp_batch_get_segment_doc_freq(
 			}
 		}
 
-		/* Move to next segment and close this one */
-		current = header->next_segment;
 		tp_segment_close(reader);
 	}
 

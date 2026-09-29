@@ -10,7 +10,7 @@
  * per-term posting lists and a per-ctid doc-length map, and
  * serves them through the standard TpDataSourceOps interface.
  *
- * Concurrency contract:
+ * Ordinary-constructor concurrency contract:
  *
  *     per-index LWLock SHARED
  *         └─► metapage buffer SHARED  (held briefly, released)
@@ -27,6 +27,10 @@
  * MemoryContext under CurrentMemoryContext; all accumulators,
  * key copies, and HTAB internals live inside it.  `close()`
  * deletes the child context in one shot (no per-entry frees).
+ *
+ * The bounded constructor is the standby exception: it consumes an endpoint
+ * captured with the segment roots under the metapage buffer lock, never
+ * rereads the metapage, and needs no extension LWLock to synchronize replay.
  */
 #pragma once
 
@@ -36,6 +40,7 @@
 
 #include "index/source.h"
 #include "index/state.h"
+#include "memtable/chain_walker.h"
 
 /*
  * Construct a chain-backed data source for `rel`.
@@ -68,6 +73,21 @@ extern TpDataSource *tp_memtable_chain_source_create(
 		Relation		   rel,
 		const char *const *query_terms,
 		int				   query_term_count);
+
+/*
+ * Construct a chain source from a previously captured bounded endpoint.
+ *
+ * This path never rereads the metapage and does not acquire the per-index
+ * LWLock.  It is used by recovery readers after the common index read
+ * snapshot has atomically copied segment roots and the memtable endpoint.
+ * The shared constructor and ingestion path are otherwise identical to
+ * tp_memtable_chain_source_create().
+ */
+extern TpDataSource *tp_memtable_chain_source_create_bounded(
+		Relation					   rel,
+		const TpMemtableChainSnapshot *snapshot,
+		const char *const			  *query_terms,
+		int							   query_term_count);
 
 /*
  * Return the total number of memtable chain pages walked by a

@@ -386,8 +386,7 @@ tp_endscan(IndexScanDesc scan)
 static bool
 tp_execute_scoring_query(IndexScanDesc scan)
 {
-	TpScanOpaque	   so = (TpScanOpaque)scan->opaque;
-	TpIndexMetaPage	   metap;
+	TpScanOpaque	   so		   = (TpScanOpaque)scan->opaque;
 	bool			   success	   = false;
 	TpLocalIndexState *index_state = NULL;
 	TpVector		  *query_vector;
@@ -431,24 +430,8 @@ tp_execute_scoring_query(IndexScanDesc scan)
 						"search")));
 	}
 
-	/*
-	 * Acquire shared lock BEFORE reading metapage.
-	 * This ensures the metapage and memtable are read in a
-	 * consistent state — spill (which rewrites both) requires
-	 * LW_EXCLUSIVE, which is blocked while we hold shared.
-	 */
+	/* Keep the memtable and segment-root snapshot in one index state. */
 	tp_acquire_index_lock(index_state, LW_SHARED);
-
-	/* Now read metapage under the lock */
-	metap = tp_get_metapage(scan->indexRelation);
-	if (!metap)
-	{
-		tp_release_index_lock(index_state);
-		ereport(ERROR,
-				(errcode(ERRCODE_INTERNAL_ERROR),
-				 errmsg("failed to get metapage for index %s",
-						RelationGetRelationName(scan->indexRelation))));
-	}
 
 	/* Use the original query vector or create one from text */
 	query_vector = so->query_vector;
@@ -480,19 +463,17 @@ tp_execute_scoring_query(IndexScanDesc scan)
 
 	if (!query_vector)
 	{
-		pfree(metap);
 		ereport(ERROR,
 				(errcode(ERRCODE_INTERNAL_ERROR),
 				 errmsg("no query vector available in scan state")));
 	}
 
 	/* Find documents matching the query using posting lists */
-	success = tp_memtable_search(scan, index_state, query_vector, metap);
+	success = tp_memtable_search(scan, index_state, query_vector);
 
 	/* Release the lock - we've extracted all CTIDs we need */
 	tp_release_index_lock(index_state);
 
-	pfree(metap);
 	return success;
 }
 

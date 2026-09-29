@@ -16,13 +16,14 @@
  *               └─► new buffer EXCL (just-extended)
  *                     └─► metapage buffer EXCL
  *
- * Reverse-order acquisitions are forbidden.  Readers
- * (chain_source.c) take the metapage SHARED, read
- * memtable_head_blkno, and release the metapage before acquiring
- * any chain-page lock.  Spill (build.c) holds the per-index
- * LWLock EXCLUSIVE, which excludes all writers above; that is
- * the path by which spill gains uncontended access to the chain
- * pages.
+ * Reverse-order acquisitions are forbidden.  Ordinary chain readers read
+ * the head from the metapage and release it before acquiring a chain page.
+ * The common read snapshot reads a candidate head/tail and releases the
+ * metapage, then locks the candidate tail SHARED before reacquiring the
+ * metapage SHARED and validating the candidate.  It never nests
+ * metapage -> tail.  Spill (build.c) holds the per-index LWLock EXCLUSIVE,
+ * which excludes all writers above; that is the path by which spill gains
+ * uncontended access to the chain pages.
  *
  * Crash safety: a crash between page allocation
  * (ExtendBufferedRel or FSM reuse via tp_fsm_claim_free_buffer) and

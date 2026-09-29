@@ -7,6 +7,64 @@ SHOW pg_textsearch.allow_rls;
  on
 (1 row)
 
+-- RLS policies filter BM25 index results when the combination is allowed.
+CREATE ROLE rls_visibility_reader;
+CREATE TABLE rls_visibility (id integer, content text);
+INSERT INTO rls_visibility VALUES
+    (1, 'target target target target target target target target'),
+    (2, 'target filler filler filler filler filler');
+ALTER TABLE rls_visibility ENABLE ROW LEVEL SECURITY;
+CREATE POLICY rls_visibility_policy ON rls_visibility
+    TO rls_visibility_reader USING (id = 2);
+CREATE INDEX rls_visibility_idx ON rls_visibility USING bm25(content)
+    WITH (text_config='english');
+NOTICE:  BM25 index build started for relation rls_visibility_idx
+NOTICE:  Using text search configuration: english
+NOTICE:  Using index options: k1=1.20, b=0.75
+NOTICE:  BM25 index build completed: 2 documents, avg_length=7.00
+GRANT SELECT ON rls_visibility TO rls_visibility_reader;
+CREATE FUNCTION pg_temp.first_plan_child(query text)
+RETURNS text
+LANGUAGE plpgsql
+AS $$
+DECLARE
+    plan json;
+BEGIN
+    EXECUTE 'EXPLAIN (FORMAT JSON, COSTS OFF) ' || query INTO plan;
+    RETURN plan->0->'Plan'->'Plans'->0->>'Node Type';
+END
+$$;
+SET enable_seqscan = off;
+\pset format unaligned
+SELECT id AS unrestricted_top
+FROM rls_visibility
+ORDER BY content <@> to_bm25query('target', 'rls_visibility_idx')
+LIMIT 1;
+unrestricted_top
+1
+(1 row)
+SET ROLE rls_visibility_reader;
+SELECT pg_temp.first_plan_child($query$
+    SELECT id
+    FROM rls_visibility
+    ORDER BY content <@> to_bm25query('target', 'rls_visibility_idx')
+    LIMIT 1
+$query$) = 'Index Scan' AS rls_uses_bm25_index;
+rls_uses_bm25_index
+t
+(1 row)
+SELECT id AS rls_visible_top
+FROM rls_visibility
+ORDER BY content <@> to_bm25query('target', 'rls_visibility_idx')
+LIMIT 1;
+rls_visible_top
+2
+(1 row)
+RESET ROLE;
+\pset format aligned
+RESET enable_seqscan;
+DROP TABLE rls_visibility;
+DROP ROLE rls_visibility_reader;
 CREATE TABLE rls_existing (id integer, content text);
 INSERT INTO rls_existing VALUES (1, 'known secret term');
 ALTER TABLE rls_existing ENABLE ROW LEVEL SECURITY;

@@ -5,6 +5,55 @@ CREATE EXTENSION pg_textsearch;
 
 SHOW pg_textsearch.allow_rls;
 
+-- RLS policies filter BM25 index results when the combination is allowed.
+CREATE ROLE rls_visibility_reader;
+CREATE TABLE rls_visibility (id integer, content text);
+INSERT INTO rls_visibility VALUES
+    (1, 'target target target target target target target target'),
+    (2, 'target filler filler filler filler filler');
+ALTER TABLE rls_visibility ENABLE ROW LEVEL SECURITY;
+CREATE POLICY rls_visibility_policy ON rls_visibility
+    TO rls_visibility_reader USING (id = 2);
+CREATE INDEX rls_visibility_idx ON rls_visibility USING bm25(content)
+    WITH (text_config='english');
+GRANT SELECT ON rls_visibility TO rls_visibility_reader;
+
+CREATE FUNCTION pg_temp.first_plan_child(query text)
+RETURNS text
+LANGUAGE plpgsql
+AS $$
+DECLARE
+    plan json;
+BEGIN
+    EXECUTE 'EXPLAIN (FORMAT JSON, COSTS OFF) ' || query INTO plan;
+    RETURN plan->0->'Plan'->'Plans'->0->>'Node Type';
+END
+$$;
+
+SET enable_seqscan = off;
+\pset format unaligned
+SELECT id AS unrestricted_top
+FROM rls_visibility
+ORDER BY content <@> to_bm25query('target', 'rls_visibility_idx')
+LIMIT 1;
+SET ROLE rls_visibility_reader;
+SELECT pg_temp.first_plan_child($query$
+    SELECT id
+    FROM rls_visibility
+    ORDER BY content <@> to_bm25query('target', 'rls_visibility_idx')
+    LIMIT 1
+$query$) = 'Index Scan' AS rls_uses_bm25_index;
+SELECT id AS rls_visible_top
+FROM rls_visibility
+ORDER BY content <@> to_bm25query('target', 'rls_visibility_idx')
+LIMIT 1;
+RESET ROLE;
+\pset format aligned
+RESET enable_seqscan;
+
+DROP TABLE rls_visibility;
+DROP ROLE rls_visibility_reader;
+
 CREATE TABLE rls_existing (id integer, content text);
 INSERT INTO rls_existing VALUES (1, 'known secret term');
 ALTER TABLE rls_existing ENABLE ROW LEVEL SECURITY;

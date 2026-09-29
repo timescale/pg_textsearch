@@ -865,6 +865,8 @@ tp_build_parallel(
 
 			if (sink.writer.pages)
 				pfree(sink.writer.pages);
+			if (sink.page_index_pages)
+				pfree(sink.page_index_pages);
 
 			MemoryContextDelete(merge_ctx);
 		}

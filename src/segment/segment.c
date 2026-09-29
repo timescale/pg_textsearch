@@ -19,6 +19,7 @@
 #include <stdio.h>
 #include <storage/bufmgr.h>
 #include <storage/bufpage.h>
+#include <storage/indexfsm.h>
 #include <storage/lock.h>
 #include <unistd.h>
 #include <utils/lsyscache.h>
@@ -27,10 +28,12 @@
 #include <utils/timestamp.h>
 
 #include "debug/dump.h"
+#include "debug/injection.h"
 #include "index/freepage.h"
 #include "index/metapage.h"
 #include "index/state.h"
 #include "segment/alive_bitset.h"
+#include "segment/compaction.h"
 #include "segment/compression.h"
 #include "segment/dictionary.h"
 #include "segment/docmap.h"
@@ -119,7 +122,7 @@ tp_segment_read_next(Relation index, BlockNumber root, BlockNumber *next)
 	{
 		UnlockReleaseBuffer(buffer);
 		ereport(ERROR,
-				(errcode(ERRCODE_DATA_CORRUPTED),
+				(errcode(ERRCODE_INDEX_CORRUPTED),
 				 errmsg("invalid segment header at block %u", root)));
 	}
 
@@ -978,6 +981,8 @@ tp_segment_writer_allocate_page(TpSegmentWriter *writer)
 	tp_segment_writer_grow_pages(writer);
 	new_page = allocate_segment_page(writer->index);
 	writer->pages[writer->pages_allocated++] = new_page;
+	tp_compaction_allocation_injection_point(
+			TP_COMPACTION_ALLOCATION_OUTPUT_DATA);
 	return new_page;
 }
 
@@ -986,7 +991,12 @@ tp_segment_writer_allocate_page(TpSegmentWriter *writer)
  * This function is also used by segment_merge.c for merged segments.
  */
 static BlockNumber
-write_page_index_internal(Relation index, BlockNumber *pages, uint32 num_pages)
+write_page_index_internal(
+		Relation	  index,
+		BlockNumber	 *pages,
+		uint32		  num_pages,
+		BlockNumber **owned_pages,
+		uint32		 *owned_count)
 {
 	BlockNumber index_root = InvalidBlockNumber;
 	BlockNumber prev_block = InvalidBlockNumber;
@@ -1004,11 +1014,23 @@ write_page_index_internal(Relation index, BlockNumber *pages, uint32 num_pages)
 							 entries_per_page;
 
 	/* Allocate index pages incrementally */
-	BlockNumber *index_pages = palloc(num_index_pages * sizeof(BlockNumber));
+	BlockNumber *index_pages;
 	uint32		 i;
 
+	Assert(owned_pages != NULL);
+	Assert(owned_count != NULL);
+	*owned_pages = NULL;
+	*owned_count = 0;
+
+	index_pages	 = palloc(num_index_pages * sizeof(BlockNumber));
+	*owned_pages = index_pages;
 	for (i = 0; i < num_index_pages; i++)
+	{
 		index_pages[i] = allocate_segment_page(index);
+		(*owned_count)++;
+		tp_compaction_allocation_injection_point(
+				TP_COMPACTION_ALLOCATION_PAGE_INDEX);
+	}
 
 	/*
 	 * Write index pages in reverse order (so we can chain them).
@@ -1060,14 +1082,53 @@ write_page_index_internal(Relation index, BlockNumber *pages, uint32 num_pages)
 			index_root = index_pages[i];
 	}
 
-	pfree(index_pages);
 	return index_root;
 }
 
 BlockNumber
 write_page_index(Relation index, BlockNumber *pages, uint32 num_pages)
 {
-	return write_page_index_internal(index, pages, num_pages);
+	volatile BlockNumber root		  = InvalidBlockNumber;
+	BlockNumber *volatile owned_pages = NULL;
+	volatile uint32 owned_count		  = 0;
+
+	PG_TRY();
+	{
+		root = write_page_index_internal(
+				index,
+				pages,
+				num_pages,
+				(BlockNumber **)&owned_pages,
+				(uint32 *)&owned_count);
+	}
+	PG_CATCH();
+	{
+		if (owned_count > 0)
+		{
+			tp_segment_free_pages(index, owned_pages, owned_count);
+			IndexFreeSpaceMapVacuum(index);
+		}
+		if (owned_pages != NULL)
+			pfree(owned_pages);
+		PG_RE_THROW();
+	}
+	PG_END_TRY();
+
+	if (owned_pages != NULL)
+		pfree(owned_pages);
+	return (BlockNumber)root;
+}
+
+BlockNumber
+write_page_index_tracked(
+		Relation	  index,
+		BlockNumber	 *pages,
+		uint32		  num_pages,
+		BlockNumber **owned_pages,
+		uint32		 *owned_count)
+{
+	return write_page_index_internal(
+			index, pages, num_pages, owned_pages, owned_count);
 }
 
 /*
@@ -1665,6 +1726,7 @@ tp_write_segment(
 	 */
 	{
 		GenericXLogState *xlog_state;
+		uint64			  legacy_total_tokens;
 
 		header_buf = ReadBuffer(index, header_block);
 		LockBuffer(header_buf, BUFFER_LOCK_EXCLUSIVE);
@@ -1673,20 +1735,52 @@ tp_write_segment(
 		header_page = GenericXLogRegisterBuffer(xlog_state, header_buf, 0);
 
 		existing_header = (TpSegmentHeader *)PageGetContents(header_page);
-		existing_header->strings_offset		 = header.strings_offset;
-		existing_header->entries_offset		 = header.entries_offset;
-		existing_header->postings_offset	 = header.postings_offset;
-		existing_header->skip_index_offset	 = header.skip_index_offset;
-		existing_header->fieldnorm_offset	 = header.fieldnorm_offset;
-		existing_header->ctid_pages_offset	 = header.ctid_pages_offset;
-		existing_header->ctid_offsets_offset = header.ctid_offsets_offset;
-		existing_header->alive_bitset_offset = header.alive_bitset_offset;
-		existing_header->alive_count		 = header.alive_count;
-		existing_header->num_docs			 = header.num_docs;
-		existing_header->total_tokens		 = header.total_tokens;
-		existing_header->data_size			 = header.data_size;
-		existing_header->num_pages			 = header.num_pages;
-		existing_header->page_index			 = header.page_index;
+		if (tp_injected_legacy_segment(&legacy_total_tokens))
+		{
+			TpSegmentHeaderV4 legacy = {
+					.magic				 = header.magic,
+					.version			 = TP_SEGMENT_FORMAT_VERSION_4,
+					.created_at			 = header.created_at,
+					.num_pages			 = header.num_pages,
+					.data_size			 = header.data_size,
+					.level				 = header.level,
+					.next_segment		 = header.next_segment,
+					.dictionary_offset	 = header.dictionary_offset,
+					.strings_offset		 = header.strings_offset,
+					.entries_offset		 = header.entries_offset,
+					.postings_offset	 = header.postings_offset,
+					.skip_index_offset	 = header.skip_index_offset,
+					.fieldnorm_offset	 = header.fieldnorm_offset,
+					.ctid_pages_offset	 = header.ctid_pages_offset,
+					.ctid_offsets_offset = header.ctid_offsets_offset,
+					.num_terms			 = header.num_terms,
+					.num_docs			 = header.num_docs,
+					.total_tokens		 = legacy_total_tokens,
+					.page_index			 = header.page_index,
+			};
+
+			memcpy(existing_header, &legacy, sizeof(legacy));
+		}
+		else
+		{
+			uint64 v5_total_tokens = tp_injected_v5_segment_total_len(
+					header.total_tokens);
+
+			existing_header->strings_offset		 = header.strings_offset;
+			existing_header->entries_offset		 = header.entries_offset;
+			existing_header->postings_offset	 = header.postings_offset;
+			existing_header->skip_index_offset	 = header.skip_index_offset;
+			existing_header->fieldnorm_offset	 = header.fieldnorm_offset;
+			existing_header->ctid_pages_offset	 = header.ctid_pages_offset;
+			existing_header->ctid_offsets_offset = header.ctid_offsets_offset;
+			existing_header->alive_bitset_offset = header.alive_bitset_offset;
+			existing_header->alive_count		 = header.alive_count;
+			existing_header->num_docs			 = header.num_docs;
+			existing_header->total_tokens		 = v5_total_tokens;
+			existing_header->data_size			 = header.data_size;
+			existing_header->num_pages			 = header.num_pages;
+			existing_header->page_index			 = header.page_index;
+		}
 
 		GenericXLogFinish(xlog_state);
 		UnlockReleaseBuffer(header_buf);

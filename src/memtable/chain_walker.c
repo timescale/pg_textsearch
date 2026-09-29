@@ -345,22 +345,20 @@ tp_chain_walker_open(
 }
 
 bool
-tp_memtable_chain_snapshot_capture(
-		Relation				 rel,
+tp_memtable_chain_snapshot_capture_locked(
+		Buffer					 tail_buffer,
 		BlockNumber				 head_blkno,
 		BlockNumber				 tail_blkno,
 		TpMemtableChainSnapshot *snapshot)
 {
-	Buffer				  buf;
 	Page				  page;
 	TpMemtablePageHeader *hdr;
 
-	Assert(rel != NULL);
 	Assert(snapshot != NULL);
 
 	if (!BlockNumberIsValid(head_blkno))
 	{
-		if (BlockNumberIsValid(tail_blkno))
+		if (BlockNumberIsValid(tail_blkno) || BufferIsValid(tail_buffer))
 			ereport(ERROR,
 					(errcode(ERRCODE_INDEX_CORRUPTED),
 					 errmsg("BM25 memtable has a tail page but no head "
@@ -375,26 +373,31 @@ tp_memtable_chain_snapshot_capture(
 				(errcode(ERRCODE_INDEX_CORRUPTED),
 				 errmsg("BM25 memtable has a head page but no tail page")));
 
-	buf = ReadBuffer(rel, tail_blkno);
-	LockBuffer(buf, BUFFER_LOCK_SHARE);
-	page = BufferGetPage(buf);
+	if (!BufferIsValid(tail_buffer) ||
+		BufferGetBlockNumber(tail_buffer) != tail_blkno)
+		ereport(ERROR,
+				(errcode(ERRCODE_INTERNAL_ERROR),
+				 errmsg("BM25 memtable tail snapshot buffer mismatch")));
+
+	page = BufferGetPage(tail_buffer);
 
 	if (!tp_memtable_page_is_valid(page) ||
 		tp_memtable_page_is_continuation(page))
-	{
-		UnlockReleaseBuffer(buf);
 		ereport(ERROR,
 				(errcode(ERRCODE_INDEX_CORRUPTED),
 				 errmsg("BM25 memtable tail page %u is invalid", tail_blkno)));
-	}
 	validate_page_layout(page, tail_blkno);
 	hdr = tp_memtable_page_header(page);
+	if (hdr->next_block != InvalidBlockNumber)
+		ereport(ERROR,
+				(errcode(ERRCODE_INDEX_CORRUPTED),
+				 errmsg("BM25 memtable tail page %u has a successor",
+						tail_blkno)));
 
 	snapshot->head_blkno	   = head_blkno;
 	snapshot->tail_blkno	   = tail_blkno;
 	snapshot->tail_free_offset = hdr->free_offset;
 
-	UnlockReleaseBuffer(buf);
 	return true;
 }
 

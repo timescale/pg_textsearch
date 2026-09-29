@@ -329,18 +329,24 @@ ingest_terms(
  * chain_walker.c so the apply protocol (cache.c) can reuse it.
  */
 static void
-walk_chain(TpMemtableChainSource *src, Relation rel)
+walk_chain(
+		TpMemtableChainSource		  *src,
+		Relation					   rel,
+		const TpMemtableChainSnapshot *snapshot)
 {
-	BlockNumber			start;
-	TpIndexMetaPage		metap = tp_get_metapage(rel);
 	TpChainWalker	   *walker;
 	TpChainWalkerRecord rec;
 
-	start = metap->memtable_head_blkno;
-	pfree(metap);
+	if (snapshot != NULL)
+		walker = tp_chain_walker_open_bounded(rel, snapshot, src->mcxt);
+	else
+	{
+		TpIndexMetaPage metap = tp_get_metapage(rel);
+		BlockNumber		start = metap->memtable_head_blkno;
 
-	walker = tp_chain_walker_open(rel, start, 0, src->mcxt);
-
+		pfree(metap);
+		walker = tp_chain_walker_open(rel, start, 0, src->mcxt);
+	}
 	while (tp_chain_walker_next(walker, &rec))
 	{
 		ingest_doclen(src, &rec.ctid, rec.doc_length);
@@ -463,29 +469,37 @@ static const TpDataSourceOps chain_source_ops = {
 		.close			  = chain_close,
 };
 
-/* ---------- public constructor ---------- */
+/* ---------- shared constructor ---------- */
 
-TpDataSource *
-tp_memtable_chain_source_create(
-		TpLocalIndexState *state,
-		Relation		   rel,
-		const char *const *query_terms,
-		int				   query_term_count)
+static TpDataSource *
+tp_memtable_chain_source_create_internal(
+		TpLocalIndexState			  *state,
+		Relation					   rel,
+		const TpMemtableChainSnapshot *snapshot,
+		bool						   acquire_index_lock,
+		const char *const			  *query_terms,
+		int							   query_term_count)
 {
 	TpMemtableChainSource *src;
 	MemoryContext		   mcxt;
 	HASHCTL				   info;
 	TpLocalIndexState	  *lock_state_to_release;
 
-	Assert(state != NULL);
+	Assert(state != NULL || !acquire_index_lock);
 	Assert(rel != NULL);
+	/*
+	 * A bounded (snapshot) source never acquires the lock, so the
+	 * empty-snapshot early return below has nothing to release.
+	 */
+	Assert(snapshot == NULL || !acquire_index_lock);
 	Assert(query_term_count >= 0);
 	Assert(query_term_count == 0 || query_terms != NULL);
 
 	/*
-	 * Acquire the per-index LWLock in SHARED mode for the whole
-	 * scan.  This excludes spill (LW_EXCLUSIVE) which would
-	 * otherwise rip chain pages out from under us.
+	 * The ordinary path acquires the per-index LWLock in SHARED mode for
+	 * the whole scan.  The bounded recovery path instead relies on its
+	 * copied endpoint and deferred reclaim, because WAL replay does not
+	 * acquire this extension lock.
 	 *
 	 * Lock ownership: if the caller already held the lock (e.g.,
 	 * scan.c acquires SHARED for the whole scan and we're being
@@ -502,25 +516,29 @@ tp_memtable_chain_source_create(
 	 * lock held past the source's lifetime risks the
 	 * LWLockReleaseAll() at xact-end dereferencing freed memory.
 	 */
-	if (state->lock_held)
-		lock_state_to_release = NULL;
-	else
-		lock_state_to_release = state;
-	tp_acquire_index_lock(state, LW_SHARED);
-	/*
-	 * Defensive: if our acquire was a no-op because the caller
-	 * already held an exclusive lock (e.g., spill path), still
-	 * don't release on close().
-	 */
-	if (lock_state_to_release != NULL && !state->lock_held)
-		lock_state_to_release = NULL;
+	lock_state_to_release = NULL;
+	if (acquire_index_lock)
+	{
+		if (!state->lock_held)
+			lock_state_to_release = state;
+		tp_acquire_index_lock(state, LW_SHARED);
+		/*
+		 * Defensive: if our acquire was a no-op because the caller
+		 * already held an exclusive lock (e.g., spill path), still
+		 * don't release on close().
+		 */
+		if (lock_state_to_release != NULL && !state->lock_held)
+			lock_state_to_release = NULL;
+	}
 
 	/*
-	 * Quick empty-chain test under SHARED metapage lock so we
-	 * skip the constructor when there are no records.  This
-	 * matches the existing tp_memtable_source_create() contract
-	 * of returning NULL for an empty memtable.
+	 * A supplied snapshot already contains the empty-chain result.  The
+	 * ordinary constructor retains its quick metapage check under the
+	 * per-index lock.
 	 */
+	if (snapshot != NULL && !BlockNumberIsValid(snapshot->head_blkno))
+		return NULL;
+	if (snapshot == NULL)
 	{
 		Buffer metabuf;
 		bool   empty;
@@ -668,7 +686,7 @@ tp_memtable_chain_source_create(
 		MemoryContextSwitchTo(old);
 	}
 
-	walk_chain(src, rel);
+	walk_chain(src, rel, snapshot);
 
 	/*
 	 * Corpus-level counters: report just the in-flight memtable
@@ -693,6 +711,31 @@ tp_memtable_chain_source_create(
 	}
 
 	return (TpDataSource *)src;
+}
+
+/* ---------- public constructors ---------- */
+
+TpDataSource *
+tp_memtable_chain_source_create(
+		TpLocalIndexState *state,
+		Relation		   rel,
+		const char *const *query_terms,
+		int				   query_term_count)
+{
+	return tp_memtable_chain_source_create_internal(
+			state, rel, NULL, true, query_terms, query_term_count);
+}
+
+TpDataSource *
+tp_memtable_chain_source_create_bounded(
+		Relation					   rel,
+		const TpMemtableChainSnapshot *snapshot,
+		const char *const			  *query_terms,
+		int							   query_term_count)
+{
+	Assert(snapshot != NULL);
+	return tp_memtable_chain_source_create_internal(
+			NULL, rel, snapshot, false, query_terms, query_term_count);
 }
 
 /*

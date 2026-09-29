@@ -48,6 +48,7 @@
 #include <postgres.h>
 
 #include <storage/block.h>
+#include <storage/buf.h>
 #include <storage/itemptr.h>
 #include <utils/memutils.h>
 #include <utils/rel.h>
@@ -125,12 +126,12 @@ extern TpChainWalker *tp_chain_walker_open(
 		MemoryContext mcxt);
 
 /*
- * Capture a stable endpoint while the caller holds the per-index lock, then
- * open a walker that stops at exactly that endpoint after the lock is
- * released.
+ * Capture an endpoint from a tail buffer the caller already holds locked.
+ * Passing InvalidBuffer captures an empty chain.  This helper never acquires
+ * or releases a buffer lock.
  */
-extern bool tp_memtable_chain_snapshot_capture(
-		Relation				 rel,
+extern bool tp_memtable_chain_snapshot_capture_locked(
+		Buffer					 tail_buffer,
 		BlockNumber				 head_blkno,
 		BlockNumber				 tail_blkno,
 		TpMemtableChainSnapshot *snapshot);

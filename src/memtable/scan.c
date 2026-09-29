@@ -29,14 +29,11 @@ bool
 tp_memtable_search(
 		IndexScanDesc	   scan,
 		TpLocalIndexState *index_state,
-		TpVector		  *query_vector,
-		TpIndexMetaPage	   metap)
+		TpVector		  *query_vector)
 {
 	TpScanOpaque  so = (TpScanOpaque)scan->opaque;
 	int			  max_results;
 	int			  result_count = 0;
-	float4		  k1_value;
-	float4		  b_value;
 	MemoryContext oldcontext;
 
 	/* Extract terms and frequencies from query vector */
@@ -85,11 +82,6 @@ tp_memtable_search(
 	memset(so->result_ctids, 0, max_results * sizeof(ItemPointerData));
 	MemoryContextSwitchTo(oldcontext);
 
-	/* Extract values from metap */
-	Assert(metap != NULL);
-	k1_value = metap->k1;
-	b_value	 = metap->b;
-
 	Assert(index_state != NULL);
 	Assert(query_terms != NULL);
 	Assert(query_frequencies != NULL);
@@ -102,8 +94,6 @@ tp_memtable_search(
 			query_terms,
 			query_frequencies,
 			entry_count,
-			k1_value,
-			b_value,
 			max_results,
 			so->result_ctids,
 			&so->result_scores);

@@ -192,7 +192,8 @@ Option | Default | Description
 [`text_config`](https://www.postgresql.org/docs/current/textsearch-configuration.html) | required | PostgreSQL text search configuration
 `k1` | 1.2 | Term frequency saturation (0.1-10.0)
 `b` | 0.75 | Length normalization (0.0-1.0)
-`compaction` | inline | Spill-time compaction: `inline`, `background`, or `off`; see [Background Compaction](#background-compaction)
+`compaction` | inline | Spill-time compaction: `inline`, `background`, or `manual`; see [Background Compaction](#background-compaction)
+`compaction_schedule` | `pg_textsearch.background_compaction_schedule` | Optional cron schedule captured when the index enters background mode
 
 ```sql
 CREATE INDEX ON documents USING bm25(content) WITH (text_config='english', k1=1.5, b=0.8);
@@ -360,13 +361,26 @@ REINDEX INDEX docs_idx;
 ### Compaction
 
 With the default `inline` policy, compaction of levels that reach the configured
-threshold occurs as part of the write transaction that triggers the spill.
-These functions provide manual and scheduled control:
+threshold occurs synchronously in the write transaction that triggers the
+spill. Readers and other memtable writers can continue while merged output is
+built, because the long build holds no per-index LWLock. This is reader
+non-blocking, not foreground-writer non-blocking: the invoking writer still
+spends the time required to build and publish the merge. Compaction is
+skipped, and left to the next spill, when another session is reindexing,
+vacuuming, or compacting the index.
+
+These functions provide manual and scheduled control. They wait when another
+session holds index maintenance:
 
 ```sql
 SELECT bm25_force_merge('docs_idx');
 SELECT bm25_compact('docs_idx'::regclass);
 SELECT bm25_compact_step('docs_idx'::regclass);
+```
+
+These report compaction state without waiting for maintenance:
+
+```sql
 SELECT bm25_needs_compaction('docs_idx'::regclass);
 SELECT bm25_level_counts('docs_idx'::regclass);
 ```
@@ -378,8 +392,8 @@ processes at most one pass.
 
 - Long merge work checks for cancellation, but published replacements remain
   physical and are not undone by `ROLLBACK`.
-- Drive maintenance loops from `bm25_compact_step()`'s return value, not
-  `bm25_needs_compaction()`, which is advisory.
+- `bm25_needs_compaction()` reports whether `bm25_compact_step()` would run a
+  pass, so either can drive a maintenance loop.
 - Mutating functions require index ownership and do not operate on partitioned
   parent indexes or during recovery.
 
@@ -387,7 +401,9 @@ See [ARCHITECTURE.md](ARCHITECTURE.md#spill-and-compaction) for sizing,
 publication, locking, and page-reclaim details.
 
 Hot standbys serving queries must set `hot_standby_feedback = on` so active
-snapshots delay physical page reuse on the primary.
+snapshots delay physical page reuse on the primary. If a standby disconnects
+while an old snapshot remains active, stock PostgreSQL recovery-conflict WAL
+cancels that snapshot before reclaimed segment pages can be reused on replay.
 
 ### Settings
 
@@ -397,7 +413,7 @@ Setting | Default | Description
 `pg_textsearch.compress_segments` | on | Compress posting blocks in new segments
 `pg_textsearch.segments_per_level` | 8 | Segments per level before automatic compaction (2-64)
 `pg_textsearch.max_segment_size` | 4095MB | Conservative size budget for newly merged multi-source segments (1-4095MB)
-`pg_textsearch.compaction_request_function` | (empty) | Schema-qualified name of a function taking one `regclass`, invoked for indexes set to `compaction = 'background'`
+`pg_textsearch.background_compaction_schedule` | `*/5 * * * *` | Default cron schedule captured by indexes entering managed background mode
 `pg_textsearch.bulk_load_threshold` | 100000 | Terms per transaction before auto-spill (0 = disable)
 `pg_textsearch.memtable_pages_threshold` | 64 | Chain pages before auto-spill (0 = disable)
 `pg_textsearch.allow_rls` | on | Allow BM25 indexes on RLS-protected tables; superuser-only
@@ -476,27 +492,48 @@ LIMIT 10;
 
 ### Background Compaction
 
-pg_textsearch does not include a background worker. `background` dispatches
-threshold debt at pre-commit, while `off` performs no automatic compaction:
+The default `inline` policy compacts during memtable spills, skipping the pass
+when another session is using or maintaining the index.
+Managed `background` mode uses [pg_durable](https://github.com/microsoft/pg_durable)
+0.2.8 or newer rather than a built-in worker. pg_durable must be preloaded,
+initialized in the current database, and granted to the index owner. The owner
+must have `LOGIN`; a superuser owner also requires
+`pg_durable.enable_superuser_instances = on`.
 
-Guidance for scheduling background compaction with `pg_durable` will be added
-in a future update.
+Each physical index has one managed workflow scoped to its captured owner. The
+index owner, or a role PostgreSQL permits to act as that owner, may enable
+background mode. A separate insert-only writer may later trigger a spill, but
+pg_textsearch submits the workflow and calls `df.signal` under the index
+owner's identity. The compaction SQL nodes reached through either a spill
+signal or the cron backstop execute in pg_durable connections authenticated as
+the index owner, not as the DML writer; pg_durable's worker role provides only
+the orchestration infrastructure.
 
-- `background` calls `pg_textsearch.compaction_request_function` at
-  pre-commit. The callback must hand work to something that survives its
-  rolled-back internal subtransaction; a plain table insert does not.
-- `off` requires an external job to call `bm25_compact()` or
-  `bm25_compact_step()`; without one, segments accumulate and spills
-  eventually fail.
+```sql
+CREATE INDEX documents_bm25 ON documents USING bm25(content)
+WITH (
+    text_config = 'english',
+    compaction = 'background'
+);
+```
 
-Change the policy with `ALTER INDEX ... SET (compaction = ...)`.
-`background` falls back to inline compaction for temporary indexes,
-autovacuum, callback-triggered spills, and `CREATE INDEX`. Prepared
-transactions do not flush queued requests. Unconfigured, unresolvable, or
-failed callbacks do not fall back inline; the compaction debt remains for a
-later spill or explicit maintenance.
+Change modes with `ALTER INDEX`. Resetting `compaction_schedule` uses the
+current `pg_textsearch.background_compaction_schedule` default. Set the
+per-index option only when the default schedule is unsuitable.
 
-See [ARCHITECTURE.md](ARCHITECTURE.md#spill-and-compaction).
+```sql
+ALTER INDEX documents_bm25 SET (compaction = 'background');
+ALTER INDEX documents_bm25 RESET (compaction_schedule);
+ALTER INDEX documents_bm25 SET (compaction = 'manual');
+```
+
+Use `manual` with an external scheduler when pg_durable is unavailable or not
+desired and foreground compaction causes unacceptable write transaction
+stalls. The legacy `off` value remains accepted as an alias for `manual`.
+Temporary indexes do not support background mode.
+
+See [ARCHITECTURE.md](ARCHITECTURE.md#managed-background-compaction) for
+workflow lifecycle and safety details.
 
 ### Partitioned Tables
 

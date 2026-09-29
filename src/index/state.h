@@ -10,6 +10,7 @@
 
 #include <lib/dshash.h>
 #include <port/atomics.h>
+#include <storage/condition_variable.h>
 #include <storage/lwlock.h>
 #include <utils/dsa.h>
 
@@ -182,7 +183,9 @@ typedef struct TpSharedIndexState
 	 * This ensures memory consistency on NUMA systems and proper
 	 * transaction isolation.
 	 */
-	LWLock lock; /* Per-index lock for this index */
+	LWLock			  lock; /* Per-index lock for this index */
+	pg_atomic_uint32  exclusive_waiters;
+	ConditionVariable exclusive_waiters_cv;
 
 	/*
 	 * Spill generation counter.  Bumped by tp_spill_finalize()
@@ -272,6 +275,8 @@ extern TpMemtable *get_memtable(TpLocalIndexState *local_state);
 /* Transaction-level lock management */
 extern void
 tp_acquire_index_lock(TpLocalIndexState *local_state, LWLockMode mode);
+extern bool
+tp_try_acquire_index_lock(TpLocalIndexState *local_state, LWLockMode mode);
 extern void tp_release_index_lock(TpLocalIndexState *local_state);
 extern void tp_release_all_index_locks(void);
 

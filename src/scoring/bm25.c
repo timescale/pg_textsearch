@@ -7,6 +7,7 @@
 #include <postgres.h>
 
 #include <math.h>
+#include <miscadmin.h>
 #include <storage/itemptr.h>
 #include <utils/memutils.h>
 
@@ -17,6 +18,7 @@
 #include "memtable/chain_source.h"
 #include "scoring/bm25.h"
 #include "scoring/bmw.h"
+#include "segment/graph_snapshot.h"
 #include "segment/segment.h"
 
 /*
@@ -45,27 +47,19 @@ tp_calculate_idf(int32 doc_freq, int32 total_docs)
  */
 static uint32
 tp_get_unified_doc_freq(
-		TpDataSource *memtable_src,
-		Relation	  index,
-		const char	 *term,
-		BlockNumber	 *level_heads)
+		TpDataSource				 *memtable_src,
+		Relation					  index,
+		const char					 *term,
+		const TpSegmentGraphSnapshot *snapshot)
 {
 	uint32 doc_freq = 0;
-	int	   level;
 
 	/* Get doc_freq from memtable chain source */
 	if (memtable_src != NULL)
 		doc_freq = tp_source_get_doc_freq(memtable_src, term);
 
-	/* Add doc_freq from all segment levels */
-	for (level = 0; level < TP_MAX_LEVELS; level++)
-	{
-		if (level_heads[level] != InvalidBlockNumber)
-		{
-			doc_freq +=
-					tp_segment_get_doc_freq(index, level_heads[level], term);
-		}
-	}
+	doc_freq += tp_segment_roots_get_doc_freq(
+			index, snapshot->roots, snapshot->root_count, term);
 
 	return doc_freq;
 }
@@ -81,14 +75,13 @@ tp_get_unified_doc_freq(
  */
 static void
 tp_batch_get_unified_doc_freq(
-		TpDataSource *memtable_src,
-		Relation	  index,
-		char		**terms,
-		int			  term_count,
-		BlockNumber	 *level_heads,
-		uint32		 *doc_freqs)
+		TpDataSource				 *memtable_src,
+		Relation					  index,
+		char						**terms,
+		int							  term_count,
+		const TpSegmentGraphSnapshot *snapshot,
+		uint32						 *doc_freqs)
 {
-	int level;
 	int i;
 
 	/* Initialize doc_freqs with memtable counts */
@@ -99,15 +92,13 @@ tp_batch_get_unified_doc_freq(
 			doc_freqs[i] = tp_source_get_doc_freq(memtable_src, terms[i]);
 	}
 
-	/* Add doc_freq from all segment levels (batch lookup) */
-	for (level = 0; level < TP_MAX_LEVELS; level++)
-	{
-		if (level_heads[level] != InvalidBlockNumber)
-		{
-			tp_batch_get_segment_doc_freq(
-					index, level_heads[level], terms, term_count, doc_freqs);
-		}
-	}
+	tp_batch_get_segment_roots_doc_freq(
+			index,
+			snapshot->roots,
+			snapshot->root_count,
+			terms,
+			term_count,
+			doc_freqs);
 }
 
 /*
@@ -121,21 +112,21 @@ tp_score_documents(
 		char			 **query_terms,
 		int32			  *query_frequencies,
 		int				   query_term_count,
-		float4			   k1,
-		float4			   b,
 		int				   max_results,
 		ItemPointer		   result_ctids,
 		float4			 **result_scores)
 {
-	float4			avg_doc_len;
-	int64			total_docs64;
-	int64			total_len64;
-	int32			total_docs;
-	TpIndexMetaPage metap;
-	BlockNumber		level_heads[TP_MAX_LEVELS];
-	TpDataSource   *memtable_src = NULL;
-	int				i;
-	int				result_count = 0;
+	float4					avg_doc_len;
+	int64					total_docs64;
+	int64					total_len64;
+	int32					total_docs;
+	float4					k1;
+	float4					b;
+	TpSegmentGraphSnapshot *snapshot;
+	TpDataSource		   *memtable_src = NULL;
+	int						i;
+	int						result_count = 0;
+	bool					recovery;
 
 	/* Basic sanity checks */
 	Assert(local_state != NULL);
@@ -159,18 +150,40 @@ tp_score_documents(
 	 * shrinkage protocol but is not authoritative for queries (it
 	 * would drift on standbys and freshly-opened backends).
 	 */
-	metap = tp_get_metapage(index_relation);
-	for (i = 0; i < TP_MAX_LEVELS; i++)
-		level_heads[i] = metap->level_heads[i];
-	total_docs64 = (int64)metap->total_docs;
-	total_len64	 = (int64)metap->total_len;
-	pfree(metap);
+	/*
+	 * Promotion may occur while snapshot creation is paused.  Keep source
+	 * selection in the recovery mode that owns this snapshot generation.
+	 */
+	recovery = RecoveryInProgress();
+	if (recovery)
+	{
+		snapshot	 = tp_segment_graph_snapshot_create(index_relation);
+		memtable_src = tp_memtable_chain_source_create_bounded(
+				index_relation,
+				&snapshot->memtable,
+				(const char *const *)query_terms,
+				query_term_count);
+	}
+	else
+	{
+		/*
+		 * The source owns per-index LW_SHARED for its lifetime, so opening
+		 * it before the roots are copied excludes a spill from publishing
+		 * between the two.  The reverse order can drop the spilled
+		 * documents from both halves of the snapshot.
+		 */
+		memtable_src = tp_memtable_source_create_for_read(
+				local_state,
+				index_relation,
+				(const char *const *)query_terms,
+				query_term_count);
+		snapshot = tp_segment_graph_snapshot_create(index_relation);
+	}
+	total_docs64 = (int64)snapshot->metapage.total_docs;
+	total_len64	 = (int64)snapshot->metapage.total_len;
+	k1			 = snapshot->metapage.k1;
+	b			 = snapshot->metapage.b;
 
-	memtable_src = tp_memtable_source_create_for_read(
-			local_state,
-			index_relation,
-			(const char *const *)query_terms,
-			query_term_count);
 	if (memtable_src != NULL)
 	{
 		total_docs64 += memtable_src->total_docs;
@@ -187,6 +200,7 @@ tp_score_documents(
 	{
 		if (memtable_src != NULL)
 			tp_source_close(memtable_src);
+		tp_segment_graph_snapshot_free(snapshot);
 		return 0;
 	}
 
@@ -204,11 +218,12 @@ tp_score_documents(
 
 		/* Get unified doc_freq across memtable and segments */
 		doc_freq = tp_get_unified_doc_freq(
-				memtable_src, index_relation, term, level_heads);
+				memtable_src, index_relation, term, snapshot);
 		if (doc_freq == 0)
 		{
 			if (memtable_src != NULL)
 				tp_source_close(memtable_src);
+			tp_segment_graph_snapshot_free(snapshot);
 			return 0;
 		}
 
@@ -222,6 +237,7 @@ tp_score_documents(
 		result_count = tp_score_single_term_bmw(
 				local_state,
 				index_relation,
+				snapshot,
 				memtable_src,
 				term,
 				idf,
@@ -256,6 +272,7 @@ tp_score_documents(
 		*result_scores = scores;
 		if (memtable_src != NULL)
 			tp_source_close(memtable_src);
+		tp_segment_graph_snapshot_free(snapshot);
 		return result_count;
 	}
 
@@ -276,7 +293,7 @@ tp_score_documents(
 				index_relation,
 				query_terms,
 				query_term_count,
-				level_heads,
+				snapshot,
 				doc_freqs);
 
 		/* Convert doc_freqs to IDFs */
@@ -296,6 +313,7 @@ tp_score_documents(
 		result_count = tp_score_multi_term_bmw(
 				local_state,
 				index_relation,
+				snapshot,
 				memtable_src,
 				query_terms,
 				query_term_count,
@@ -334,6 +352,7 @@ tp_score_documents(
 		*result_scores = scores;
 		if (memtable_src != NULL)
 			tp_source_close(memtable_src);
+		tp_segment_graph_snapshot_free(snapshot);
 		return result_count;
 	}
 }
