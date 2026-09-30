@@ -206,7 +206,7 @@ Option | Default | Description
 [`text_config`](https://www.postgresql.org/docs/current/textsearch-configuration.html) | required | PostgreSQL text search configuration
 `k1` | 1.2 | Term frequency saturation (0.1-10.0)
 `b` | 0.75 | Length normalization (0.0-1.0)
-`max_token_length` | 255 | Maximum raw token and normalized lexeme length in bytes (1-2047)
+`max_token_length` | 255 | Maximum raw token and normalized lexeme length in bytes for configurations using PostgreSQL's built-in parser (1-2047)
 `compaction` | inline | Spill-time compaction: `inline`, `background`, or `manual`; see [Background Compaction](#background-compaction)
 `compaction_schedule` | `pg_textsearch.background_compaction_schedule` | Optional cron schedule captured when the index enters background mode
 
@@ -569,12 +569,24 @@ identifiers that PostgreSQL would otherwise ignore above 2047 bytes.
 Different long tokens can truncate to the same prefix and therefore rank as
 the same term.
 
+Token truncation is supported only for text search configurations using
+PostgreSQL's built-in `pg_catalog.default` parser. Custom dictionaries and
+mappings remain supported when they use that parser. Configurations backed by
+a custom parser retain the extension's original chunked PostgreSQL
+normalization and scoring behavior; their effective stored token limit is the
+legacy value rather than 255. Normal `CREATE INDEX` therefore remains
+setup-free for custom-parser configurations, but explicitly specifying or
+altering `max_token_length` is rejected because PostgreSQL's parser callback
+API does not provide a source offset for arbitrary parser-owned token buffers.
+
 The setting is stored in the index and is used consistently for index builds,
 inserts, updates, maintenance rebuilds, ranked queries, vectors, and
-standalone scoring. Existing indexes keep their pre-upgrade tokenization
-until they are rebuilt. After changing `max_token_length` with `ALTER INDEX`,
-run `REINDEX INDEX` before using the index; pg_textsearch rejects access while
-an explicit option differs from the stored setting.
+standalone scoring when the configured parser supports truncation.
+Custom-parser indexes use their native query and vector normalization paths.
+Existing indexes keep their pre-upgrade tokenization until they are rebuilt.
+After changing `max_token_length` with `ALTER INDEX`, run `REINDEX INDEX`
+before using the index; pg_textsearch rejects access while an explicit option
+differs from the stored setting.
 
 Native `text @@ tsquery` evaluation has no per-index normalization context.
 The index records whether any raw token or normalized lexeme was actually

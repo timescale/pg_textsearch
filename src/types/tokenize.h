@@ -10,6 +10,8 @@
 
 #define TP_TOKEN_WINDOW_BYTES (256 * 1024)
 
+extern bool tp_text_config_uses_builtin_parser(Oid text_config_oid);
+
 extern int
 tp_token_window_end(const char *input, int input_length, int window_start);
 

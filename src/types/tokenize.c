@@ -8,8 +8,10 @@
  */
 #include <postgres.h>
 
+#include <catalog/namespace.h>
 #include <common/hashfn.h>
 #include <mb/pg_wchar.h>
+#include <nodes/makefuncs.h>
 #include <tsearch/ts_cache.h>
 #include <tsearch/ts_utils.h>
 #include <utils/fmgrprotos.h>
@@ -75,6 +77,25 @@ typedef struct TpTermFrequencySink
 {
 	HTAB *terms;
 } TpTermFrequencySink;
+
+bool
+tp_text_config_uses_builtin_parser(Oid text_config_oid)
+{
+	static Oid			builtin_parser_oid = InvalidOid;
+	TSConfigCacheEntry *config;
+
+	if (!OidIsValid(builtin_parser_oid))
+	{
+		List *names =
+				list_make2(makeString("pg_catalog"), makeString("default"));
+
+		builtin_parser_oid = get_ts_parser_oid(names, false);
+		list_free_deep(names);
+	}
+
+	config = lookup_ts_config_cache(text_config_oid);
+	return config->prsId == builtin_parser_oid;
+}
 
 static void
 tp_lexize_init(TpLexizeData *state, TSConfigCacheEntry *cfg)
@@ -517,6 +538,7 @@ tp_parse_text_to_sink(
 		char		*input,
 		int			 input_length,
 		int			 max_token_length,
+		bool		 track_input_windows,
 		bool		*normalization_changed,
 		TpLexemeSink sink,
 		void		*sink_context)
@@ -541,8 +563,12 @@ tp_parse_text_to_sink(
 			PointerGetDatum(input),
 			Int32GetDatum(input_length)));
 	tp_lexize_init(&lexize, config);
-	if (input_length > 0)
+	if (track_input_windows)
+	{
+		Assert(input_length > TP_TOKEN_WINDOW_BYTES);
+		Assert(tp_text_config_uses_builtin_parser(config_oid));
 		input_window_end = tp_token_window_end(input, input_length, 0);
+	}
 
 	do
 	{
@@ -558,15 +584,19 @@ tp_parse_text_to_sink(
 		if (type > 0)
 		{
 			int original_length = token_length;
-			int token_offset	= token - input;
 
-			Assert(token_offset >= 0 && token_offset < input_length);
-			while (token_offset >= input_window_end &&
-				   input_window_end < input_length)
+			if (track_input_windows)
 			{
-				input_window++;
-				input_window_end = tp_token_window_end(
-						input, input_length, input_window_end);
+				int token_offset = token - input;
+
+				Assert(token_offset >= 0 && token_offset < input_length);
+				while (token_offset >= input_window_end &&
+					   input_window_end < input_length)
+				{
+					input_window++;
+					input_window_end = tp_token_window_end(
+							input, input_length, input_window_end);
+				}
 			}
 
 			token_length = tp_clip_token_length(
@@ -689,6 +719,7 @@ tp_make_tsvector(
 			VARDATA_ANY(input),
 			VARSIZE_ANY_EXHDR(input),
 			max_token_length,
+			false,
 			normalization_changed,
 			tp_emit_parsed_word,
 			&sink);
@@ -747,6 +778,7 @@ tp_tokenize_document(
 			VARDATA_ANY(input),
 			VARSIZE_ANY_EXHDR(input),
 			max_token_length,
+			VARSIZE_ANY_EXHDR(input) > TP_TOKEN_WINDOW_BYTES,
 			normalization_changed,
 			tp_emit_term_frequency,
 			&sink);

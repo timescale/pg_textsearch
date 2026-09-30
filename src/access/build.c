@@ -1048,6 +1048,18 @@ tp_build_extract_options(
 		*k1				  = options->k1;
 		*b				  = options->b;
 		*max_token_length = options->max_token_length;
+		if (!tp_text_config_uses_builtin_parser(*text_config_oid))
+		{
+			if (tp_index_reloption_is_explicit(index, "max_token_length"))
+				ereport(ERROR,
+						(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+						 errmsg("max_token_length is not supported with the "
+								"configured custom text search parser"),
+						 errhint("Run ALTER INDEX %s RESET "
+								 "(max_token_length), then retry REINDEX.",
+								 RelationGetRelationName(index))));
+			*max_token_length = TP_LEGACY_MAX_TOKEN_LENGTH;
+		}
 	}
 	else
 	{
@@ -2000,6 +2012,19 @@ tp_buildempty(Relation index)
 				 errhint("Specify text_config when creating the index: "
 						 "CREATE INDEX ... USING "
 						 "bm25(column) WITH (text_config='english')")));
+	}
+
+	if (!tp_text_config_uses_builtin_parser(text_config_oid))
+	{
+		if (tp_index_reloption_is_explicit(index, "max_token_length"))
+			ereport(ERROR,
+					(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+					 errmsg("max_token_length is not supported with the "
+							"configured custom text search parser"),
+					 errhint("Run ALTER INDEX %s RESET (max_token_length), "
+							 "then retry REINDEX.",
+							 RelationGetRelationName(index))));
+		max_token_length = TP_LEGACY_MAX_TOKEN_LENGTH;
 	}
 
 	/* Create and initialize the metapage */

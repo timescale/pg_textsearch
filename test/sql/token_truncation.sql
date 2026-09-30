@@ -269,6 +269,113 @@ FROM (
     ORDER BY body <@> to_bm25query('the running', 'trunc_english_idx')
 ) ranked;
 
+CREATE TEXT SEARCH PARSER trunc_native_parser (
+    START = pg_catalog.prsd_start,
+    GETTOKEN = pg_catalog.prsd_nexttoken,
+    END = pg_catalog.prsd_end,
+    LEXTYPES = pg_catalog.prsd_lextype,
+    HEADLINE = pg_catalog.prsd_headline
+);
+CREATE TEXT SEARCH CONFIGURATION trunc_custom_parser_cfg (
+    PARSER = trunc_native_parser
+);
+ALTER TEXT SEARCH CONFIGURATION trunc_custom_parser_cfg
+    ADD MAPPING FOR asciiword WITH pg_catalog.simple;
+
+CREATE TABLE trunc_custom_parser (
+    id integer PRIMARY KEY,
+    body text NOT NULL
+);
+INSERT INTO trunc_custom_parser VALUES
+    (1, repeat('a', 300000) || ' continuation'),
+    (2, repeat('alpha ', 100000));
+CREATE INDEX trunc_custom_parser_idx
+ON trunc_custom_parser USING bm25(body)
+WITH (text_config = 'public.trunc_custom_parser_cfg');
+
+SELECT count(*) = 0 AS custom_parser_preserves_legacy_elision
+FROM (
+    SELECT id
+    FROM trunc_custom_parser
+    ORDER BY body <@> to_bm25query(
+        repeat('a', 300), 'trunc_custom_parser_idx')
+) ranked;
+SELECT id = 1 AS custom_parser_keeps_following_token
+FROM trunc_custom_parser
+ORDER BY body <@> to_bm25query(
+    'continuation', 'trunc_custom_parser_idx')
+LIMIT 1;
+SELECT split_part(
+    split_part(
+        bm25_dump_index('trunc_custom_parser_idx'),
+        'total_len: ',
+        2),
+    E'\n',
+    1) = '766' AS custom_parser_preserves_legacy_frequency_windows;
+
+INSERT INTO trunc_custom_parser VALUES
+    (3, repeat('b', 300000) || ' inserted');
+SELECT count(*) = 0 AS custom_parser_dml_preserves_legacy_elision
+FROM (
+    SELECT id
+    FROM trunc_custom_parser
+    ORDER BY body <@> to_bm25query(
+        repeat('b', 300), 'trunc_custom_parser_idx')
+) ranked;
+SELECT id = 3 AS custom_parser_dml_keeps_following_token
+FROM trunc_custom_parser
+ORDER BY body <@> to_bm25query('inserted', 'trunc_custom_parser_idx')
+LIMIT 1;
+
+REINDEX INDEX trunc_custom_parser_idx;
+SELECT count(*) = 0 AS custom_parser_reindex_preserves_legacy_elision
+FROM (
+    SELECT id
+    FROM trunc_custom_parser
+    ORDER BY body <@> to_bm25query(
+        repeat('a', 300), 'trunc_custom_parser_idx')
+) ranked;
+
+\set VERBOSITY terse
+CREATE INDEX trunc_custom_parser_explicit_idx
+ON trunc_custom_parser USING bm25(body)
+WITH (
+    text_config = 'public.trunc_custom_parser_cfg',
+    max_token_length = 32
+);
+ALTER INDEX trunc_custom_parser_idx SET (max_token_length = 32);
+\set VERBOSITY default
+
+CREATE TEXT SEARCH CONFIGURATION trunc_custom_dictionary_cfg (
+    COPY = pg_catalog.simple
+);
+CREATE TEXT SEARCH DICTIONARY trunc_custom_dictionary (
+    TEMPLATE = pg_catalog.simple
+);
+ALTER TEXT SEARCH CONFIGURATION trunc_custom_dictionary_cfg
+    ALTER MAPPING FOR asciiword WITH trunc_custom_dictionary;
+CREATE TABLE trunc_custom_dictionary (
+    id integer PRIMARY KEY,
+    body text NOT NULL
+);
+INSERT INTO trunc_custom_dictionary VALUES
+    (1, 'abcdefghij'),
+    (2, 'abcdezzzzz');
+CREATE INDEX trunc_custom_dictionary_idx
+ON trunc_custom_dictionary USING bm25(body)
+WITH (
+    text_config = 'public.trunc_custom_dictionary_cfg',
+    max_token_length = 5
+);
+SELECT array_agg(id ORDER BY id) = ARRAY[1, 2]
+       AS builtin_parser_custom_dictionary_truncates
+FROM (
+    SELECT id
+    FROM trunc_custom_dictionary
+    ORDER BY body <@> to_bm25query(
+        'abcdefghij', 'trunc_custom_dictionary_idx')
+) ranked;
+
 \set VERBOSITY terse
 CREATE INDEX trunc_invalid_zero_idx ON trunc_boundaries USING bm25(body)
     WITH (text_config = 'simple', max_token_length = 0);
@@ -465,4 +572,10 @@ DROP TABLE trunc_frequency_boundary;
 DROP TABLE trunc_boolean;
 DROP TABLE trunc_boolean_clean;
 DROP TABLE trunc_boolean_dictionary;
+DROP TABLE trunc_custom_parser;
+DROP TABLE trunc_custom_dictionary;
+DROP TEXT SEARCH CONFIGURATION trunc_custom_parser_cfg;
+DROP TEXT SEARCH PARSER trunc_native_parser;
+DROP TEXT SEARCH CONFIGURATION trunc_custom_dictionary_cfg;
+DROP TEXT SEARCH DICTIONARY trunc_custom_dictionary;
 DROP EXTENSION pg_textsearch CASCADE;

@@ -26,6 +26,47 @@
 #include "constants.h"
 #include "debug/injection.h"
 #include "index/metapage.h"
+#include "types/tokenize.h"
+
+bool
+tp_index_reloption_is_explicit(Relation index, const char *option_name)
+{
+	HeapTuple tuple;
+	bool	  found = false;
+
+	tuple = SearchSysCache1(RELOID, ObjectIdGetDatum(RelationGetRelid(index)));
+	if (!HeapTupleIsValid(tuple))
+		elog(ERROR,
+			 "cache lookup failed for relation %u",
+			 RelationGetRelid(index));
+
+	{
+		bool  is_null;
+		Datum reloptions = SysCacheGetAttr(
+				RELOID, tuple, Anum_pg_class_reloptions, &is_null);
+
+		if (!is_null)
+		{
+			List	 *definitions = untransformRelOptions(reloptions);
+			ListCell *cell;
+
+			foreach (cell, definitions)
+			{
+				DefElem *definition = lfirst_node(DefElem, cell);
+
+				if (strcmp(definition->defname, option_name) == 0)
+				{
+					found = true;
+					break;
+				}
+			}
+			list_free_deep(definitions);
+		}
+	}
+	ReleaseSysCache(tuple);
+
+	return found;
+}
 
 /*
  * Initialize Tapir index metapage
@@ -264,6 +305,30 @@ tp_metapage_copy_from_page(Relation index, Page page)
 		result->max_token_length	= TP_LEGACY_MAX_TOKEN_LENGTH;
 	}
 
+	if (result->max_token_length != TP_LEGACY_MAX_TOKEN_LENGTH &&
+		!tp_text_config_uses_builtin_parser(result->text_config_oid))
+	{
+		if (tp_index_reloption_is_explicit(index, "max_token_length"))
+			ereport(ERROR,
+					(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+					 errmsg("BM25 index \"%s\" stores max_token_length for an "
+							"unsupported custom text search parser",
+							RelationGetRelationName(index)),
+					 errhint("Run ALTER INDEX %s RESET (max_token_length), "
+							 "then REINDEX INDEX %s.",
+							 RelationGetRelationName(index),
+							 RelationGetRelationName(index))));
+		else
+			ereport(ERROR,
+					(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+					 errmsg("BM25 index \"%s\" stores max_token_length for an "
+							"unsupported custom text search parser",
+							RelationGetRelationName(index)),
+					 errhint("Run REINDEX INDEX %s to preserve the custom "
+							 "parser's existing tokenization.",
+							 RelationGetRelationName(index))));
+	}
+
 	return result;
 }
 
@@ -297,40 +362,8 @@ tp_get_metapage(Relation index)
 
 		if (options->max_token_length != result->max_token_length)
 		{
-			HeapTuple tuple = SearchSysCache1(
-					RELOID, ObjectIdGetDatum(RelationGetRelid(index)));
-			bool option_is_explicit = false;
-
-			if (!HeapTupleIsValid(tuple))
-				elog(ERROR,
-					 "cache lookup failed for relation %u",
-					 RelationGetRelid(index));
-
-			{
-				bool  is_null;
-				Datum reloptions = SysCacheGetAttr(
-						RELOID, tuple, Anum_pg_class_reloptions, &is_null);
-
-				if (!is_null)
-				{
-					List	 *definitions = untransformRelOptions(reloptions);
-					ListCell *cell;
-
-					foreach (cell, definitions)
-					{
-						DefElem *definition = lfirst_node(DefElem, cell);
-
-						if (strcmp(definition->defname, "max_token_length") ==
-							0)
-						{
-							option_is_explicit = true;
-							break;
-						}
-					}
-					list_free_deep(definitions);
-				}
-				ReleaseSysCache(tuple);
-			}
+			bool option_is_explicit =
+					tp_index_reloption_is_explicit(index, "max_token_length");
 
 			if (option_is_explicit ||
 				result->max_token_length != TP_LEGACY_MAX_TOKEN_LENGTH)

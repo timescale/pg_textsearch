@@ -184,6 +184,8 @@ StaticAssertDecl(
  */
 extern void
 tp_init_metapage(Page page, Oid text_config_oid, int max_token_length);
+extern bool
+tp_index_reloption_is_explicit(Relation index, const char *option_name);
 /* Caller must hold at least BUFFER_LOCK_SHARE on the metapage buffer. */
 extern TpIndexMetaPage tp_metapage_copy_from_page(Relation index, Page page);
 extern TpIndexMetaPage tp_get_metapage(Relation index);
