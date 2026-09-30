@@ -693,8 +693,8 @@ tp_promote_subxact_states(
 /*
  * Clean up shared memory allocations for an index
  *
- * This is called when an index is dropped. We free the DSA allocations
- * but keep the DSA area itself since it's shared by all indices.
+ * Called only after the drop commits. We free the DSA allocations but keep
+ * the DSA area itself since it's shared by all indices.
  */
 static void
 cleanup_index_shared_memory(TpRegistryKey key, bool cleanup_local_state)
@@ -757,9 +757,10 @@ cleanup_index_shared_memory(TpRegistryKey key, bool cleanup_local_state)
 	 * Safe with an empty cache:
 	 * tp_cache_clear is a no-op when both handles are INVALID.
 	 *
-	 * DROP INDEX runs under AccessExclusiveLock on the index, so no
-	 * concurrent backend can be reading the cache here; we do not
-	 * acquire cache.lock.
+	 * The drop has committed and still holds its relation locks, so no
+	 * concurrent backend can be reading the cache here. A rolled-back
+	 * drop must never free shared state retained by other backends.
+	 * DROP DATABASE instead excludes all connections to its database.
 	 *
 	 * Memtable-cache eviction accesses victim shared states by DSA
 	 * pointer without holding the index relation lock.  Take the

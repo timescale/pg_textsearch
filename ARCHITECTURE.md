@@ -142,6 +142,16 @@ TRUNCATE, and rollback must never resume a cursor in a replacement file.
 Chain-page counts are lazily recounted against that same file identity
 before spill threshold checks; shutdown spills skip a busy recount lock.
 
+Index drops free registry state only at commit, before relation locks are
+released. Transaction or savepoint rollback preserves allocations referenced
+by other backends; releasing a savepoint transfers pending cleanup to its
+parent. `PREPARE TRANSACTION` rejects pending index-drop cleanup, as it does
+initial index creation, because this ownership is backend-local.
+Concurrent drops retain that state across PostgreSQL's intermediate commits
+and reader waits. Only successful completion of the utility command schedules
+cleanup for its final transaction; cancellation preserves the surviving
+index's state.
+
 `pg_textsearch.memory_limit` has three budget tiers:
 
 - per-index per-record growth guard (`limit / 8`): reject a record whose
@@ -412,6 +422,12 @@ the per-index lock before stamping its already-unreachable pages free and
 returning them to the FSM. Free-before-unlink is forbidden; unlink-before-free
 is safe, and an error during the unlocked free loop can only leak the
 unfinished remainder until `REINDEX`.
+
+Tombstone walks reject metapage and past-EOF links before reading them.
+The drain warns and detaches the corrupt tail, preserving any valid prefix;
+`REINDEX` reclaims the leaked pages. `bm25_pending_free_pages()` instead
+raises a corruption error without changing the chain or returning a partial
+count.
 
 Metapage V8 already contains `pending_free_head`; compaction preserves that
 existing chain when upgrading and publishing. Only older metapage versions

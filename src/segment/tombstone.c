@@ -415,7 +415,7 @@ tp_tombstone_drain(
 		/*
 		 * Re-read under the lock each iteration: the lock is dropped
 		 * between iterations and the relation can shrink.  This only
-		 * keeps the b >= nblocks check below honest; it is not what
+		 * keeps the block bounds checks below honest; it is not what
 		 * makes the frees safe (see below).
 		 */
 		nblocks = RelationGetNumberOfBlocks(index);
@@ -427,6 +427,14 @@ tp_tombstone_drain(
 			Buffer			buf;
 			Page			page;
 			TpTombstonePage t;
+
+			if (cur == 0 || cur >= nblocks)
+			{
+				corrupt		 = true;
+				corrupt_at	 = cur;
+				corrupt_prev = prev;
+				break;
+			}
 
 			buf = ReadBuffer(index, cur);
 			LockBuffer(buf, BUFFER_LOCK_SHARE);
@@ -615,8 +623,9 @@ tp_tombstone_drain(
 uint64
 tp_pending_free_block_count(Relation index)
 {
-	uint64		total = 0;
-	BlockNumber cur	  = tp_tombstone_read_head(index);
+	uint64		total	= 0;
+	BlockNumber nblocks = RelationGetNumberOfBlocks(index);
+	BlockNumber cur		= tp_tombstone_read_head(index);
 
 	/*
 	 * Caller must hold the per-index LWLock in shared mode so a concurrent
@@ -632,6 +641,14 @@ tp_pending_free_block_count(Relation index)
 		BlockNumber		next;
 
 		CHECK_FOR_INTERRUPTS();
+
+		if (cur == 0 || cur >= nblocks)
+			ereport(ERROR,
+					(errcode(ERRCODE_DATA_CORRUPTED),
+					 errmsg("pg_textsearch: corrupt tombstone page %u "
+							"in index \"%s\"",
+							cur,
+							RelationGetRelationName(index))));
 
 		buf = ReadBuffer(index, cur);
 		LockBuffer(buf, BUFFER_LOCK_SHARE);

@@ -580,6 +580,11 @@ ORDER BY content <@> to_bm25query('search terms', 'docs_idx')
 LIMIT 10;
 ```
 
+### Two-Phase Commit
+
+`PREPARE TRANSACTION` is not supported after creating a BM25 index or while
+BM25 index-drop cleanup is pending. Commit or roll back that DDL first.
+
 ## Troubleshooting
 
 List installed text search configurations:

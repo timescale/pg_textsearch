@@ -1,16 +1,21 @@
 #include <postgres.h>
 
+#include <access/genam.h>
+#include <access/generic_xlog.h>
 #include <executor/spi.h>
 #include <fmgr.h>
 #include <miscadmin.h>
 #include <nodes/primnodes.h>
 #include <nodes/readfuncs.h>
+#include <storage/bufmgr.h>
 #include <utils/builtins.h>
 #include <utils/injection_point.h>
 #include <utils/plancache.h>
 #include <varatt.h>
 
 #include "debug/injection.h"
+#include "index/metapage.h"
+#include "segment/tombstone.h"
 #include "types/query.h"
 
 PG_MODULE_MAGIC;
@@ -22,6 +27,62 @@ PG_FUNCTION_INFO_V1(pg_textsearch_test_attach_reclaim_horizon_hold);
 PG_FUNCTION_INFO_V1(pg_textsearch_test_attach_legacy_segment);
 PG_FUNCTION_INFO_V1(pg_textsearch_test_attach_v5_segment_total_len);
 PG_FUNCTION_INFO_V1(pg_textsearch_test_attach_vacuum_total_len);
+PG_FUNCTION_INFO_V1(pg_textsearch_test_set_tombstone_link);
+
+Datum
+pg_textsearch_test_set_tombstone_link(PG_FUNCTION_ARGS)
+{
+	Oid				  index_oid = PG_GETARG_OID(0);
+	bool			  at_head	= PG_GETARG_BOOL(1);
+	int64			  block		= PG_GETARG_INT64(2);
+	Relation		  index;
+	Buffer			  buf;
+	Page			  page;
+	TpIndexMetaPage	  metap;
+	BlockNumber		  head;
+	GenericXLogState *state;
+
+	if (!superuser())
+		elog(ERROR, "must be superuser to corrupt a tombstone link");
+	if (block < 0 || block > MaxBlockNumber)
+		elog(ERROR, "invalid test block number");
+
+	index = index_open(index_oid, AccessExclusiveLock);
+	buf	  = ReadBuffer(index, TP_METAPAGE_BLKNO);
+	LockBuffer(buf, BUFFER_LOCK_EXCLUSIVE);
+	metap = (TpIndexMetaPage)PageGetContents(BufferGetPage(buf));
+	if (metap->magic != TP_METAPAGE_MAGIC ||
+		metap->version != TP_METAPAGE_VERSION)
+		elog(ERROR, "expected a current BM25 metapage");
+	head = metap->pending_free_head;
+	if (head == InvalidBlockNumber)
+		elog(ERROR, "expected a nonempty tombstone chain");
+
+	if (!at_head)
+	{
+		TpTombstonePage t;
+
+		UnlockReleaseBuffer(buf);
+		buf = ReadBuffer(index, head);
+		LockBuffer(buf, BUFFER_LOCK_EXCLUSIVE);
+		t = tp_tombstone_page(BufferGetPage(buf));
+		if (t->magic != TP_TOMBSTONE_MAGIC ||
+			t->next_page != InvalidBlockNumber)
+			elog(ERROR, "expected a single tombstone page");
+	}
+
+	state = GenericXLogStart(index);
+	page  = GenericXLogRegisterBuffer(state, buf, GENERIC_XLOG_FULL_IMAGE);
+	if (at_head)
+		((TpIndexMetaPage)PageGetContents(page))->pending_free_head =
+				(BlockNumber)block;
+	else
+		tp_tombstone_page(page)->next_page = (BlockNumber)block;
+	GenericXLogFinish(state);
+	UnlockReleaseBuffer(buf);
+	index_close(index, AccessExclusiveLock);
+	PG_RETURN_VOID();
+}
 
 Datum
 pg_textsearch_test_attach_panic(PG_FUNCTION_ARGS)

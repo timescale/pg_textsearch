@@ -40,6 +40,7 @@ The Makefile defines these entry points:
 | `make test-multi-index` | Multi-index, user, and schema behavior |
 | `make test-reindex` | Rebuild, rollback, and prepared-transaction caches |
 | `make test-cross-database-registry` | Database isolation and DROP cleanup |
+| `make test-drop-rollback` | Multi-backend DROP rollback and deferred cleanup |
 | `make test-injection-sql` | Behavior-specific SQL regressions requiring injection points |
 | `make test-injection-shell` | Crash and concurrency injection-point tests |
 | `make test-chinese` | Optional zhparser regression |
@@ -71,6 +72,10 @@ the installed prefixes. The sanitizer builds use the same configure option.
 reading the tail, advances it from another session, then requires both writers
 to retry successfully. `make test-memtable-stale-tail` covers a corrupt tail
 and REINDEX repair without requiring injection points.
+
+`tombstone_bounds_injection` corrupts head and next-page links at block zero,
+EOF, and past EOF. It checks diagnostic errors and drain recovery while a
+pinned horizon keeps the valid chain prefix parked.
 
 ## Sanitizers
 
