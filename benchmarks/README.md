@@ -19,6 +19,9 @@ Performance benchmarks for the pg_textsearch BM25 full-text search extension.
 
 # Measure the filtered-seed top-K optimization (synthetic, no download)
 ./run_filtered_seed.sh
+
+# Measure index-build memory (synthetic, Linux, no download)
+python3 run_build_memory.py
 ```
 
 ## Datasets
@@ -76,6 +79,55 @@ The main runner script is `runner/run_benchmark.sh`:
 #   --report    - Generate markdown report
 #   --port PORT - Postgres port (default: 5433 for release build)
 ```
+
+## Build Memory
+
+`run_build_memory.py` reproduces vocabulary-driven build-memory growth
+with 100,000 synthetic documents. It starts a disposable local cluster
+using `PG_CONFIG` (default: `pg_config`), with the **installed** extension.
+It never installs binaries or connects to an existing server.
+Requires Linux, Python 3, and PostgreSQL server tools; run as a non-root user.
+
+```bash
+PG_CONFIG=/path/to/pg_config python3 run_build_memory.py
+
+# Run only the one-million-term case, or change the corpus/workers
+python3 run_build_memory.py --case unique
+python3 run_build_memory.py --case unique --rows 200000 --workers 4
+```
+
+The default matrix compares 1,000 repeated terms, 500K/1M/2M unique terms,
+and the 1M case with a lower memory budget and with parallelism disabled.
+Every document also contains one shared term for a result-count check.
+Defaults are two workers and `maintenance_work_mem=64MB`; the low-budget
+and serial controls use 16MB. Builds verify the actual worker count and
+query results. Allow about a minute and 1.5 GiB of available memory for
+the unfixed implementation. Parallel cases require at least 100K rows.
+
+Results go into a new `results/build_memory_<timestamp>/` directory:
+`summary.json` records versions, settings, timings, index sizes, sampled
+memory peaks by phase, and failures; per-case CSV files contain leader
+RSS/private memory, worker private memory, aggregate build PSS, and
+temporary-file sizes. Logs are retained; the cluster data is removed.
+PSS avoids counting shared pages multiple times. Sampling can miss brief
+peaks; `--interval` controls the delay between samples (default 0.1s).
+
+For an **intentional OOM experiment**, use a private cgroup v2 scope:
+
+```bash
+systemd-run --user --scope -p MemoryMax=384M -p MemorySwapMax=0 \
+  -p OOMPolicy=continue \
+  python3 run_build_memory.py --case unique --cgroup
+```
+
+This requires a systemd user manager with memory-controller delegation.
+Use 512M for a higher-limit comparison. `--cgroup` records the current
+scope's memory and OOM counters; these include the runner and client
+processes, not just PostgreSQL. An OOM/failure returns nonzero and records
+the error rather than publishing a successful result. Keep results/data
+on a **disk-backed filesystem**, not tmpfs: `--output /disk/new-directory`
+selects another location. Tmpfs data would itself consume the memory cap.
+Benchmark failures are expected on unfixed builds under tight limits.
 
 ## Running Benchmarks
 
