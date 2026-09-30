@@ -73,6 +73,10 @@ reading the tail, advances it from another session, then requires both writers
 to retry successfully. `make test-memtable-stale-tail` covers a corrupt tail
 and REINDEX repair without requiring injection points.
 
+`tombstone_bounds_injection` corrupts head and next-page links at block zero,
+EOF, and past EOF. It checks diagnostic errors and drain recovery while a
+pinned horizon keeps the valid chain prefix parked.
+
 ## Sanitizers
 
 Pull-request CI builds PostgreSQL 17.2 and 18.1 and pg_textsearch with Clang

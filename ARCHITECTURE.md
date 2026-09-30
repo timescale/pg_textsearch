@@ -378,6 +378,12 @@ returning them to the FSM. Free-before-unlink is forbidden; unlink-before-free
 is safe, and an error during the unlocked free loop can only leak the
 unfinished remainder until `REINDEX`.
 
+Tombstone walks reject metapage and past-EOF links before reading them.
+The drain warns and detaches the corrupt tail, preserving any valid prefix;
+`REINDEX` reclaims the leaked pages. `bm25_pending_free_pages()` instead
+raises a corruption error without changing the chain or returning a partial
+count.
+
 Metapage V8 already contains `pending_free_head`; compaction preserves that
 existing chain when upgrading and publishing. Only older metapage versions
 synthesize an empty pending-free head.

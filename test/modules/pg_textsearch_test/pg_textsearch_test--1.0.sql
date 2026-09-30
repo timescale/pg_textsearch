@@ -1,5 +1,11 @@
 \echo Use "CREATE EXTENSION pg_textsearch_test" to load this file. \quit
 
+CREATE FUNCTION pg_textsearch_test_set_tombstone_link(
+    idx regclass, at_head boolean, block bigint)
+RETURNS void
+AS 'MODULE_PATHNAME', 'pg_textsearch_test_set_tombstone_link'
+LANGUAGE C STRICT PARALLEL UNSAFE;
+
 CREATE FUNCTION pg_textsearch_test_attach_panic(point text DEFAULT NULL)
 RETURNS void
 AS 'MODULE_PATHNAME', 'pg_textsearch_test_attach_panic'
