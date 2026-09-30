@@ -10091,8 +10091,7 @@ test_background_vacuum_rewrites_sparse_singleton() {
         after_root="${after_state%%:*}"
         after_docs="${after_state##*:}"
         if [ "${signal_events_after}" -gt "${signal_events_before}" ]; then
-            if [ "${after_root}" != "${before_root}" ] ||
-                [ "${after_docs}" -lt "${before_docs}" ]; then
+            if [ "${after_root}" != "${before_root}" ]; then
                 rewritten=true
                 break
             fi
