@@ -436,7 +436,52 @@ SELECT bm25_summarize_index('serial_test_empty_idx')
 (1 row)
 
 --------------------------------------------------------------------------------
--- Test 13: Serial and parallel streaming builds produce identical results
+-- Test 13: Low parallel budgets are divided across actual workers
+--------------------------------------------------------------------------------
+SET max_parallel_maintenance_workers = 2;
+SET maintenance_work_mem = '64MB';
+INSERT INTO parallel_test_2workers (content)
+VALUES (repeat('large ', 20000)), ('');
+ANALYZE parallel_test_2workers;
+CREATE INDEX parallel_test_low_budget_idx ON parallel_test_2workers
+  USING bm25(content) WITH (text_config='english');
+NOTICE:  BM25 index build started for relation parallel_test_low_budget_idx
+NOTICE:  Using text search configuration: english
+NOTICE:  Using index options: k1=1.20, b=0.75
+NOTICE:  parallel index build: launched 1 of 1 requested workers
+NOTICE:  BM25 index build completed: 150003 documents, avg_length=16.00
+SELECT COUNT(*) AS low_budget_documents
+FROM (
+    SELECT 1
+    FROM parallel_test_2workers
+    ORDER BY content <@> to_bm25query(
+        'database', 'parallel_test_low_budget_idx')
+) ranked;
+ low_budget_documents 
+----------------------
+                30000
+(1 row)
+
+SELECT id AS parallel_large_document_id
+FROM parallel_test_2workers
+ORDER BY content <@> to_bm25query(
+    'large', 'parallel_test_low_budget_idx'), id
+LIMIT 1;
+ parallel_large_document_id 
+----------------------------
+                     150002
+(1 row)
+
+SELECT bm25_summarize_index('parallel_test_low_budget_idx')
+           ~ E'total_docs: 150003\n'
+    AS parallel_tokenless_row_counted;
+ parallel_tokenless_row_counted 
+--------------------------------
+ t
+(1 row)
+
+--------------------------------------------------------------------------------
+-- Test 14: Serial and parallel streaming builds produce identical results
 --------------------------------------------------------------------------------
 SET maintenance_work_mem = '256MB';
 CREATE TABLE parallel_stream_test AS

@@ -93,6 +93,27 @@ leader working memory is bounded by active inputs, posting blocks, offset
 windows, and fixed-size copy buffers. The output keeps the ordinary segment
 layout, compression, page index, dictionary backpatch, and publication order.
 
+Worker batch flushes use the bytes allocated by the batch's dedicated memory
+context, including the arena, dynahash, and document arrays. The worker
+threshold also reserves conservative serialization scratch for sorted terms,
+string offsets, term and dictionary metadata, the geometrically grown skip
+array, temporary CTID arrays, and the alive bitmap. Parallel builds divide the
+total `maintenance_work_mem` batch budget by the workers actually launched. A
+worker budget that cannot hold the initial context, one 1 MiB arena page, and
+minimum serialization scratch is rejected explicitly rather than being raised
+by a hidden per-worker floor.
+
+Serial builds retain their established arena-payload and document-capacity
+flush estimate, preserving their batching and inline-compaction behavior.
+Correcting serial dynahash and serialization accounting is deferred until it
+can be paired with a serial merge strategy that does not regress build time or
+peak memory.
+
+The worker batch estimate is not a hard backend RSS limit. PostgreSQL executor
+and backend overhead, temporary-file buffers, and the resettable tokenization
+of one document are outside it. A single document can therefore overshoot the
+worker threshold before the following flush check.
+
 A primary reader uses the memtable cache only when its physical relation file
 and applied endpoint match the captured chain. It holds the cache apply lock
 in shared mode for that scoring call to prevent catch-up from changing the

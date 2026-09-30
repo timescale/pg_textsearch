@@ -343,7 +343,38 @@ SELECT bm25_summarize_index('serial_test_empty_idx')
     AS document_arrays_flushed;
 
 --------------------------------------------------------------------------------
--- Test 13: Serial and parallel streaming builds produce identical results
+-- Test 13: Low parallel budgets are divided across actual workers
+--------------------------------------------------------------------------------
+SET max_parallel_maintenance_workers = 2;
+SET maintenance_work_mem = '64MB';
+
+INSERT INTO parallel_test_2workers (content)
+VALUES (repeat('large ', 20000)), ('');
+ANALYZE parallel_test_2workers;
+
+CREATE INDEX parallel_test_low_budget_idx ON parallel_test_2workers
+  USING bm25(content) WITH (text_config='english');
+
+SELECT COUNT(*) AS low_budget_documents
+FROM (
+    SELECT 1
+    FROM parallel_test_2workers
+    ORDER BY content <@> to_bm25query(
+        'database', 'parallel_test_low_budget_idx')
+) ranked;
+
+SELECT id AS parallel_large_document_id
+FROM parallel_test_2workers
+ORDER BY content <@> to_bm25query(
+    'large', 'parallel_test_low_budget_idx'), id
+LIMIT 1;
+
+SELECT bm25_summarize_index('parallel_test_low_budget_idx')
+           ~ E'total_docs: 150003\n'
+    AS parallel_tokenless_row_counted;
+
+--------------------------------------------------------------------------------
+-- Test 14: Serial and parallel streaming builds produce identical results
 --------------------------------------------------------------------------------
 SET maintenance_work_mem = '256MB';
 

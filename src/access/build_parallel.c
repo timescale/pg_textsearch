@@ -264,12 +264,11 @@ tp_parallel_build_worker_main(dsm_segment *seg, shm_toc *toc)
 	}
 
 	/*
-	 * Per-worker memory budget: split maintenance_work_mem across
-	 * workers. Minimum 64MB per worker to avoid excessive flushing.
+	 * The configured maintenance_work_mem is the total worker batch budget.
+	 * Divide it by the workers PostgreSQL actually launched; never multiply
+	 * a small setting through a per-worker floor.
 	 */
 	budget = (Size)maintenance_work_mem * 1024L / shared->nworkers_launched;
-	if (budget < 64L * 1024 * 1024)
-		budget = 64L * 1024 * 1024;
 
 	/*
 	 * Clamp to the arena's addressable capacity: with few workers
@@ -279,7 +278,25 @@ tp_parallel_build_worker_main(dsm_segment *seg, shm_toc *toc)
 	 */
 	budget = tp_arena_clamp_budget(budget);
 
-	build_ctx = tp_build_context_create(budget);
+	build_ctx						   = tp_build_context_create(budget);
+	build_ctx->account_full_allocation = true;
+	{
+		Size minimum_budget = tp_build_context_minimum_budget(build_ctx);
+
+		if (budget < minimum_budget)
+			ereport(ERROR,
+					(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+					 errmsg("parallel index build memory budget is too small"),
+					 errdetail(
+							 "maintenance_work_mem provides %zu bytes per "
+							 "worker for %d workers, but at least %zu bytes "
+							 "are required for the initial batch.",
+							 budget,
+							 shared->nworkers_launched,
+							 minimum_budget),
+					 errhint("Increase maintenance_work_mem or reduce "
+							 "max_parallel_maintenance_workers.")));
+	}
 	tracker_init(&tracker);
 
 	build_tmpctx = AllocSetContextCreate(
