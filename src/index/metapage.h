@@ -187,6 +187,7 @@ tp_init_metapage(Page page, Oid text_config_oid, int max_token_length);
 /* Caller must hold at least BUFFER_LOCK_SHARE on the metapage buffer. */
 extern TpIndexMetaPage tp_metapage_copy_from_page(Relation index, Page page);
 extern TpIndexMetaPage tp_get_metapage(Relation index);
+extern void			   tp_mark_normalization_changed(Relation index);
 extern void
 tp_check_level_count_increment(TpIndexMetaPage metap, uint32 level);
 

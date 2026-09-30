@@ -60,6 +60,12 @@ ORDER BY content <@> to_bm25query('database', 'parallel_test_1worker_idx')) sub;
 SELECT COUNT(*) AS truncated_count FROM (SELECT 1 FROM parallel_test_1worker
 ORDER BY content <@> to_bm25query(repeat('q', 40), 'parallel_test_1worker_idx')) sub;
 
+RESET enable_seqscan;
+EXPLAIN (COSTS OFF)
+SELECT id FROM parallel_test_1worker
+WHERE content @@ to_tsquery('english', 'missingterm');
+SET enable_seqscan = off;
+
 REINDEX INDEX parallel_test_1worker_idx;
 
 --------------------------------------------------------------------------------

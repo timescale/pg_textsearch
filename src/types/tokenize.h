@@ -8,5 +8,8 @@
 
 #include <tsearch/ts_type.h>
 
-extern TSVector
-tp_make_tsvector(text *input, Oid text_config_oid, int max_token_length);
+extern TSVector tp_make_tsvector(
+		text *input,
+		Oid	  text_config_oid,
+		int	  max_token_length,
+		bool *normalization_changed);

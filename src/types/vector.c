@@ -901,6 +901,7 @@ to_tpvector(PG_FUNCTION_ARGS)
 			input_text,
 			text_config_oid,
 			max_token_length,
+			NULL,
 			&lexemes,
 			&frequencies,
 			&entry_count);

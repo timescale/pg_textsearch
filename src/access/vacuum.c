@@ -682,6 +682,7 @@ tp_vacuum_rebuild_segment(
 				document_text,
 				text_config_oid,
 				max_token_length,
+				NULL,
 				&terms,
 				&frequencies,
 				&term_count);

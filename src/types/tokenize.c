@@ -313,7 +313,8 @@ tp_parse_text(
 		ParsedText *parsed,
 		char	   *input,
 		int			input_length,
-		int			max_token_length)
+		int			max_token_length,
+		bool	   *normalization_changed)
 {
 	TSConfigCacheEntry *config;
 	TSParserCacheEntry *parser;
@@ -343,8 +344,13 @@ tp_parse_text(
 
 		if (type > 0)
 		{
+			int original_length = token_length;
+
 			token_length = tp_clip_token_length(
 					token, token_length, max_token_length);
+			if (normalization_changed != NULL &&
+				token_length < original_length)
+				*normalization_changed = true;
 			if (token_length == 0)
 				continue;
 		}
@@ -361,6 +367,9 @@ tp_parse_text(
 				int clipped_length = tp_clip_token_length(
 						current->lexeme, lexeme_length, max_token_length);
 
+				if (normalization_changed != NULL &&
+					clipped_length < lexeme_length)
+					*normalization_changed = true;
 				if (clipped_length == 0)
 				{
 					pfree(current->lexeme);
@@ -402,9 +411,16 @@ tp_parse_text(
 }
 
 TSVector
-tp_make_tsvector(text *input, Oid text_config_oid, int max_token_length)
+tp_make_tsvector(
+		text *input,
+		Oid	  text_config_oid,
+		int	  max_token_length,
+		bool *normalization_changed)
 {
 	ParsedText parsed;
+
+	if (normalization_changed != NULL)
+		*normalization_changed = false;
 
 	if (max_token_length == 0)
 		return DatumGetTSVector(DirectFunctionCall2Coll(
@@ -427,7 +443,8 @@ tp_make_tsvector(text *input, Oid text_config_oid, int max_token_length)
 			&parsed,
 			VARDATA_ANY(input),
 			VARSIZE_ANY_EXHDR(input),
-			max_token_length);
+			max_token_length,
+			normalization_changed);
 
 	return make_tsvector(&parsed);
 }

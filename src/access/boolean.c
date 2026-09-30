@@ -189,7 +189,7 @@ tp_boolean_find_term(TpBooleanEvalState *state, const char *lexeme, int length)
 }
 
 static TpBooleanEvalState
-tp_boolean_extract_terms(TSQuery query, int max_token_length)
+tp_boolean_extract_terms(TSQuery query, bool normalization_changed)
 {
 	TpBooleanEvalState state;
 	QueryItem		  *items	= GETQUERY(query);
@@ -199,8 +199,8 @@ tp_boolean_extract_terms(TSQuery query, int max_token_length)
 	state.query = query;
 	state.terms = palloc0(Max(query->size, 1) * sizeof(TpBooleanTerm));
 	state.exact_operand_count = tp_boolean_query_exact_operand_count(query);
-	state.max_token_length	  = max_token_length;
-	state.requires_recheck	  = max_token_length != TP_LEGACY_MAX_TOKEN_LENGTH;
+	state.max_token_length	  = normalization_changed ? 1 : 0;
+	state.requires_recheck	  = normalization_changed;
 
 	for (int i = 0; i < query->size; i++)
 	{
@@ -219,7 +219,7 @@ tp_boolean_extract_terms(TSQuery query, int max_token_length)
 			const char	  *lexeme  = operands + operand->distance;
 			TpBooleanTerm *term;
 
-			if (max_token_length != TP_LEGACY_MAX_TOKEN_LENGTH)
+			if (normalization_changed)
 				continue;
 
 			/*
@@ -880,7 +880,8 @@ tp_boolean_execute(IndexScanDesc scan, TpLocalIndexState *index_state)
 	tp_boolean_check_config(scan->indexRelation, metap);
 
 	state = tp_boolean_extract_terms(
-			so->boolean_query, metap->max_token_length);
+			so->boolean_query,
+			(metap->capabilities & TP_METAPAGE_NORMALIZATION_CHANGED) != 0);
 	if (state.exact_operand_count > TP_BOOLEAN_MAX_EXACT_OPERANDS)
 	{
 		tp_release_index_lock(index_state);

@@ -48,6 +48,7 @@ typedef struct TpParallelWorkerResult
 	uint64 total_docs; /* Documents indexed */
 	uint64 total_len;  /* Sum of document lengths */
 	uint64 tuples_scanned;
+	bool   normalization_changed;
 
 	/* Per-segment info (all L0, BufFile offsets) */
 	uint32 final_segment_count;

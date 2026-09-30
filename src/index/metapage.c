@@ -9,6 +9,7 @@
  */
 #include <postgres.h>
 
+#include <access/generic_xlog.h>
 #include <miscadmin.h>
 #include <nodes/parsenodes.h>
 #include <nodes/pg_list.h>
@@ -86,6 +87,32 @@ tp_check_level_count_increment(TpIndexMetaPage metap, uint32 level)
 				(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
 				 errmsg("bm25 segment count limit reached at level %u",
 						level)));
+}
+
+void
+tp_mark_normalization_changed(Relation index)
+{
+	Buffer			  metabuf;
+	GenericXLogState *state;
+	Page			  page;
+	TpIndexMetaPage	  metap;
+
+	metabuf = ReadBuffer(index, TP_METAPAGE_BLKNO);
+	LockBuffer(metabuf, BUFFER_LOCK_EXCLUSIVE);
+	metap = (TpIndexMetaPage)PageGetContents(BufferGetPage(metabuf));
+	if ((metap->capabilities & TP_METAPAGE_NORMALIZATION_CHANGED) != 0)
+	{
+		UnlockReleaseBuffer(metabuf);
+		return;
+	}
+
+	state = GenericXLogStart(index);
+	page  = GenericXLogRegisterBuffer(state, metabuf, 0);
+	metap = (TpIndexMetaPage)PageGetContents(page);
+	tp_metapage_upgrade_to_current(index, page);
+	metap->capabilities |= TP_METAPAGE_NORMALIZATION_CHANGED;
+	GenericXLogFinish(state);
+	UnlockReleaseBuffer(metabuf);
 }
 
 static void

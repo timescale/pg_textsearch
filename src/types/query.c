@@ -925,7 +925,8 @@ bm25_text_bm25query_score(PG_FUNCTION_ARGS)
 		query_tsvector = tp_make_tsvector(
 				cstring_to_text(query_text),
 				text_config_oid,
-				metap->max_token_length);
+				metap->max_token_length,
+				NULL);
 		query_entries		= ARRPTR(query_tsvector);
 		query_lexemes_start = STRPTR(query_tsvector);
 
@@ -934,6 +935,7 @@ bm25_text_bm25query_score(PG_FUNCTION_ARGS)
 				text_arg,
 				text_config_oid,
 				metap->max_token_length,
+				NULL,
 				&doc_terms,
 				&doc_frequencies,
 				&doc_term_count);

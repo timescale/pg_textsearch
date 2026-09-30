@@ -577,18 +577,23 @@ run `REINDEX INDEX` before using the index; pg_textsearch rejects access while
 an explicit option differs from the stored setting.
 
 Native `text @@ tsquery` evaluation has no per-index normalization context.
-For truncation-enabled indexes, Boolean index scans therefore request heap
-rechecks and use all indexed documents as the candidate superset. Even a short
-query operand is not safe to narrow through truncated postings because a text
-search dictionary can normalize the full raw token differently from its
-truncated prefix. Boolean index scans can therefore approach a full indexed
-document scan before the heap recheck. This preserves sequential/index result
-equivalence without false negatives.
+The index records whether any raw token or normalized lexeme was actually
+clipped. While no clipping has occurred, Boolean scans retain normal selective
+posting-list candidates. Once clipping occurs, the flag remains set until
+REINDEX and Boolean scans request heap rechecks over all indexed documents.
+Even a short query operand is not safe to narrow through truncated postings
+because a text search dictionary can normalize the full raw token differently
+from its truncated prefix. The fallback can therefore approach a full indexed
+document scan before the heap recheck and is costed as a full index traversal
+plus candidate materialization. This preserves sequential/index result
+equivalence without penalizing indexes whose normalization never changed.
 
-pg_textsearch splits raw inputs larger than 256KB at whitespace or
-multibyte-character boundaries before tokenization, then merges the term
-frequencies. Text arrays are flattened with spaces before this processing and
-do not preserve element boundaries.
+pg_textsearch splits raw inputs larger than 256KB at whitespace boundaries
+before tokenization, then merges the term frequencies. A whitespace-free run
+is kept intact even when it exceeds 256KB so one logical token and overlapping
+URL or hyphen components are not normalized as independent fragments. Text
+arrays are flattened with spaces before this processing and do not preserve
+element boundaries.
 
 ### PL/pgSQL and Stored Procedures
 

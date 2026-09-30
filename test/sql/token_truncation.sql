@@ -98,6 +98,53 @@ FROM (
         'http://example.com/' || repeat('x', 2200),
         'trunc_default_idx')
 ) ranked;
+
+CREATE TABLE trunc_oversized (
+    id integer PRIMARY KEY,
+    body text NOT NULL
+);
+INSERT INTO trunc_oversized VALUES
+    (1, repeat('a', 256 * 1024) ||
+        repeat('b', 256 * 1024) ||
+        repeat('a', 256 * 1024)),
+    (2, 'http://example.com/' || repeat('x', 300000) ||
+        ' continuation'),
+    (3, repeat('a', 16));
+CREATE INDEX trunc_oversized_idx ON trunc_oversized USING bm25(body)
+    WITH (text_config = 'simple', max_token_length = 16);
+
+EXPLAIN (COSTS OFF)
+SELECT id
+FROM trunc_oversized
+ORDER BY body <@> to_bm25query(
+    'aaaaaaaaaaaaaaaa', 'trunc_oversized_idx')
+LIMIT 1;
+
+SELECT (
+    SELECT body <@> to_bm25query(
+        'aaaaaaaaaaaaaaaa', 'trunc_oversized_idx')
+    FROM trunc_oversized WHERE id = 1
+) = (
+    SELECT body <@> to_bm25query(
+        'aaaaaaaaaaaaaaaa', 'trunc_oversized_idx')
+    FROM trunc_oversized WHERE id = 3
+) AS oversized_token_has_one_prefix;
+SELECT count(*) = 0 AS oversized_token_has_no_suffix_match
+FROM (
+    SELECT id
+    FROM trunc_oversized
+    ORDER BY body <@> to_bm25query(
+        'bbbbbbbbbbbbbbbb', 'trunc_oversized_idx')
+) ranked;
+SELECT array_agg(id ORDER BY id) = ARRAY[2]
+       AS oversized_url_keeps_following_token
+FROM (
+    SELECT id
+    FROM trunc_oversized
+    ORDER BY body <@> to_bm25query(
+        'continuation', 'trunc_oversized_idx')
+) ranked;
+
 SELECT count(*) = 0 AS tokenless_input_stays_empty
 FROM (
     SELECT id
@@ -184,6 +231,37 @@ INSERT INTO trunc_boolean VALUES
 SET default_text_search_config = 'pg_catalog.simple';
 CREATE INDEX trunc_boolean_idx ON trunc_boolean USING bm25(body)
     WITH (text_config = 'simple', max_token_length = 16);
+
+CREATE TABLE trunc_boolean_clean (
+    id integer PRIMARY KEY,
+    body text NOT NULL
+);
+INSERT INTO trunc_boolean_clean
+SELECT g, CASE WHEN g = 7777 THEN 'needle' ELSE 'common' END
+FROM generate_series(1, 10000) g;
+CREATE INDEX trunc_boolean_clean_idx ON trunc_boolean_clean USING bm25(body)
+    WITH (text_config = 'simple');
+ANALYZE trunc_boolean_clean;
+
+RESET enable_indexscan;
+RESET enable_bitmapscan;
+RESET enable_seqscan;
+EXPLAIN (COSTS OFF)
+SELECT id
+FROM trunc_boolean_clean
+WHERE body @@ to_tsquery('simple', 'needle');
+SELECT array_agg(id ORDER BY id) = ARRAY[7777]
+       AS unchanged_normalization_stays_selective
+FROM trunc_boolean_clean
+WHERE body @@ to_tsquery('simple', 'needle');
+
+INSERT INTO trunc_boolean_clean VALUES
+    (10001, repeat('z', 300));
+ANALYZE trunc_boolean_clean;
+EXPLAIN (COSTS OFF)
+SELECT id
+FROM trunc_boolean_clean
+WHERE body @@ to_tsquery('simple', 'needle');
 
 SET enable_indexscan = off;
 SET enable_bitmapscan = off;
@@ -308,6 +386,8 @@ LIMIT 1;
 
 DROP TABLE trunc_urls;
 DROP TABLE trunc_boundaries;
+DROP TABLE trunc_oversized;
 DROP TABLE trunc_boolean;
+DROP TABLE trunc_boolean_clean;
 DROP TABLE trunc_boolean_dictionary;
 DROP EXTENSION pg_textsearch CASCADE;

@@ -1197,6 +1197,7 @@ tp_tokenize_chunk(
 		int			chunk_len,
 		Oid			text_config_oid,
 		int			max_token_length,
+		bool	   *normalization_changed,
 		char	 ***terms_out,
 		int32	  **frequencies_out,
 		int		   *term_count_out)
@@ -1207,7 +1208,11 @@ tp_tokenize_chunk(
 
 	chunk_text = cstring_to_text_with_len(chunk, chunk_len);
 
-	tsvector = tp_make_tsvector(chunk_text, text_config_oid, max_token_length);
+	tsvector = tp_make_tsvector(
+			chunk_text,
+			text_config_oid,
+			max_token_length,
+			normalization_changed);
 
 	doc_length = tp_extract_terms_from_tsvector(
 			tsvector, terms_out, frequencies_out, term_count_out);
@@ -1219,20 +1224,19 @@ tp_tokenize_chunk(
 }
 
 /*
- * Find a chunk boundary inside the first `target` bytes of `data`.
+ * Find a token-safe chunk boundary near `target`.
  *
  * Prefers the byte index just past the last ASCII whitespace at or
- * before `target`. If no whitespace is found, returns the largest
- * UTF-8/multibyte codepoint boundary <= target (and never less than one
- * full character).
+ * before `target`. If none exists, extends through the current
+ * whitespace-free run so one parser token and its overlapping URL or
+ * hyphen components are never split into independently normalized chunks.
  *
- * `data` must be at least `target` bytes long. Returns 1..target.
+ * `data` must be at least `target` bytes long. Returns 1..length.
  */
 static int
-tp_find_chunk_boundary(const char *data, int target)
+tp_find_chunk_boundary(const char *data, int length, int target)
 {
 	int i;
-	int pos;
 
 	for (i = target; i > 0; i--)
 	{
@@ -1241,24 +1245,14 @@ tp_find_chunk_boundary(const char *data, int target)
 			return i;
 	}
 
-	pos = 0;
-	while (pos < target)
+	for (i = target; i < length; i++)
 	{
-		int mblen = pg_mblen(data + pos);
-		if (mblen <= 0)
-			mblen = 1;
-		if (pos + mblen > target)
-			break;
-		pos += mblen;
+		char c = data[i];
+		if (c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '\f')
+			return i + 1;
 	}
-	if (pos == 0)
-	{
-		/* Single character is larger than target; emit it anyway. */
-		pos = pg_mblen(data);
-		if (pos <= 0)
-			pos = 1;
-	}
-	return pos;
+
+	return length;
 }
 
 typedef struct TpTermEntry
@@ -1340,6 +1334,7 @@ tp_tokenize_text(
 		text   *document_text,
 		Oid		text_config_oid,
 		int		max_token_length,
+		bool   *normalization_changed,
 		char ***terms_out,
 		int32 **frequencies_out,
 		int	   *term_count_out)
@@ -1351,6 +1346,10 @@ tp_tokenize_text(
 	int			 cap;
 	int			 used;
 	TpTermEntry *acc;
+	bool		 changed = false;
+
+	if (normalization_changed != NULL)
+		*normalization_changed = false;
 
 	/*
 	 * Single-chunk fast path: pass document_text straight into
@@ -1362,7 +1361,10 @@ tp_tokenize_text(
 		TSVector tsvector;
 
 		tsvector = tp_make_tsvector(
-				document_text, text_config_oid, max_token_length);
+				document_text,
+				text_config_oid,
+				max_token_length,
+				normalization_changed);
 		return tp_extract_terms_from_tsvector(
 				tsvector, terms_out, frequencies_out, term_count_out);
 	}
@@ -1379,7 +1381,9 @@ tp_tokenize_text(
 		int	   take		 = remaining <= TP_TSVECTOR_CHUNK_BYTES
 								 ? remaining
 								 : tp_find_chunk_boundary(
-								   data + offset, TP_TSVECTOR_CHUNK_BYTES);
+								   data + offset,
+								   remaining,
+								   TP_TSVECTOR_CHUNK_BYTES);
 		char **chunk_terms;
 		int32 *chunk_freqs;
 		int	   chunk_term_count;
@@ -1390,6 +1394,7 @@ tp_tokenize_text(
 				take,
 				text_config_oid,
 				max_token_length,
+				&changed,
 				&chunk_terms,
 				&chunk_freqs,
 				&chunk_term_count);
@@ -1412,6 +1417,8 @@ tp_tokenize_text(
 			pfree(chunk_freqs);
 
 		offset += take;
+		if (changed && normalization_changed != NULL)
+			*normalization_changed = true;
 	}
 
 	tp_merge_term_entries(
@@ -1442,6 +1449,7 @@ tp_process_document_text(
 	int32 *frequencies;
 	int	   term_count;
 	int	   doc_length;
+	bool   normalization_changed;
 
 	if (!document_text || !index_state)
 		return false;
@@ -1462,6 +1470,7 @@ tp_process_document_text(
 			document_text,
 			text_config_oid,
 			max_token_length,
+			&normalization_changed,
 			&terms,
 			&frequencies,
 			&term_count);
@@ -1480,6 +1489,8 @@ tp_process_document_text(
 		 * During index build, we acquire once and hold for the entire build.
 		 */
 		tp_acquire_index_lock(index_state, LW_EXCLUSIVE);
+		if (normalization_changed)
+			tp_mark_normalization_changed(index_rel);
 
 		tp_add_document_terms(
 				index_state,
@@ -1526,6 +1537,7 @@ typedef struct TpBuildCallbackState
 	int				   max_token_length;
 	MemoryContext	   per_doc_ctx;
 	bool			   is_text_array;
+	bool			   normalization_changed;
 	uint64			   total_docs;
 	uint64			   total_len;
 	uint64			   tuples_done;
@@ -1552,6 +1564,7 @@ tp_build_callback(
 	int32				 *frequencies;
 	int					  term_count;
 	int					  doc_length;
+	bool				  normalization_changed;
 	MemoryContext		  oldctx;
 
 	/* Suppress unused parameter warnings for callback signature */
@@ -1581,11 +1594,13 @@ tp_build_callback(
 			document_text,
 			bs->text_config_oid,
 			bs->max_token_length,
+			&normalization_changed,
 			&terms,
 			&frequencies,
 			&term_count);
 
 	MemoryContextSwitchTo(oldctx);
+	bs->normalization_changed |= normalization_changed;
 
 	tp_build_context_add_document(
 			bs->build_ctx, terms, frequencies, term_count, doc_length, ctid);
@@ -1848,16 +1863,17 @@ tp_build(Relation heap, Relation index, IndexInfo *indexInfo)
 		build_ctx = tp_build_context_create(budget);
 
 		/* Initialize callback state */
-		bs.build_ctx		= build_ctx;
-		bs.index_state		= index_state;
-		bs.index			= index;
-		bs.text_config_oid	= text_config_oid;
-		bs.max_token_length = max_token_length;
-		bs.is_text_array	= is_text_array;
-		bs.per_doc_ctx		= AllocSetContextCreate(
-				 CurrentMemoryContext,
-				 "build per-doc temp",
-				 ALLOCSET_DEFAULT_SIZES);
+		bs.build_ctx			 = build_ctx;
+		bs.index_state			 = index_state;
+		bs.index				 = index;
+		bs.text_config_oid		 = text_config_oid;
+		bs.max_token_length		 = max_token_length;
+		bs.is_text_array		 = is_text_array;
+		bs.normalization_changed = false;
+		bs.per_doc_ctx			 = AllocSetContextCreate(
+				  CurrentMemoryContext,
+				  "build per-doc temp",
+				  ALLOCSET_DEFAULT_SIZES);
 		bs.total_docs  = 0;
 		bs.total_len   = 0;
 		bs.tuples_done = 0;
@@ -1884,6 +1900,9 @@ tp_build(Relation heap, Relation index, IndexInfo *indexInfo)
 				tp_build_callback,
 				&bs,
 				NULL);
+
+		if (bs.normalization_changed)
+			tp_mark_normalization_changed(index);
 
 		/* Accumulate final batch stats */
 		total_docs = bs.total_docs + build_ctx->num_docs;
@@ -2056,15 +2075,15 @@ tp_insert(
 		IndexInfo		*indexInfo)
 {
 	text			  *document_text;
-	Datum			   vector_datum;
 	TpVector		  *tpvec;
-	TpVectorEntry	  *vector_entry;
 	int32			  *frequencies = NULL;
 	int				   term_count;
 	int				   doc_length = 0;
 	int				   i;
 	TpLocalIndexState *index_state;
-	char			 **terms = NULL;
+	char			 **terms				 = NULL;
+	bool			   normalization_changed = false;
+	TpIndexMetaPage	   metap;
 
 	(void)checkUnique;	  /* unused */
 	(void)indexUnchanged; /* unused */
@@ -2084,49 +2103,31 @@ tp_insert(
 		else
 			document_text = DatumGetTextPP(values[0]);
 	}
+	metap	   = tp_get_metapage(index);
+	doc_length = tp_tokenize_text(
+			document_text,
+			metap->text_config_oid,
+			metap->max_token_length,
+			&normalization_changed,
+			&terms,
+			&frequencies,
+			&term_count);
+	pfree(metap);
+
 	{
 		char *index_name;
-		char *schema_name;
-		Oid	  namespace_oid = RelationGetNamespace(index);
+		char *schema_name = get_namespace_name(RelationGetNamespace(index));
 
-		schema_name = get_namespace_name(namespace_oid);
-		index_name	= quote_qualified_identifier(
-				 schema_name, RelationGetRelationName(index));
-
-		vector_datum = DirectFunctionCall2(
-				to_tpvector,
-				PointerGetDatum(document_text),
-				CStringGetTextDatum(index_name));
-
+		index_name = quote_qualified_identifier(
+				schema_name, RelationGetRelationName(index));
+		tpvec = create_tpvector_from_strings(
+				index_name, term_count, (const char **)terms, frequencies);
 		pfree(index_name);
 		pfree(schema_name);
 	}
-	tpvec = (TpVector *)DatumGetPointer(vector_datum);
 
-	/* Extract terms and frequencies */
-	term_count = tpvec->entry_count;
-	if (term_count > 0)
-	{
-		terms		= palloc(term_count * sizeof(char *));
-		frequencies = palloc(term_count * sizeof(int32));
-
-		vector_entry = TPVECTOR_ENTRIES_PTR(tpvec);
-		for (i = 0; i < term_count; i++)
-		{
-			TpVectorEntryView v;
-			char			 *lexeme;
-
-			vector_entry = tpvector_entry_decode_advance(vector_entry, &v);
-
-			lexeme = palloc(v.lexeme_len + 1);
-			memcpy(lexeme, v.lexeme, v.lexeme_len);
-			lexeme[v.lexeme_len] = '\0';
-
-			terms[i]	   = lexeme;
-			frequencies[i] = (int32)v.frequency;
-			doc_length += v.frequency;
-		}
-	}
+	if (normalization_changed)
+		tp_mark_normalization_changed(index);
 
 	/* --- Phase 2: Shared-memory + chain-page work (under lock) --- */
 	index_state = tp_get_local_index_state(RelationGetRelid(index));
@@ -2190,6 +2191,7 @@ tp_insert(
 		pfree(terms);
 		pfree(frequencies);
 	}
+	pfree(tpvec);
 
 	return true;
 }

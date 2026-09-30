@@ -298,6 +298,7 @@ tp_parallel_build_worker_main(dsm_segment *seg, shm_toc *toc)
 		int32	   *frequencies;
 		int			term_count;
 		int			doc_length;
+		bool		normalization_changed;
 
 		/* Evaluate index expression (or extract plain column) */
 		econtext->ecxt_scantuple = slot;
@@ -331,11 +332,13 @@ tp_parallel_build_worker_main(dsm_segment *seg, shm_toc *toc)
 				document_text,
 				shared->text_config_oid,
 				shared->max_token_length,
+				&normalization_changed,
 				&terms,
 				&frequencies,
 				&term_count);
 
 		MemoryContextSwitchTo(oldctx);
+		my_result->normalization_changed |= normalization_changed;
 
 		tp_build_context_add_document(
 				build_ctx, terms, frequencies, term_count, doc_length, ctid);
@@ -503,8 +506,9 @@ tp_build_parallel(
 	Snapshot			   snapshot;
 	Size				   shmem_size;
 	int					   launched;
-	uint64				   total_docs = 0;
-	uint64				   total_len  = 0;
+	uint64				   total_docs			 = 0;
+	uint64				   total_len			 = 0;
+	bool				   normalization_changed = false;
 
 	/* Workers reconstruct IndexInfo via BuildIndexInfo() */
 	(void)indexInfo;
@@ -640,6 +644,7 @@ tp_build_parallel(
 						(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
 						 errmsg("pg_textsearch: document count overflow")));
 			total_len += results[i].total_len;
+			normalization_changed |= results[i].normalization_changed;
 		}
 		if (!tp_document_count_fits(total_docs))
 			ereport(ERROR,
@@ -852,6 +857,8 @@ tp_build_parallel(
 				metap->level_counts[0] = 1;
 				metap->total_docs	   = total_docs;
 				metap->total_len	   = total_len;
+				if (normalization_changed)
+					metap->capabilities |= TP_METAPAGE_NORMALIZATION_CHANGED;
 
 				GenericXLogFinish(state);
 				UnlockReleaseBuffer(metabuf);
@@ -892,6 +899,8 @@ tp_build_parallel(
 
 			metap->total_docs = total_docs;
 			metap->total_len  = total_len;
+			if (normalization_changed)
+				metap->capabilities |= TP_METAPAGE_NORMALIZATION_CHANGED;
 
 			GenericXLogFinish(state);
 			UnlockReleaseBuffer(metabuf);

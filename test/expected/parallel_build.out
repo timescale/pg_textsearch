@@ -68,6 +68,19 @@ ORDER BY content <@> to_bm25query(repeat('q', 40), 'parallel_test_1worker_idx'))
           100000
 (1 row)
 
+RESET enable_seqscan;
+EXPLAIN (COSTS OFF)
+SELECT id FROM parallel_test_1worker
+WHERE content @@ to_tsquery('english', 'missingterm');
+                       QUERY PLAN                        
+---------------------------------------------------------
+ Gather
+   Workers Planned: 2
+   ->  Parallel Seq Scan on parallel_test_1worker
+         Filter: (content @@ '''missingterm'''::tsquery)
+(4 rows)
+
+SET enable_seqscan = off;
 REINDEX INDEX parallel_test_1worker_idx;
 NOTICE:  BM25 index build started for relation parallel_test_1worker_idx
 NOTICE:  Using text search configuration: english
