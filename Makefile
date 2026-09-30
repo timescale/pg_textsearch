@@ -98,7 +98,7 @@ REGRESS = abort aerodocs basic binary_io bmw bmw_skip_advance boolean_queries bu
 INJECTION_REGRESS = scoring_injection merge_injection compaction_injection \
 	compaction_error_injection \
 	force_merge_injection segment_reclaim_injection \
-	vacuum_rebuild_injection query_hint_roundtrip
+	vacuum_rebuild_injection query_hint_roundtrip memtable_stale_tail_injection
 REGRESS_OPTS = --inputdir=test --outputdir=test
 
 PG_CONFIG ?= pg_config

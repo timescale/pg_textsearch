@@ -152,6 +152,9 @@ jobs:
         echo "Running SQL regression tests under sanitizer..."
         make installcheck PGHOST=$PWD/tmp_sanitizer_test PGPORT=55433
 
+        echo "Running stale memtable-tail tests under sanitizer..."
+        timeout 120s make test-memtable-stale-tail
+
         # Run shell-based tests under sanitizer (more likely to find memory issues)
         echo "Running spill-time inline compaction locking tests under sanitizer..."
         timeout 600s bash -c "

@@ -528,6 +528,7 @@ tp_memtable_append(
 		CHECK_FOR_INTERRUPTS();
 
 		tail_blkno = memtable_read_tail_blkno(rel);
+		TP_INJECTION_POINT(TP_INJECTION_MEMTABLE_TAIL_READ);
 
 		/*
 		 * An extend publishes old_tail.next and meta.tail under both

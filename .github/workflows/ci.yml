@@ -472,6 +472,7 @@ jobs:
           exit 1
         fi
         pg_ctl stop -D tmp_check_shared/data
+        make test-memtable-stale-tail
         make test-injection-shell
 
   build-msvc:
@@ -748,6 +749,9 @@ jobs:
 
         echo "Running SQL regression tests under sanitizer..."
         make installcheck PGHOST=$PWD/tmp_sanitizer_test PGPORT=55433
+
+        echo "Running stale memtable-tail tests under sanitizer..."
+        timeout 120s make test-memtable-stale-tail
 
         # Run shell-based tests under sanitizer (more likely to find memory issues)
         echo "Running spill-time inline compaction locking tests under sanitizer..."

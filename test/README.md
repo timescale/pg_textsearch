@@ -29,6 +29,7 @@ The Makefile defines these entry points:
 | `make test-shell` | Concurrency, recovery, segment, CIC, multi-index, and reindex |
 | `make test-all` | `make test` plus `make test-shell` |
 | `make test-concurrency` | Multi-backend concurrency and VACUUM/merge races |
+| `make test-memtable-stale-tail` | Corrupt-tail rejection and REINDEX repair |
 | `make test-recovery` | Crash, shutdown-spill, reclaim, and compaction recovery |
 | `make test-segment` | Multi-backend segment tests |
 | `make test-stress` | Long-running stress workload |
@@ -65,6 +66,11 @@ entirely.
 
 CI builds PostgreSQL 17, 18, and 19 with injection points enabled and caches
 the installed prefixes. The sanitizer builds use the same configure option.
+
+`memtable_stale_tail_injection` pauses normal and oversized writers after
+reading the tail, advances it from another session, then requires both writers
+to retry successfully. `make test-memtable-stale-tail` covers a corrupt tail
+and REINDEX repair without requiring injection points.
 
 ## Sanitizers
 

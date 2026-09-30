@@ -1,0 +1,111 @@
+\pset format unaligned
+SET client_min_messages = warning;
+CREATE EXTENSION pg_textsearch;
+CREATE EXTENSION injection_points;
+CREATE EXTENSION dblink;
+SET pg_textsearch.memtable_pages_threshold = 0;
+SET pg_textsearch.bulk_load_threshold = 0;
+
+CREATE TABLE tail_retry (id int, body text);
+CREATE INDEX tail_retry_idx ON tail_retry USING bm25(body)
+    WITH (text_config = 'simple', compaction = 'manual');
+INSERT INTO tail_retry VALUES (0, 'retry seed');
+
+SELECT dblink_connect('retry_writer', format(
+    'host=%s port=%s dbname=%s',
+    current_setting('unix_socket_directories'),
+    current_setting('port'), current_database()));
+SELECT dblink_exec('retry_writer',
+    'SET pg_textsearch.memtable_pages_threshold = 0');
+SELECT dblink_exec('retry_writer',
+    'SET pg_textsearch.bulk_load_threshold = 0');
+SELECT * FROM dblink('retry_writer',
+    'SELECT injection_points_set_local()') AS t(result text);
+
+-- Force both append paths to encounter a legitimately advanced tail.
+DO $$
+DECLARE
+    point text := 'pg-textsearch-memtable-tail-read';
+    writer_pid int;
+    terms int;
+    old_tail bigint;
+    new_tail bigint;
+    inserted_id int;
+    deadline timestamptz;
+BEGIN
+    SELECT pid INTO writer_pid
+    FROM dblink('retry_writer', 'SELECT pg_backend_pid()') AS t(pid int);
+    FOREACH terms IN ARRAY ARRAY[60, 1000] LOOP
+        SELECT blkno INTO STRICT old_tail
+        FROM bm25_memtable_chain('tail_retry_idx') WHERE next_block IS NULL;
+        PERFORM result FROM dblink('retry_writer', format(
+            'SELECT injection_points_attach(%L, %L)', point, 'wait')
+        ) AS t(result text);
+        PERFORM dblink_send_query('retry_writer', format($q$
+            INSERT INTO tail_retry
+            SELECT %s, 'retry ' || string_agg(md5(j::text), ' ')
+            FROM generate_series(1, %s) j RETURNING id
+        $q$, terms, terms));
+        deadline := clock_timestamp() + interval '30 seconds';
+        LOOP
+            PERFORM pg_stat_clear_snapshot();
+            EXIT WHEN EXISTS (
+                SELECT 1 FROM pg_stat_activity
+                WHERE pid = writer_pid
+                  AND wait_event_type = 'InjectionPoint'
+                  AND wait_event = point
+            );
+            IF dblink_is_busy('retry_writer') = 0 THEN
+                RAISE EXCEPTION 'writer finished without the tail-read pause';
+            END IF;
+            IF clock_timestamp() >= deadline THEN
+                RAISE EXCEPTION 'timed out waiting for the tail-read pause';
+            END IF;
+            PERFORM pg_sleep(0.01);
+        END LOOP;
+
+        -- An oversized append always publishes a new tail.
+        INSERT INTO tail_retry
+        SELECT -terms, 'retry ' || string_agg(md5(j::text), ' ')
+        FROM generate_series(1, 1000) j;
+        SELECT blkno INTO STRICT new_tail
+        FROM bm25_memtable_chain('tail_retry_idx') WHERE next_block IS NULL;
+        IF new_tail = old_tail OR NOT EXISTS (
+            SELECT 1 FROM bm25_memtable_chain('tail_retry_idx')
+            WHERE blkno = old_tail AND next_block IS NOT NULL
+        ) THEN
+            RAISE EXCEPTION 'concurrent append did not advance the old tail';
+        END IF;
+
+        -- Detach before waking so the metapage reread cannot pause again.
+        PERFORM injection_points_detach(point);
+        PERFORM injection_points_wakeup(point);
+        deadline := clock_timestamp() + interval '30 seconds';
+        WHILE dblink_is_busy('retry_writer') <> 0 LOOP
+            IF clock_timestamp() >= deadline THEN
+                RAISE EXCEPTION 'writer did not retry the advanced tail';
+            END IF;
+            PERFORM pg_sleep(0.01);
+        END LOOP;
+        SELECT id INTO STRICT inserted_id
+        FROM dblink_get_result('retry_writer') AS t(id int);
+        IF inserted_id <> terms THEN
+            RAISE EXCEPTION 'retry inserted the wrong document';
+        END IF;
+        PERFORM id FROM dblink_get_result('retry_writer') AS t(id int);
+    END LOOP;
+END
+$$;
+SELECT dblink_disconnect('retry_writer');
+
+SELECT array_agg(id ORDER BY id) FROM (
+    SELECT id FROM tail_retry
+    ORDER BY body <@> to_bm25query('retry', 'tail_retry_idx') LIMIT 10
+) ranked;
+
+DROP TABLE tail_retry;
+RESET pg_textsearch.memtable_pages_threshold;
+RESET pg_textsearch.bulk_load_threshold;
+DROP EXTENSION dblink;
+DROP EXTENSION injection_points;
+DROP EXTENSION pg_textsearch;
