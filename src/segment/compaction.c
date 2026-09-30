@@ -952,6 +952,7 @@ tp_metapage_identity_matches(
 		const TpIndexMetaPageData *snapshot)
 {
 	if (current->version != TP_METAPAGE_VERSION &&
+		current->version != TP_METAPAGE_VERSION_V9 &&
 		current->version != TP_METAPAGE_VERSION_V8 &&
 		current->version != TP_METAPAGE_VERSION_V7 &&
 		current->version != TP_METAPAGE_VERSION_V6)
