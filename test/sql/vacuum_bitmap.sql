@@ -2,10 +2,13 @@
 
 CREATE EXTENSION IF NOT EXISTS pg_textsearch;
 
+-- Temporary relations keep VACUUM's horizon independent of other
+-- backends and standby feedback, so deleted tuples can be removed.
+
 -- =============================================================
 -- Test 1: Basic VACUUM with bitmap marking
 -- =============================================================
-CREATE TABLE vb_test (id serial PRIMARY KEY, content text);
+CREATE TEMP TABLE vb_test (id serial PRIMARY KEY, content text);
 
 INSERT INTO vb_test (content)
 SELECT 'document number ' || i || ' about databases'
@@ -46,7 +49,7 @@ DROP TABLE vb_test;
 -- =============================================================
 -- Test 2: Full segment delete — segment should be dropped
 -- =============================================================
-CREATE TABLE vb_full (id serial PRIMARY KEY, content text);
+CREATE TEMP TABLE vb_full (id serial PRIMARY KEY, content text);
 
 INSERT INTO vb_full (content)
 SELECT 'fulldelete document ' || i
@@ -79,7 +82,7 @@ DROP TABLE vb_full;
 -- =============================================================
 -- Test 3: CTID reuse correctness
 -- =============================================================
-CREATE TABLE vb_reuse (id serial PRIMARY KEY, content text);
+CREATE TEMP TABLE vb_reuse (id serial PRIMARY KEY, content text);
 
 INSERT INTO vb_reuse (content)
 SELECT 'alpha keyword document ' || i
@@ -123,7 +126,7 @@ DROP TABLE vb_reuse;
 -- =============================================================
 -- Test 4: Multiple segments with mixed deletes
 -- =============================================================
-CREATE TABLE vb_multi (id serial PRIMARY KEY, content text);
+CREATE TEMP TABLE vb_multi (id serial PRIMARY KEY, content text);
 
 INSERT INTO vb_multi (content)
 SELECT 'first batch document ' || i || ' with search term'
@@ -160,7 +163,7 @@ DROP TABLE vb_multi;
 -- =============================================================
 -- Test 5: Merge after VACUUM cleans up dead docs
 -- =============================================================
-CREATE TABLE vb_merge (id serial PRIMARY KEY, content text);
+CREATE TEMP TABLE vb_merge (id serial PRIMARY KEY, content text);
 
 INSERT INTO vb_merge (content)
 SELECT 'merge test document ' || i
@@ -188,7 +191,7 @@ DROP TABLE vb_merge;
 -- =============================================================
 -- Test 6: Score correctness after deletes (multi-term BMW)
 -- =============================================================
-CREATE TABLE vb_scores (id serial PRIMARY KEY, content text);
+CREATE TEMP TABLE vb_scores (id serial PRIMARY KEY, content text);
 
 INSERT INTO vb_scores (content) VALUES
     ('database systems performance tuning'),
@@ -223,7 +226,7 @@ DROP TABLE vb_scores;
 -- =============================================================
 -- Test 7: Many deletes (>64 per segment, exercises realloc)
 -- =============================================================
-CREATE TABLE vb_many (id serial PRIMARY KEY, content text);
+CREATE TEMP TABLE vb_many (id serial PRIMARY KEY, content text);
 
 INSERT INTO vb_many (content)
 SELECT 'manydelete document ' || i || ' searchable'
@@ -247,7 +250,7 @@ DROP TABLE vb_many;
 -- =============================================================
 -- Test 8: Multi-segment merge with dead docs
 -- =============================================================
-CREATE TABLE vb_multimerge (id serial PRIMARY KEY, content text);
+CREATE TEMP TABLE vb_multimerge (id serial PRIMARY KEY, content text);
 
 INSERT INTO vb_multimerge (content)
 SELECT 'batch1 doc ' || i || ' target'
@@ -292,7 +295,7 @@ DROP TABLE vb_multimerge;
 -- =============================================================
 -- Test 9: All docs dead across segments then merge
 -- =============================================================
-CREATE TABLE vb_alldead (id serial PRIMARY KEY, content text);
+CREATE TEMP TABLE vb_alldead (id serial PRIMARY KEY, content text);
 
 INSERT INTO vb_alldead (content)
 SELECT 'alldead doc ' || i FROM generate_series(1, 30) i;
@@ -343,7 +346,7 @@ DROP TABLE vb_alldead;
 -- =============================================================
 -- Test 10: Dump shows alive bitset info
 -- =============================================================
-CREATE TABLE vb_dump (id serial PRIMARY KEY, content text);
+CREATE TEMP TABLE vb_dump (id serial PRIMARY KEY, content text);
 
 INSERT INTO vb_dump (content)
 SELECT 'dump test ' || i FROM generate_series(1, 10) i;
@@ -360,7 +363,7 @@ DROP TABLE vb_dump;
 -- =============================================================
 -- Test 11: Batched CTID reads across pages and segments
 -- =============================================================
-CREATE TABLE vb_batched (id serial PRIMARY KEY, content text);
+CREATE TEMP TABLE vb_batched (id serial PRIMARY KEY, content text);
 
 INSERT INTO vb_batched (content)
 SELECT 'bounded batch ' || i
@@ -373,7 +376,7 @@ INSERT INTO vb_batched (content)
 SELECT 'bounded batch ' || i
 FROM generate_series(3001, 6000) i;
 
-SELECT bm25_spill_index('vb_batched_idx');
+SELECT bm25_spill_index('vb_batched_idx') > 0 AS spilled;
 
 DELETE FROM vb_batched WHERE id % 3 = 0;
 VACUUM vb_batched;

@@ -3,8 +3,8 @@
 -- Ensure extension is loaded
 CREATE EXTENSION IF NOT EXISTS pg_textsearch;
 
--- Create test table
-CREATE TABLE vacuum_test (
+-- Isolate physical cleanup from other backends and standby feedback.
+CREATE TEMP TABLE vacuum_test (
     id SERIAL PRIMARY KEY,
     content TEXT
 );

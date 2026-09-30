@@ -6639,7 +6639,7 @@ second: $(cat "${second_output}")"
 
 test_cross_statement_owner_lock_order() {
     local am_oid dependency_before first_output first_pid first_status=0
-    local gate_pid second_heap_oid second_output
+    local gate_pid second_heap_oid second_output second_waited=false
     local second_pid second_status=0
 
     first_output="${DATA_DIR}/cross-owner-first.out"
@@ -6769,13 +6769,21 @@ SQL
                     'lifecycle-cross-owner-second';")"
     fi
 
+    # Keep statement-level overlap, but serialize terminal reconciliation
+    # so contention on shared extension objects cannot defer either job.
+    if [ "${dependency_before}" = "0" ]; then
+        wait "${second_pid}" || second_status=$?
+        second_waited=true
+    fi
     sql_super -c "SELECT pg_catalog.pg_terminate_backend(pid)
       FROM pg_catalog.pg_stat_activity
       WHERE application_name =
             'lifecycle-cross-owner-gate';" >/dev/null
     wait "${gate_pid}" || true
     wait "${first_pid}" || first_status=$?
-    wait "${second_pid}" || second_status=$?
+    if [ "${second_waited}" = "false" ]; then
+        wait "${second_pid}" || second_status=$?
+    fi
     if [ "${first_status}" -ne 0 ] || [ "${second_status}" -ne 0 ] ||
         grep -Fq "deadlock detected" "${first_output}" ||
         grep -Fq "deadlock detected" "${second_output}"; then
