@@ -100,9 +100,12 @@ The default matrix compares 1,000 repeated terms, 500K/1M/2M unique terms,
 and the 1M case with a lower memory budget and with parallelism disabled.
 Every document also contains one shared term for a result-count check.
 Defaults are two workers and `maintenance_work_mem=64MB`; the low-budget
-and serial controls use 16MB. Builds verify the actual worker count and
-query results. Allow about a minute and 1.5 GiB of available memory for
-the unfixed implementation. Parallel cases require at least 100K rows.
+and serial controls use 16MB. Tables explicitly request the chosen worker
+count; builds verify the actual count and query results rather than silently
+comparing different degrees of parallelism. Allow about a minute and 1.5 GiB
+of available memory for the unfixed implementation. Parallel cases require
+at least 100K rows.
+The serial-only case accepts smaller corpora.
 
 Results go into a new `results/build_memory_<timestamp>/` directory:
 `summary.json` records versions, settings, timings, index sizes, sampled

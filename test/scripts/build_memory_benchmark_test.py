@@ -9,6 +9,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -99,6 +100,7 @@ class BuildMemoryTest(unittest.TestCase):
                 ["--workers", "-1"],
                 ["--interval", "nan"],
                 ["--rows", "100", "--workers", "2"],
+                ["--rows", "100", "--case", "serial", "--case", "unique"],
                 ["--terms", "0"],
                 ["--maintenance-work-mem", "64MB'; SELECT 1; --"],
             ):
@@ -110,6 +112,15 @@ class BuildMemoryTest(unittest.TestCase):
                     )
                     self.assertNotEqual(result.returncode, 0)
                     self.assertFalse(output.exists())
+
+    def test_small_serial_case_does_not_require_parallel_rows(self):
+        with patch.object(sys, "argv", [
+            str(RUNNER), "--case", "serial", "--rows", "100",
+        ]):
+            args = benchmark.parse_args()
+        self.assertEqual(args.cases, ["serial"])
+        self.assertEqual(args.rows, 100)
+        self.assertEqual(args.workers, 2)
 
     @unittest.skipUnless(sys.platform == "linux", "Linux runner")
     def test_missing_postgres_tools_record_failure(self):
@@ -130,6 +141,24 @@ class BuildMemoryTest(unittest.TestCase):
 @unittest.skipUnless(os.environ.get("BUILD_MEMORY_PG_CONFIG"),
                      "set BUILD_MEMORY_PG_CONFIG for cluster tests")
 class ClusterIntegrationTest(unittest.TestCase):
+    def test_default_parallel_degree_is_not_reduced_for_small_heap(self):
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "results"
+            result = subprocess.run(
+                [sys.executable, str(RUNNER), "--output", str(output),
+                 "--pg-config", os.environ["BUILD_MEMORY_PG_CONFIG"],
+                 "--case", "repeated"],
+                capture_output=True, text=True,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            summary = json.loads((output / "summary.json").read_text())
+            self.assertEqual(summary["status"], "ok")
+            case = summary["cases"][0]
+            self.assertLess(case["heap_bytes"], 24 * 2**20)
+            self.assertEqual(case["workers_requested"], 2)
+            self.assertEqual(case["workers_launched"], 2)
+            self.assertEqual(case["matching_docs"], 100000)
+
     def test_success_records_metrics_and_cleans_up(self):
         with tempfile.TemporaryDirectory() as directory:
             output = Path(directory) / "results"

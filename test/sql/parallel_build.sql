@@ -569,6 +569,39 @@ SELECT bm25_summarize_index('parallel_stream_parallel')
 RESET pg_textsearch.compress_segments;
 
 --------------------------------------------------------------------------------
+-- Test 15: Small worker budgets can produce more than 64 segments per worker
+--------------------------------------------------------------------------------
+SET max_parallel_maintenance_workers = 2;
+SET maintenance_work_mem = '4MB';
+
+CREATE TABLE parallel_many_segments AS
+SELECT i AS id, 'anchor ' || (
+    SELECT string_agg('t' || lpad(((i - 1) * 10 + j)::text, 9, '0'),
+                      ' ' ORDER BY j)
+    FROM generate_series(1, 10) j
+) AS content
+FROM generate_series(1, 100000) i;
+
+ALTER TABLE parallel_many_segments SET (parallel_workers=2);
+ANALYZE parallel_many_segments;
+
+CREATE INDEX parallel_many_segments_idx ON parallel_many_segments
+  USING bm25(content) WITH (text_config='simple');
+REINDEX INDEX parallel_many_segments_idx;
+
+SELECT count(*) AS all_worker_segments_indexed
+FROM (
+    SELECT id FROM parallel_many_segments
+    ORDER BY content <@> to_bm25query('anchor', 'parallel_many_segments_idx')
+    LIMIT 100000
+) ranked;
+
+SELECT id AS last_worker_document
+FROM parallel_many_segments
+ORDER BY content <@> to_bm25query('t001000000', 'parallel_many_segments_idx')
+LIMIT 10;
+
+--------------------------------------------------------------------------------
 -- Cleanup
 --------------------------------------------------------------------------------
 DROP TABLE parallel_test_serial CASCADE;
@@ -583,6 +616,7 @@ DROP TABLE parallel_test_below_threshold CASCADE;
 DROP TABLE parallel_test_empty CASCADE;
 DROP TABLE serial_test_empty CASCADE;
 DROP TABLE parallel_stream_test CASCADE;
+DROP TABLE parallel_many_segments CASCADE;
 DROP TABLE parallel_stream_expected;
 DROP TYPE parallel_stream_result;
 DROP EXTENSION pg_textsearch CASCADE;

@@ -78,6 +78,11 @@ all-live state. Empty-token documents still occupy the fieldnorm and CTID
 sections and contribute to corpus totals even when a worker segment has no
 dictionary terms.
 
+Each worker appends its segment directory to its temporary stream and reports
+only the directory offset and count through shared memory. Small build budgets
+can therefore produce more than 64 segments per worker without exhausting a
+fixed shared-memory reporting array.
+
 After all workers finish, the leader publishes one final L0 segment. It merges
 source dictionaries one term at a time, using bounded windows for worker
 string offsets and temporary streams for string metadata, exact source

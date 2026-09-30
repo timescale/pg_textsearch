@@ -83,10 +83,11 @@ tracker_add_segment(
 {
 	if (tracker->count >= tracker->capacity)
 	{
-		tracker->capacity *= 2;
+		tracker->capacity =
+				tp_grow_capacity(tracker->capacity, 32, "worker segments");
 		tracker->entries = repalloc(
 				tracker->entries,
-				tracker->capacity * sizeof(WorkerSegmentEntry));
+				mul_size(tracker->capacity, sizeof(WorkerSegmentEntry)));
 	}
 	tracker->entries[tracker->count].offset	   = offset;
 	tracker->entries[tracker->count].data_size = data_size;
@@ -422,44 +423,21 @@ tp_parallel_build_worker_main(dsm_segment *seg, shm_toc *toc)
 		tracker.buffile_end = seg_offset + data_size;
 	}
 
-	/*
-	 * Phase 1 complete: report segments to leader.
-	 * All segments are L0 (no worker-side compaction).
-	 */
+	/* Append the segment directory instead of bounding it by the DSM size. */
 	{
-		uint32 i;
+		int	  fileno;
+		off_t file_offset;
 
-		/*
-		 * The shared result struct can only report
-		 * TP_MAX_WORKER_SEGMENTS segment offsets/sizes to the leader.
-		 * If a worker produced more than that, truncating would
-		 * silently drop the extra segments and build an incomplete
-		 * index.  Fail the build instead so the missing postings are
-		 * never committed.  See issue #409.
-		 */
-		if (tracker.count > TP_MAX_WORKER_SEGMENTS)
-			ereport(ERROR,
-					(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
-					 errmsg("parallel index build: worker %d "
-							"produced too many segments (%u, "
-							"limit %d)",
-							worker_id,
-							tracker.count,
-							TP_MAX_WORKER_SEGMENTS),
-					 errhint("Increase maintenance_work_mem so each "
-							 "worker flushes fewer, larger segments "
-							 "(the per-worker budget is bounded by the "
-							 "arena's ~4 GiB capacity). Reducing "
-							 "max_parallel_maintenance_workers makes this "
-							 "worse, as each remaining worker then scans a "
-							 "larger share of the table.")));
-
-		for (i = 0; i < tracker.count; i++)
-		{
-			my_result->seg_offsets[i] = tracker.entries[i].offset;
-			my_result->seg_sizes[i]	  = tracker.entries[i].data_size;
-		}
-		my_result->final_segment_count = tracker.count;
+		tp_buffile_decompose_offset(
+				tracker.buffile_end, &fileno, &file_offset);
+		if (BufFileSeek(buffile, fileno, file_offset, SEEK_SET) != 0)
+			elog(ERROR, "could not seek parallel worker segment directory");
+		BufFileWrite(
+				buffile,
+				tracker.entries,
+				mul_size(tracker.count, sizeof(WorkerSegmentEntry)));
+		my_result->segment_directory_offset = tracker.buffile_end;
+		my_result->final_segment_count		= tracker.count;
 	}
 
 	/* Export BufFile so leader can reopen */
@@ -688,21 +666,34 @@ tp_build_parallel(
 
 		/* Count total segments across all workers */
 		for (w = 0; w < launched; w++)
-			total_segments += results[w].final_segment_count;
+		{
+			if (pg_add_u32_overflow(
+						total_segments,
+						results[w].final_segment_count,
+						&total_segments))
+				ereport(ERROR,
+						(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
+						 errmsg("parallel index build: segment count "
+								"overflow")));
+		}
 
 		/* Open worker BufFiles and create segment readers */
 		open_files	= palloc0(sizeof(BufFile *) * launched);
 		file_opened = palloc0(sizeof(bool) * launched);
-		readers		= palloc0(sizeof(TpSegmentReader *) * total_segments);
-		sources		= palloc0(sizeof(TpMergeSource) * total_segments);
+		readers = palloc0(mul_size(sizeof(TpSegmentReader *), total_segments));
+		sources = palloc0(mul_size(sizeof(TpMergeSource), total_segments));
 
 		{
 			uint32 reader_idx = 0;
 
 			for (w = 0; w < launched; w++)
 			{
-				uint32 s;
-				char   fname[64];
+				uint32				s;
+				char				fname[64];
+				int					fileno;
+				off_t				file_offset;
+				Size				directory_size;
+				WorkerSegmentEntry *segments;
 
 				if (results[w].final_segment_count == 0)
 					continue;
@@ -712,10 +703,24 @@ tp_build_parallel(
 						&shared->fileset.fs, fname, O_RDONLY, false);
 				file_opened[w] = true;
 
+				directory_size = mul_size(
+						results[w].final_segment_count,
+						sizeof(WorkerSegmentEntry));
+				segments = palloc(directory_size);
+				tp_buffile_decompose_offset(
+						results[w].segment_directory_offset,
+						&fileno,
+						&file_offset);
+				if (BufFileSeek(
+							open_files[w], fileno, file_offset, SEEK_SET) != 0)
+					elog(ERROR,
+						 "could not seek parallel worker segment directory");
+				BufFileReadExact(open_files[w], segments, directory_size);
+
 				for (s = 0; s < results[w].final_segment_count; s++)
 				{
 					readers[reader_idx] = tp_segment_open_from_buffile(
-							open_files[w], results[w].seg_offsets[s]);
+							open_files[w], segments[s].offset);
 					if (!readers[reader_idx])
 					{
 						reader_idx++;
@@ -734,6 +739,7 @@ tp_build_parallel(
 					}
 					reader_idx++;
 				}
+				pfree(segments);
 			}
 		}
 

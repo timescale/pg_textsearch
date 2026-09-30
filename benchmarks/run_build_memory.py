@@ -380,14 +380,15 @@ def parse_args():
         parser.error("memory sampling requires Linux /proc")
     if args.rows <= 0 or args.terms <= 0 or args.workers < 0:
         parser.error("rows/terms must be positive and workers nonnegative")
-    if args.workers > 0 and args.rows < 100000:
+    args.cases = list(dict.fromkeys(args.cases or CASES))
+    if (args.workers > 0 and args.rows < 100000
+            and any(case != "serial" for case in args.cases)):
         parser.error("parallel cases require at least 100000 rows")
     if any(not math.isfinite(v) or v <= 0
            for v in (args.interval, args.timeout)):
         parser.error("interval and timeout must be positive finite seconds")
     if not re.fullmatch(r"[1-9][0-9]*(?:kB|MB|GB)", args.maintenance_work_mem):
         parser.error("maintenance-work-mem must be a size such as 64MB")
-    args.cases = list(dict.fromkeys(args.cases or CASES))
     return args
 
 
