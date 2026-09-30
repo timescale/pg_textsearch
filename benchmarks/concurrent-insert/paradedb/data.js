@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790667359060,
+  "lastUpdate": 1790753734654,
   "repoUrl": "https://github.com/timescale/pg_textsearch",
   "entries": {
     "Concurrent INSERT (ParadeDB)": [
@@ -11040,6 +11040,68 @@ window.BENCHMARK_DATA = {
           {
             "name": "ParadeDB INSERT latency (c=8)",
             "value": 0.731,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tjgreen@gmail.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "3296557626cf30eb95e26df9e98a2c59d624e52a",
+          "message": "Validate tombstone chain links before reading pages (#525)\n\nReject invalid tombstone head and next-page pointers before reading\nbuffers. Drains now use the existing warning-and-recovery path,\npreserving valid prefixes; pending-page diagnostics raise corruption\nerrors without modifying the chain.\n\nAdd regression coverage for block zero, EOF, and past-EOF links in both\npositions.\n\nFixes #469.",
+          "timestamp": "2026-09-30T03:30:03Z",
+          "url": "https://github.com/timescale/pg_textsearch/commit/3296557626cf30eb95e26df9e98a2c59d624e52a"
+        },
+        "date": 1790753689557,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "ParadeDB INSERT TPS (c=1)",
+            "value": 2520.184628,
+            "unit": "tps"
+          },
+          {
+            "name": "ParadeDB INSERT latency (c=1)",
+            "value": 0.397,
+            "unit": "ms"
+          },
+          {
+            "name": "ParadeDB INSERT TPS (c=2)",
+            "value": 4678.9731,
+            "unit": "tps"
+          },
+          {
+            "name": "ParadeDB INSERT latency (c=2)",
+            "value": 0.427,
+            "unit": "ms"
+          },
+          {
+            "name": "ParadeDB INSERT TPS (c=4)",
+            "value": 7332.529966,
+            "unit": "tps"
+          },
+          {
+            "name": "ParadeDB INSERT latency (c=4)",
+            "value": 0.546,
+            "unit": "ms"
+          },
+          {
+            "name": "ParadeDB INSERT TPS (c=8)",
+            "value": 11001.555542,
+            "unit": "tps"
+          },
+          {
+            "name": "ParadeDB INSERT latency (c=8)",
+            "value": 0.727,
             "unit": "ms"
           }
         ]
