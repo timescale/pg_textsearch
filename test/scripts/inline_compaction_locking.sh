@@ -219,8 +219,8 @@ SQL
     fi
     level_counts=$($PSQL -c "
         SELECT bm25_level_counts('inline_capacity_idx'::regclass);")
-    if [ "${level_counts}" != "{1,1,0,0,0,0,0,0}" ]; then
-        fail "full-L0 spill did not compact level 0 before spilling"
+    if [ "${level_counts}" != "{0,1,0,0,0,0,0,0}" ]; then
+        fail "full-L0 spill did not consolidate the resulting segments"
     fi
 
     ranked_count=$($PSQL -c "
@@ -286,8 +286,8 @@ SQL
     fi
     level_counts=$($PSQL -c "
         SELECT bm25_level_counts('vacuum_capacity_idx'::regclass);")
-    if [ "${level_counts}" != "{1,1,0,0,0,0,0,0}" ]; then
-        fail "VACUUM did not compact level 0 before spilling"
+    if [ "${level_counts}" != "{0,1,0,0,0,0,0,0}" ]; then
+        fail "VACUUM did not consolidate the resulting segments"
     fi
     ranked_count=$($PSQL -c "
         SELECT count(*) FROM (

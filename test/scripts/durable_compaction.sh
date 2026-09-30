@@ -10020,6 +10020,119 @@ ${reuse_output}"
     sql_as durable_owner -c "DROP TABLE public.lifecycle_adopt_docs;"
 }
 
+test_background_vacuum_rewrites_sparse_singleton() {
+    local after_docs after_root after_state before_docs before_root before_state
+    local index_oid instance_id signal_events_after signal_events_before
+    local rewritten=false
+
+    sql_as durable_owner -c "
+        CREATE TABLE public.background_vacuum_sparse_docs (
+            id integer PRIMARY KEY,
+            body text NOT NULL
+        );
+        INSERT INTO public.background_vacuum_sparse_docs
+        SELECT id, pg_catalog.format(
+                       'sparsevacuum document %s stable filler', id)
+        FROM pg_catalog.generate_series(1, 100) AS id;
+        CREATE INDEX background_vacuum_sparse_idx
+          ON public.background_vacuum_sparse_docs USING bm25(body)
+          WITH (text_config = 'english',
+                compaction = 'background',
+                compaction_schedule = '0 0 1 1 *');" >/dev/null 2>&1
+
+    index_oid="$(sql_super -c "SELECT
+        'public.background_vacuum_sparse_idx'::regclass::oid;")"
+    instance_id="$(current_generation_job_id "${index_oid}")"
+    [ -n "${instance_id}" ] ||
+        error "sparse VACUUM fixture created no managed workflow"
+    wait_for_signal_node "${instance_id}" 30
+
+    before_state="$(sql_super -c "
+        WITH summary AS (
+            SELECT bm25_summarize_index(
+                       'public.background_vacuum_sparse_idx') AS value
+        )
+        SELECT pg_catalog.substring(
+                   value, 'Segment 1: block=([0-9]+)') || ':' ||
+               pg_catalog.substring(value, 'docs=([0-9]+)')
+        FROM summary;")"
+    before_root="${before_state%%:*}"
+    before_docs="${before_state##*:}"
+    assert_eq "sparse VACUUM fixture starts with 100 persisted docs" \
+        "100" "${before_docs}"
+    signal_events_before="$(sql_super -c "SELECT count(*)
+        FROM _duroxide.history
+        WHERE instance_id = '${instance_id}'
+          AND event_data::jsonb->>'type' = 'ExternalEvent'
+          AND event_data::jsonb->>'name' = 'compact';")"
+
+    sql_as durable_owner -c "DELETE FROM
+        public.background_vacuum_sparse_docs WHERE id <= 50;" >/dev/null
+    sql_as durable_owner -c \
+        "VACUUM public.background_vacuum_sparse_docs;" >/dev/null
+
+    after_state="${before_state}"
+    signal_events_after="${signal_events_before}"
+    for _ in $(seq 1 60); do
+        signal_events_after="$(sql_super -c "SELECT count(*)
+            FROM _duroxide.history
+            WHERE instance_id = '${instance_id}'
+              AND event_data::jsonb->>'type' = 'ExternalEvent'
+              AND event_data::jsonb->>'name' = 'compact';")"
+        after_state="$(sql_super -c "
+            WITH summary AS (
+                SELECT bm25_summarize_index(
+                           'public.background_vacuum_sparse_idx') AS value
+            )
+            SELECT pg_catalog.substring(
+                       value, 'Segment 1: block=([0-9]+)') || ':' ||
+                   pg_catalog.substring(value, 'docs=([0-9]+)')
+            FROM summary;")"
+        after_root="${after_state%%:*}"
+        after_docs="${after_state##*:}"
+        if [ "${signal_events_after}" -gt "${signal_events_before}" ]; then
+            if [ "${after_root}" != "${before_root}" ] ||
+                [ "${after_docs}" -lt "${before_docs}" ]; then
+                rewritten=true
+                break
+            fi
+        fi
+        sleep 1
+    done
+    if ! "${rewritten}"; then
+        error "background VACUUM did not dispatch and rewrite the sparse \
+singleton: before=${before_state}, after=${after_state}, \
+signals=${signal_events_before}:${signal_events_after}"
+    fi
+
+    wait_for_signal_node "${instance_id}" 30
+    assert_eq "background VACUUM rewrites exactly the 50 live documents" \
+        "50" "${after_docs}"
+    assert_eq "background VACUUM keeps the managed workflow active" \
+        "${instance_id}" "$(current_generation_job_id "${index_oid}")"
+    assert_eq "background VACUUM preserves the exact surviving result IDs" \
+        "50:true" \
+        "$(sql_as durable_owner -c "
+            SET enable_seqscan = off;
+            WITH ranked AS (
+                SELECT id
+                FROM public.background_vacuum_sparse_docs
+                ORDER BY body <@> to_bm25query(
+                    'sparsevacuum', 'background_vacuum_sparse_idx')
+                LIMIT 100
+            )
+            SELECT count(*) || ':' ||
+                   (pg_catalog.array_agg(id ORDER BY id) =
+                    ARRAY(SELECT pg_catalog.generate_series(51, 100)))
+            FROM ranked;")"
+
+    sql_as durable_owner -c "SELECT df.cancel(
+        '${instance_id}', 'sparse VACUUM test complete');" >/dev/null
+    wait_for_terminal "${instance_id}" 30
+    sql_as durable_owner -c \
+        "DROP TABLE public.background_vacuum_sparse_docs;"
+}
+
 install_signal_probe() {
     sql_super <<'SQL'
 ALTER FUNCTION df.signal(text, text, text) RENAME TO signal_v028;
@@ -10247,7 +10360,7 @@ test_request_queue_runtime() {
     sql_as durable_owner -c "SELECT public.queue_force_spills(
         'public.queue_below_docs'::regclass,
         'public.queue_below_idx'::regclass, 0, 1);" >/dev/null
-    assert_eq "below-threshold spill does not signal" "0" \
+    assert_eq "below-threshold spill signals without writer-side planning" "1" \
         "$(signal_attempt_count)"
 
     reset_signal_probe
@@ -11916,6 +12029,7 @@ run_test test_reindex_authorization_ordering
 run_test test_create_authorization_ordering
 run_test test_lineage_guard_name_race
 run_test test_reindex_authorization_resolution_race
+run_test test_background_vacuum_rewrites_sparse_singleton
 run_test test_prior_generation_spill_adoption
 run_test test_request_queue_runtime
 run_test test_precommit_signal_observes_published_spill

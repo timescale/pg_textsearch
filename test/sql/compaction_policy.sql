@@ -110,19 +110,31 @@ SELECT n, 'common document ' || n FROM generate_series(101, 200) n;
 SELECT bm25_spill_index('policy_interior_idx') > 0 AS newer_spilled;
 DELETE FROM policy_interior WHERE id <= 50;
 VACUUM policy_interior;
+CREATE TEMP TABLE policy_interior_before AS
+SELECT (regexp_match(summary, 'L0 Segment 1: block=([0-9]+),'))[1]
+           AS clean_root,
+       (regexp_match(summary, 'L0 Segment 2: block=([0-9]+),'))[1]
+           AS sparse_root
+FROM (SELECT bm25_summarize_index('policy_interior_idx') AS summary) s;
 SELECT bm25_compact_step('policy_interior_idx') AS interior_rewrite_ran;
 SELECT bm25_level_counts('policy_interior_idx') =
            ARRAY[2, 0, 0, 0, 0, 0, 0, 0]
        AND bm25_summarize_index('policy_interior_idx')
            ~ E'total_docs: 150\n'
        AS interior_rewrite_does_not_copy_clean_head;
+SELECT (regexp_match(summary, 'L0 Segment 1: block=([0-9]+),'))[1]
+           = before.clean_root
+       AND (regexp_match(summary, 'L0 Segment 2: block=([0-9]+),'))[1]
+           <> before.sparse_root AS only_sparse_root_replaced
+FROM policy_interior_before before,
+     (SELECT bm25_summarize_index('policy_interior_idx') AS summary) s;
 SELECT count(*) = 150 AS interior_rewrite_preserves_matches
 FROM (SELECT id FROM policy_interior
       ORDER BY body <@> to_bm25query('common', 'policy_interior_idx')
       LIMIT 1000) ranked;
 
 DROP TABLE policy_small, policy_unequal, policy_deleted, policy_vacuum,
-    policy_interior;
+    policy_interior, policy_interior_before;
 
 -- The managed worker's physical-target entry point sees the same small debt.
 CREATE TABLE policy_background (id integer, body text);
