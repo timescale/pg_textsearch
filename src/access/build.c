@@ -15,7 +15,6 @@
 #include <commands/progress.h>
 #include <executor/spi.h>
 #include <math.h>
-#include <mb/pg_wchar.h>
 #include <miscadmin.h>
 #include <nodes/makefuncs.h>
 #include <nodes/value.h>
@@ -1174,13 +1173,6 @@ tp_free_terms_array(char **terms, int term_count)
 }
 
 /*
- * Maximum input bytes per to_tsvector call. Postgres's tsvector caps the
- * lexeme dictionary at 1 MB (MAXSTRPOS). 256 KB leaves comfortable
- * headroom for stemming/case-fold expansion.
- */
-#define TP_TSVECTOR_CHUNK_BYTES (256 * 1024)
-
-/*
  * Tokenize a single chunk via to_tsvector_byid and extract terms.
  * Caller owns the returned arrays. doc_length is returned.
  *
@@ -1221,48 +1213,6 @@ tp_tokenize_chunk(
 	pfree(tsvector);
 
 	return doc_length;
-}
-
-/*
- * Find a chunk boundary inside the first `target` bytes of `data`.
- *
- * Prefers the byte index just past the last ASCII whitespace at or
- * before `target`. If no whitespace is found, returns the largest
- * multibyte codepoint boundary at or below target.
- *
- * `data` must be at least `target` bytes long. Returns 1..target.
- */
-static int
-tp_find_chunk_boundary(const char *data, int target)
-{
-	int i;
-	int pos;
-
-	for (i = target; i > 0; i--)
-	{
-		char c = data[i - 1];
-		if (c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '\f')
-			return i;
-	}
-
-	pos = 0;
-	while (pos < target)
-	{
-		int mblen = pg_mblen(data + pos);
-		if (mblen <= 0)
-			mblen = 1;
-		if (pos + mblen > target)
-			break;
-		pos += mblen;
-	}
-	if (pos == 0)
-	{
-		pos = pg_mblen(data);
-		if (pos <= 0)
-			pos = 1;
-	}
-
-	return pos;
 }
 
 typedef struct TpTermEntry
@@ -1382,7 +1332,7 @@ tp_tokenize_text(
 	 * to_tsvector_byid. Avoids the cstring_to_text_with_len memcpy that
 	 * tp_tokenize_chunk would otherwise do on every small document.
 	 */
-	if (len <= TP_TSVECTOR_CHUNK_BYTES)
+	if (len <= TP_TOKEN_WINDOW_BYTES)
 	{
 		TSVector tsvector;
 
@@ -1404,10 +1354,9 @@ tp_tokenize_text(
 	while (offset < len)
 	{
 		int	   remaining = len - offset;
-		int	   take		 = remaining <= TP_TSVECTOR_CHUNK_BYTES
+		int	   take		 = remaining <= TP_TOKEN_WINDOW_BYTES
 								 ? remaining
-								 : tp_find_chunk_boundary(
-								   data + offset, TP_TSVECTOR_CHUNK_BYTES);
+								 : tp_token_window_end(data, len, offset) - offset;
 		char **chunk_terms;
 		int32 *chunk_freqs;
 		int	   chunk_term_count;

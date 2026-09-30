@@ -598,6 +598,14 @@ by the final index entry, rather than with raw input length or token count.
 Text arrays are flattened with spaces before this processing and do not
 preserve element boundaries.
 
+Term-frequency accounting retains the extension's previous 256KB document
+windows so existing unclipped documents keep the same BM25 field lengths and
+scores. Parser and dictionary state do not reset at those virtual boundaries:
+an output is counted once in the window containing the parser token that
+started its normalization, including delayed multi-token dictionary output.
+Window-local position deduplication and PostgreSQL's per-window frequency cap
+then match the former chunked vectors without splitting or fabricating tokens.
+
 ### PL/pgSQL and Stored Procedures
 
 Planner hooks do not resolve the implicit query syntax inside PL/pgSQL. Use an

@@ -160,6 +160,49 @@ FROM trunc_compact
 ORDER BY body <@> to_bm25query('u160000', 'trunc_compact_idx')
 LIMIT 1;
 
+CREATE TABLE trunc_frequency_windows (
+    body text NOT NULL
+);
+INSERT INTO trunc_frequency_windows
+SELECT repeat('alpha ', 100000);
+CREATE INDEX trunc_frequency_windows_idx
+ON trunc_frequency_windows USING bm25(body)
+WITH (text_config = 'simple');
+SELECT split_part(
+    split_part(
+        bm25_dump_index('trunc_frequency_windows_idx'),
+        'total_len: ',
+        2),
+    E'\n',
+    1) = '765' AS repeated_term_preserves_legacy_windows;
+SELECT bm25_dump_index('trunc_frequency_windows_idx')
+       LIKE '%max_tf=765,%'
+       AS repeated_term_preserves_legacy_tf;
+
+CREATE TABLE trunc_frequency_boundary (
+    body text NOT NULL
+);
+INSERT INTO trunc_frequency_boundary
+SELECT repeat('alpha ', 43690) ||
+       'edge edge ' ||
+       repeat('alpha ', 43690);
+CREATE INDEX trunc_frequency_boundary_idx
+ON trunc_frequency_boundary USING bm25(body)
+WITH (text_config = 'simple');
+SELECT split_part(
+    split_part(
+        bm25_dump_index('trunc_frequency_boundary_idx'),
+        'total_len: ',
+        2),
+    E'\n',
+    1) = '513' AS boundary_terms_preserve_legacy_length;
+SELECT bm25_dump_index('trunc_frequency_boundary_idx')
+       LIKE '%max_tf=511,%'
+       AS boundary_repeated_term_preserves_legacy_tf;
+SELECT bm25_dump_index('trunc_frequency_boundary_idx')
+       LIKE '%max_tf=2,%'
+       AS boundary_distinct_term_preserves_legacy_tf;
+
 SELECT count(*) = 0 AS tokenless_input_stays_empty
 FROM (
     SELECT id
@@ -417,6 +460,8 @@ DROP TABLE trunc_urls;
 DROP TABLE trunc_boundaries;
 DROP TABLE trunc_oversized;
 DROP TABLE trunc_compact;
+DROP TABLE trunc_frequency_windows;
+DROP TABLE trunc_frequency_boundary;
 DROP TABLE trunc_boolean;
 DROP TABLE trunc_boolean_clean;
 DROP TABLE trunc_boolean_dictionary;

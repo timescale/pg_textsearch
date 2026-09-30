@@ -8,6 +8,11 @@
 
 #include <tsearch/ts_type.h>
 
+#define TP_TOKEN_WINDOW_BYTES (256 * 1024)
+
+extern int
+tp_token_window_end(const char *input, int input_length, int window_start);
+
 extern TSVector tp_make_tsvector(
 		text *input,
 		Oid	  text_config_oid,
