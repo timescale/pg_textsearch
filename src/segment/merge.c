@@ -98,7 +98,7 @@ tp_discard_unpublished_pages(
 /*
  * Sequential append to sink.
  */
-static void
+void
 merge_sink_write(TpMergeSink *sink, const void *data, Size size)
 {
 	tp_segment_writer_write(&sink->writer, data, size);
@@ -114,7 +114,7 @@ merge_sink_write(TpMergeSink *sink, const void *data, Size size)
  * dict entries or the segment header struct), rather than emitting a
  * full-page image for every visited page.
  */
-static void
+void
 merge_sink_write_at(
 		TpMergeSink *sink, uint64 offset, const void *data, uint64 size)
 {
@@ -150,10 +150,54 @@ merge_sink_write_at(
 	}
 }
 
+void
+merge_sink_finish(TpMergeSink *sink, TpSegmentHeader *header)
+{
+	BlockNumber page_index_root;
+
+	Assert(sink->writer.buffer_pos == SizeOfPageHeaderData);
+
+	page_index_root = write_page_index_tracked(
+			sink->index,
+			sink->writer.pages,
+			sink->writer.pages_allocated,
+			&sink->page_index_pages,
+			&sink->page_index_pages_allocated);
+	header->page_index = page_index_root;
+	header->num_pages  = sink->writer.pages_allocated;
+
+	merge_sink_write_at(sink, 0, header, sizeof(TpSegmentHeader));
+	tp_segment_writer_finish(&sink->writer);
+}
+
 /* ----------------------------------------------------------------
  * Merge source operations
  * ----------------------------------------------------------------
  */
+
+#define TP_MERGE_STRING_OFFSETS_WINDOW 1024
+
+static void
+merge_source_refill_string_offsets(TpMergeSource *source)
+{
+	TpSegmentHeader *header = source->reader->header;
+	uint32			 count;
+
+	Assert(source->reader->buffile != NULL);
+	Assert(source->current_idx < source->num_terms);
+
+	count =
+			Min(TP_MERGE_STRING_OFFSETS_WINDOW,
+				source->num_terms - source->current_idx);
+	tp_segment_read(
+			source->reader,
+			header->dictionary_offset + sizeof(uint32) +
+					(uint64)source->current_idx * sizeof(uint32),
+			source->string_offsets,
+			count * sizeof(uint32));
+	source->string_offsets_start = source->current_idx;
+	source->string_offsets_count = count;
+}
 
 /*
  * Advance a merge source to its next term.
@@ -184,12 +228,17 @@ merge_source_advance(TpMergeSource *source)
 
 	header = source->reader->header;
 
+	if (source->current_idx < source->string_offsets_start ||
+		source->current_idx >=
+				source->string_offsets_start + source->string_offsets_count)
+		merge_source_refill_string_offsets(source);
+
 	/* Read the term at current index */
 	source->current_term = tp_segment_read_term_at_index(
 			source->reader,
 			source->reader->header,
 			source->string_offsets,
-			source->current_idx);
+			source->current_idx - source->string_offsets_start);
 
 	/* Read the dictionary entry (version-aware) */
 	tp_segment_read_dict_entry(
@@ -243,6 +292,8 @@ merge_source_init(TpMergeSource *source, Relation index, BlockNumber root)
 			header->dictionary_offset + sizeof(dict_header.num_terms),
 			source->string_offsets,
 			sizeof(uint32) * source->num_terms);
+	source->string_offsets_start = 0;
+	source->string_offsets_count = source->num_terms;
 
 	/* Position before first term (advance will move to index 0) */
 	source->current_idx	 = UINT32_MAX; /* Will wrap to 0 on advance */
@@ -294,14 +345,13 @@ merge_source_init_from_reader(TpMergeSource *source, TpSegmentReader *reader)
 			&dict_header,
 			sizeof(dict_header.num_terms));
 
-	/* Cache all string offsets for this segment */
+	/* Cache a bounded string-offset window for the BufFile source. */
 	source->string_offsets = palloc_extended(
-			sizeof(uint32) * source->num_terms, MCXT_ALLOC_HUGE);
-	tp_segment_read(
-			source->reader,
-			header->dictionary_offset + sizeof(dict_header.num_terms),
-			source->string_offsets,
-			sizeof(uint32) * source->num_terms);
+			sizeof(uint32) *
+					Min(TP_MERGE_STRING_OFFSETS_WINDOW, source->num_terms),
+			MCXT_ALLOC_HUGE);
+	source->string_offsets_start = 0;
+	source->string_offsets_count = 0;
 
 	/* Position before first term */
 	source->current_idx	 = UINT32_MAX;
@@ -1462,22 +1512,9 @@ write_merged_segment_to_sink(
 	/* Finalize data_size */
 	header.data_size = sink->current_offset;
 
-	/* Flush writer and write page index */
-	{
-		BlockNumber page_index_root;
-
-		tp_segment_writer_flush(&sink->writer);
-		sink->writer.buffer_pos = SizeOfPageHeaderData;
-
-		page_index_root = write_page_index_tracked(
-				sink->index,
-				sink->writer.pages,
-				sink->writer.pages_allocated,
-				&sink->page_index_pages,
-				&sink->page_index_pages_allocated);
-		header.page_index = page_index_root;
-		header.num_pages  = sink->writer.pages_allocated;
-	}
+	/* Flush writer before dictionary and header backpatching. */
+	tp_segment_writer_flush(&sink->writer);
+	sink->writer.buffer_pos = SizeOfPageHeaderData;
 
 	/* Backpatch dict entries */
 	{
@@ -1504,11 +1541,7 @@ write_merged_segment_to_sink(
 			pfree(dict_entries);
 	}
 
-	/* Backpatch header */
-	merge_sink_write_at(sink, 0, &header, sizeof(TpSegmentHeader));
-
-	/* Finish writer */
-	tp_segment_writer_finish(&sink->writer);
+	merge_sink_finish(sink, &header);
 
 	/* Cleanup */
 	if (string_offsets)

@@ -41,6 +41,10 @@ typedef struct TpMergeSink
 
 /* Sink initialization */
 extern void merge_sink_init_pages(TpMergeSink *sink, Relation index);
+extern void merge_sink_write(TpMergeSink *sink, const void *data, Size size);
+extern void merge_sink_write_at(
+		TpMergeSink *sink, uint64 offset, const void *data, uint64 size);
+extern void merge_sink_finish(TpMergeSink *sink, TpSegmentHeader *header);
 
 /*
  * Write a merged segment to sink (pages or BufFile).

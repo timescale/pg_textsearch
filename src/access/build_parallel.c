@@ -38,6 +38,7 @@
 
 #include "access/am.h"
 #include "access/build_context.h"
+#include "access/build_merge.h"
 #include "access/build_parallel.h"
 #include "constants.h"
 #include "index/metapage.h"
@@ -663,12 +664,8 @@ tp_build_parallel(
 		TpMergeSource		   *sources;
 		uint32					total_segments = 0;
 		uint32					num_sources	   = 0;
-		uint64					total_tokens   = 0;
 		int						w;
 		uint32					i;
-		TpMergedTerm		   *merged_terms	 = NULL;
-		uint32					num_merged_terms = 0;
-		uint32					merged_capacity	 = 0;
 		MemoryContext			merge_ctx;
 		MemoryContext			old_ctx;
 
@@ -711,8 +708,6 @@ tp_build_parallel(
 					if (merge_source_init_from_reader(
 								&sources[num_sources], readers[reader_idx]))
 					{
-						total_tokens +=
-								readers[reader_idx]->header->total_tokens;
 						/*
 						 * Source now owns this reader; clear
 						 * slot so cleanup won't double-close.
@@ -730,81 +725,11 @@ tp_build_parallel(
 			TpMergeSink sink;
 			BlockNumber segment_root;
 
-			/* N-way term merge */
 			merge_ctx = AllocSetContextCreate(
 					CurrentMemoryContext,
 					"Leader Merge",
 					ALLOCSET_DEFAULT_SIZES);
 			old_ctx = MemoryContextSwitchTo(merge_ctx);
-
-			while (true)
-			{
-				int			  min_idx;
-				const char	 *min_term;
-				TpMergedTerm *current_merged;
-
-				min_idx = merge_find_min_source(sources, num_sources);
-				if (min_idx < 0)
-					break;
-
-				min_term = sources[min_idx].current_term;
-
-				if (num_merged_terms >= TP_MAX_DICTIONARY_TERMS)
-					ereport(ERROR,
-							(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
-							 errmsg("pg_textsearch: segment dictionary "
-									"exceeds "
-									"%u terms",
-									TP_MAX_DICTIONARY_TERMS)));
-
-				if (num_merged_terms >= merged_capacity)
-				{
-					merged_capacity =
-							tp_grow_capacity(merged_capacity, 1024, "terms");
-					if (merged_terms == NULL)
-						merged_terms = palloc_extended(
-								mul_size(
-										(Size)merged_capacity,
-										sizeof(TpMergedTerm)),
-								MCXT_ALLOC_HUGE);
-					else
-						merged_terms = repalloc_huge(
-								merged_terms,
-								mul_size(
-										(Size)merged_capacity,
-										sizeof(TpMergedTerm)));
-				}
-
-				current_merged				 = &merged_terms[num_merged_terms];
-				current_merged->term_len	 = strlen(min_term);
-				current_merged->term		 = pstrdup(min_term);
-				current_merged->segment_refs = NULL;
-				current_merged->num_segment_refs	  = 0;
-				current_merged->segment_refs_capacity = 0;
-				current_merged->posting_offset		  = 0;
-				current_merged->posting_count		  = 0;
-				num_merged_terms++;
-
-				for (i = 0; i < num_sources; i++)
-				{
-					if (sources[i].exhausted)
-						continue;
-
-					if (strcmp(sources[i].current_term,
-							   current_merged->term) == 0)
-					{
-						merged_term_add_segment_ref(
-								current_merged, i, &sources[i].current_entry);
-						merge_source_advance(&sources[i]);
-					}
-				}
-
-				CHECK_FOR_INTERRUPTS();
-			}
-
-			MemoryContextSwitchTo(old_ctx);
-
-			tp_validate_merged_terms(merged_terms, num_merged_terms);
 
 			/* Write single merged segment to index pages */
 			merge_sink_init_pages(&sink, index);
@@ -812,16 +737,10 @@ tp_build_parallel(
 				elog(ERROR, "merge: failed to allocate segment pages");
 			segment_root = sink.writer.pages[0];
 
-			write_merged_segment_to_sink(
-					&sink,
-					merged_terms,
-					num_merged_terms,
-					sources,
-					num_sources,
-					0, /* target_level: L0 */
-					total_tokens,
-					true, /* disjoint_sources */
-					InvalidBlockNumber);
+			tp_write_parallel_build_merge(
+					&sink, sources, num_sources, total_docs, total_len);
+
+			MemoryContextSwitchTo(old_ctx);
 
 			/*
 			 * Flush dirty buffers before updating the metapage,
@@ -851,17 +770,6 @@ tp_build_parallel(
 				GenericXLogFinish(state);
 				UnlockReleaseBuffer(metabuf);
 			}
-
-			/* Cleanup merge data */
-			for (i = 0; i < num_merged_terms; i++)
-			{
-				if (merged_terms[i].term)
-					pfree(merged_terms[i].term);
-				if (merged_terms[i].segment_refs)
-					pfree(merged_terms[i].segment_refs);
-			}
-			if (merged_terms)
-				pfree(merged_terms);
 
 			if (sink.writer.pages)
 				pfree(sink.writer.pages);

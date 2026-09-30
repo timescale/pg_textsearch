@@ -69,6 +69,30 @@ Snapshots also identify the physical relation file, so a same-backend
 `REINDEX` or `TRUNCATE` captures a new generation rather than reusing old
 block numbers.
 
+## Parallel Index Build
+
+Parallel build workers scan disjoint heap ranges and write current-format
+segments as flat temporary `BufFile` streams. These private worker segments
+contain only live documents; an absent alive-bitset section represents that
+all-live state. Empty-token documents still occupy the fieldnorm and CTID
+sections and contribute to corpus totals even when a worker segment has no
+dictionary terms.
+
+After all workers finish, the leader publishes one final L0 segment. It merges
+source dictionaries one term at a time, using bounded windows for worker
+string offsets and temporary streams for string metadata, exact source
+references, skip entries, and dictionary-entry backpatch data. Posting blocks
+are read from worker segments and written directly to the normal WAL-logged
+segment writer; complete output postings are never spooled or reread.
+
+Worker inputs are ordered and disjoint, so the leader assigns each source a
+document-ID base and concatenates its fieldnorm and split CTID sections in the
+same order. It emits the all-live bitmap incrementally. This avoids
+vocabulary-sized merged-term state and corpus-sized document remapping arrays;
+leader working memory is bounded by active inputs, posting blocks, offset
+windows, and fixed-size copy buffers. The output keeps the ordinary segment
+layout, compression, page index, dictionary backpatch, and publication order.
+
 A primary reader uses the memtable cache only when its physical relation file
 and applied endpoint match the captured chain. It holds the cache apply lock
 in shared mode for that scoring call to prevent catch-up from changing the

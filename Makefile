@@ -30,6 +30,7 @@ OBJS = \
 	src/access/handler.o \
 	src/access/build.o \
 	src/access/build_context.o \
+	src/access/build_merge.o \
 	src/access/build_parallel.o \
 	src/access/compaction_api.o \
 	src/access/boolean.o \

@@ -28,6 +28,8 @@ typedef struct TpMergeSource
 	TpDictEntry		 current_entry;	 /* dictionary entry */
 	bool			 exhausted;		 /* True if no more terms */
 	uint32			*string_offsets; /* Cached string offsets array */
+	uint32			 string_offsets_start;
+	uint32			 string_offsets_count;
 } TpMergeSource;
 
 /*
