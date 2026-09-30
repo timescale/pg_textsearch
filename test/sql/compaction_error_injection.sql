@@ -5,7 +5,7 @@ CREATE EXTENSION injection_points;
 
 CREATE TABLE compaction_unwind (id serial PRIMARY KEY, body text);
 CREATE INDEX compaction_unwind_idx ON compaction_unwind
-    USING bm25(body) WITH (text_config = 'english');
+    USING bm25(body) WITH (text_config = 'english', compaction = 'manual');
 SET pg_textsearch.segments_per_level = 2;
 
 -- An error raised anywhere in a compaction pass must unwind without

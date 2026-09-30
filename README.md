@@ -374,9 +374,11 @@ REINDEX INDEX docs_idx;
 
 ### Compaction
 
-With the default `inline` policy, compaction of levels that reach the configured
-threshold occurs synchronously in the write transaction that triggers the
-spill. Readers and other memtable writers can continue while merged output is
+Compaction consolidates comparable-sized segments across levels and rewrites
+segments with at least 50% dead documents, even below the segment-count
+threshold. With the default `inline` policy, spills and serial VACUUM provide
+an opportunity for one synchronous pass.
+Readers and other memtable writers can continue while merged output is
 built, because the long build holds no per-index LWLock. This is reader
 non-blocking, not foreground-writer non-blocking: the invoking writer still
 spends the time required to build and publish the merge. Compaction is
@@ -425,7 +427,7 @@ Setting | Default | Description
 --- | --- | ---
 `pg_textsearch.default_limit` | 1000 | Initial scoring batch when no SQL LIMIT is available
 `pg_textsearch.compress_segments` | on | Compress posting blocks in new segments
-`pg_textsearch.segments_per_level` | 8 | Segments per level before automatic compaction (2-64)
+`pg_textsearch.segments_per_level` | 8 | Count-triggered compaction threshold and maximum inputs per opportunistic merge (2-64)
 `pg_textsearch.max_segment_size` | 4095MB | Conservative size budget for newly merged multi-source segments (1-4095MB)
 `pg_textsearch.background_compaction_schedule` | `*/5 * * * *` | Default cron schedule captured by indexes entering managed background mode
 `pg_textsearch.bulk_load_threshold` | 100000 | Terms per transaction before auto-spill (0 = disable)
@@ -622,7 +624,7 @@ ownership. See [Compaction](#compaction) before scripting them.
 Function | Description
 --- | ---
 bm25_level_counts(index) → int4[] | Segments held at each of the eight LSM levels
-bm25_needs_compaction(index) → bool | Whether any level reached `segments_per_level` (advisory)
+bm25_needs_compaction(index) → bool | Whether a compaction pass is eligible (advisory)
 bm25_compact(index) → void | Run eligible compaction passes
 bm25_compact_step(index) → bool | Run at most one pass
 

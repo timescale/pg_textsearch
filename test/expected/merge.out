@@ -276,10 +276,10 @@ DROP TABLE merge_bounded CASCADE;
 SET pg_textsearch.memtable_pages_threshold = 0;
 SET pg_textsearch.bulk_load_threshold = 0;
 SET pg_textsearch.max_segment_size = '1MB';
-SET pg_textsearch.segments_per_level = 8;
+SET pg_textsearch.segments_per_level = 2;
 CREATE TABLE merge_starve (id bigint PRIMARY KEY, content text);
 CREATE INDEX merge_starve_idx ON merge_starve USING bm25(content)
-  WITH (text_config='simple');
+  WITH (text_config='simple', compaction='manual');
 NOTICE:  BM25 index build started for relation merge_starve_idx
 NOTICE:  Using text search configuration: simple
 NOTICE:  Using index options: k1=1.20, b=0.75
@@ -295,7 +295,12 @@ BEGIN
                'common ' || repeat(md5((batch * 2000 + gs)::text), 4)
         FROM generate_series(1, 2000) gs;
         PERFORM bm25_spill_index('merge_starve_idx');
+        IF batch % 2 = 1
+           AND NOT bm25_compact_step('merge_starve_idx') THEN
+            RAISE EXCEPTION 'failed to construct an L1 segment';
+        END IF;
     END LOOP;
+    PERFORM set_config('pg_textsearch.segments_per_level', '8', false);
     -- Each of these alone exceeds the budget, so L0 becomes an
     -- uncombinable run while staying below the level threshold.
     FOR batch IN 8..11 LOOP
@@ -325,8 +330,11 @@ DO $$
 DECLARE
     summary text := bm25_summarize_index('merge_starve_idx');
 BEGIN
-    IF regexp_count(summary, 'L1 Segment [0-9]+:') <> 0
-       OR regexp_count(summary, 'L2 Segment [0-9]+:') = 0 THEN
+    IF NOT bm25_compact_step('merge_starve_idx') THEN
+        RAISE EXCEPTION 'higher-level compaction did not run';
+    END IF;
+    summary := bm25_summarize_index('merge_starve_idx');
+    IF regexp_count(summary, 'L1 Segment [0-9]+:') <> 1 THEN
         RAISE EXCEPTION 'uncombinable L0 starved a compactable L1: %',
                         summary;
     END IF;

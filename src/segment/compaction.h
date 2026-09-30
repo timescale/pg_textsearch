@@ -37,12 +37,6 @@ extern bool tp_try_compaction_publication_lock(Relation index, LOCKMODE mode);
 extern void tp_compaction_publication_unlock(Relation index, LOCKMODE mode);
 
 /*
- * Report whether any level holds at least segments_per_level segments.
- * A cheap count-only gate; see the comment on the definition.
- */
-extern bool tp_compaction_needed(Relation index);
-
-/*
  * Report whether tp_compact_step would run a pass, accounting for
  * levels whose segments are all over max_segment_size.  Safe as a loop
  * condition.

@@ -133,7 +133,8 @@ SELECT 'first batch document ' || i || ' with search term'
 FROM generate_series(1, 50) i;
 
 CREATE INDEX vb_multi_idx ON vb_multi
-    USING bm25 (content) WITH (text_config = 'english');
+    USING bm25 (content)
+    WITH (text_config = 'english', compaction = 'manual');
 
 -- Force first batch to segment
 SELECT bm25_spill_index('vb_multi_idx');
@@ -170,7 +171,8 @@ SELECT 'merge test document ' || i
 FROM generate_series(1, 50) i;
 
 CREATE INDEX vb_merge_idx ON vb_merge
-    USING bm25 (content) WITH (text_config = 'english');
+    USING bm25 (content)
+    WITH (text_config = 'english', compaction = 'manual');
 
 -- Delete half
 DELETE FROM vb_merge WHERE id <= 25;
@@ -257,7 +259,8 @@ SELECT 'batch1 doc ' || i || ' target'
 FROM generate_series(1, 50) i;
 
 CREATE INDEX vb_mm_idx ON vb_multimerge
-    USING bm25 (content) WITH (text_config = 'english');
+    USING bm25 (content)
+    WITH (text_config = 'english', compaction = 'manual');
 
 SELECT bm25_spill_index('vb_mm_idx');
 
@@ -370,7 +373,8 @@ SELECT 'bounded batch ' || i
 FROM generate_series(1, 3000) i;
 
 CREATE INDEX vb_batched_idx ON vb_batched
-    USING bm25 (content) WITH (text_config = 'english');
+    USING bm25 (content)
+    WITH (text_config = 'english', compaction = 'manual');
 
 INSERT INTO vb_batched (content)
 SELECT 'bounded batch ' || i

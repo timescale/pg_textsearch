@@ -113,7 +113,8 @@ EOF
         fail "PostgreSQL startup failed"
     createdb -h "${SOCKET_DIR}" -p "${TEST_PORT}" "${TEST_DB}"
     sql -c "CREATE EXTENSION pg_textsearch;
-            CREATE EXTENSION injection_points;" >/dev/null
+            CREATE EXTENSION injection_points;
+            CREATE EXTENSION pg_textsearch_test;" >/dev/null
 }
 
 seed_index() {
@@ -767,7 +768,15 @@ test_spill_prefix_progress() {
     local backend
     local oid
 
-    log "Case: concurrent spill prefix survives publication..."
+    log "Case: concurrent spill prefix survives cross-level consolidation..."
+    sql -c "
+        SELECT bm25_compact('spill_idx');
+        SELECT pg_textsearch_test_move_level('spill_idx', 1, 7);
+        INSERT INTO spill_docs(body)
+        SELECT 'common spillcase below threshold ' || gs
+          FROM generate_series(1, 32) gs;
+        SELECT bm25_spill_index('spill_idx');" >/dev/null
+    assert_graph spill_idx "{1,0,0,0,0,0,0,1}"
     oid=$(index_oid spill_idx)
     start_compaction pgts-spill-compactor spill_idx \
         "${POINT_AFTER_SELECT}" "${compactor_output}"

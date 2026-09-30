@@ -7,9 +7,9 @@ SET pg_textsearch.segments_per_level = 64;
 CREATE TABLE compaction_step (id serial PRIMARY KEY, body text);
 CREATE TABLE compaction_full (id serial PRIMARY KEY, body text);
 CREATE INDEX compaction_step_idx ON compaction_step
-    USING bm25(body) WITH (text_config = 'english');
+    USING bm25(body) WITH (text_config = 'english', compaction = 'manual');
 CREATE INDEX compaction_full_idx ON compaction_full
-    USING bm25(body) WITH (text_config = 'english');
+    USING bm25(body) WITH (text_config = 'english', compaction = 'manual');
 CREATE INDEX compaction_btree_idx ON compaction_step(id);
 CREATE TABLE compaction_partitioned (id integer, body text)
     PARTITION BY RANGE (id);
@@ -108,7 +108,8 @@ SELECT bm25_level_counts('compaction_step_idx'::regclass) =
        AS step_starts_with_debt;
 
 UPDATE pg_catalog.pg_class
-SET reloptions = reloptions || ARRAY['compaction=background']
+SET reloptions = array_replace(
+        reloptions, 'compaction=manual', 'compaction=background')
 WHERE oid = 'compaction_step_idx'::regclass;
 SELECT d.oid AS db_oid,
        c.oid AS index_oid,
@@ -287,9 +288,9 @@ SET pg_textsearch.segments_per_level = 64;
 CREATE TEMP TABLE compaction_temp_step (id serial, body text);
 CREATE TEMP TABLE compaction_temp_full (id serial, body text);
 CREATE INDEX compaction_temp_step_idx ON compaction_temp_step
-    USING bm25(body) WITH (text_config = 'english');
+    USING bm25(body) WITH (text_config = 'english', compaction = 'manual');
 CREATE INDEX compaction_temp_full_idx ON compaction_temp_full
-    USING bm25(body) WITH (text_config = 'english');
+    USING bm25(body) WITH (text_config = 'english', compaction = 'manual');
 DO $$
 DECLARE
     n integer;
@@ -319,7 +320,7 @@ SELECT NOT bm25_needs_compaction('compaction_temp_step_idx'::regclass)
 -- A caller must not treat a step as transactional work.
 CREATE TABLE compaction_rollback (id serial, body text);
 CREATE INDEX compaction_rollback_idx ON compaction_rollback
-    USING bm25(body) WITH (text_config = 'english');
+    USING bm25(body) WITH (text_config = 'english', compaction = 'manual');
 SET pg_textsearch.segments_per_level = 64;
 DO $$
 DECLARE
@@ -405,12 +406,11 @@ DROP TABLE compaction_unreducible CASCADE;
 -- index grows by the full size of the run rather than by the pair.
 CREATE TABLE compaction_uncombinable_tail (id bigint PRIMARY KEY, body text);
 CREATE INDEX compaction_uncombinable_tail_idx ON compaction_uncombinable_tail
-    USING bm25(body) WITH (text_config = 'simple');
+    USING bm25(body) WITH (text_config = 'simple', compaction = 'manual');
 SET pg_textsearch.memtable_pages_threshold = 0;
 SET pg_textsearch.bulk_load_threshold = 0;
 SET pg_textsearch.max_segment_size = '1MB';
--- Build the layout with a fanout no spill can reach, so that the only
--- compaction in this fixture is the one under test.
+-- Manual mode preserves the layout until the explicit pass.
 SET pg_textsearch.segments_per_level = 64;
 INSERT INTO compaction_uncombinable_tail
 SELECT gs, 'common ' || repeat(md5(gs::text), 32)

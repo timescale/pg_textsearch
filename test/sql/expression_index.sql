@@ -18,7 +18,7 @@ INSERT INTO expr_jsonb (data) VALUES
 
 CREATE INDEX expr_jsonb_idx ON expr_jsonb
     USING bm25 ((data->>'content'))
-    WITH (text_config='english');
+    WITH (text_config='english', compaction='manual');
 
 SET enable_seqscan = off;
 

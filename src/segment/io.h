@@ -174,6 +174,9 @@ extern void tp_segment_writer_flush(TpSegmentWriter *writer);
 extern void tp_segment_writer_finish(TpSegmentWriter *writer);
 
 /* Reader functions */
+/* Metadata-only reader; close with tp_segment_close, do not read data. */
+extern TpSegmentReader *
+tp_segment_open_header(Relation index, BlockNumber root);
 extern TpSegmentReader *
 tp_segment_open_ex(Relation index, BlockNumber root, bool load_ctids);
 extern TpSegmentReader *tp_segment_open(Relation index, BlockNumber root);

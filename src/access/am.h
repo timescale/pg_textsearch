@@ -196,9 +196,11 @@ void tp_spill_memtable_if_needed(
  */
 bool tp_spill_memtable_if_needed_deferred(
 		Relation index, TpLocalIndexState *index_state, uint32 min_pages);
-/* Apply the index policy after a caller-deferred spill. */
+/* Apply the index policy at a spill or VACUUM maintenance opportunity. */
 void tp_apply_compaction_policy(
-		TpLocalIndexState *index_state, Relation index_rel, bool spilled);
+		TpLocalIndexState *index_state,
+		Relation		   index_rel,
+		bool			   maintenance_opportunity);
 
 /* Shutdown cleanup spills durable state without starting maintenance. */
 void tp_spill_memtable_without_compaction_if_needed(

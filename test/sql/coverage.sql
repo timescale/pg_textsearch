@@ -15,7 +15,7 @@ INSERT INTO coverage_docs (content) VALUES
     ('full text search engine postgresql');
 
 CREATE INDEX coverage_idx ON coverage_docs USING bm25(content)
-    WITH (text_config='english');
+    WITH (text_config='english', compaction='manual');
 
 -- Test bm25_summarize_index with memtable data
 SELECT bm25_summarize_index('coverage_idx') IS NOT NULL AS summarize_memtable;

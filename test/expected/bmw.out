@@ -332,7 +332,7 @@ INSERT INTO bmw_hybrid (content)
 SELECT 'segment document ' || i || ' with searchterm'
 FROM generate_series(1, 500) i;
 CREATE INDEX bmw_hybrid_idx ON bmw_hybrid USING bm25(content)
-    WITH (text_config='english');
+    WITH (text_config='english', compaction='manual');
 NOTICE:  BM25 index build started for relation bmw_hybrid_idx
 NOTICE:  Using text search configuration: english
 NOTICE:  Using index options: k1=1.20, b=0.75

@@ -16,7 +16,7 @@ INSERT INTO partial_docs (content, category) VALUES
     ('gardening tips and tricks', 'lifestyle');
 CREATE INDEX partial_tech_idx ON partial_docs
     USING bm25 (content)
-    WITH (text_config='english')
+    WITH (text_config='english', compaction='manual')
     WHERE category = 'tech';
 NOTICE:  BM25 index build started for relation partial_tech_idx
 NOTICE:  Using text search configuration: english

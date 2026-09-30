@@ -148,7 +148,7 @@ SET pg_textsearch.segments_per_level = 3;
 
 CREATE TABLE force_spill_cascade (id serial PRIMARY KEY, content text);
 CREATE INDEX force_spill_cascade_idx ON force_spill_cascade USING bm25(content)
-  WITH (text_config='english');
+  WITH (text_config='english', compaction='manual');
 
 DO $$
 DECLARE
@@ -178,6 +178,7 @@ END
 $$;
 
 SET pg_textsearch.segments_per_level = 2;
+ALTER INDEX force_spill_cascade_idx SET (compaction = 'inline');
 DO $$
 BEGIN
     PERFORM bm25_force_merge('force_spill_cascade_idx');
@@ -210,25 +211,23 @@ DROP TABLE force_spill_cascade CASCADE;
 --------------------------------------------------------------------------------
 -- Force merge is bounded best-effort compaction, not forceMerge(1).
 --
--- Four top-level layouts: a single L7 segment, a deeper cascade that
--- still settles at one L7 segment because the top level compacts into
--- itself, a mixed L0+L7 pair (the multi-segment case), and an L7
--- segment with a pending memtable.
+-- Four layouts: a single L1 segment, repeated merges that stay in L1,
+-- a mixed L0+L1 pair, and an L1 segment with a pending memtable.
 --------------------------------------------------------------------------------
 
 SET pg_textsearch.segments_per_level = 2;
 
-CREATE TABLE force_l7_single (id serial PRIMARY KEY, content text);
-CREATE INDEX force_l7_single_idx ON force_l7_single USING bm25(content)
+CREATE TABLE force_tier_single (id serial PRIMARY KEY, content text);
+CREATE INDEX force_tier_single_idx ON force_tier_single USING bm25(content)
   WITH (text_config='english');
-CREATE TABLE force_l7_deep (id serial PRIMARY KEY, content text);
-CREATE INDEX force_l7_deep_idx ON force_l7_deep USING bm25(content)
+CREATE TABLE force_tier_deep (id serial PRIMARY KEY, content text);
+CREATE INDEX force_tier_deep_idx ON force_tier_deep USING bm25(content)
   WITH (text_config='english');
-CREATE TABLE force_l7_mixed (id serial PRIMARY KEY, content text);
-CREATE INDEX force_l7_mixed_idx ON force_l7_mixed USING bm25(content)
+CREATE TABLE force_tier_mixed (id serial PRIMARY KEY, content text);
+CREATE INDEX force_tier_mixed_idx ON force_tier_mixed USING bm25(content)
   WITH (text_config='english');
-CREATE TABLE force_l7_memtable (id serial PRIMARY KEY, content text);
-CREATE INDEX force_l7_memtable_idx ON force_l7_memtable USING bm25(content)
+CREATE TABLE force_tier_memtable (id serial PRIMARY KEY, content text);
+CREATE INDEX force_tier_memtable_idx ON force_tier_memtable USING bm25(content)
   WITH (text_config='english');
 
 DO $$
@@ -236,63 +235,64 @@ DECLARE
     n integer;
 BEGIN
     FOR n IN 1..256 LOOP
-        INSERT INTO force_l7_deep (content)
+        INSERT INTO force_tier_deep (content)
         VALUES (format('multiple terminal %s filler', n));
-        PERFORM bm25_spill_index('force_l7_deep_idx');
+        PERFORM bm25_spill_index('force_tier_deep_idx');
 
         IF n <= 128 THEN
-            INSERT INTO force_l7_single (content)
+            INSERT INTO force_tier_single (content)
             VALUES (format('single terminal %s filler', n));
-            PERFORM bm25_spill_index('force_l7_single_idx');
-            INSERT INTO force_l7_mixed (content)
+            PERFORM bm25_spill_index('force_tier_single_idx');
+            INSERT INTO force_tier_mixed (content)
             VALUES (format('mixed terminal %s filler', n));
-            PERFORM bm25_spill_index('force_l7_mixed_idx');
-            INSERT INTO force_l7_memtable (content)
+            PERFORM bm25_spill_index('force_tier_mixed_idx');
+            INSERT INTO force_tier_memtable (content)
             VALUES (format('memtable terminal %s filler', n));
-            PERFORM bm25_spill_index('force_l7_memtable_idx');
+            PERFORM bm25_spill_index('force_tier_memtable_idx');
         END IF;
     END LOOP;
 
     -- Runtime inline policy performs one bounded pass per spill.  Explicitly
-    -- drain the remaining cascade to construct the terminal-level fixtures.
-    PERFORM bm25_compact('force_l7_deep_idx'::regclass);
-    PERFORM bm25_compact('force_l7_single_idx'::regclass);
-    PERFORM bm25_compact('force_l7_mixed_idx'::regclass);
-    PERFORM bm25_compact('force_l7_memtable_idx'::regclass);
+    -- drain the remaining cascade to construct the size-tiered fixtures.
+    PERFORM bm25_compact('force_tier_deep_idx'::regclass);
+    PERFORM bm25_compact('force_tier_single_idx'::regclass);
+    PERFORM bm25_compact('force_tier_mixed_idx'::regclass);
+    PERFORM bm25_compact('force_tier_memtable_idx'::regclass);
 
-    INSERT INTO force_l7_mixed (content) VALUES ('mixed lower filler');
-    PERFORM bm25_spill_index('force_l7_mixed_idx');
-    INSERT INTO force_l7_memtable (content) VALUES ('memtable pending filler');
+    ALTER INDEX force_tier_mixed_idx SET (compaction = 'manual');
+    INSERT INTO force_tier_mixed (content) VALUES ('mixed lower filler');
+    PERFORM bm25_spill_index('force_tier_mixed_idx');
+    INSERT INTO force_tier_memtable (content) VALUES ('memtable pending filler');
 END
 $$;
 
 DO $$
 DECLARE
-    single_summary text := bm25_summarize_index('force_l7_single_idx');
-    deep_summary text := bm25_summarize_index('force_l7_deep_idx');
-    mixed_summary text := bm25_summarize_index('force_l7_mixed_idx');
-    memtable_summary text := bm25_summarize_index('force_l7_memtable_idx');
+    single_summary text := bm25_summarize_index('force_tier_single_idx');
+    deep_summary text := bm25_summarize_index('force_tier_deep_idx');
+    mixed_summary text := bm25_summarize_index('force_tier_mixed_idx');
+    memtable_summary text := bm25_summarize_index('force_tier_memtable_idx');
 BEGIN
     IF regexp_count(single_summary, 'L[0-7] Segment [0-9]+:') <> 1
-       OR single_summary !~ 'L7 Segment 1:' THEN
-        RAISE EXCEPTION 'single L7 layout was not constructed: %',
+       OR single_summary !~ 'L1 Segment 1:' THEN
+        RAISE EXCEPTION 'single L1 layout was not constructed: %',
                         single_summary;
     END IF;
     IF regexp_count(deep_summary, 'L[0-7] Segment [0-9]+:') <> 1
-       OR deep_summary !~ 'L7 Segment 1:' THEN
-        RAISE EXCEPTION 'deep cascade did not settle at one L7 segment: %',
+       OR deep_summary !~ 'L1 Segment 1:' THEN
+        RAISE EXCEPTION 'deep cascade did not settle at one L1 segment: %',
                         deep_summary;
     END IF;
     IF regexp_count(mixed_summary, 'L[0-7] Segment [0-9]+:') <> 2
        OR mixed_summary !~ 'L0 Segment 1:'
-       OR mixed_summary !~ 'L7 Segment 1:' THEN
-        RAISE EXCEPTION 'mixed L7 layout was not constructed: %',
+       OR mixed_summary !~ 'L1 Segment 1:' THEN
+        RAISE EXCEPTION 'mixed L1 layout was not constructed: %',
                         mixed_summary;
     END IF;
     IF regexp_count(memtable_summary, 'L[0-7] Segment [0-9]+:') <> 1
-       OR memtable_summary !~ 'L7 Segment 1:'
+       OR memtable_summary !~ 'L1 Segment 1:'
        OR memtable_summary !~ E'Memtable:\n  terms: 0\n  documents: 1' THEN
-        RAISE EXCEPTION 'memtable L7 layout was not constructed: %',
+        RAISE EXCEPTION 'memtable L1 layout was not constructed: %',
                         memtable_summary;
     END IF;
 END
@@ -300,24 +300,24 @@ $$;
 
 DO $$
 DECLARE
-    single_before text := bm25_summarize_index('force_l7_single_idx');
-    deep_before text := bm25_summarize_index('force_l7_deep_idx');
-    mixed_before text := bm25_summarize_index('force_l7_mixed_idx');
-    memtable_before text := bm25_summarize_index('force_l7_memtable_idx');
+    single_before text := bm25_summarize_index('force_tier_single_idx');
+    deep_before text := bm25_summarize_index('force_tier_deep_idx');
+    mixed_before text := bm25_summarize_index('force_tier_mixed_idx');
+    memtable_before text := bm25_summarize_index('force_tier_memtable_idx');
     single_summary text;
     deep_summary text;
     mixed_summary text;
     memtable_summary text;
 BEGIN
-    PERFORM bm25_force_merge('force_l7_single_idx');
-    PERFORM bm25_force_merge('force_l7_deep_idx');
-    PERFORM bm25_force_merge('force_l7_mixed_idx');
-    PERFORM bm25_force_merge('force_l7_memtable_idx');
+    PERFORM bm25_force_merge('force_tier_single_idx');
+    PERFORM bm25_force_merge('force_tier_deep_idx');
+    PERFORM bm25_force_merge('force_tier_mixed_idx');
+    PERFORM bm25_force_merge('force_tier_memtable_idx');
 
-    single_summary := bm25_summarize_index('force_l7_single_idx');
-    deep_summary := bm25_summarize_index('force_l7_deep_idx');
-    mixed_summary := bm25_summarize_index('force_l7_mixed_idx');
-    memtable_summary := bm25_summarize_index('force_l7_memtable_idx');
+    single_summary := bm25_summarize_index('force_tier_single_idx');
+    deep_summary := bm25_summarize_index('force_tier_deep_idx');
+    mixed_summary := bm25_summarize_index('force_tier_mixed_idx');
+    memtable_summary := bm25_summarize_index('force_tier_memtable_idx');
 
     IF regexp_count(single_summary, 'L[0-7] Segment [0-9]+:') >
        regexp_count(single_before, 'L[0-7] Segment [0-9]+:') THEN
@@ -330,7 +330,7 @@ BEGIN
                         deep_before, deep_summary;
     END IF;
     -- The mixed fixture is the multi-segment case, so force merge must
-    -- actually combine its L0 and L7 segments.  Asserting only that the
+    -- actually combine its L0 and L1 segments.  Asserting only that the
     -- count did not increase would also accept a no-op.
     IF regexp_count(mixed_summary, 'L[0-7] Segment [0-9]+:') <> 1
        OR mixed_summary !~ 'L0 Segment 1:' THEN
@@ -349,26 +349,26 @@ BEGIN
     END IF;
 
     IF (SELECT count(*) FROM (
-            SELECT 1 FROM force_l7_single
+            SELECT 1 FROM force_tier_single
             ORDER BY content <@>
-                     to_bm25query('filler', 'force_l7_single_idx')
+                     to_bm25query('filler', 'force_tier_single_idx')
         ) ranked) <> 128
        OR (SELECT count(*) FROM (
-               SELECT 1 FROM force_l7_deep
+               SELECT 1 FROM force_tier_deep
                ORDER BY content <@>
-                        to_bm25query('filler', 'force_l7_deep_idx')
+                        to_bm25query('filler', 'force_tier_deep_idx')
            ) ranked) <> 256
        OR (SELECT count(*) FROM (
-               SELECT 1 FROM force_l7_mixed
+               SELECT 1 FROM force_tier_mixed
                ORDER BY content <@>
-                        to_bm25query('filler', 'force_l7_mixed_idx')
+                        to_bm25query('filler', 'force_tier_mixed_idx')
            ) ranked) <> 129
        OR (SELECT count(*) FROM (
-               SELECT 1 FROM force_l7_memtable
+               SELECT 1 FROM force_tier_memtable
                ORDER BY content <@>
-                        to_bm25query('filler', 'force_l7_memtable_idx')
+                        to_bm25query('filler', 'force_tier_memtable_idx')
            ) ranked) <> 129 THEN
-        RAISE EXCEPTION 'terminal force merge lost documents';
+        RAISE EXCEPTION 'size-tiered force merge lost documents';
     END IF;
 END
 $$;
@@ -378,7 +378,7 @@ $$;
 DO $$
 BEGIN
     IF bm25_test_chain_source(
-            'force_l7_single_idx', 'one_doc_no_terms') <> 'OK' THEN
+            'force_tier_single_idx', 'one_doc_no_terms') <> 'OK' THEN
         RAISE EXCEPTION 'could not construct termless singleton memtable';
     END IF;
 END
@@ -386,7 +386,7 @@ $$;
 
 DO $$
 DECLARE
-    summary text := bm25_summarize_index('force_l7_single_idx');
+    summary text := bm25_summarize_index('force_tier_single_idx');
 BEGIN
     IF regexp_count(summary, 'L[0-7] Segment [0-9]+:') <> 1
        OR summary !~ 'L0 Segment 1:'
@@ -395,8 +395,8 @@ BEGIN
                         summary;
     END IF;
 
-    PERFORM bm25_force_merge('force_l7_single_idx');
-    summary := bm25_summarize_index('force_l7_single_idx');
+    PERFORM bm25_force_merge('force_tier_single_idx');
+    summary := bm25_summarize_index('force_tier_single_idx');
 
     IF regexp_count(summary, 'L[0-7] Segment [0-9]+:') <> 1
        OR summary !~ 'L0 Segment 1:'
@@ -405,25 +405,25 @@ BEGIN
                         summary;
     END IF;
 
-    IF bm25_dump_index('force_l7_single_idx')::text
+    IF bm25_dump_index('force_tier_single_idx')::text
        !~ E'total_docs: 129\n  total_len: 519\n' THEN
         RAISE EXCEPTION 'termless force merge lost document accounting';
     END IF;
 
     IF (SELECT count(*) FROM (
-            SELECT 1 FROM force_l7_single
+            SELECT 1 FROM force_tier_single
             ORDER BY content <@>
-                     to_bm25query('filler', 'force_l7_single_idx')
+                     to_bm25query('filler', 'force_tier_single_idx')
         ) ranked) <> 128 THEN
         RAISE EXCEPTION 'termless force merge changed query results';
     END IF;
 END
 $$;
 
-DROP TABLE force_l7_single CASCADE;
-DROP TABLE force_l7_deep CASCADE;
-DROP TABLE force_l7_mixed CASCADE;
-DROP TABLE force_l7_memtable CASCADE;
+DROP TABLE force_tier_single CASCADE;
+DROP TABLE force_tier_deep CASCADE;
+DROP TABLE force_tier_mixed CASCADE;
+DROP TABLE force_tier_memtable CASCADE;
 
 --------------------------------------------------------------------------------
 -- Termless accounting survives a non-no-op force compaction.

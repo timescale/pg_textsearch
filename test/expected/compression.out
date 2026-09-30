@@ -15,7 +15,8 @@ CREATE TABLE compression_docs (
 );
 -- Create BM25 index
 CREATE INDEX compression_idx ON compression_docs
-    USING bm25 (content) WITH (text_config = 'english');
+    USING bm25 (content)
+    WITH (text_config = 'english', compaction = 'manual');
 NOTICE:  BM25 index build started for relation compression_idx
 NOTICE:  Using text search configuration: english
 NOTICE:  Using index options: k1=1.20, b=0.75
@@ -154,7 +155,8 @@ CREATE TABLE mixed_docs (
     content text
 );
 CREATE INDEX mixed_idx ON mixed_docs
-    USING bm25 (content) WITH (text_config = 'english');
+    USING bm25 (content)
+    WITH (text_config = 'english', compaction = 'manual');
 NOTICE:  BM25 index build started for relation mixed_idx
 NOTICE:  Using text search configuration: english
 NOTICE:  Using index options: k1=1.20, b=0.75
@@ -213,7 +215,7 @@ ORDER BY content <@> to_bm25query('delta', 'mixed_idx')) sub;
    150
 (1 row)
 
--- Turn compression back on, add more data, and trigger merge
+-- Turn compression back on and add a third segment
 SET pg_textsearch.compress_segments = on;
 INSERT INTO mixed_docs (content)
 SELECT 'alpha zeta theta document ' || i
@@ -244,7 +246,8 @@ CREATE TABLE mixed_docs2 (
     content text
 );
 CREATE INDEX mixed_idx2 ON mixed_docs2
-    USING bm25 (content) WITH (text_config = 'english');
+    USING bm25 (content)
+    WITH (text_config = 'english', compaction = 'manual');
 NOTICE:  BM25 index build started for relation mixed_idx2
 NOTICE:  Using text search configuration: english
 NOTICE:  Using index options: k1=1.20, b=0.75

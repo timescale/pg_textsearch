@@ -201,7 +201,8 @@ output. Buffer, WAL, and I/O work may still wait after admission.
 
 The `compaction` index option controls spill-time behavior:
 
-- `inline` compacts threshold debt during spills and index builds. It never
+- `inline` compacts eligible debt during spills, serial VACUUM, and index
+  builds. It never
   waits for maintenance admission or exclusive index access: when another
   session is using or maintaining the index -- a concurrent `REINDEX INDEX
   CONCURRENTLY`, `VACUUM`, or explicit compaction -- the pass is skipped
@@ -245,6 +246,37 @@ pass: it runs the same selection without publishing, so a level that is full
 of over-budget segments reports false and is safe to loop on. It tries the
 maintenance lock instead of waiting for it, and reports true when another
 session holds it.
+
+### Consolidation policy
+
+Count-triggered compaction remains available at `segments_per_level`.
+Merged outputs use their estimated surviving size for placement, with L1 as
+the minimum destination; small outputs no longer climb a level on every
+merge. Capacity-driven singleton promotion remains an exception.
+
+Below the count threshold, a segment with at least 50% dead documents can
+be rewritten alone. This also works inside a level's chain, retaining its
+level so publication needs only one predecessor splice. Completely dead
+segments retain their existing cleanup path.
+
+Otherwise, compaction considers head prefixes across levels whose estimated
+surviving sizes are within a factor of two of the first source. A pass
+combines at most `segments_per_level` sources into one bounded output.
+Incompatible heads are not rewritten merely to reach smaller segments
+behind them. This prevents each tiny spill from rewriting a large output.
+Surviving-size estimates guide selection and placement only: the conservative
+document, dictionary, and posting estimates still enforce merge-size and
+format bounds. An existing over-budget singleton can be rewritten for
+deletion cleanup, but cannot join a multi-source merge.
+
+Explicit maintenance, inline policy, and managed workers use the same planner.
+Background spills enqueue a request without running selection in the writer;
+the worker determines whether any pass is eligible. Policy scans read only
+segment headers, loading page maps and dictionaries for selected candidates.
+Serial VACUUM invokes the configured policy after cleanup, so partial
+deletion needs no subsequent spill to become eligible. Manual mode leaves
+nonempty segments for explicit maintenance. A scheduled worker also discovers
+below-threshold debt without a new signal.
 
 ### Compaction phases
 

@@ -21,7 +21,7 @@ INSERT INTO partial_docs (content, category) VALUES
 
 CREATE INDEX partial_tech_idx ON partial_docs
     USING bm25 (content)
-    WITH (text_config='english')
+    WITH (text_config='english', compaction='manual')
     WHERE category = 'tech';
 
 SET enable_seqscan = off;

@@ -463,9 +463,11 @@ tp_compact_build_private(TpLocalIndexState *index_state, Relation index_rel)
 
 void
 tp_apply_compaction_policy(
-		TpLocalIndexState *index_state, Relation index_rel, bool spilled)
+		TpLocalIndexState *index_state,
+		Relation		   index_rel,
+		bool			   maintenance_opportunity)
 {
-	if (!spilled)
+	if (!maintenance_opportunity)
 		return;
 
 	/*
@@ -493,7 +495,7 @@ tp_apply_compaction_policy(
 		if (RelationUsesLocalBuffers(index_rel) ||
 			!tp_compaction_dispatch_possible())
 			tp_compact_inline(index_state, index_rel);
-		else if (tp_compaction_needed(index_rel))
+		else
 			tp_compaction_request(RelationGetRelid(index_rel));
 		break;
 	case TP_COMPACTION_MANUAL:

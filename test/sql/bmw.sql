@@ -252,7 +252,7 @@ SELECT 'segment document ' || i || ' with searchterm'
 FROM generate_series(1, 500) i;
 
 CREATE INDEX bmw_hybrid_idx ON bmw_hybrid USING bm25(content)
-    WITH (text_config='english');
+    WITH (text_config='english', compaction='manual');
 
 -- Batch 2: insert and spill to create a second segment
 INSERT INTO bmw_hybrid (content)

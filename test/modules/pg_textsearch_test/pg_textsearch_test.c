@@ -15,6 +15,7 @@
 
 #include "debug/injection.h"
 #include "index/metapage.h"
+#include "segment/format.h"
 #include "segment/tombstone.h"
 #include "types/query.h"
 
@@ -28,6 +29,71 @@ PG_FUNCTION_INFO_V1(pg_textsearch_test_attach_legacy_segment);
 PG_FUNCTION_INFO_V1(pg_textsearch_test_attach_v5_segment_total_len);
 PG_FUNCTION_INFO_V1(pg_textsearch_test_attach_vacuum_total_len);
 PG_FUNCTION_INFO_V1(pg_textsearch_test_set_tombstone_link);
+PG_FUNCTION_INFO_V1(pg_textsearch_test_move_level);
+
+Datum
+pg_textsearch_test_move_level(PG_FUNCTION_ARGS)
+{
+	Relation		  index;
+	int				  from = PG_GETARG_INT32(1);
+	int				  to   = PG_GETARG_INT32(2);
+	Buffer			  buffers[MAX_GENERIC_XLOG_PAGES];
+	uint32			  count;
+	BlockNumber		  root;
+	TpIndexMetaPage	  meta;
+	GenericXLogState *state;
+	Page			  copy;
+
+	if (!superuser())
+		elog(ERROR, "must be superuser to move test segments");
+	if (from < 0 || from >= TP_MAX_LEVELS || to < 0 || to >= TP_MAX_LEVELS ||
+		from == to)
+		elog(ERROR, "invalid test levels");
+	index	   = index_open(PG_GETARG_OID(0), AccessExclusiveLock);
+	buffers[0] = ReadBuffer(index, TP_METAPAGE_BLKNO);
+	LockBuffer(buffers[0], BUFFER_LOCK_EXCLUSIVE);
+	meta = (TpIndexMetaPage)PageGetContents(BufferGetPage(buffers[0]));
+	if (meta->magic != TP_METAPAGE_MAGIC ||
+		meta->version != TP_METAPAGE_VERSION)
+		elog(ERROR, "expected a current BM25 metapage");
+	count = meta->level_counts[from];
+	if (count == 0 || count >= MAX_GENERIC_XLOG_PAGES ||
+		meta->level_counts[to] != 0)
+		elog(ERROR, "expected a short source chain and empty destination");
+	root = meta->level_heads[from];
+	for (uint32 i = 1; i <= count; i++)
+	{
+		TpSegmentHeader *header;
+
+		buffers[i] = ReadBuffer(index, root);
+		LockBuffer(buffers[i], BUFFER_LOCK_EXCLUSIVE);
+		header = (TpSegmentHeader *)PageGetContents(BufferGetPage(buffers[i]));
+		if (header->magic != TP_SEGMENT_MAGIC ||
+			header->version != TP_SEGMENT_FORMAT_VERSION ||
+			header->level != (uint32)from)
+			elog(ERROR, "expected a current segment on the source level");
+		root = header->next_segment;
+	}
+	if (BlockNumberIsValid(root))
+		elog(ERROR, "unexpected test segment chain tail");
+	state					 = GenericXLogStart(index);
+	copy					 = GenericXLogRegisterBuffer(state, buffers[0], 0);
+	meta					 = (TpIndexMetaPage)PageGetContents(copy);
+	meta->level_heads[to]	 = meta->level_heads[from];
+	meta->level_counts[to]	 = meta->level_counts[from];
+	meta->level_heads[from]	 = InvalidBlockNumber;
+	meta->level_counts[from] = 0;
+	for (uint32 i = 1; i <= count; i++)
+	{
+		copy = GenericXLogRegisterBuffer(state, buffers[i], 0);
+		((TpSegmentHeader *)PageGetContents(copy))->level = (uint32)to;
+	}
+	GenericXLogFinish(state);
+	for (uint32 i = 0; i <= count; i++)
+		UnlockReleaseBuffer(buffers[i]);
+	index_close(index, AccessExclusiveLock);
+	PG_RETURN_VOID();
+}
 
 Datum
 pg_textsearch_test_set_tombstone_link(PG_FUNCTION_ARGS)

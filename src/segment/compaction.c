@@ -54,6 +54,7 @@ typedef struct TpCompactionSource
 	uint32			  chain_position;
 	bool			  has_dead_docs;
 	uint64			  total_tokens;
+	uint64			  live_bytes;
 	TpSegmentEstimate estimate;
 } TpCompactionSource;
 
@@ -431,7 +432,8 @@ tp_collect_source(
 		TpCompactionPlan *plan,
 		BlockNumber		  root,
 		uint32			  level,
-		uint32			  chain_position)
+		uint32			  chain_position,
+		bool			  estimate_size)
 {
 	TpCompactionSource *source;
 	TpSegmentReader	   *reader;
@@ -453,7 +455,8 @@ tp_collect_source(
 	source->source_level   = level;
 	source->chain_position = chain_position;
 
-	reader = tp_segment_open(index, root);
+	reader = estimate_size ? tp_segment_open(index, root)
+						   : tp_segment_open_header(index, root);
 	if (reader == NULL)
 		ereport(ERROR,
 				(errcode(ERRCODE_DATA_CORRUPTED),
@@ -473,11 +476,25 @@ tp_collect_source(
 						level)));
 	}
 
-	tp_collect_source_estimate(
-			source,
-			reader,
-			plan->num_sources == 1 &&
-					tp_compaction_maintenance_lock_held(index));
+	if (estimate_size)
+		tp_collect_source_estimate(
+				source,
+				reader,
+				plan->num_sources == 1 &&
+						tp_compaction_maintenance_lock_held(index));
+	/* Policy accounting is cheap; dictionary walks are only for size safety.
+	 */
+	source->live_bytes = (uint64)reader->header->num_pages * BLCKSZ;
+	if (reader->header->alive_bitset_offset > 0 &&
+		reader->header->num_docs > 0)
+	{
+		uint64 alive = reader->header->alive_count;
+		uint64 docs	 = reader->header->num_docs;
+
+		source->live_bytes = source->live_bytes / docs * alive +
+							 source->live_bytes % docs * alive / docs;
+	}
+	source->live_bytes	  = Max(source->live_bytes, (uint64)BLCKSZ);
 	source->has_dead_docs = reader->header->alive_bitset_offset > 0 &&
 							reader->header->alive_count <
 									reader->header->num_docs;
@@ -574,7 +591,8 @@ tp_collect_force_sources(
 
 		for (uint32 position = 0; position < snapshot->level_counts[level];
 			 position++)
-			current = tp_collect_source(index, plan, current, level, position);
+			current = tp_collect_source(
+					index, plan, current, level, position, true);
 
 		if (BlockNumberIsValid(current))
 			ereport(ERROR,
@@ -2290,8 +2308,7 @@ tp_compaction_candidate(
 		const uint16 level_counts[TP_MAX_LEVELS], uint32 first_level)
 {
 	/*
-	 * Every level is a candidate, including the top one: it compacts
-	 * into itself rather than promoting, so its debt is reducible.
+	 * Every level is a candidate, including the top one.
 	 */
 	for (uint32 level = first_level; level < TP_MAX_LEVELS; level++)
 	{
@@ -2300,26 +2317,6 @@ tp_compaction_candidate(
 	}
 
 	return TP_MAX_LEVELS;
-}
-
-/*
- * Cheap count-only gate on whether any level sits at the compaction
- * threshold.  Shares tp_compaction_candidate() with the planner but
- * ignores segment sizes, so it reports true for a level whose segments
- * are all over budget.  Callers that need an accurate answer use
- * tp_compaction_pass_available().
- */
-bool
-tp_compaction_needed(Relation index)
-{
-	TpIndexMetaPageData *metap;
-	bool				 needed;
-
-	metap  = tp_get_metapage(index);
-	needed = tp_compaction_candidate(metap->level_counts, 0) < TP_MAX_LEVELS;
-	pfree(metap);
-
-	return needed;
 }
 
 static void
@@ -2380,7 +2377,7 @@ tp_select_level_prefix(
 
 	for (uint32 i = 0; i < prefix_count; i++)
 		current = tp_collect_source(
-				index, plan, current, level, chain_position + i);
+				index, plan, current, level, chain_position + i, true);
 
 	plan->selected_counts[level] += (uint16)prefix_count;
 	plan->retained_heads[level] = current;
@@ -2433,17 +2430,33 @@ tp_assign_ordinary_batches(
 {
 	for (uint32 i = first_batch; i < plan->num_batches; i++)
 	{
-		TpCompactionBatch  *batch  = &plan->batches[i];
-		TpCompactionSource *source = &plan->sources[batch->first_source];
-		uint32				minimum_level = source->source_level + 1;
-		uint32 output_level = tp_size_class(batch->estimate.bytes);
+		TpCompactionBatch  *batch	   = &plan->batches[i];
+		TpCompactionSource *source	   = &plan->sources[batch->first_source];
+		uint64				live_bytes = 0;
+		uint32				output_level;
 
-		if (output_level < minimum_level)
-			output_level = minimum_level;
+		for (uint32 j = 0; j < batch->source_count; j++)
+		{
+			if (!tp_u64_add(
+						live_bytes,
+						plan->sources[batch->first_source + j].live_bytes,
+						&live_bytes))
+				live_bytes = PG_UINT64_MAX;
+		}
+		output_level = Max(1U, tp_size_class(live_bytes));
+
+		/* Capacity recourse must still move an uncombinable singleton. */
+		if (batch->source_count == 1)
+			output_level = Max(output_level, source->source_level + 1);
+		else if (
+				output_level < source->source_level &&
+				(uint32)plan->retained_counts[output_level] +
+								planned_outputs[output_level] >=
+						plan->output_capacity)
+			output_level = source->source_level;
 
 		/*
-		 * The top level compacts into itself rather than promoting, so it
-		 * is reducible like any other and carries no special count ceiling.
+		 * Capacity-driven promotion cannot go past the terminal level.
 		 */
 		if (output_level > TP_MAX_LEVELS - 1)
 			output_level = TP_MAX_LEVELS - 1;
@@ -2488,7 +2501,7 @@ tp_build_empty_plan(
 								"its recorded count",
 								level)));
 
-			reader = tp_segment_open(index, current);
+			reader = tp_segment_open_header(index, current);
 			if (reader == NULL)
 				ereport(ERROR,
 						(errcode(ERRCODE_DATA_CORRUPTED),
@@ -2577,10 +2590,8 @@ tp_build_ordinary_plan(
 		tp_assign_ordinary_batches(plan, first_batch, planned_outputs);
 
 		/*
-		 * Outputs do not always land above the candidate: the top level
-		 * compacts into itself.  Check every level this plan grows; a full
-		 * level is over capacity only when it also has too few segments to
-		 * compact.
+		 * Size placement can keep outputs at the candidate or move them
+		 * down. Check every level this plan grows.
 		 */
 		for (uint32 level = 0; level < TP_MAX_LEVELS; level++)
 		{
@@ -2628,6 +2639,168 @@ tp_free_compaction_plan(TpCompactionPlan *plan)
 		pfree(plan->batches);
 }
 
+/*
+ * Rewrite one half-dead segment, including an interior chain member.
+ * Keep its level so publication only needs that chain's splice point.
+ */
+static bool
+tp_build_sparse_plan(
+		Relation index, const TpIndexMetaPage snapshot, TpCompactionPlan *plan)
+{
+	for (uint32 level = 0; level < TP_MAX_LEVELS; level++)
+	{
+		BlockNumber current = snapshot->level_heads[level];
+
+		for (uint32 position = 0; position < snapshot->level_counts[level];
+			 position++)
+		{
+			TpSegmentReader *reader = tp_segment_open_header(index, current);
+			BlockNumber		 next;
+			bool			 sparse;
+
+			if (reader == NULL)
+				ereport(ERROR,
+						(errcode(ERRCODE_DATA_CORRUPTED),
+						 errmsg("could not open segment at block %u",
+								current)));
+			next   = reader->header->next_segment;
+			sparse = reader->header->alive_bitset_offset > 0 &&
+					 reader->header->num_docs > 0 &&
+					 reader->header->alive_count <=
+							 reader->header->num_docs / 2;
+			tp_segment_close(reader);
+			if (sparse)
+			{
+				tp_initialize_ordinary_plan(index, snapshot, plan);
+				(void)tp_collect_source(
+						index, plan, current, level, position, true);
+				plan->prefix_counts[level]	 = (uint16)position;
+				plan->selected_heads[level]	 = current;
+				plan->selected_counts[level] = 1;
+				plan->retained_heads[level]	 = next;
+				plan->retained_counts[level] -= (uint16)(position + 1);
+				tp_append_bounded_batches(plan, 0, 1);
+				plan->batches[0].output_level = level;
+				return true;
+			}
+			current = next;
+		}
+	}
+	return false;
+}
+
+/*
+ * Merge comparable head prefixes across levels. Each source is within
+ * a factor of two of the seed's surviving size, avoiding repeated
+ * rewrites of a large output for each tiny spill. The existing fanout
+ * bounds input count and conservative estimates bound output size.
+ */
+static bool
+tp_build_consolidation_plan(
+		Relation index, const TpIndexMetaPage snapshot, TpCompactionPlan *plan)
+{
+	uint64 budget = tp_max_segment_size_bytes();
+
+	for (uint32 seed = 0; seed < TP_MAX_LEVELS; seed++)
+	{
+		TpSegmentEstimate estimate	 = {0};
+		uint64			  seed_bytes = 0;
+		uint64			  live_bytes = 0;
+		uint32			  output_level;
+
+		if (snapshot->level_counts[seed] == 0)
+			continue;
+		tp_initialize_ordinary_plan(index, snapshot, plan);
+		for (uint32 level = seed; level < TP_MAX_LEVELS; level++)
+		{
+			while (plan->retained_counts[level] > 0 &&
+				   plan->num_sources < (uint32)tp_segments_per_level)
+			{
+				TpCompactionSource *source;
+				uint32				position = plan->selected_counts[level];
+				BlockNumber			root	 = plan->retained_heads[level];
+				BlockNumber			next	 = tp_collect_source(
+						index, plan, root, level, position, false);
+
+				source = &plan->sources[plan->num_sources - 1];
+				if (plan->num_sources == 1)
+					seed_bytes = source->live_bytes;
+				else if (
+						source->live_bytes / 2 > seed_bytes ||
+						seed_bytes / 2 > source->live_bytes)
+				{
+					plan->num_sources--;
+					break;
+				}
+				if (position == 0)
+					plan->selected_heads[level] = root;
+				plan->selected_counts[level]++;
+				plan->retained_counts[level]--;
+				plan->retained_heads[level] = next;
+			}
+		}
+		if (plan->num_sources >= 2)
+		{
+			uint32 accepted = 0;
+
+			for (uint32 i = 0; i < plan->num_sources; i++)
+			{
+				TpCompactionSource *source = &plan->sources[i];
+				TpSegmentReader *reader = tp_segment_open(index, source->root);
+				TpSegmentEstimate combined;
+
+				if (reader == NULL)
+					ereport(ERROR,
+							(errcode(ERRCODE_DATA_CORRUPTED),
+							 errmsg("could not open segment at block %u",
+									source->root)));
+				tp_collect_source_estimate(
+						source,
+						reader,
+						i == 0 && tp_compaction_maintenance_lock_held(index));
+				tp_segment_close(reader);
+				if (i == 0)
+					combined = source->estimate;
+				else if (!tp_estimate_add(
+								 &estimate,
+								 &source->estimate,
+								 budget,
+								 &combined))
+					break;
+				if (combined.bytes > budget)
+					break;
+				estimate = combined;
+				live_bytes += source->live_bytes;
+				accepted++;
+			}
+			while (plan->num_sources > accepted)
+			{
+				TpCompactionSource *source =
+						&plan->sources[--plan->num_sources];
+				uint32 level = source->source_level;
+
+				plan->retained_heads[level] = source->root;
+				plan->retained_counts[level]++;
+				if (--plan->selected_counts[level] == 0)
+					plan->selected_heads[level] = InvalidBlockNumber;
+			}
+		}
+		output_level = Max(1U, tp_size_class(live_bytes));
+		if (plan->num_sources >= 2 &&
+			plan->retained_counts[output_level] < plan->output_capacity)
+		{
+			plan->num_batches			  = 1;
+			plan->batches[0].source_count = plan->num_sources;
+			plan->batches[0].estimate	  = estimate;
+			plan->batches[0].output_level = output_level;
+			return true;
+		}
+		tp_free_compaction_plan(plan);
+		memset(plan, 0, sizeof(*plan));
+	}
+	return false;
+}
+
 static bool
 tp_select_compaction_plan(
 		TpLocalIndexState *index_state,
@@ -2668,6 +2841,10 @@ tp_select_compaction_plan(
 					TP_MAX_LEVELS)
 			selected =
 					tp_build_ordinary_plan(index, snapshot, first_level, plan);
+		if (!selected && !empty_only)
+			selected = tp_build_sparse_plan(index, snapshot, plan);
+		if (!selected && !empty_only)
+			selected = tp_build_consolidation_plan(index, snapshot, plan);
 	}
 	PG_FINALLY();
 	{

@@ -143,8 +143,12 @@ tp_segment_read_next(Relation index, BlockNumber root, BlockNumber *next)
  * If load_ctids is false, skips CTID preloading - use tp_segment_lookup_ctid
  * for deferred resolution.
  */
-TpSegmentReader *
-tp_segment_open_ex(Relation index, BlockNumber root_block, bool load_ctids)
+static TpSegmentReader *
+tp_segment_open_internal(
+		Relation	index,
+		BlockNumber root_block,
+		bool		load_ctids,
+		bool		header_only)
 {
 	TpSegmentReader	   *reader;
 	Buffer				header_buf;
@@ -315,6 +319,9 @@ tp_segment_open_ex(Relation index, BlockNumber root_block, bool load_ctids)
 	LockBuffer(
 			header_buf, BUFFER_LOCK_UNLOCK); /* Just unlock, don't release */
 
+	if (header_only)
+		return reader;
+
 	/* Always load page map from disk - no caching due to concurrency issues */
 	reader->page_map = palloc(sizeof(BlockNumber) * reader->num_pages);
 
@@ -438,6 +445,19 @@ tp_segment_open_ex(Relation index, BlockNumber root_block, bool load_ctids)
 	}
 
 	return reader;
+}
+
+/* Open only the version-normalized header, without loading the page map. */
+TpSegmentReader *
+tp_segment_open_header(Relation index, BlockNumber root_block)
+{
+	return tp_segment_open_internal(index, root_block, false, true);
+}
+
+TpSegmentReader *
+tp_segment_open_ex(Relation index, BlockNumber root_block, bool load_ctids)
+{
+	return tp_segment_open_internal(index, root_block, load_ctids, false);
 }
 
 /*

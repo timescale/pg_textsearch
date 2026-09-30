@@ -154,7 +154,8 @@ INSERT INTO vb_multi (content)
 SELECT 'first batch document ' || i || ' with search term'
 FROM generate_series(1, 50) i;
 CREATE INDEX vb_multi_idx ON vb_multi
-    USING bm25 (content) WITH (text_config = 'english');
+    USING bm25 (content)
+    WITH (text_config = 'english', compaction = 'manual');
 NOTICE:  BM25 index build started for relation vb_multi_idx
 NOTICE:  Using text search configuration: english
 NOTICE:  Using index options: k1=1.20, b=0.75
@@ -200,7 +201,8 @@ INSERT INTO vb_merge (content)
 SELECT 'merge test document ' || i
 FROM generate_series(1, 50) i;
 CREATE INDEX vb_merge_idx ON vb_merge
-    USING bm25 (content) WITH (text_config = 'english');
+    USING bm25 (content)
+    WITH (text_config = 'english', compaction = 'manual');
 NOTICE:  BM25 index build started for relation vb_merge_idx
 NOTICE:  Using text search configuration: english
 NOTICE:  Using index options: k1=1.20, b=0.75
@@ -304,7 +306,8 @@ INSERT INTO vb_multimerge (content)
 SELECT 'batch1 doc ' || i || ' target'
 FROM generate_series(1, 50) i;
 CREATE INDEX vb_mm_idx ON vb_multimerge
-    USING bm25 (content) WITH (text_config = 'english');
+    USING bm25 (content)
+    WITH (text_config = 'english', compaction = 'manual');
 NOTICE:  BM25 index build started for relation vb_mm_idx
 NOTICE:  Using text search configuration: english
 NOTICE:  Using index options: k1=1.20, b=0.75
@@ -453,7 +456,8 @@ INSERT INTO vb_batched (content)
 SELECT 'bounded batch ' || i
 FROM generate_series(1, 3000) i;
 CREATE INDEX vb_batched_idx ON vb_batched
-    USING bm25 (content) WITH (text_config = 'english');
+    USING bm25 (content)
+    WITH (text_config = 'english', compaction = 'manual');
 NOTICE:  BM25 index build started for relation vb_batched_idx
 NOTICE:  Using text search configuration: english
 NOTICE:  Using index options: k1=1.20, b=0.75

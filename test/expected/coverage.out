@@ -11,7 +11,7 @@ INSERT INTO coverage_docs (content) VALUES
     ('database search query optimization'),
     ('full text search engine postgresql');
 CREATE INDEX coverage_idx ON coverage_docs USING bm25(content)
-    WITH (text_config='english');
+    WITH (text_config='english', compaction='manual');
 NOTICE:  BM25 index build started for relation coverage_idx
 NOTICE:  Using text search configuration: english
 NOTICE:  Using index options: k1=1.20, b=0.75

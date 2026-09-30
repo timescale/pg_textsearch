@@ -1304,6 +1304,8 @@ tp_vacuumcleanup(IndexVacuumInfo *info, IndexBulkDeleteResult *stats)
 	}
 	PG_END_TRY();
 
+	/* Deletion debt needs a maintenance opportunity even without a spill. */
+	tp_apply_compaction_policy(index_state, info->index, true);
 	return stats;
 }
 

@@ -14,7 +14,8 @@ CREATE TABLE compression_docs (
 
 -- Create BM25 index
 CREATE INDEX compression_idx ON compression_docs
-    USING bm25 (content) WITH (text_config = 'english');
+    USING bm25 (content)
+    WITH (text_config = 'english', compaction = 'manual');
 
 -- Insert enough documents to create multiple blocks (block size is 128)
 -- We need at least 128+ docs with the same term to test block compression
@@ -104,7 +105,8 @@ CREATE TABLE mixed_docs (
 );
 
 CREATE INDEX mixed_idx ON mixed_docs
-    USING bm25 (content) WITH (text_config = 'english');
+    USING bm25 (content)
+    WITH (text_config = 'english', compaction = 'manual');
 
 -- Insert first batch with compression ON
 INSERT INTO mixed_docs (content)
@@ -139,7 +141,7 @@ ORDER BY content <@> to_bm25query('beta', 'mixed_idx')) sub;
 SELECT count(*) FROM (SELECT 1 FROM mixed_docs
 ORDER BY content <@> to_bm25query('delta', 'mixed_idx')) sub;
 
--- Turn compression back on, add more data, and trigger merge
+-- Turn compression back on and add a third segment
 SET pg_textsearch.compress_segments = on;
 
 INSERT INTO mixed_docs (content)
@@ -168,7 +170,8 @@ CREATE TABLE mixed_docs2 (
 );
 
 CREATE INDEX mixed_idx2 ON mixed_docs2
-    USING bm25 (content) WITH (text_config = 'english');
+    USING bm25 (content)
+    WITH (text_config = 'english', compaction = 'manual');
 
 -- First batch uncompressed
 INSERT INTO mixed_docs2 (content)
