@@ -170,6 +170,53 @@ merge_sink_finish(TpMergeSink *sink, TpSegmentHeader *header)
 	tp_segment_writer_finish(&sink->writer);
 }
 
+TpSkipEntry
+merge_sink_write_posting_block(
+		TpMergeSink *sink, TpBlockPosting *block, uint32 count)
+{
+	TpSkipEntry skip;
+	uint16		max_tf	 = 0;
+	uint8		min_norm = 255;
+	uint32		last_did = 0;
+	uint32		i;
+
+	Assert(count > 0 && count <= TP_BLOCK_SIZE);
+
+	for (i = 0; i < count; i++)
+	{
+		if (block[i].doc_id > last_did)
+			last_did = block[i].doc_id;
+		if (block[i].frequency > max_tf)
+			max_tf = block[i].frequency;
+		if (block[i].fieldnorm < min_norm)
+			min_norm = block[i].fieldnorm;
+	}
+
+	skip.last_doc_id	= last_did;
+	skip.doc_count		= (uint8)count;
+	skip.block_max_tf	= max_tf;
+	skip.block_max_norm = min_norm;
+	skip.posting_offset = sink->current_offset;
+	memset(skip.reserved, 0, sizeof(skip.reserved));
+
+	if (tp_compress_segments)
+	{
+		uint8  compressed[TP_MAX_COMPRESSED_BLOCK_SIZE];
+		uint32 compressed_size;
+
+		compressed_size = tp_compress_block(block, count, compressed);
+		skip.flags		= TP_BLOCK_FLAG_DELTA;
+		merge_sink_write(sink, compressed, compressed_size);
+	}
+	else
+	{
+		skip.flags = TP_BLOCK_FLAG_UNCOMPRESSED;
+		merge_sink_write(sink, block, count * sizeof(TpBlockPosting));
+	}
+
+	return skip;
+}
+
 /* ----------------------------------------------------------------
  * Merge source operations
  * ----------------------------------------------------------------
@@ -1261,62 +1308,24 @@ write_merged_segment_to_sink(
 	 * Computes skip entry, optionally compresses, writes data,
 	 * and accumulates the skip entry.
 	 */
-#define FLUSH_BLOCK(block_buf, block_count, num_blocks)                         \
-	do                                                                          \
-	{                                                                           \
-		TpSkipEntry skip_;                                                      \
-		uint16		max_tf_	  = 0;                                              \
-		uint8		min_norm_ = 255;                                            \
-		uint32		last_did_ = 0;                                              \
-		uint32		j_;                                                         \
-                                                                                \
-		for (j_ = 0; j_ < (block_count); j_++)                                  \
-		{                                                                       \
-			if ((block_buf)[j_].doc_id > last_did_)                             \
-				last_did_ = (block_buf)[j_].doc_id;                             \
-			if ((block_buf)[j_].frequency > max_tf_)                            \
-				max_tf_ = (block_buf)[j_].frequency;                            \
-			if ((block_buf)[j_].fieldnorm < min_norm_)                          \
-				min_norm_ = (block_buf)[j_].fieldnorm;                          \
-		}                                                                       \
-                                                                                \
-		skip_.last_doc_id	 = last_did_;                                       \
-		skip_.doc_count		 = (uint8)(block_count);                            \
-		skip_.block_max_tf	 = max_tf_;                                         \
-		skip_.block_max_norm = min_norm_;                                       \
-		skip_.posting_offset = sink->current_offset;                            \
-		memset(skip_.reserved, 0, sizeof(skip_.reserved));                      \
-                                                                                \
-		if (tp_compress_segments)                                               \
-		{                                                                       \
-			uint8  cbuf_[TP_MAX_COMPRESSED_BLOCK_SIZE];                         \
-			uint32 csize_;                                                      \
-                                                                                \
-			csize_		= tp_compress_block((block_buf), (block_count), cbuf_); \
-			skip_.flags = TP_BLOCK_FLAG_DELTA;                                  \
-			merge_sink_write(sink, cbuf_, csize_);                              \
-		}                                                                       \
-		else                                                                    \
-		{                                                                       \
-			skip_.flags = TP_BLOCK_FLAG_UNCOMPRESSED;                           \
-			merge_sink_write(                                                   \
-					sink,                                                       \
-					(block_buf),                                                \
-					(block_count) * sizeof(TpBlockPosting));                    \
-		}                                                                       \
-                                                                                \
-		if (skip_entries_count >= skip_entries_capacity)                        \
-		{                                                                       \
-			skip_entries_capacity = tp_grow_capacity(                           \
-					skip_entries_capacity, 1024, "posting blocks");             \
-			all_skip_entries = repalloc_huge(                                   \
-					all_skip_entries,                                           \
-					mul_size(                                                   \
-							(Size)skip_entries_capacity,                        \
-							sizeof(TpSkipEntry)));                              \
-		}                                                                       \
-		all_skip_entries[skip_entries_count++] = skip_;                         \
-		(num_blocks)++;                                                         \
+#define FLUSH_BLOCK(block_buf, block_count, num_blocks)             \
+	do                                                              \
+	{                                                               \
+		TpSkipEntry skip_ = merge_sink_write_posting_block(         \
+				sink, (block_buf), (block_count));                  \
+                                                                    \
+		if (skip_entries_count >= skip_entries_capacity)            \
+		{                                                           \
+			skip_entries_capacity = tp_grow_capacity(               \
+					skip_entries_capacity, 1024, "posting blocks"); \
+			all_skip_entries = repalloc_huge(                       \
+					all_skip_entries,                               \
+					mul_size(                                       \
+							(Size)skip_entries_capacity,            \
+							sizeof(TpSkipEntry)));                  \
+		}                                                           \
+		all_skip_entries[skip_entries_count++] = skip_;             \
+		(num_blocks)++;                                             \
 	} while (0)
 
 	/*

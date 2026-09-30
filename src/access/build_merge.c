@@ -15,14 +15,11 @@
 #include "access/build_merge.h"
 #include "constants.h"
 #include "segment/alive_bitset.h"
-#include "segment/compression.h"
 #include "segment/io.h"
 #include "segment/segment.h"
 
 #define TP_BUILD_MERGE_COPY_BUFFER_SIZE (64 * 1024)
 #define TP_BUILD_MERGE_DICT_CHUNK		4096
-
-extern bool tp_compress_segments;
 
 static void
 build_merge_rewind(BufFile *file)
@@ -111,45 +108,7 @@ static void
 build_merge_flush_block(
 		TpMergeSink *sink, BufFile *skips, TpBlockPosting *block, uint32 count)
 {
-	TpSkipEntry skip;
-	uint16		max_tf	 = 0;
-	uint8		min_norm = 255;
-	uint32		last_did = 0;
-	uint32		i;
-
-	Assert(count > 0 && count <= TP_BLOCK_SIZE);
-
-	for (i = 0; i < count; i++)
-	{
-		if (block[i].doc_id > last_did)
-			last_did = block[i].doc_id;
-		if (block[i].frequency > max_tf)
-			max_tf = block[i].frequency;
-		if (block[i].fieldnorm < min_norm)
-			min_norm = block[i].fieldnorm;
-	}
-
-	skip.last_doc_id	= last_did;
-	skip.doc_count		= (uint8)count;
-	skip.block_max_tf	= max_tf;
-	skip.block_max_norm = min_norm;
-	skip.posting_offset = sink->current_offset;
-	memset(skip.reserved, 0, sizeof(skip.reserved));
-
-	if (tp_compress_segments)
-	{
-		uint8  compressed[TP_MAX_COMPRESSED_BLOCK_SIZE];
-		uint32 compressed_size;
-
-		compressed_size = tp_compress_block(block, count, compressed);
-		skip.flags		= TP_BLOCK_FLAG_DELTA;
-		merge_sink_write(sink, compressed, compressed_size);
-	}
-	else
-	{
-		skip.flags = TP_BLOCK_FLAG_UNCOMPRESSED;
-		merge_sink_write(sink, block, count * sizeof(TpBlockPosting));
-	}
+	TpSkipEntry skip = merge_sink_write_posting_block(sink, block, count);
 
 	BufFileWrite(skips, &skip, sizeof(skip));
 }
