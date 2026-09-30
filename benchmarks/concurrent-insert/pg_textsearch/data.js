@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790667461868,
+  "lastUpdate": 1790753904341,
   "repoUrl": "https://github.com/timescale/pg_textsearch",
   "entries": {
     "Concurrent INSERT (pg_textsearch)": [
@@ -11102,6 +11102,68 @@ window.BENCHMARK_DATA = {
           {
             "name": "pg_textsearch INSERT latency (c=8)",
             "value": 0.741,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tjgreen@gmail.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "3296557626cf30eb95e26df9e98a2c59d624e52a",
+          "message": "Validate tombstone chain links before reading pages (#525)\n\nReject invalid tombstone head and next-page pointers before reading\nbuffers. Drains now use the existing warning-and-recovery path,\npreserving valid prefixes; pending-page diagnostics raise corruption\nerrors without modifying the chain.\n\nAdd regression coverage for block zero, EOF, and past-EOF links in both\npositions.\n\nFixes #469.",
+          "timestamp": "2026-09-30T03:30:03Z",
+          "url": "https://github.com/timescale/pg_textsearch/commit/3296557626cf30eb95e26df9e98a2c59d624e52a"
+        },
+        "date": 1790753862656,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "pg_textsearch INSERT TPS (c=1)",
+            "value": 2905.315127,
+            "unit": "tps"
+          },
+          {
+            "name": "pg_textsearch INSERT latency (c=1)",
+            "value": 0.344,
+            "unit": "ms"
+          },
+          {
+            "name": "pg_textsearch INSERT TPS (c=2)",
+            "value": 5121.988763,
+            "unit": "tps"
+          },
+          {
+            "name": "pg_textsearch INSERT latency (c=2)",
+            "value": 0.39,
+            "unit": "ms"
+          },
+          {
+            "name": "pg_textsearch INSERT TPS (c=4)",
+            "value": 7712.068797,
+            "unit": "tps"
+          },
+          {
+            "name": "pg_textsearch INSERT latency (c=4)",
+            "value": 0.519,
+            "unit": "ms"
+          },
+          {
+            "name": "pg_textsearch INSERT TPS (c=8)",
+            "value": 11811.661312,
+            "unit": "tps"
+          },
+          {
+            "name": "pg_textsearch INSERT latency (c=8)",
+            "value": 0.677,
             "unit": "ms"
           }
         ]
