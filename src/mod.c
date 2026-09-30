@@ -188,6 +188,7 @@ typedef struct TpProcessUtilityContext
 	Oid								rls_ddl_lock_object;
 	List						   *altered_relids;
 	List						   *hierarchy_relids;
+	List						   *concurrent_index_drops;
 } TpProcessUtilityContext;
 
 static TpProcessUtilityContext *current_utility_context = NULL;
@@ -1217,6 +1218,18 @@ tp_promote_managed_intents(
 	MemoryContextSwitchTo(old_context);
 }
 
+static void
+tp_schedule_index_drop(Oid index_oid)
+{
+	TpPendingIndexDrop *drop = MemoryContextAlloc(
+			TopTransactionContext, sizeof(TpPendingIndexDrop));
+
+	drop->index_oid		   = index_oid;
+	drop->subid			   = GetCurrentSubTransactionId();
+	drop->next			   = tp_pending_index_drops;
+	tp_pending_index_drops = drop;
+}
+
 /*
  * Object access hook - enforce RLS checks, record CREATE INDEX objects, and
  * handle DROP INDEX.
@@ -1306,19 +1319,26 @@ tp_object_access(
 					tp_registry_key(MyDatabaseId, objectId)))
 			return;
 
-		/*
-		 * Other backends retain shared-state pointers across transactions.
-		 * A rollback must leave those allocations alive.
-		 */
+		if (arg != NULL && (((ObjectAccessDrop *)arg)->dropflags &
+							PERFORM_DELETION_CONCURRENTLY))
 		{
-			TpPendingIndexDrop *drop = MemoryContextAlloc(
-					TopTransactionContext, sizeof(TpPendingIndexDrop));
+			MemoryContext old_context;
 
-			drop->index_oid		   = objectId;
-			drop->subid			   = GetCurrentSubTransactionId();
-			drop->next			   = tp_pending_index_drops;
-			tp_pending_index_drops = drop;
+			/*
+			 * Concurrent DROP commits before draining readers. Keep its
+			 * cleanup outside those transactions until core DROP returns.
+			 */
+			if (current_utility_context == NULL)
+				elog(ERROR,
+					 "cannot track concurrent pg_textsearch index drop "
+					 "outside a utility command");
+			old_context = MemoryContextSwitchTo(TopMemoryContext);
+			current_utility_context->concurrent_index_drops = lappend_oid(
+					current_utility_context->concurrent_index_drops, objectId);
+			MemoryContextSwitchTo(old_context);
 		}
+		else
+			tp_schedule_index_drop(objectId);
 	}
 }
 
@@ -5184,6 +5204,7 @@ tp_process_utility(
 		QueryCompletion		 *qc)
 {
 	TpProcessUtilityContext *utility_context;
+	ListCell				*lc;
 
 	if (tp_managed_reconciling && !IsA(pstmt->utilityStmt, GrantStmt))
 		ereport(ERROR,
@@ -5222,6 +5243,11 @@ tp_process_utility(
 				dest,
 				qc);
 
+		foreach (lc, utility_context->concurrent_index_drops)
+			tp_schedule_index_drop(lfirst_oid(lc));
+		list_free(utility_context->concurrent_index_drops);
+		utility_context->concurrent_index_drops = NIL;
+
 		validate_utility_context(utility_context);
 
 		if (utility_context->build_progress_started)
@@ -5248,6 +5274,7 @@ tp_process_utility(
 	PG_CATCH();
 	{
 		current_utility_context = utility_context->previous;
+		list_free(utility_context->concurrent_index_drops);
 		if (utility_context->build_progress_started)
 		{
 			utility_context->build_progress_started = false;

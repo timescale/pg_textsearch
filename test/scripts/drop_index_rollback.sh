@@ -1,5 +1,5 @@
 #!/bin/bash
-# A rolled-back DROP must not invalidate another backend's cached state (#506).
+# Shared state must outlive rolled-back drops and concurrent readers (#506).
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -9,10 +9,18 @@ SOCKET_DIR="$(mktemp -d /tmp/pgts-drop.XXXXXX)"
 export PGHOST="${SOCKET_DIR}"
 export PGPORT="${TEST_PORT:-55463}"
 export PGDATABASE=postgres
+READER_PID=
+DROPPER_PID=
 
 cleanup() {
     local status=$?
     trap - EXIT
+    for pid in "${READER_PID}" "${DROPPER_PID}"; do
+        if [ -n "${pid}" ]; then
+            kill "${pid}" 2>/dev/null || true
+            wait "${pid}" 2>/dev/null || true
+        fi
+    done
     if [ -f "${TEST_DIR}/data/postmaster.pid" ]; then
         if ! pg_ctl -D "${TEST_DIR}/data" -m immediate -w stop >/dev/null; then
             echo "Could not stop test server; preserving ${TEST_DIR}" >&2
@@ -21,6 +29,11 @@ cleanup() {
     fi
     if [ "${status}" -ne 0 ]; then
         cat "${TEST_DIR}/postgres.log" >&2
+        for output in reader.out dropper.out; do
+            if [ -f "${TEST_DIR}/${output}" ]; then
+                cat "${TEST_DIR}/${output}" >&2
+            fi
+        done
     fi
     rm -rf "${TEST_DIR}" "${SOCKET_DIR}"
     exit "${status}"
@@ -83,6 +96,113 @@ INSERT INTO docs VALUES (20001, 'drug trial cached');
 SQL
 }
 
+wait_for_reader() {
+    local marker=$1
+    for _ in $(seq 1 300); do
+        if grep -Fxq "${marker}" "${TEST_DIR}/reader.out"; then
+            return
+        fi
+        if ! kill -0 "${READER_PID}" 2>/dev/null; then
+            echo "Reader exited before ${marker}" >&2
+            return 1
+        fi
+        sleep 0.1
+    done
+    echo "Timed out waiting for ${marker}" >&2
+    return 1
+}
+
+concurrent_drop_case() {
+    local outcome=$1 reader_fd cache_bytes waiting=false
+
+    echo "Testing concurrent drop with active reader: ${outcome}"
+    fixture
+    mkfifo "${TEST_DIR}/reader-${outcome}.sql"
+    exec {reader_fd}<>"${TEST_DIR}/reader-${outcome}.sql"
+    PGAPPNAME=drop-rollback-reader \
+        psql -X -v ON_ERROR_STOP=1 <"${TEST_DIR}/reader-${outcome}.sql" \
+        >"${TEST_DIR}/reader.out" 2>&1 &
+    READER_PID=$!
+    cat >&"${reader_fd}" <<'SQL'
+SET enable_seqscan = off;
+BEGIN;
+SELECT assert_hits(20001);
+DECLARE live_cursor CURSOR FOR
+    SELECT id FROM docs
+    ORDER BY txt <@> to_bm25query('drug trial', 'docs_idx') LIMIT 5;
+FETCH 1 FROM live_cursor;
+\echo reader_ready
+SQL
+    wait_for_reader reader_ready
+    cache_bytes="$(sql -Atc "SELECT bm25_cache_global_estimated_bytes();")"
+
+    PGAPPNAME=drop-rollback-dropper \
+        psql -X -v ON_ERROR_STOP=1 -c "DROP INDEX CONCURRENTLY docs_idx;" \
+        >"${TEST_DIR}/dropper.out" 2>&1 &
+    DROPPER_PID=$!
+    for _ in $(seq 1 300); do
+        waiting="$(sql -Atc "SELECT
+            EXISTS (SELECT FROM pg_index
+                    WHERE indexrelid = 'docs_idx'::regclass
+                      AND NOT indisvalid)
+            AND EXISTS (SELECT FROM pg_stat_activity
+                        WHERE application_name = 'drop-rollback-dropper'
+                          AND wait_event_type = 'Lock');")"
+        [ "${waiting}" = "t" ] && break
+        sleep 0.1
+    done
+    if [ "${waiting}" != "t" ]; then
+        echo "Concurrent drop did not reach its reader wait" >&2
+        return 1
+    fi
+    if [ "${cache_bytes}" -eq 0 ] ||
+        [ "$(sql -Atc "SELECT bm25_cache_global_estimated_bytes();")" \
+          != "${cache_bytes}" ]; then
+        echo "Concurrent drop freed shared state before readers finished" >&2
+        return 1
+    fi
+    sql -c "INSERT INTO docs VALUES (20002, 'drug trial late');"
+    if [ "${outcome}" = cancel ]; then
+        sql -c "SELECT pg_cancel_backend(pid) FROM pg_stat_activity
+                WHERE application_name = 'drop-rollback-dropper';"
+        if wait "${DROPPER_PID}"; then
+            echo "Cancelled concurrent drop unexpectedly succeeded" >&2
+            return 1
+        fi
+        DROPPER_PID=
+        grep -Fq "canceling statement due to user request" \
+            "${TEST_DIR}/dropper.out"
+    fi
+    cat >&"${reader_fd}" <<'SQL'
+FETCH ALL FROM live_cursor;
+CLOSE live_cursor;
+SELECT assert_hits(20002);
+COMMIT;
+\echo reader_finished
+SQL
+    wait_for_reader reader_finished
+    if [ "${outcome}" = cancel ]; then
+        sql -c "REINDEX INDEX docs_idx;"
+        printf 'SELECT assert_hits(20002);\n' >&"${reader_fd}"
+    else
+        wait "${DROPPER_PID}"
+        DROPPER_PID=
+        sql <<'SQL'
+DO $$
+BEGIN
+    IF bm25_cache_global_estimated_bytes() <> 0 THEN
+        RAISE EXCEPTION 'concurrent drop leaked shared cache';
+    END IF;
+END;
+$$;
+SQL
+    fi
+    printf '\\q\n' >&"${reader_fd}"
+    wait "${READER_PID}"
+    READER_PID=
+    exec {reader_fd}>&-
+}
+
 rollback_case() {
     local name="$1" ddl="$2"
     echo "Testing ${name}"
@@ -135,6 +255,40 @@ rollback_case "caught statement error" \
          PERFORM 1 / 0;
      EXCEPTION WHEN division_by_zero THEN NULL;
      END $$;'
+
+concurrent_drop_case commit
+concurrent_drop_case cancel
+
+echo "Testing concurrent drop failure after physical deletion"
+fixture
+sql <<'SQL'
+SELECT assert_hits(20001);
+SELECT bm25_cache_global_estimated_bytes() AS cache_bytes \gset
+CREATE FUNCTION reject_index_drop() RETURNS event_trigger
+LANGUAGE plpgsql AS $$
+BEGIN
+    RAISE EXCEPTION 'reject concurrent drop';
+END;
+$$;
+CREATE EVENT TRIGGER reject_index_drop ON sql_drop
+WHEN TAG IN ('DROP INDEX') EXECUTE FUNCTION reject_index_drop();
+\set ON_ERROR_STOP off
+DROP INDEX CONCURRENTLY docs_idx;
+\set drop_state :SQLSTATE
+\set ON_ERROR_STOP on
+DROP EVENT TRIGGER reject_index_drop;
+DROP FUNCTION reject_index_drop();
+SELECT :'drop_state' = 'P0001'
+       AND to_regclass('docs_idx') IS NOT NULL
+       AND :cache_bytes > 0
+       AND bm25_cache_global_estimated_bytes() = :cache_bytes AS retained \gset
+\if :retained
+\else
+    DO $$ BEGIN RAISE EXCEPTION 'failed drop lost shared state'; END $$;
+\endif
+REINDEX INDEX docs_idx;
+SELECT assert_hits(20001);
+SQL
 
 echo "Testing PREPARE rejection and savepoint queue cleanup"
 fixture

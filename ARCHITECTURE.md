@@ -102,6 +102,10 @@ released. Transaction or savepoint rollback preserves allocations referenced
 by other backends; releasing a savepoint transfers pending cleanup to its
 parent. `PREPARE TRANSACTION` rejects pending index-drop cleanup, as it does
 initial index creation, because this ownership is backend-local.
+Concurrent drops retain that state across PostgreSQL's intermediate commits
+and reader waits. Only successful completion of the utility command schedules
+cleanup for its final transaction; cancellation preserves the surviving
+index's state.
 
 `pg_textsearch.memory_limit` has three budget tiers:
 
