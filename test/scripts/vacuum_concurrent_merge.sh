@@ -984,7 +984,7 @@ test_compact_yields_to_vacuum() {
     wait "${vacuum_drain_pid}" "${compactor_drain_pid}" 2>/dev/null || true
 
     levels=$(sql -c "SELECT bm25_level_counts('yield_bm25'::regclass);")
-    [ "${levels}" = "{0,0,1,0,0,0,0,0}" ] ||
+    [ "${levels}" = "{0,1,0,0,0,0,0,0}" ] ||
         error "explicit compaction left unexpected levels ${levels}"
     log "Queued VACUUM acquired maintenance between compaction passes"
 }

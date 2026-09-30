@@ -1,12 +1,14 @@
 \pset format unaligned
+\set VERBOSITY terse
 SET client_min_messages = warning;
 CREATE EXTENSION pg_textsearch;
 CREATE EXTENSION injection_points;
 CREATE EXTENSION pg_textsearch_test;
 SET enable_seqscan = off;
 
+-- Temporary fixtures isolate immediate cleanup from other backends' xmin.
 -- Legacy token totals are rebuilt from heap data.
-CREATE TABLE vacuum_legacy_stats (
+CREATE TEMP TABLE vacuum_legacy_stats (
     id serial PRIMARY KEY,
     content text
 );
@@ -38,7 +40,7 @@ DROP TABLE vacuum_legacy_stats;
 
 -- Legacy replacement rebases a changed text configuration.
 CREATE TEXT SEARCH CONFIGURATION public.vacuum_mutable_cfg (COPY = english);
-CREATE TABLE vacuum_mutable_config (
+CREATE TEMP TABLE vacuum_mutable_config (
     id serial PRIMARY KEY,
     content text
 );
@@ -66,7 +68,7 @@ DROP TABLE vacuum_mutable_config;
 DROP TEXT SEARCH CONFIGURATION public.vacuum_mutable_cfg;
 
 -- Inconsistent multi-segment legacy totals are fully rebased.
-CREATE TABLE vacuum_multi_legacy (
+CREATE TEMP TABLE vacuum_multi_legacy (
     id serial PRIMARY KEY,
     content text
 );
@@ -105,7 +107,7 @@ SELECT bm25_dump_index('vacuum_multi_legacy_idx')
 DROP TABLE vacuum_multi_legacy;
 
 -- Impossible current-format totals fail closed.
-CREATE TABLE vacuum_current_corrupt (
+CREATE TEMP TABLE vacuum_current_corrupt (
     id serial PRIMARY KEY,
     content text
 );
@@ -121,7 +123,7 @@ VACUUM vacuum_current_corrupt;
 SELECT injection_points_detach('pg-textsearch-vacuum-total-len');
 DROP TABLE vacuum_current_corrupt;
 
-CREATE TABLE vacuum_current_inflated (
+CREATE TEMP TABLE vacuum_current_inflated (
     id serial PRIMARY KEY,
     content text
 );
@@ -137,7 +139,7 @@ SELECT injection_points_detach('pg-textsearch-vacuum-total-len');
 DROP TABLE vacuum_current_inflated;
 
 -- Mixed graphs fail closed when a current-format header is corrupt.
-CREATE TABLE vacuum_mixed_current_corrupt (
+CREATE TEMP TABLE vacuum_mixed_current_corrupt (
     id serial PRIMARY KEY,
     content text
 );
@@ -169,7 +171,7 @@ SELECT bm25_dump_index('vacuum_mixed_current_corrupt_idx')
     AS mixed_corruption_preserved_legacy;
 DROP TABLE vacuum_mixed_current_corrupt;
 
-CREATE TABLE vacuum_mixed_no_dead (
+CREATE TEMP TABLE vacuum_mixed_no_dead (
     id serial PRIMARY KEY,
     content text
 );
@@ -202,7 +204,7 @@ SELECT bm25_dump_index('vacuum_mixed_no_dead_idx')
 DROP TABLE vacuum_mixed_no_dead;
 
 -- Spill cannot compact corrupt legacy totals before VACUUM repairs them.
-CREATE TABLE vacuum_spill_legacy (
+CREATE TEMP TABLE vacuum_spill_legacy (
     id serial PRIMARY KEY,
     content text
 );
@@ -224,7 +226,11 @@ END
 $$;
 
 SELECT pg_textsearch_test_attach_vacuum_total_len(5000);
-ALTER INDEX vacuum_spill_legacy_idx SET (compaction = 'inline');
+-- ALTER's managed lifecycle rejects temporary indexes; test storage here.
+UPDATE pg_class
+SET reloptions = array_replace(reloptions, 'compaction=off',
+                               'compaction=inline')
+WHERE oid = 'vacuum_spill_legacy_idx'::regclass;
 SET pg_textsearch.segments_per_level = 2;
 INSERT INTO vacuum_spill_legacy (content)
 VALUES ('alpha beta gamma delta');
@@ -251,4 +257,5 @@ RESET enable_seqscan;
 DROP EXTENSION pg_textsearch_test;
 DROP EXTENSION injection_points;
 DROP EXTENSION pg_textsearch;
+\set VERBOSITY default
 \pset format aligned
