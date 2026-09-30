@@ -141,8 +141,9 @@ install-test-injection test-injection-sql test-injection-shell:
 endif
 
 # SQL regression tests
-test: test-segment-io-limits test-mixed-update-query-benchmark \
-	test-filtered-seed-benchmark test-build-memory-benchmark
+test: test-segment-io-limits test-compression \
+	test-mixed-update-query-benchmark test-filtered-seed-benchmark \
+	test-build-memory-benchmark
 	@echo "Running SQL regression tests..."
 	@$(pg_regress_installcheck) $(REGRESS_OPTS) $(REGRESS)
 
@@ -157,6 +158,17 @@ test-segment-io-limits:
 		-o "$$tmp_dir/segment_io_limits_test"; \
 	"$$tmp_dir/segment_io_limits_test"
 
+test-compression:
+	@set -e; tmp_dir="$$(mktemp -d)"; \
+	trap 'rm -rf "$$tmp_dir"' EXIT; \
+	$(CC) $(CFLAGS) $(CPPFLAGS) -std=gnu11 \
+		-Isrc \
+		-isystem "$$($(PG_CONFIG) --includedir-server)" \
+		-isystem "$$($(PG_CONFIG) --includedir)" \
+		test/scripts/compression_test.c \
+		-o "$$tmp_dir/compression_test"; \
+	"$$tmp_dir/compression_test"
+
 test-mixed-update-query-benchmark:
 	@./test/scripts/mixed_update_query_benchmark_test.sh
 
@@ -170,10 +182,12 @@ test-durable:
 	@echo "Running managed pg_durable compaction tests..."
 	@cd test/scripts && ./durable_compaction.sh
 
-installcheck: test-segment-io-limits test-mixed-update-query-benchmark \
-	test-filtered-seed-benchmark test-build-memory-benchmark
-test-local: test-segment-io-limits test-mixed-update-query-benchmark \
-	test-filtered-seed-benchmark test-build-memory-benchmark
+installcheck: test-segment-io-limits test-compression \
+	test-mixed-update-query-benchmark test-filtered-seed-benchmark \
+	test-build-memory-benchmark
+test-local: test-segment-io-limits test-compression \
+	test-mixed-update-query-benchmark test-filtered-seed-benchmark \
+	test-build-memory-benchmark
 
 # Custom local test target with dedicated PostgreSQL instance
 test-local: install
@@ -492,7 +506,8 @@ help:
 	@echo "  make format"
 
 .PHONY: \
-	test test-segment-io-limits test-mixed-update-query-benchmark \
+	test test-segment-io-limits test-compression \
+	test-mixed-update-query-benchmark \
 	test-filtered-seed-benchmark test-build-memory-benchmark \
 	test-durable \
 	test-injection-sql test-injection-shell install-test-injection \

@@ -5,20 +5,11 @@
  * compression.c - Block compression for posting lists
  *
  * Implements delta encoding + bitpacking for posting list compression.
- * Decoding uses branchless direct-indexed loads with optional SIMD
- * (SSE2 on x86-64, NEON on ARM64) for vectorized mask+store.
+ * Decoding fuses bit extraction, delta reconstruction, and posting writes.
  */
 #include <postgres.h>
 
 #include <string.h>
-
-#if defined(__SSE2__)
-#include <emmintrin.h>
-#define TP_SIMD_SSE2 1
-#elif defined(__ARM_NEON) || defined(__aarch64__)
-#include <arm_neon.h>
-#define TP_SIMD_NEON 1
-#endif
 
 #include "segment/compression.h"
 
@@ -75,116 +66,14 @@ bitpack_encode(uint32 *values, uint32 count, uint8 bits, uint8 *out)
 	return out_pos;
 }
 
-/*
- * Unpack a bit stream into an array of values.
- *
- * Uses branchless direct-indexed uint64 loads instead of a
- * byte-at-a-time accumulator. Each value is extracted by computing
- * its bit offset, loading 8 bytes from the corresponding position,
- * shifting, and masking. This eliminates the branch-heavy inner
- * loop that dominated CPU time in the scalar version.
- *
- * Safety: callers allocate TP_MAX_COMPRESSED_BLOCK_SIZE (898 bytes).
- * After the bitpacked section there is always at least the
- * fieldnorm array (count bytes), so reading up to 7 bytes past
- * the end of the bitpacked region is safe. The caller validates
- * count <= TP_BLOCK_SIZE and bit widths before calling.
- *
- * SIMD (SSE2 / NEON) is used where available to perform the
- * mask+store for groups of 4 values in a single wide write.
- */
-static void
-bitpack_decode(const uint8 *in, uint32 count, uint8 bits, uint32 *out)
+static inline uint32
+bitpack_extract(const uint8 *in, uint32 bit_offset, uint32 mask)
 {
-	uint32 mask = (bits == 32) ? UINT32_MAX : ((1U << bits) - 1);
-	uint32 i;
+	uint64 raw;
 
-#if defined(TP_SIMD_SSE2)
-	{
-		__m128i vmask	 = _mm_set1_epi32((int)mask);
-		uint32	simd_end = count & ~3U;
-
-		for (i = 0; i < simd_end; i += 4)
-		{
-			uint32 v0, v1, v2, v3;
-			uint32 bit_off;
-			uint64 raw;
-
-			bit_off = i * (uint32)bits;
-			memcpy(&raw, in + (bit_off >> 3), 8);
-			v0 = (uint32)(raw >> (bit_off & 7)) & mask;
-
-			bit_off += bits;
-			memcpy(&raw, in + (bit_off >> 3), 8);
-			v1 = (uint32)(raw >> (bit_off & 7)) & mask;
-
-			bit_off += bits;
-			memcpy(&raw, in + (bit_off >> 3), 8);
-			v2 = (uint32)(raw >> (bit_off & 7)) & mask;
-
-			bit_off += bits;
-			memcpy(&raw, in + (bit_off >> 3), 8);
-			v3 = (uint32)(raw >> (bit_off & 7)) & mask;
-
-			_mm_storeu_si128(
-					(__m128i *)(out + i),
-					_mm_and_si128(
-							_mm_setr_epi32((int)v0, (int)v1, (int)v2, (int)v3),
-							vmask));
-		}
-
-		for (; i < count; i++)
-		{
-			uint32 bit_off = i * (uint32)bits;
-			uint64 raw;
-
-			memcpy(&raw, in + (bit_off >> 3), 8);
-			out[i] = (uint32)(raw >> (bit_off & 7)) & mask;
-		}
-	}
-#elif defined(TP_SIMD_NEON)
-	{
-		uint32x4_t vmask	= vdupq_n_u32(mask);
-		uint32	   simd_end = count & ~3U;
-
-		for (i = 0; i < simd_end; i += 4)
-		{
-			uint32 vals[4];
-			uint32 bit_off = i * (uint32)bits;
-			int	   v;
-
-			for (v = 0; v < 4; v++)
-			{
-				uint64 raw;
-
-				memcpy(&raw, in + (bit_off >> 3), 8);
-				vals[v] = (uint32)(raw >> (bit_off & 7)) & mask;
-				bit_off += bits;
-			}
-
-			vst1q_u32(out + i, vandq_u32(vld1q_u32(vals), vmask));
-		}
-
-		for (; i < count; i++)
-		{
-			uint32 bit_off = i * (uint32)bits;
-			uint64 raw;
-
-			memcpy(&raw, in + (bit_off >> 3), 8);
-			out[i] = (uint32)(raw >> (bit_off & 7)) & mask;
-		}
-	}
-#else
-	/* Scalar fallback: branchless direct-indexed loads */
-	for (i = 0; i < count; i++)
-	{
-		uint32 bit_off = i * (uint32)bits;
-		uint64 raw;
-
-		memcpy(&raw, in + (bit_off >> 3), 8);
-		out[i] = (uint32)(raw >> (bit_off & 7)) & mask;
-	}
-#endif
+	/* The caller's full-size buffer permits reads past a packed section. */
+	memcpy(&raw, in + (bit_offset >> 3), sizeof(raw));
+	return (uint32)(raw >> (bit_offset & 7)) & mask;
 }
 
 /*
@@ -258,17 +147,7 @@ tp_compress_block(TpBlockPosting *postings, uint32 count, uint8 *out_buf)
 	return out_pos;
 }
 
-/*
- * Decompress a block of postings.
- *
- * first_doc_id is the base for delta decoding. For the first block of a term,
- * pass 0. For subsequent blocks, pass (previous block's last_doc_id + 1) or
- * simply 0 if storing absolute first doc ID in each block's delta stream.
- *
- * Note: We store deltas from the previous doc within the block, so
- * first_doc_id should be 0 for proper decoding (the first delta IS the first
- * absolute doc ID).
- */
+/* Unpack and reconstruct postings without intermediate arrays. */
 void
 tp_decompress_block(
 		const uint8	   *compressed,
@@ -277,12 +156,15 @@ tp_decompress_block(
 		TpBlockPosting *out_postings)
 {
 	const TpCompressedBlockHeader *header;
-	uint32						   doc_deltas[TP_BLOCK_SIZE];
-	uint32						   frequencies[TP_BLOCK_SIZE];
+	const uint8					  *doc_stream;
+	const uint8					  *freq_stream;
+	const uint8					  *fieldnorms;
 	uint32						   doc_id_bytes;
-	uint32						   freq_bytes;
-	uint32						   pos;
-	uint32						   prev_doc;
+	uint32						   doc_mask;
+	uint32						   freq_mask;
+	uint32						   doc_bit_offset  = 0;
+	uint32						   freq_bit_offset = 0;
+	uint32						   prev_doc		   = first_doc_id;
 	uint32						   i;
 
 	if (count > TP_BLOCK_SIZE)
@@ -313,31 +195,27 @@ tp_decompress_block(
 						"width %u",
 						header->freq_bits)));
 
-	pos = sizeof(TpCompressedBlockHeader);
-
-	/* Calculate sizes for seeking */
 	doc_id_bytes = (count * header->doc_id_bits + 7) / 8;
-	freq_bytes	 = (count * header->freq_bits + 7) / 8;
+	doc_stream	 = compressed + sizeof(TpCompressedBlockHeader);
+	freq_stream	 = doc_stream + doc_id_bytes;
+	fieldnorms	 = freq_stream + (count * header->freq_bits + 7) / 8;
+	doc_mask	 = header->doc_id_bits == 32 ? UINT32_MAX
+											 : ((1U << header->doc_id_bits) - 1);
+	freq_mask	 = (1U << header->freq_bits) - 1;
 
-	/* Decode doc ID deltas */
-	bitpack_decode(compressed + pos, count, header->doc_id_bits, doc_deltas);
-	pos += doc_id_bytes;
-
-	/* Decode frequencies */
-	bitpack_decode(compressed + pos, count, header->freq_bits, frequencies);
-	pos += freq_bytes;
-
-	/* Reconstruct postings with absolute doc IDs */
-	prev_doc = first_doc_id;
 	for (i = 0; i < count; i++)
 	{
-		uint32 doc_id = prev_doc + doc_deltas[i];
+		uint32 doc_id = prev_doc +
+						bitpack_extract(doc_stream, doc_bit_offset, doc_mask);
 
 		out_postings[i].doc_id	  = doc_id;
-		out_postings[i].frequency = (uint16)frequencies[i];
-		out_postings[i].fieldnorm = compressed[pos + i];
+		out_postings[i].frequency = (uint16)
+				bitpack_extract(freq_stream, freq_bit_offset, freq_mask);
+		out_postings[i].fieldnorm = fieldnorms[i];
 		out_postings[i].reserved  = 0;
 
+		doc_bit_offset += header->doc_id_bits;
+		freq_bit_offset += header->freq_bits;
 		prev_doc = doc_id;
 	}
 }

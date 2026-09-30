@@ -28,6 +28,7 @@ The Makefile defines these entry points:
 | `make test-local` | Install and test in a temporary cluster on port 55433 |
 | `make test-shell` | Concurrency, recovery, segment, CIC, multi-index, and reindex |
 | `make test-all` | `make test` plus `make test-shell` |
+| `make test-compression` | Standalone packed-posting decoder coverage |
 | `make test-concurrency` | Multi-backend concurrency and VACUUM/merge races |
 | `make test-memtable-stale-tail` | Corrupt-tail rejection and REINDEX repair |
 | `make test-recovery` | Crash, shutdown-spill, reclaim, and compaction recovery |
