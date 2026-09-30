@@ -30,6 +30,7 @@ OBJS = \
 	src/access/handler.o \
 	src/access/build.o \
 	src/access/build_context.o \
+	src/access/build_merge.o \
 	src/access/build_parallel.o \
 	src/access/compaction_api.o \
 	src/access/boolean.o \
@@ -141,7 +142,7 @@ endif
 
 # SQL regression tests
 test: test-segment-io-limits test-mixed-update-query-benchmark \
-	test-filtered-seed-benchmark
+	test-filtered-seed-benchmark test-build-memory-benchmark
 	@echo "Running SQL regression tests..."
 	@$(pg_regress_installcheck) $(REGRESS_OPTS) $(REGRESS)
 
@@ -162,14 +163,17 @@ test-mixed-update-query-benchmark:
 test-filtered-seed-benchmark:
 	@bash test/scripts/filtered_seed_benchmark_test.sh
 
+test-build-memory-benchmark:
+	@python3 test/scripts/build_memory_benchmark_test.py
+
 test-durable:
 	@echo "Running managed pg_durable compaction tests..."
 	@cd test/scripts && ./durable_compaction.sh
 
 installcheck: test-segment-io-limits test-mixed-update-query-benchmark \
-	test-filtered-seed-benchmark
+	test-filtered-seed-benchmark test-build-memory-benchmark
 test-local: test-segment-io-limits test-mixed-update-query-benchmark \
-	test-filtered-seed-benchmark
+	test-filtered-seed-benchmark test-build-memory-benchmark
 
 # Custom local test target with dedicated PostgreSQL instance
 test-local: install
@@ -489,7 +493,7 @@ help:
 
 .PHONY: \
 	test test-segment-io-limits test-mixed-update-query-benchmark \
-	test-filtered-seed-benchmark \
+	test-filtered-seed-benchmark test-build-memory-benchmark \
 	test-durable \
 	test-injection-sql test-injection-shell install-test-injection \
 	clean-test-dirs installcheck test-rls-locking test-concurrency \

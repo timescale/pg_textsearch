@@ -28,13 +28,6 @@
 #define TP_MAX_PARALLEL_WORKERS 32
 
 /*
- * Maximum L0 segments a single worker can produce.
- * Without worker-side compaction, this is bounded by
- * (table_size / maintenance_work_mem_per_worker).
- */
-#define TP_MAX_WORKER_SEGMENTS 64
-
-/*
  * Shared memory keys for parallel build TOC
  */
 #define TP_PARALLEL_KEY_SHARED UINT64CONST(0xB175DA7A00000001)
@@ -49,10 +42,9 @@ typedef struct TpParallelWorkerResult
 	uint64 total_len;  /* Sum of document lengths */
 	uint64 tuples_scanned;
 
-	/* Per-segment info (all L0, BufFile offsets) */
+	/* Segment directory stored at the end of the worker's BufFile */
 	uint32 final_segment_count;
-	uint64 seg_offsets[TP_MAX_WORKER_SEGMENTS];
-	uint64 seg_sizes[TP_MAX_WORKER_SEGMENTS];
+	uint64 segment_directory_offset;
 } TpParallelWorkerResult;
 
 /*

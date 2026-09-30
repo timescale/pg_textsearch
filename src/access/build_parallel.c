@@ -38,6 +38,7 @@
 
 #include "access/am.h"
 #include "access/build_context.h"
+#include "access/build_merge.h"
 #include "access/build_parallel.h"
 #include "constants.h"
 #include "index/metapage.h"
@@ -82,10 +83,11 @@ tracker_add_segment(
 {
 	if (tracker->count >= tracker->capacity)
 	{
-		tracker->capacity *= 2;
+		tracker->capacity =
+				tp_grow_capacity(tracker->capacity, 32, "worker segments");
 		tracker->entries = repalloc(
 				tracker->entries,
-				tracker->capacity * sizeof(WorkerSegmentEntry));
+				mul_size(tracker->capacity, sizeof(WorkerSegmentEntry)));
 	}
 	tracker->entries[tracker->count].offset	   = offset;
 	tracker->entries[tracker->count].data_size = data_size;
@@ -263,12 +265,11 @@ tp_parallel_build_worker_main(dsm_segment *seg, shm_toc *toc)
 	}
 
 	/*
-	 * Per-worker memory budget: split maintenance_work_mem across
-	 * workers. Minimum 64MB per worker to avoid excessive flushing.
+	 * The configured maintenance_work_mem is the total worker batch budget.
+	 * Divide it by the workers PostgreSQL actually launched; never multiply
+	 * a small setting through a per-worker floor.
 	 */
 	budget = (Size)maintenance_work_mem * 1024L / shared->nworkers_launched;
-	if (budget < 64L * 1024 * 1024)
-		budget = 64L * 1024 * 1024;
 
 	/*
 	 * Clamp to the arena's addressable capacity: with few workers
@@ -278,7 +279,25 @@ tp_parallel_build_worker_main(dsm_segment *seg, shm_toc *toc)
 	 */
 	budget = tp_arena_clamp_budget(budget);
 
-	build_ctx = tp_build_context_create(budget);
+	build_ctx						   = tp_build_context_create(budget);
+	build_ctx->account_full_allocation = true;
+	{
+		Size minimum_budget = tp_build_context_minimum_budget(build_ctx);
+
+		if (budget < minimum_budget)
+			ereport(ERROR,
+					(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+					 errmsg("parallel index build memory budget is too small"),
+					 errdetail(
+							 "maintenance_work_mem provides %zu bytes per "
+							 "worker for %d workers, but at least %zu bytes "
+							 "are required for the initial batch.",
+							 budget,
+							 shared->nworkers_launched,
+							 minimum_budget),
+					 errhint("Increase maintenance_work_mem or reduce "
+							 "max_parallel_maintenance_workers.")));
+	}
 	tracker_init(&tracker);
 
 	build_tmpctx = AllocSetContextCreate(
@@ -404,44 +423,21 @@ tp_parallel_build_worker_main(dsm_segment *seg, shm_toc *toc)
 		tracker.buffile_end = seg_offset + data_size;
 	}
 
-	/*
-	 * Phase 1 complete: report segments to leader.
-	 * All segments are L0 (no worker-side compaction).
-	 */
+	/* Append the segment directory instead of bounding it by the DSM size. */
 	{
-		uint32 i;
+		int	  fileno;
+		off_t file_offset;
 
-		/*
-		 * The shared result struct can only report
-		 * TP_MAX_WORKER_SEGMENTS segment offsets/sizes to the leader.
-		 * If a worker produced more than that, truncating would
-		 * silently drop the extra segments and build an incomplete
-		 * index.  Fail the build instead so the missing postings are
-		 * never committed.  See issue #409.
-		 */
-		if (tracker.count > TP_MAX_WORKER_SEGMENTS)
-			ereport(ERROR,
-					(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
-					 errmsg("parallel index build: worker %d "
-							"produced too many segments (%u, "
-							"limit %d)",
-							worker_id,
-							tracker.count,
-							TP_MAX_WORKER_SEGMENTS),
-					 errhint("Increase maintenance_work_mem so each "
-							 "worker flushes fewer, larger segments "
-							 "(the per-worker budget is bounded by the "
-							 "arena's ~4 GiB capacity). Reducing "
-							 "max_parallel_maintenance_workers makes this "
-							 "worse, as each remaining worker then scans a "
-							 "larger share of the table.")));
-
-		for (i = 0; i < tracker.count; i++)
-		{
-			my_result->seg_offsets[i] = tracker.entries[i].offset;
-			my_result->seg_sizes[i]	  = tracker.entries[i].data_size;
-		}
-		my_result->final_segment_count = tracker.count;
+		tp_buffile_decompose_offset(
+				tracker.buffile_end, &fileno, &file_offset);
+		if (BufFileSeek(buffile, fileno, file_offset, SEEK_SET) != 0)
+			elog(ERROR, "could not seek parallel worker segment directory");
+		BufFileWrite(
+				buffile,
+				tracker.entries,
+				mul_size(tracker.count, sizeof(WorkerSegmentEntry)));
+		my_result->segment_directory_offset = tracker.buffile_end;
+		my_result->final_segment_count		= tracker.count;
 	}
 
 	/* Export BufFile so leader can reopen */
@@ -663,32 +659,41 @@ tp_build_parallel(
 		TpMergeSource		   *sources;
 		uint32					total_segments = 0;
 		uint32					num_sources	   = 0;
-		uint64					total_tokens   = 0;
 		int						w;
 		uint32					i;
-		TpMergedTerm		   *merged_terms	 = NULL;
-		uint32					num_merged_terms = 0;
-		uint32					merged_capacity	 = 0;
 		MemoryContext			merge_ctx;
 		MemoryContext			old_ctx;
 
 		/* Count total segments across all workers */
 		for (w = 0; w < launched; w++)
-			total_segments += results[w].final_segment_count;
+		{
+			if (pg_add_u32_overflow(
+						total_segments,
+						results[w].final_segment_count,
+						&total_segments))
+				ereport(ERROR,
+						(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
+						 errmsg("parallel index build: segment count "
+								"overflow")));
+		}
 
 		/* Open worker BufFiles and create segment readers */
 		open_files	= palloc0(sizeof(BufFile *) * launched);
 		file_opened = palloc0(sizeof(bool) * launched);
-		readers		= palloc0(sizeof(TpSegmentReader *) * total_segments);
-		sources		= palloc0(sizeof(TpMergeSource) * total_segments);
+		readers = palloc0(mul_size(sizeof(TpSegmentReader *), total_segments));
+		sources = palloc0(mul_size(sizeof(TpMergeSource), total_segments));
 
 		{
 			uint32 reader_idx = 0;
 
 			for (w = 0; w < launched; w++)
 			{
-				uint32 s;
-				char   fname[64];
+				uint32				s;
+				char				fname[64];
+				int					fileno;
+				off_t				file_offset;
+				Size				directory_size;
+				WorkerSegmentEntry *segments;
 
 				if (results[w].final_segment_count == 0)
 					continue;
@@ -698,10 +703,24 @@ tp_build_parallel(
 						&shared->fileset.fs, fname, O_RDONLY, false);
 				file_opened[w] = true;
 
+				directory_size = mul_size(
+						results[w].final_segment_count,
+						sizeof(WorkerSegmentEntry));
+				segments = palloc(directory_size);
+				tp_buffile_decompose_offset(
+						results[w].segment_directory_offset,
+						&fileno,
+						&file_offset);
+				if (BufFileSeek(
+							open_files[w], fileno, file_offset, SEEK_SET) != 0)
+					elog(ERROR,
+						 "could not seek parallel worker segment directory");
+				BufFileReadExact(open_files[w], segments, directory_size);
+
 				for (s = 0; s < results[w].final_segment_count; s++)
 				{
 					readers[reader_idx] = tp_segment_open_from_buffile(
-							open_files[w], results[w].seg_offsets[s]);
+							open_files[w], segments[s].offset);
 					if (!readers[reader_idx])
 					{
 						reader_idx++;
@@ -711,8 +730,6 @@ tp_build_parallel(
 					if (merge_source_init_from_reader(
 								&sources[num_sources], readers[reader_idx]))
 					{
-						total_tokens +=
-								readers[reader_idx]->header->total_tokens;
 						/*
 						 * Source now owns this reader; clear
 						 * slot so cleanup won't double-close.
@@ -722,6 +739,7 @@ tp_build_parallel(
 					}
 					reader_idx++;
 				}
+				pfree(segments);
 			}
 		}
 
@@ -730,81 +748,11 @@ tp_build_parallel(
 			TpMergeSink sink;
 			BlockNumber segment_root;
 
-			/* N-way term merge */
 			merge_ctx = AllocSetContextCreate(
 					CurrentMemoryContext,
 					"Leader Merge",
 					ALLOCSET_DEFAULT_SIZES);
 			old_ctx = MemoryContextSwitchTo(merge_ctx);
-
-			while (true)
-			{
-				int			  min_idx;
-				const char	 *min_term;
-				TpMergedTerm *current_merged;
-
-				min_idx = merge_find_min_source(sources, num_sources);
-				if (min_idx < 0)
-					break;
-
-				min_term = sources[min_idx].current_term;
-
-				if (num_merged_terms >= TP_MAX_DICTIONARY_TERMS)
-					ereport(ERROR,
-							(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
-							 errmsg("pg_textsearch: segment dictionary "
-									"exceeds "
-									"%u terms",
-									TP_MAX_DICTIONARY_TERMS)));
-
-				if (num_merged_terms >= merged_capacity)
-				{
-					merged_capacity =
-							tp_grow_capacity(merged_capacity, 1024, "terms");
-					if (merged_terms == NULL)
-						merged_terms = palloc_extended(
-								mul_size(
-										(Size)merged_capacity,
-										sizeof(TpMergedTerm)),
-								MCXT_ALLOC_HUGE);
-					else
-						merged_terms = repalloc_huge(
-								merged_terms,
-								mul_size(
-										(Size)merged_capacity,
-										sizeof(TpMergedTerm)));
-				}
-
-				current_merged				 = &merged_terms[num_merged_terms];
-				current_merged->term_len	 = strlen(min_term);
-				current_merged->term		 = pstrdup(min_term);
-				current_merged->segment_refs = NULL;
-				current_merged->num_segment_refs	  = 0;
-				current_merged->segment_refs_capacity = 0;
-				current_merged->posting_offset		  = 0;
-				current_merged->posting_count		  = 0;
-				num_merged_terms++;
-
-				for (i = 0; i < num_sources; i++)
-				{
-					if (sources[i].exhausted)
-						continue;
-
-					if (strcmp(sources[i].current_term,
-							   current_merged->term) == 0)
-					{
-						merged_term_add_segment_ref(
-								current_merged, i, &sources[i].current_entry);
-						merge_source_advance(&sources[i]);
-					}
-				}
-
-				CHECK_FOR_INTERRUPTS();
-			}
-
-			MemoryContextSwitchTo(old_ctx);
-
-			tp_validate_merged_terms(merged_terms, num_merged_terms);
 
 			/* Write single merged segment to index pages */
 			merge_sink_init_pages(&sink, index);
@@ -812,16 +760,10 @@ tp_build_parallel(
 				elog(ERROR, "merge: failed to allocate segment pages");
 			segment_root = sink.writer.pages[0];
 
-			write_merged_segment_to_sink(
-					&sink,
-					merged_terms,
-					num_merged_terms,
-					sources,
-					num_sources,
-					0, /* target_level: L0 */
-					total_tokens,
-					true, /* disjoint_sources */
-					InvalidBlockNumber);
+			tp_write_parallel_build_merge(
+					&sink, sources, num_sources, total_docs, total_len);
+
+			MemoryContextSwitchTo(old_ctx);
 
 			/*
 			 * Flush dirty buffers before updating the metapage,
@@ -851,17 +793,6 @@ tp_build_parallel(
 				GenericXLogFinish(state);
 				UnlockReleaseBuffer(metabuf);
 			}
-
-			/* Cleanup merge data */
-			for (i = 0; i < num_merged_terms; i++)
-			{
-				if (merged_terms[i].term)
-					pfree(merged_terms[i].term);
-				if (merged_terms[i].segment_refs)
-					pfree(merged_terms[i].segment_refs);
-			}
-			if (merged_terms)
-				pfree(merged_terms);
 
 			if (sink.writer.pages)
 				pfree(sink.writer.pages);

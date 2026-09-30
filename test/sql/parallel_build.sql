@@ -343,6 +343,265 @@ SELECT bm25_summarize_index('serial_test_empty_idx')
     AS document_arrays_flushed;
 
 --------------------------------------------------------------------------------
+-- Test 13: Low parallel budgets are divided across actual workers
+--------------------------------------------------------------------------------
+SET max_parallel_maintenance_workers = 2;
+SET maintenance_work_mem = '64MB';
+
+INSERT INTO parallel_test_2workers (content)
+VALUES (repeat('large ', 20000)), ('');
+ANALYZE parallel_test_2workers;
+
+CREATE INDEX parallel_test_low_budget_idx ON parallel_test_2workers
+  USING bm25(content) WITH (text_config='english');
+
+SELECT COUNT(*) AS low_budget_documents
+FROM (
+    SELECT 1
+    FROM parallel_test_2workers
+    ORDER BY content <@> to_bm25query(
+        'database', 'parallel_test_low_budget_idx')
+) ranked;
+
+SELECT id AS parallel_large_document_id
+FROM parallel_test_2workers
+ORDER BY content <@> to_bm25query(
+    'large', 'parallel_test_low_budget_idx'), id
+LIMIT 1;
+
+SELECT bm25_summarize_index('parallel_test_low_budget_idx')
+           ~ E'total_docs: 150003\n'
+    AS parallel_tokenless_row_counted;
+
+--------------------------------------------------------------------------------
+-- Test 14: Serial and parallel streaming builds produce identical results
+--------------------------------------------------------------------------------
+SET maintenance_work_mem = '256MB';
+
+CREATE TABLE parallel_stream_test AS
+SELECT i AS id,
+       CASE WHEN i % 100 = 0 THEN ''
+            ELSE 'anchor shared t' || i::text END AS content
+FROM generate_series(1, 100000) i;
+
+ALTER TABLE parallel_stream_test SET (parallel_workers=2);
+ANALYZE parallel_stream_test;
+
+CREATE TYPE parallel_stream_result AS (
+    id integer,
+    score double precision
+);
+
+SET max_parallel_maintenance_workers=0;
+CREATE INDEX parallel_stream_serial ON parallel_stream_test
+  USING bm25(content) WITH (text_config='simple');
+
+CREATE TEMP TABLE parallel_stream_expected AS
+SELECT
+    ARRAY(
+        SELECT ROW(id, score)::parallel_stream_result
+        FROM (
+            SELECT id,
+                   content <@> to_bm25query(
+                       'anchor shared', 'parallel_stream_serial') AS score
+            FROM parallel_stream_test
+            ORDER BY content <@> to_bm25query(
+                         'anchor shared', 'parallel_stream_serial'),
+                     id
+            LIMIT 100000
+        ) ranked
+    ) AS shared_results,
+    ARRAY(
+        SELECT ROW(id, score)::parallel_stream_result
+        FROM (
+            SELECT id,
+                   content <@> to_bm25query(
+                       't99999', 'parallel_stream_serial') AS score
+            FROM parallel_stream_test
+            ORDER BY content <@> to_bm25query(
+                         't99999', 'parallel_stream_serial'),
+                     id
+            LIMIT 100000
+        ) ranked
+    ) AS unique_results,
+    ARRAY(
+        SELECT ROW(id, score)::parallel_stream_result
+        FROM (
+            SELECT id,
+                   content <@> to_bm25query(
+                       'missing', 'parallel_stream_serial') AS score
+            FROM parallel_stream_test
+            ORDER BY content <@> to_bm25query(
+                         'missing', 'parallel_stream_serial'),
+                     id
+            LIMIT 100000
+        ) ranked
+    ) AS missing_results;
+
+SELECT cardinality(shared_results) AS shared_count,
+       ARRAY(SELECT (result).id FROM unnest(unique_results) result)
+           AS unique_ids,
+       cardinality(missing_results) AS missing_count
+FROM parallel_stream_expected;
+
+SELECT bm25_summarize_index('parallel_stream_serial')
+           ~ E'total_docs: 100000\n  total_len: 297000\n'
+    AS serial_corpus_totals;
+
+DROP INDEX parallel_stream_serial;
+
+SET max_parallel_maintenance_workers=2;
+CREATE INDEX parallel_stream_parallel ON parallel_stream_test
+  USING bm25(content) WITH (text_config='simple');
+
+WITH actual AS (
+    SELECT
+        ARRAY(
+            SELECT ROW(id, score)::parallel_stream_result
+            FROM (
+                SELECT id,
+                       content <@> to_bm25query(
+                           'anchor shared',
+                           'parallel_stream_parallel') AS score
+                FROM parallel_stream_test
+                ORDER BY content <@> to_bm25query(
+                             'anchor shared',
+                             'parallel_stream_parallel'),
+                         id
+                LIMIT 100000
+            ) ranked
+        ) AS shared_results,
+        ARRAY(
+            SELECT ROW(id, score)::parallel_stream_result
+            FROM (
+                SELECT id,
+                       content <@> to_bm25query(
+                           't99999', 'parallel_stream_parallel') AS score
+                FROM parallel_stream_test
+                ORDER BY content <@> to_bm25query(
+                             't99999', 'parallel_stream_parallel'),
+                         id
+                LIMIT 100000
+            ) ranked
+        ) AS unique_results,
+        ARRAY(
+            SELECT ROW(id, score)::parallel_stream_result
+            FROM (
+                SELECT id,
+                       content <@> to_bm25query(
+                           'missing', 'parallel_stream_parallel') AS score
+                FROM parallel_stream_test
+                ORDER BY content <@> to_bm25query(
+                             'missing', 'parallel_stream_parallel'),
+                         id
+                LIMIT 100000
+            ) ranked
+        ) AS missing_results
+)
+SELECT actual.shared_results = expected.shared_results AS shared_matches,
+       actual.unique_results = expected.unique_results AS unique_matches,
+       actual.missing_results = expected.missing_results AS missing_matches
+FROM actual, parallel_stream_expected expected;
+
+SELECT bm25_summarize_index('parallel_stream_parallel')
+           ~ E'total_docs: 100000\n  total_len: 297000\n'
+    AS parallel_corpus_totals;
+
+DROP INDEX parallel_stream_parallel;
+
+SET pg_textsearch.compress_segments=off;
+CREATE INDEX parallel_stream_parallel ON parallel_stream_test
+  USING bm25(content) WITH (text_config='simple');
+
+WITH actual AS (
+    SELECT
+        ARRAY(
+            SELECT ROW(id, score)::parallel_stream_result
+            FROM (
+                SELECT id,
+                       content <@> to_bm25query(
+                           'anchor shared',
+                           'parallel_stream_parallel') AS score
+                FROM parallel_stream_test
+                ORDER BY content <@> to_bm25query(
+                             'anchor shared',
+                             'parallel_stream_parallel'),
+                         id
+                LIMIT 100000
+            ) ranked
+        ) AS shared_results,
+        ARRAY(
+            SELECT ROW(id, score)::parallel_stream_result
+            FROM (
+                SELECT id,
+                       content <@> to_bm25query(
+                           't99999', 'parallel_stream_parallel') AS score
+                FROM parallel_stream_test
+                ORDER BY content <@> to_bm25query(
+                             't99999', 'parallel_stream_parallel'),
+                         id
+                LIMIT 100000
+            ) ranked
+        ) AS unique_results,
+        ARRAY(
+            SELECT ROW(id, score)::parallel_stream_result
+            FROM (
+                SELECT id,
+                       content <@> to_bm25query(
+                           'missing', 'parallel_stream_parallel') AS score
+                FROM parallel_stream_test
+                ORDER BY content <@> to_bm25query(
+                             'missing', 'parallel_stream_parallel'),
+                         id
+                LIMIT 100000
+            ) ranked
+        ) AS missing_results
+)
+SELECT actual.shared_results = expected.shared_results AS shared_matches,
+       actual.unique_results = expected.unique_results AS unique_matches,
+       actual.missing_results = expected.missing_results AS missing_matches
+FROM actual, parallel_stream_expected expected;
+
+SELECT bm25_summarize_index('parallel_stream_parallel')
+           ~ E'total_docs: 100000\n  total_len: 297000\n'
+    AS uncompressed_corpus_totals;
+
+RESET pg_textsearch.compress_segments;
+
+--------------------------------------------------------------------------------
+-- Test 15: Small worker budgets can produce more than 64 segments per worker
+--------------------------------------------------------------------------------
+SET max_parallel_maintenance_workers = 2;
+SET maintenance_work_mem = '4MB';
+
+CREATE TABLE parallel_many_segments AS
+SELECT i AS id, 'anchor ' || (
+    SELECT string_agg('t' || lpad(((i - 1) * 10 + j)::text, 9, '0'),
+                      ' ' ORDER BY j)
+    FROM generate_series(1, 10) j
+) AS content
+FROM generate_series(1, 100000) i;
+
+ALTER TABLE parallel_many_segments SET (parallel_workers=2);
+ANALYZE parallel_many_segments;
+
+CREATE INDEX parallel_many_segments_idx ON parallel_many_segments
+  USING bm25(content) WITH (text_config='simple');
+REINDEX INDEX parallel_many_segments_idx;
+
+SELECT count(*) AS all_worker_segments_indexed
+FROM (
+    SELECT id FROM parallel_many_segments
+    ORDER BY content <@> to_bm25query('anchor', 'parallel_many_segments_idx')
+    LIMIT 100000
+) ranked;
+
+SELECT id AS last_worker_document
+FROM parallel_many_segments
+ORDER BY content <@> to_bm25query('t001000000', 'parallel_many_segments_idx')
+LIMIT 10;
+
+--------------------------------------------------------------------------------
 -- Cleanup
 --------------------------------------------------------------------------------
 DROP TABLE parallel_test_serial CASCADE;
@@ -356,4 +615,8 @@ DROP TABLE parallel_test_custom CASCADE;
 DROP TABLE parallel_test_below_threshold CASCADE;
 DROP TABLE parallel_test_empty CASCADE;
 DROP TABLE serial_test_empty CASCADE;
+DROP TABLE parallel_stream_test CASCADE;
+DROP TABLE parallel_many_segments CASCADE;
+DROP TABLE parallel_stream_expected;
+DROP TYPE parallel_stream_result;
 DROP EXTENSION pg_textsearch CASCADE;

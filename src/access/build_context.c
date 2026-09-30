@@ -36,6 +36,44 @@ static int build_term_info_cmp(const void *a, const void *b);
 /* GUC: compression for segments */
 extern bool tp_compress_segments;
 
+typedef struct TpBuildTermBlockInfo
+{
+	uint64 posting_offset;
+	uint32 skip_entry_start;
+	uint32 block_count;
+	uint32 doc_freq;
+} TpBuildTermBlockInfo;
+
+static void
+build_context_initialize(TpBuildContext *ctx)
+{
+	HASHCTL info;
+
+	Assert(CurrentMemoryContext == ctx->memory_context);
+
+	ctx->arena = tp_arena_create();
+
+	memset(&info, 0, sizeof(info));
+	info.keysize   = sizeof(char *);
+	info.entrysize = sizeof(TpBuildTermEntry);
+	info.hash	   = build_term_hash;
+	info.match	   = build_term_match;
+	info.hcxt	   = ctx->memory_context;
+	ctx->terms_ht  = hash_create(
+			 "build_terms",
+			 16384,
+			 &info,
+			 HASH_ELEM | HASH_FUNCTION | HASH_COMPARE | HASH_CONTEXT);
+
+	ctx->docs_capacity	= TP_BUILD_INITIAL_DOCS;
+	ctx->fieldnorms		= palloc(ctx->docs_capacity * sizeof(uint8));
+	ctx->ctids			= palloc(ctx->docs_capacity * sizeof(ItemPointerData));
+	ctx->num_docs		= 0;
+	ctx->num_terms		= 0;
+	ctx->posting_blocks = 0;
+	ctx->total_len		= 0;
+}
+
 /*
  * Create a new build context.
  */
@@ -43,32 +81,27 @@ TpBuildContext *
 tp_build_context_create(Size budget)
 {
 	TpBuildContext *ctx;
-	HASHCTL			info;
+	MemoryContext	oldctx;
 
-	ctx = palloc0(sizeof(TpBuildContext));
+	ctx					= palloc0(sizeof(TpBuildContext));
+	ctx->budget			= budget;
+	ctx->memory_context = AllocSetContextCreate(
+			CurrentMemoryContext, "build batch", ALLOCSET_DEFAULT_SIZES);
 
-	/* Create arena */
-	ctx->arena = tp_arena_create();
-
-	/* Create local hash table for terms */
-	memset(&info, 0, sizeof(info));
-	info.keysize   = sizeof(char *);
-	info.entrysize = sizeof(TpBuildTermEntry);
-	info.hash	   = build_term_hash;
-	info.match	   = build_term_match;
-	ctx->terms_ht  = hash_create(
-			 "build_terms",
-			 16384, /* initial size */
-			 &info,
-			 HASH_ELEM | HASH_FUNCTION | HASH_COMPARE);
-
-	/* Allocate flat arrays for documents */
-	ctx->docs_capacity = TP_BUILD_INITIAL_DOCS;
-	ctx->fieldnorms	   = palloc(ctx->docs_capacity * sizeof(uint8));
-	ctx->ctids		   = palloc(ctx->docs_capacity * sizeof(ItemPointerData));
-	ctx->num_docs	   = 0;
-	ctx->total_len	   = 0;
-	ctx->budget		   = budget;
+	oldctx = MemoryContextSwitchTo(ctx->memory_context);
+	PG_TRY();
+	{
+		build_context_initialize(ctx);
+	}
+	PG_CATCH();
+	{
+		MemoryContextSwitchTo(oldctx);
+		MemoryContextDelete(ctx->memory_context);
+		pfree(ctx);
+		PG_RE_THROW();
+	}
+	PG_END_TRY();
+	MemoryContextSwitchTo(oldctx);
 
 	return ctx;
 }
@@ -128,74 +161,191 @@ tp_build_context_add_document(
 		int32			doc_length,
 		ItemPointer		ctid)
 {
-	uint32 doc_id;
-	uint8  norm;
-	int	   i;
+	uint32		  doc_id;
+	uint8		  norm;
+	int			  i;
+	MemoryContext oldctx;
 
 	Assert(ctx != NULL);
 	Assert(ctid != NULL);
 
-	/* Assign sequential doc_id (UINT32_MAX reserved as sentinel) */
-	if (ctx->num_docs >= UINT32_MAX - 1)
-		ereport(ERROR,
-				(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
-				 errmsg("too many documents in segment (max %u)",
-						UINT32_MAX - 1)));
-
-	if (ctx->num_docs >= ctx->docs_capacity)
-		build_context_grow_docs(ctx);
-
-	doc_id = ctx->num_docs;
-	norm   = encode_fieldnorm(doc_length);
-
-	/* Store fieldnorm and CTID */
-	ctx->fieldnorms[doc_id] = norm;
-	ctx->ctids[doc_id]		= *ctid;
-	ctx->num_docs++;
-	ctx->total_len += doc_length;
-
-	/* Add each term to the hash table and EXPULL */
-	for (i = 0; i < term_count; i++)
+	oldctx = MemoryContextSwitchTo(ctx->memory_context);
+	PG_TRY();
 	{
-		TpBuildTermEntry *entry;
-		bool			  found;
-		char			 *term_key;
+		/* Assign sequential doc_id (UINT32_MAX reserved as sentinel) */
+		if (ctx->num_docs >= UINT32_MAX - 1)
+			ereport(ERROR,
+					(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
+					 errmsg("too many documents in segment (max %u)",
+							UINT32_MAX - 1)));
 
-		/*
-		 * Look up or create the term entry. The hash table key
-		 * is a char* pointer. For new entries, we copy the term
-		 * string into the arena so it persists.
-		 */
-		term_key = terms[i];
-		entry	 = hash_search(ctx->terms_ht, &term_key, HASH_ENTER, &found);
+		if (ctx->num_docs >= ctx->docs_capacity)
+			build_context_grow_docs(ctx);
 
-		if (!found)
+		doc_id = ctx->num_docs;
+		norm   = encode_fieldnorm(doc_length);
+
+		/* Store fieldnorm and CTID */
+		ctx->fieldnorms[doc_id] = norm;
+		ctx->ctids[doc_id]		= *ctid;
+		ctx->num_docs++;
+		ctx->total_len += doc_length;
+
+		/* Add each term to the hash table and EXPULL */
+		for (i = 0; i < term_count; i++)
 		{
-			ArenaAddr str_addr;
-			char	 *arena_str;
-			uint32	  len = strlen(terms[i]);
+			TpBuildTermEntry *entry;
+			bool			  found;
+			char			 *term_key;
 
-			/* Copy term string into arena */
-			str_addr  = tp_arena_alloc(ctx->arena, len + 1);
-			arena_str = tp_arena_get_ptr(ctx->arena, str_addr);
-			memcpy(arena_str, terms[i], len + 1);
+			/*
+			 * Look up or create the term entry. The hash table key
+			 * is a char* pointer. For new entries, we copy the term
+			 * string into the arena so it persists.
+			 */
+			term_key = terms[i];
+			entry = hash_search(ctx->terms_ht, &term_key, HASH_ENTER, &found);
 
-			/* Update entry to point to arena copy */
-			entry->term		= arena_str;
-			entry->term_len = len;
-			tp_expull_init(&entry->expull);
+			if (!found)
+			{
+				ArenaAddr str_addr;
+				char	 *arena_str;
+				uint32	  len = strlen(terms[i]);
+
+				/* Copy term string into arena */
+				str_addr  = tp_arena_alloc(ctx->arena, len + 1);
+				arena_str = tp_arena_get_ptr(ctx->arena, str_addr);
+				memcpy(arena_str, terms[i], len + 1);
+
+				/* Update entry to point to arena copy */
+				entry->term		= arena_str;
+				entry->term_len = len;
+				tp_expull_init(&entry->expull);
+				ctx->num_terms++;
+			}
+
+			if (entry->expull.num_entries % TP_BLOCK_SIZE == 0)
+				ctx->posting_blocks++;
+
+			/* Append posting to this term's EXPULL list */
+			tp_expull_append(
+					ctx->arena,
+					&entry->expull,
+					doc_id,
+					(uint16)frequencies[i],
+					norm);
 		}
-
-		/* Append posting to this term's EXPULL list */
-		tp_expull_append(
-				ctx->arena,
-				&entry->expull,
-				doc_id,
-				(uint16)frequencies[i],
-				norm);
 	}
+	PG_CATCH();
+	{
+		MemoryContextSwitchTo(oldctx);
+		PG_RE_THROW();
+	}
+	PG_END_TRY();
+	MemoryContextSwitchTo(oldctx);
 
 	return doc_id;
+}
+
+static Size
+build_scratch_allocation(Size bytes)
+{
+	if (bytes == 0)
+		return 0;
+
+	return add_size(MAXALIGN(bytes), MAXALIGN(sizeof(void *)));
+}
+
+static Size
+build_context_serialization_scratch(TpBuildContext *ctx)
+{
+	Size   scratch;
+	Size   doc_capacity;
+	uint32 skip_capacity;
+
+	scratch = ALLOCSET_DEFAULT_INITSIZE;
+
+	scratch = add_size(
+			scratch,
+			build_scratch_allocation(
+					mul_size(ctx->num_terms, sizeof(TpBuildTermInfo))));
+	scratch = add_size(
+			scratch,
+			build_scratch_allocation(
+					mul_size(ctx->num_terms, sizeof(uint32))));
+	scratch = add_size(
+			scratch,
+			build_scratch_allocation(
+					mul_size(ctx->num_terms, sizeof(TpBuildTermBlockInfo))));
+	scratch = add_size(
+			scratch,
+			build_scratch_allocation(tp_dictionary_size(ctx->num_terms)));
+
+	skip_capacity = 1024;
+	while ((uint64)skip_capacity < ctx->posting_blocks)
+		skip_capacity =
+				tp_grow_capacity(skip_capacity, 1024, "posting blocks");
+	scratch = add_size(
+			scratch,
+			build_scratch_allocation(
+					mul_size((Size)skip_capacity, sizeof(TpSkipEntry))));
+
+	doc_capacity = ctx->docs_capacity;
+	scratch		 = add_size(
+			 scratch,
+			 build_scratch_allocation(mul_size(doc_capacity, sizeof(uint32))));
+	scratch = add_size(
+			scratch,
+			build_scratch_allocation(mul_size(doc_capacity, sizeof(uint16))));
+	scratch = add_size(
+			scratch,
+			build_scratch_allocation(tp_alive_bitset_size(doc_capacity)));
+
+	return scratch;
+}
+
+bool
+tp_build_context_should_flush(TpBuildContext *ctx)
+{
+	Size docs_usage;
+	Size live_bytes;
+	Size required_bytes;
+	Size scratch_bytes;
+
+	Assert(ctx != NULL);
+
+	if (ctx->budget == 0)
+		return false;
+
+	if (!ctx->account_full_allocation)
+	{
+		docs_usage = mul_size(
+				ctx->docs_capacity,
+				add_size(sizeof(*ctx->fieldnorms), sizeof(*ctx->ctids)));
+		required_bytes = add_size(tp_arena_mem_usage(ctx->arena), docs_usage);
+		return required_bytes >= ctx->budget;
+	}
+
+	live_bytes	   = MemoryContextMemAllocated(ctx->memory_context, true);
+	scratch_bytes  = build_context_serialization_scratch(ctx);
+	required_bytes = add_size(live_bytes, scratch_bytes);
+
+	return required_bytes >= ctx->budget;
+}
+
+Size
+tp_build_context_minimum_budget(TpBuildContext *ctx)
+{
+	Size live_bytes;
+	Size required_bytes;
+
+	Assert(ctx != NULL);
+
+	live_bytes = MemoryContextMemAllocated(ctx->memory_context, true);
+	required_bytes =
+			add_size(live_bytes, build_context_serialization_scratch(ctx));
+
+	return required_bytes;
 }
 
 /*
@@ -310,18 +460,8 @@ tp_write_segment_from_build_ctx(TpBuildContext *ctx, Relation index)
 	Buffer	header_buf;
 	Page	header_page;
 
-	/*
-	 * Per-term block tracking (same as tp_write_segment).
-	 */
-	typedef struct
-	{
-		uint64 posting_offset;
-		uint32 skip_entry_start;
-		uint32 block_count;
-		uint32 doc_freq;
-	} TermBlockInfo;
-
-	TermBlockInfo *term_blocks;
+	/* Per-term block tracking (same as tp_write_segment). */
+	TpBuildTermBlockInfo *term_blocks;
 
 	/* Accumulated skip entries */
 	TpSkipEntry *all_skip_entries;
@@ -419,7 +559,7 @@ tp_write_segment_from_build_ctx(TpBuildContext *ctx, Relation index)
 
 	/* Initialize per-term tracking and skip entry accumulator */
 	term_blocks = palloc_extended(
-			num_terms * sizeof(TermBlockInfo),
+			num_terms * sizeof(TpBuildTermBlockInfo),
 			MCXT_ALLOC_HUGE | MCXT_ALLOC_ZERO);
 
 	skip_entries_capacity = 1024;
@@ -799,15 +939,7 @@ tp_write_segment_to_buffile(TpBuildContext *ctx, BufFile *file)
 	uint64 current_offset;
 
 	/* Per-term block tracking */
-	typedef struct
-	{
-		uint64 posting_offset;
-		uint32 skip_entry_start;
-		uint32 block_count;
-		uint32 doc_freq;
-	} TermBlockInfo;
-
-	TermBlockInfo *term_blocks;
+	TpBuildTermBlockInfo *term_blocks;
 
 	/* Accumulated skip entries */
 	TpSkipEntry *all_skip_entries;
@@ -905,7 +1037,7 @@ tp_write_segment_to_buffile(TpBuildContext *ctx, BufFile *file)
 
 	/* Initialize per-term tracking and skip entry accumulator */
 	term_blocks = palloc_extended(
-			num_terms * sizeof(TermBlockInfo),
+			num_terms * sizeof(TpBuildTermBlockInfo),
 			MCXT_ALLOC_HUGE | MCXT_ALLOC_ZERO);
 
 	skip_entries_capacity = 1024;
@@ -1126,42 +1258,24 @@ tp_write_segment_to_buffile(TpBuildContext *ctx, BufFile *file)
 void
 tp_build_context_reset(TpBuildContext *ctx)
 {
+	MemoryContext oldctx;
+
 	if (ctx == NULL)
 		return;
 
-	/* Reset arena (frees all pages except first) */
-	tp_arena_reset(ctx->arena);
-
-	/* Destroy and recreate hash table */
-	hash_destroy(ctx->terms_ht);
+	MemoryContextReset(ctx->memory_context);
+	oldctx = MemoryContextSwitchTo(ctx->memory_context);
+	PG_TRY();
 	{
-		HASHCTL info;
-
-		memset(&info, 0, sizeof(info));
-		info.keysize   = sizeof(char *);
-		info.entrysize = sizeof(TpBuildTermEntry);
-		info.hash	   = build_term_hash;
-		info.match	   = build_term_match;
-		ctx->terms_ht  = hash_create(
-				 "build_terms",
-				 16384,
-				 &info,
-				 HASH_ELEM | HASH_FUNCTION | HASH_COMPARE);
+		build_context_initialize(ctx);
 	}
-
-	/* Reset document arrays and release capacity acquired by this batch */
-	if (ctx->docs_capacity > TP_BUILD_INITIAL_DOCS)
+	PG_CATCH();
 	{
-		ctx->fieldnorms = repalloc_huge(
-				ctx->fieldnorms,
-				mul_size(TP_BUILD_INITIAL_DOCS, sizeof(*ctx->fieldnorms)));
-		ctx->ctids = repalloc_huge(
-				ctx->ctids,
-				mul_size(TP_BUILD_INITIAL_DOCS, sizeof(*ctx->ctids)));
-		ctx->docs_capacity = TP_BUILD_INITIAL_DOCS;
+		MemoryContextSwitchTo(oldctx);
+		PG_RE_THROW();
 	}
-	ctx->num_docs  = 0;
-	ctx->total_len = 0;
+	PG_END_TRY();
+	MemoryContextSwitchTo(oldctx);
 }
 
 /*
@@ -1173,9 +1287,6 @@ tp_build_context_destroy(TpBuildContext *ctx)
 	if (ctx == NULL)
 		return;
 
-	tp_arena_destroy(ctx->arena);
-	hash_destroy(ctx->terms_ht);
-	pfree(ctx->fieldnorms);
-	pfree(ctx->ctids);
+	MemoryContextDelete(ctx->memory_context);
 	pfree(ctx);
 }
