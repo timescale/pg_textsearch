@@ -384,6 +384,13 @@ The drain warns and detaches the corrupt tail, preserving any valid prefix;
 raises a corruption error without changing the chain or returning a partial
 count.
 
+The free-page primitive applies the same rule to its own input: a metapage or
+past-EOF block is reported with a warning and skipped, never read and never
+pushed to the FSM. That keeps a stale block number out of `smgr`, whose error
+names neither the index nor the caller that produced it. It is defence in
+depth, not a substitute for the drain's lock discipline, and it cannot detect
+a stale block that is still in range and still live.
+
 Metapage V8 already contains `pending_free_head`; compaction preserves that
 existing chain when upgrading and publishing. Only older metapage versions
 synthesize an empty pending-free head.

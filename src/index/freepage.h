@@ -70,6 +70,14 @@ extern void tp_log_page_reuse_conflict(
  * whose block the FSM offered by mistake.  Takes the buffer's
  * EXCLUSIVE lock; the caller must already have removed `blk` from
  * every live structure (it is unreferenced once freed).
+ *
+ * A block that cannot name a freeable page -- the metapage, or a block
+ * at or past EOF -- is reported with a WARNING and skipped rather than
+ * read (issue #468).  That keeps a stale block number out of smgr,
+ * whose error names neither the index nor the caller.  It is defence in
+ * depth only: it cannot make an unlocked free safe against a concurrent
+ * truncation (issue #465), and it cannot detect a stale block that is
+ * still in range and still live.
  */
 extern void tp_record_free_index_page(Relation index, BlockNumber blk);
 

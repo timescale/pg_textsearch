@@ -55,8 +55,30 @@ tp_record_free_index_page(Relation index, BlockNumber blk)
 	GenericXLogState *state;
 	TpFreePageData	 *f;
 
-	if (blk == TP_METAPAGE_BLKNO)
-		elog(ERROR, "pg_textsearch: refusing to free metapage (block 0)");
+	/*
+	 * Never read a block that cannot belong to a freeable page.  The
+	 * metapage is never allocatable, and a block at or past EOF has no
+	 * page to stamp: reading it fails in smgr with a bare "could not
+	 * read blocks" error that names neither this index nor the caller
+	 * that produced the bad block (issue #468).  Skipping is always the
+	 * right action -- such a block is not worth freeing -- so report it
+	 * and return rather than pushing it to the FSM.
+	 *
+	 * This is defence in depth, not a substitute for the caller's lock
+	 * discipline (issue #465).  A bound checked here still goes stale if
+	 * the caller frees without holding the per-index lock against a
+	 * concurrent truncation.
+	 */
+	if (blk == TP_METAPAGE_BLKNO || blk >= RelationGetNumberOfBlocks(index))
+	{
+		ereport(WARNING,
+				(errcode(ERRCODE_DATA_CORRUPTED),
+				 errmsg("pg_textsearch: skipping free of invalid block %u "
+						"in index \"%s\"",
+						blk,
+						RelationGetRelationName(index))));
+		return;
+	}
 
 	buf = ReadBuffer(index, blk);
 	LockBuffer(buf, BUFFER_LOCK_EXCLUSIVE);

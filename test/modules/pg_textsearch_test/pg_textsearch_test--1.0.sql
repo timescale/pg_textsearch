@@ -6,6 +6,13 @@ RETURNS void
 AS 'MODULE_PATHNAME', 'pg_textsearch_test_set_tombstone_link'
 LANGUAGE C STRICT PARALLEL UNSAFE;
 
+-- Declared against the pg_textsearch library: the extension is built
+-- -fvisibility=hidden, so this module cannot call the primitive itself.
+CREATE FUNCTION pg_textsearch_test_free_index_page(idx regclass, block bigint)
+RETURNS void
+AS 'pg_textsearch', 'pg_textsearch_test_free_index_page'
+LANGUAGE C STRICT PARALLEL UNSAFE;
+
 CREATE FUNCTION pg_textsearch_test_attach_panic(point text DEFAULT NULL)
 RETURNS void
 AS 'MODULE_PATHNAME', 'pg_textsearch_test_attach_panic'

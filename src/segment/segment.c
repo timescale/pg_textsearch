@@ -1880,6 +1880,11 @@ tp_segment_collect_pages(
 /*
  * Free pages belonging to a segment by recording them in the FSM.
  * Call this after the segment is no longer referenced (metapage updated).
+ *
+ * The block-0 check is a caller-side code-bug guard, not corruption
+ * handling: this list is built from a segment's own page index, so a
+ * metapage entry means the builder is wrong and must fail loudly.
+ * tp_record_free_index_page() separately skips invalid blocks.
  */
 void
 tp_segment_free_pages(Relation index, BlockNumber *pages, uint32 num_pages)

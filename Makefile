@@ -76,6 +76,7 @@ OBJS = \
 	src/planner/hooks.o \
 	src/planner/cost.o \
 	src/debug/injection.o \
+	src/debug/testprobe.o \
 	src/debug/dump.o
 
 # Shared library target
@@ -98,6 +99,7 @@ REGRESS = abort aerodocs basic binary_io bmw bmw_skip_advance boolean_queries bu
 INJECTION_REGRESS = scoring_injection merge_injection compaction_injection \
 	compaction_error_injection \
 	force_merge_injection segment_reclaim_injection tombstone_bounds_injection \
+	freepage_bounds_injection \
 	vacuum_rebuild_injection query_hint_roundtrip memtable_stale_tail_injection
 REGRESS_OPTS = --inputdir=test --outputdir=test
 

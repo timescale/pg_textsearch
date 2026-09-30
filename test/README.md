@@ -77,6 +77,12 @@ and REINDEX repair without requiring injection points.
 EOF, and past EOF. It checks diagnostic errors and drain recovery while a
 pinned horizon keeps the valid chain prefix parked.
 
+`freepage_bounds_injection` frees metapage, EOF, and past-EOF blocks through
+`pg_textsearch_test_free_index_page()`, which calls the primitive directly
+because no production caller can reach it with an invalid block. It checks
+that each is skipped with a warning and that valid blocks still park and
+drain.
+
 ## Sanitizers
 
 Pull-request CI builds PostgreSQL 17.2 and 18.1 and pg_textsearch with Clang

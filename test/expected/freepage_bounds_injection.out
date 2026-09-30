@@ -1,0 +1,89 @@
+-- An invalid block must be skipped with a warning, never read.
+\pset format unaligned
+SET client_min_messages = error;
+CREATE EXTENSION pg_textsearch;
+CREATE EXTENSION injection_points;
+CREATE EXTENSION pg_textsearch_test;
+SET pg_textsearch.memtable_pages_threshold = 0;
+SET pg_textsearch.bulk_load_threshold = 0;
+CREATE TABLE freepage_docs (id int, body text);
+INSERT INTO freepage_docs
+    SELECT g, 'alpha beta' FROM generate_series(1, 40) g;
+CREATE INDEX freepage_idx ON freepage_docs USING bm25(body)
+    WITH (text_config = 'simple', compaction = 'manual');
+-- Block numbers in the warnings below are fixed, not derived from the
+-- index size, so the expected output does not depend on the layout.
+SET client_min_messages = warning;
+SELECT pg_textsearch_test_free_index_page('freepage_idx', 1000000);
+WARNING:  pg_textsearch: skipping free of invalid block 1000000 in index "freepage_idx"
+pg_textsearch_test_free_index_page
+
+(1 row)
+SELECT pg_textsearch_test_free_index_page('freepage_idx', 0);
+WARNING:  pg_textsearch: skipping free of invalid block 0 in index "freepage_idx"
+pg_textsearch_test_free_index_page
+
+(1 row)
+SET client_min_messages = error;
+-- The first block past EOF is the boundary the smgr read fell off.
+SELECT pg_textsearch_test_free_index_page(
+    'freepage_idx',
+    pg_relation_size('freepage_idx') / current_setting('block_size')::bigint);
+pg_textsearch_test_free_index_page
+
+(1 row)
+-- Skipping means skipping entirely: no page stamped, nothing parked,
+-- and no invalid block handed to the FSM for a later allocator to claim.
+SELECT bm25_pending_free_pages('freepage_idx');
+bm25_pending_free_pages
+0
+(1 row)
+CREATE FUNCTION pg_temp.check_usable(expected int)
+RETURNS void LANGUAGE plpgsql AS $$
+DECLARE
+    hits int[];
+BEGIN
+    SELECT array_agg(id) INTO hits FROM (
+        SELECT id FROM freepage_docs
+        ORDER BY body <@> to_bm25query('probe', 'freepage_idx') LIMIT 1
+    ) ranked;
+    IF hits IS DISTINCT FROM ARRAY[expected] THEN
+        RAISE EXCEPTION 'index unusable: %', hits;
+    END IF;
+END
+$$;
+INSERT INTO freepage_docs VALUES (41, 'probe');
+SELECT pg_temp.check_usable(41);
+check_usable
+
+(1 row)
+-- Valid blocks must still be freed: park pages, then drain them.
+INSERT INTO freepage_docs
+    SELECT g, 'alpha gamma' FROM generate_series(42, 81) g;
+SELECT bm25_spill_index('freepage_idx') > 0 AS spilled;
+spilled
+t
+(1 row)
+SELECT bm25_force_merge('freepage_idx');
+bm25_force_merge
+
+(1 row)
+SELECT bm25_pending_free_pages('freepage_idx') > 0 AS parked;
+parked
+t
+(1 row)
+VACUUM freepage_docs;
+SELECT bm25_pending_free_pages('freepage_idx') AS parked_after_drain;
+parked_after_drain
+0
+(1 row)
+INSERT INTO freepage_docs VALUES (82, 'probe');
+DELETE FROM freepage_docs WHERE id = 41;
+SELECT pg_temp.check_usable(82);
+check_usable
+
+(1 row)
+DROP TABLE freepage_docs;
+DROP EXTENSION pg_textsearch_test;
+DROP EXTENSION injection_points;
+DROP EXTENSION pg_textsearch;
