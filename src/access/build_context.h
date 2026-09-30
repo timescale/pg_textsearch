@@ -48,6 +48,12 @@ typedef struct TpBuildTermEntry
  */
 typedef struct TpBuildContext
 {
+	/*
+	 * Stable wrapper ownership remains with the caller. Batch allocations
+	 * live in this resettable child context.
+	 */
+	MemoryContext memory_context;
+
 	/* Arena for EXPULL blocks and term strings */
 	TpArena *arena;
 
@@ -59,12 +65,20 @@ typedef struct TpBuildContext
 	ItemPointerData *ctids;		 /* Heap CTID per doc */
 	uint32			 num_docs;	 /* Documents in current batch */
 	uint32			 docs_capacity;
+	uint32			 num_terms;		 /* Vocabulary in current batch */
+	uint64			 posting_blocks; /* Serialized posting-block count */
 
 	/* Corpus statistics for this batch */
 	uint64 total_len; /* Sum of document lengths */
 
 	/* Budget for flush decisions */
 	Size budget; /* Max tracked bytes before flush */
+
+	/*
+	 * Parallel workers account actual child-context allocation plus
+	 * serialization scratch. Serial builds retain their existing estimator.
+	 */
+	bool account_full_allocation;
 } TpBuildContext;
 
 /*
@@ -96,22 +110,13 @@ extern uint32 tp_build_context_add_document(
 /*
  * Check if the build context should be flushed (budget exceeded).
  */
-static inline bool
-tp_build_context_should_flush(TpBuildContext *ctx)
-{
-	Size docs_usage;
-	Size total_usage;
+extern bool tp_build_context_should_flush(TpBuildContext *ctx);
 
-	if (ctx->budget == 0)
-		return false;
-
-	docs_usage = mul_size(
-			ctx->docs_capacity,
-			add_size(sizeof(*ctx->fieldnorms), sizeof(*ctx->ctids)));
-	total_usage = add_size(tp_arena_mem_usage(ctx->arena), docs_usage);
-
-	return total_usage >= ctx->budget;
-}
+/*
+ * Minimum useful worker budget: initial context allocations, one arena page,
+ * and the serialization scratch needed for the initial document capacity.
+ */
+extern Size tp_build_context_minimum_budget(TpBuildContext *ctx);
 
 /*
  * Build a sorted term array from the build context.

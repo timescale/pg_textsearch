@@ -98,7 +98,7 @@ tp_discard_unpublished_pages(
 /*
  * Sequential append to sink.
  */
-static void
+void
 merge_sink_write(TpMergeSink *sink, const void *data, Size size)
 {
 	tp_segment_writer_write(&sink->writer, data, size);
@@ -114,7 +114,7 @@ merge_sink_write(TpMergeSink *sink, const void *data, Size size)
  * dict entries or the segment header struct), rather than emitting a
  * full-page image for every visited page.
  */
-static void
+void
 merge_sink_write_at(
 		TpMergeSink *sink, uint64 offset, const void *data, uint64 size)
 {
@@ -150,10 +150,101 @@ merge_sink_write_at(
 	}
 }
 
+void
+merge_sink_finish(TpMergeSink *sink, TpSegmentHeader *header)
+{
+	BlockNumber page_index_root;
+
+	Assert(sink->writer.buffer_pos == SizeOfPageHeaderData);
+
+	page_index_root = write_page_index_tracked(
+			sink->index,
+			sink->writer.pages,
+			sink->writer.pages_allocated,
+			&sink->page_index_pages,
+			&sink->page_index_pages_allocated);
+	header->page_index = page_index_root;
+	header->num_pages  = sink->writer.pages_allocated;
+
+	merge_sink_write_at(sink, 0, header, sizeof(TpSegmentHeader));
+	tp_segment_writer_finish(&sink->writer);
+}
+
+TpSkipEntry
+merge_sink_write_posting_block(
+		TpMergeSink *sink, TpBlockPosting *block, uint32 count)
+{
+	TpSkipEntry skip;
+	uint16		max_tf	 = 0;
+	uint8		min_norm = 255;
+	uint32		last_did = 0;
+	uint32		i;
+
+	Assert(count > 0 && count <= TP_BLOCK_SIZE);
+
+	for (i = 0; i < count; i++)
+	{
+		if (block[i].doc_id > last_did)
+			last_did = block[i].doc_id;
+		if (block[i].frequency > max_tf)
+			max_tf = block[i].frequency;
+		if (block[i].fieldnorm < min_norm)
+			min_norm = block[i].fieldnorm;
+	}
+
+	skip.last_doc_id	= last_did;
+	skip.doc_count		= (uint8)count;
+	skip.block_max_tf	= max_tf;
+	skip.block_max_norm = min_norm;
+	skip.posting_offset = sink->current_offset;
+	memset(skip.reserved, 0, sizeof(skip.reserved));
+
+	if (tp_compress_segments)
+	{
+		uint8  compressed[TP_MAX_COMPRESSED_BLOCK_SIZE];
+		uint32 compressed_size;
+
+		compressed_size = tp_compress_block(block, count, compressed);
+		skip.flags		= TP_BLOCK_FLAG_DELTA;
+		merge_sink_write(sink, compressed, compressed_size);
+	}
+	else
+	{
+		skip.flags = TP_BLOCK_FLAG_UNCOMPRESSED;
+		merge_sink_write(sink, block, count * sizeof(TpBlockPosting));
+	}
+
+	return skip;
+}
+
 /* ----------------------------------------------------------------
  * Merge source operations
  * ----------------------------------------------------------------
  */
+
+#define TP_MERGE_STRING_OFFSETS_WINDOW 1024
+
+static void
+merge_source_refill_string_offsets(TpMergeSource *source)
+{
+	TpSegmentHeader *header = source->reader->header;
+	uint32			 count;
+
+	Assert(source->reader->buffile != NULL);
+	Assert(source->current_idx < source->num_terms);
+
+	count =
+			Min(TP_MERGE_STRING_OFFSETS_WINDOW,
+				source->num_terms - source->current_idx);
+	tp_segment_read(
+			source->reader,
+			header->dictionary_offset + sizeof(uint32) +
+					(uint64)source->current_idx * sizeof(uint32),
+			source->string_offsets,
+			count * sizeof(uint32));
+	source->string_offsets_start = source->current_idx;
+	source->string_offsets_count = count;
+}
 
 /*
  * Advance a merge source to its next term.
@@ -184,12 +275,17 @@ merge_source_advance(TpMergeSource *source)
 
 	header = source->reader->header;
 
+	if (source->current_idx < source->string_offsets_start ||
+		source->current_idx >=
+				source->string_offsets_start + source->string_offsets_count)
+		merge_source_refill_string_offsets(source);
+
 	/* Read the term at current index */
 	source->current_term = tp_segment_read_term_at_index(
 			source->reader,
 			source->reader->header,
 			source->string_offsets,
-			source->current_idx);
+			source->current_idx - source->string_offsets_start);
 
 	/* Read the dictionary entry (version-aware) */
 	tp_segment_read_dict_entry(
@@ -243,6 +339,8 @@ merge_source_init(TpMergeSource *source, Relation index, BlockNumber root)
 			header->dictionary_offset + sizeof(dict_header.num_terms),
 			source->string_offsets,
 			sizeof(uint32) * source->num_terms);
+	source->string_offsets_start = 0;
+	source->string_offsets_count = source->num_terms;
 
 	/* Position before first term (advance will move to index 0) */
 	source->current_idx	 = UINT32_MAX; /* Will wrap to 0 on advance */
@@ -294,14 +392,13 @@ merge_source_init_from_reader(TpMergeSource *source, TpSegmentReader *reader)
 			&dict_header,
 			sizeof(dict_header.num_terms));
 
-	/* Cache all string offsets for this segment */
+	/* Cache a bounded string-offset window for the BufFile source. */
 	source->string_offsets = palloc_extended(
-			sizeof(uint32) * source->num_terms, MCXT_ALLOC_HUGE);
-	tp_segment_read(
-			source->reader,
-			header->dictionary_offset + sizeof(dict_header.num_terms),
-			source->string_offsets,
-			sizeof(uint32) * source->num_terms);
+			sizeof(uint32) *
+					Min(TP_MERGE_STRING_OFFSETS_WINDOW, source->num_terms),
+			MCXT_ALLOC_HUGE);
+	source->string_offsets_start = 0;
+	source->string_offsets_count = 0;
 
 	/* Position before first term */
 	source->current_idx	 = UINT32_MAX;
@@ -1211,62 +1308,24 @@ write_merged_segment_to_sink(
 	 * Computes skip entry, optionally compresses, writes data,
 	 * and accumulates the skip entry.
 	 */
-#define FLUSH_BLOCK(block_buf, block_count, num_blocks)                         \
-	do                                                                          \
-	{                                                                           \
-		TpSkipEntry skip_;                                                      \
-		uint16		max_tf_	  = 0;                                              \
-		uint8		min_norm_ = 255;                                            \
-		uint32		last_did_ = 0;                                              \
-		uint32		j_;                                                         \
-                                                                                \
-		for (j_ = 0; j_ < (block_count); j_++)                                  \
-		{                                                                       \
-			if ((block_buf)[j_].doc_id > last_did_)                             \
-				last_did_ = (block_buf)[j_].doc_id;                             \
-			if ((block_buf)[j_].frequency > max_tf_)                            \
-				max_tf_ = (block_buf)[j_].frequency;                            \
-			if ((block_buf)[j_].fieldnorm < min_norm_)                          \
-				min_norm_ = (block_buf)[j_].fieldnorm;                          \
-		}                                                                       \
-                                                                                \
-		skip_.last_doc_id	 = last_did_;                                       \
-		skip_.doc_count		 = (uint8)(block_count);                            \
-		skip_.block_max_tf	 = max_tf_;                                         \
-		skip_.block_max_norm = min_norm_;                                       \
-		skip_.posting_offset = sink->current_offset;                            \
-		memset(skip_.reserved, 0, sizeof(skip_.reserved));                      \
-                                                                                \
-		if (tp_compress_segments)                                               \
-		{                                                                       \
-			uint8  cbuf_[TP_MAX_COMPRESSED_BLOCK_SIZE];                         \
-			uint32 csize_;                                                      \
-                                                                                \
-			csize_		= tp_compress_block((block_buf), (block_count), cbuf_); \
-			skip_.flags = TP_BLOCK_FLAG_DELTA;                                  \
-			merge_sink_write(sink, cbuf_, csize_);                              \
-		}                                                                       \
-		else                                                                    \
-		{                                                                       \
-			skip_.flags = TP_BLOCK_FLAG_UNCOMPRESSED;                           \
-			merge_sink_write(                                                   \
-					sink,                                                       \
-					(block_buf),                                                \
-					(block_count) * sizeof(TpBlockPosting));                    \
-		}                                                                       \
-                                                                                \
-		if (skip_entries_count >= skip_entries_capacity)                        \
-		{                                                                       \
-			skip_entries_capacity = tp_grow_capacity(                           \
-					skip_entries_capacity, 1024, "posting blocks");             \
-			all_skip_entries = repalloc_huge(                                   \
-					all_skip_entries,                                           \
-					mul_size(                                                   \
-							(Size)skip_entries_capacity,                        \
-							sizeof(TpSkipEntry)));                              \
-		}                                                                       \
-		all_skip_entries[skip_entries_count++] = skip_;                         \
-		(num_blocks)++;                                                         \
+#define FLUSH_BLOCK(block_buf, block_count, num_blocks)             \
+	do                                                              \
+	{                                                               \
+		TpSkipEntry skip_ = merge_sink_write_posting_block(         \
+				sink, (block_buf), (block_count));                  \
+                                                                    \
+		if (skip_entries_count >= skip_entries_capacity)            \
+		{                                                           \
+			skip_entries_capacity = tp_grow_capacity(               \
+					skip_entries_capacity, 1024, "posting blocks"); \
+			all_skip_entries = repalloc_huge(                       \
+					all_skip_entries,                               \
+					mul_size(                                       \
+							(Size)skip_entries_capacity,            \
+							sizeof(TpSkipEntry)));                  \
+		}                                                           \
+		all_skip_entries[skip_entries_count++] = skip_;             \
+		(num_blocks)++;                                             \
 	} while (0)
 
 	/*
@@ -1462,22 +1521,9 @@ write_merged_segment_to_sink(
 	/* Finalize data_size */
 	header.data_size = sink->current_offset;
 
-	/* Flush writer and write page index */
-	{
-		BlockNumber page_index_root;
-
-		tp_segment_writer_flush(&sink->writer);
-		sink->writer.buffer_pos = SizeOfPageHeaderData;
-
-		page_index_root = write_page_index_tracked(
-				sink->index,
-				sink->writer.pages,
-				sink->writer.pages_allocated,
-				&sink->page_index_pages,
-				&sink->page_index_pages_allocated);
-		header.page_index = page_index_root;
-		header.num_pages  = sink->writer.pages_allocated;
-	}
+	/* Flush writer before dictionary and header backpatching. */
+	tp_segment_writer_flush(&sink->writer);
+	sink->writer.buffer_pos = SizeOfPageHeaderData;
 
 	/* Backpatch dict entries */
 	{
@@ -1504,11 +1550,7 @@ write_merged_segment_to_sink(
 			pfree(dict_entries);
 	}
 
-	/* Backpatch header */
-	merge_sink_write_at(sink, 0, &header, sizeof(TpSegmentHeader));
-
-	/* Finish writer */
-	tp_segment_writer_finish(&sink->writer);
+	merge_sink_finish(sink, &header);
 
 	/* Cleanup */
 	if (string_offsets)
