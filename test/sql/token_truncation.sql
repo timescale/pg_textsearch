@@ -145,6 +145,21 @@ FROM (
         'continuation', 'trunc_oversized_idx')
 ) ranked;
 
+CREATE TABLE trunc_compact (
+    id integer PRIMARY KEY,
+    body text NOT NULL
+);
+INSERT INTO trunc_compact
+SELECT 1, string_agg(
+    'u' || lpad(g::text, 6, '0'), ',' ORDER BY g)
+FROM generate_series(1, 160000) g;
+CREATE INDEX trunc_compact_idx ON trunc_compact USING bm25(body)
+    WITH (text_config = 'simple');
+SELECT id = 1 AS compact_unique_tokens_exceed_tsvector_limit
+FROM trunc_compact
+ORDER BY body <@> to_bm25query('u160000', 'trunc_compact_idx')
+LIMIT 1;
+
 SELECT count(*) = 0 AS tokenless_input_stays_empty
 FROM (
     SELECT id
@@ -255,8 +270,22 @@ SELECT array_agg(id ORDER BY id) = ARRAY[7777]
 FROM trunc_boolean_clean
 WHERE body @@ to_tsquery('simple', 'needle');
 
+SET plan_cache_mode = force_generic_plan;
+PREPARE trunc_boolean_cached AS
+SELECT id
+FROM trunc_boolean_clean
+WHERE body @@ to_tsquery('simple', 'needle');
+EXPLAIN (COSTS OFF)
+EXECUTE trunc_boolean_cached;
+
 INSERT INTO trunc_boolean_clean VALUES
     (10001, repeat('z', 300));
+EXPLAIN (COSTS OFF)
+EXECUTE trunc_boolean_cached;
+EXECUTE trunc_boolean_cached;
+DEALLOCATE trunc_boolean_cached;
+RESET plan_cache_mode;
+
 ANALYZE trunc_boolean_clean;
 EXPLAIN (COSTS OFF)
 SELECT id
@@ -387,6 +416,7 @@ LIMIT 1;
 DROP TABLE trunc_urls;
 DROP TABLE trunc_boundaries;
 DROP TABLE trunc_oversized;
+DROP TABLE trunc_compact;
 DROP TABLE trunc_boolean;
 DROP TABLE trunc_boolean_clean;
 DROP TABLE trunc_boolean_dictionary;

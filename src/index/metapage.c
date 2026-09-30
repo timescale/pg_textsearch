@@ -10,11 +10,14 @@
 #include <postgres.h>
 
 #include <access/generic_xlog.h>
+#include <access/xlog.h>
 #include <miscadmin.h>
 #include <nodes/parsenodes.h>
 #include <nodes/pg_list.h>
 #include <storage/bufmgr.h>
 #include <storage/bufpage.h>
+#include <storage/sinval.h>
+#include <storage/standby.h>
 #include <utils/memutils.h>
 #include <utils/rel.h>
 #include <utils/syscache.h>
@@ -113,6 +116,23 @@ tp_mark_normalization_changed(Relation index)
 	metap->capabilities |= TP_METAPAGE_NORMALIZATION_CHANGED;
 	GenericXLogFinish(state);
 	UnlockReleaseBuffer(metabuf);
+
+	/*
+	 * The capability transition is a physical, monotonic index change and is
+	 * not rolled back if the triggering heap change aborts.  Invalidate plans
+	 * on the heap relation immediately, and WAL-log the same invalidation for
+	 * hot standbys, rather than tying it to transaction commit.
+	 */
+	{
+		SharedInvalidationMessage message = {0};
+
+		message.rc.id	 = SHAREDINVALRELCACHE_ID;
+		message.rc.dbId	 = MyDatabaseId;
+		message.rc.relId = index->rd_index->indrelid;
+		SendSharedInvalidMessages(&message, 1);
+		if (XLogStandbyInfoActive())
+			LogStandbyInvalidations(1, &message, false);
+	}
 }
 
 static void

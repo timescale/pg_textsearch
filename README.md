@@ -588,12 +588,15 @@ document scan before the heap recheck and is costed as a full index traversal
 plus candidate materialization. This preserves sequential/index result
 equivalence without penalizing indexes whose normalization never changed.
 
-pg_textsearch splits raw inputs larger than 256KB at whitespace boundaries
-before tokenization, then merges the term frequencies. A whitespace-free run
-is kept intact even when it exceeds 256KB so one logical token and overlapping
-URL or hyphen components are not normalized as independent fragments. Text
-arrays are flattened with spaces before this processing and do not preserve
-element boundaries.
+For truncation-enabled indexes, pg_textsearch runs one parser and dictionary
+state over the complete document and accumulates normalized term frequencies
+directly. It does not materialize an input-sized parsed-word array or an
+intermediate `tsvector`, so large punctuation-separated documents retain
+dictionary continuity without PostgreSQL's 1MB `tsvector` limit. The
+accumulator grows with distinct normalized output terms, which are required
+by the final index entry, rather than with raw input length or token count.
+Text arrays are flattened with spaces before this processing and do not
+preserve element boundaries.
 
 ### PL/pgSQL and Stored Procedures
 

@@ -13,3 +13,12 @@ extern TSVector tp_make_tsvector(
 		Oid	  text_config_oid,
 		int	  max_token_length,
 		bool *normalization_changed);
+
+extern int tp_tokenize_document(
+		text   *input,
+		Oid		text_config_oid,
+		int		max_token_length,
+		bool   *normalization_changed,
+		char ***terms_out,
+		int32 **frequencies_out,
+		int	   *term_count_out);

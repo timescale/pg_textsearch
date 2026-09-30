@@ -1224,19 +1224,19 @@ tp_tokenize_chunk(
 }
 
 /*
- * Find a token-safe chunk boundary near `target`.
+ * Find a chunk boundary inside the first `target` bytes of `data`.
  *
  * Prefers the byte index just past the last ASCII whitespace at or
- * before `target`. If none exists, extends through the current
- * whitespace-free run so one parser token and its overlapping URL or
- * hyphen components are never split into independently normalized chunks.
+ * before `target`. If no whitespace is found, returns the largest
+ * multibyte codepoint boundary at or below target.
  *
- * `data` must be at least `target` bytes long. Returns 1..length.
+ * `data` must be at least `target` bytes long. Returns 1..target.
  */
 static int
-tp_find_chunk_boundary(const char *data, int length, int target)
+tp_find_chunk_boundary(const char *data, int target)
 {
 	int i;
+	int pos;
 
 	for (i = target; i > 0; i--)
 	{
@@ -1245,14 +1245,24 @@ tp_find_chunk_boundary(const char *data, int length, int target)
 			return i;
 	}
 
-	for (i = target; i < length; i++)
+	pos = 0;
+	while (pos < target)
 	{
-		char c = data[i];
-		if (c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '\f')
-			return i + 1;
+		int mblen = pg_mblen(data + pos);
+		if (mblen <= 0)
+			mblen = 1;
+		if (pos + mblen > target)
+			break;
+		pos += mblen;
+	}
+	if (pos == 0)
+	{
+		pos = pg_mblen(data);
+		if (pos <= 0)
+			pos = 1;
 	}
 
-	return length;
+	return pos;
 }
 
 typedef struct TpTermEntry
@@ -1352,6 +1362,22 @@ tp_tokenize_text(
 		*normalization_changed = false;
 
 	/*
+	 * Truncation-enabled indexes use one parser and dictionary state for the
+	 * complete document.  Normalized lexemes are accumulated directly by
+	 * term, avoiding both input-sized ParsedWord preallocation and the
+	 * tsvector size limit.
+	 */
+	if (max_token_length > 0)
+		return tp_tokenize_document(
+				document_text,
+				text_config_oid,
+				max_token_length,
+				normalization_changed,
+				terms_out,
+				frequencies_out,
+				term_count_out);
+
+	/*
 	 * Single-chunk fast path: pass document_text straight into
 	 * to_tsvector_byid. Avoids the cstring_to_text_with_len memcpy that
 	 * tp_tokenize_chunk would otherwise do on every small document.
@@ -1381,9 +1407,7 @@ tp_tokenize_text(
 		int	   take		 = remaining <= TP_TSVECTOR_CHUNK_BYTES
 								 ? remaining
 								 : tp_find_chunk_boundary(
-								   data + offset,
-								   remaining,
-								   TP_TSVECTOR_CHUNK_BYTES);
+								   data + offset, TP_TSVECTOR_CHUNK_BYTES);
 		char **chunk_terms;
 		int32 *chunk_freqs;
 		int	   chunk_term_count;

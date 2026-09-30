@@ -8,10 +8,12 @@
  */
 #include <postgres.h>
 
+#include <common/hashfn.h>
 #include <mb/pg_wchar.h>
 #include <tsearch/ts_cache.h>
 #include <tsearch/ts_utils.h>
 #include <utils/fmgrprotos.h>
+#include <utils/hsearch.h>
 #include <varatt.h>
 
 #include "types/tokenize.h"
@@ -42,6 +44,31 @@ typedef struct TpLexizeData
 	TpParsedLex		   *last_result;
 	TSLexeme		   *temporary_result;
 } TpLexizeData;
+
+typedef void (*TpLexemeSink)(
+		void  *context,
+		char  *lexeme,
+		int	   length,
+		int	   position,
+		uint16 flags,
+		uint16 variant);
+
+typedef struct TpParsedTextSink
+{
+	ParsedText *parsed;
+} TpParsedTextSink;
+
+typedef struct TpTermFrequencyEntry
+{
+	char *term;
+	int32 frequency;
+	int	  last_position;
+} TpTermFrequencyEntry;
+
+typedef struct TpTermFrequencySink
+{
+	HTAB *terms;
+} TpTermFrequencySink;
 
 static void
 tp_lexize_init(TpLexizeData *state, TSConfigCacheEntry *cfg)
@@ -301,20 +328,105 @@ tp_lexize_exec(TpLexizeData *state, TpParsedLex **corresponding)
 static int
 tp_clip_token_length(const char *token, int length, int max_token_length)
 {
-	if (length <= max_token_length)
+	if (max_token_length == 0 || length <= max_token_length)
 		return length;
 
 	return pg_mbcliplen(token, length, max_token_length);
 }
 
 static void
-tp_parse_text(
-		Oid			config_oid,
-		ParsedText *parsed,
-		char	   *input,
-		int			input_length,
-		int			max_token_length,
-		bool	   *normalization_changed)
+tp_emit_parsed_word(
+		void  *context,
+		char  *lexeme,
+		int	   length,
+		int	   position,
+		uint16 flags,
+		uint16 variant)
+{
+	TpParsedTextSink *sink	 = context;
+	ParsedText		 *parsed = sink->parsed;
+
+	if (parsed->curwords == parsed->lenwords)
+	{
+		parsed->lenwords *= 2;
+		parsed->words =
+				repalloc(parsed->words, parsed->lenwords * sizeof(ParsedWord));
+	}
+
+	parsed->words[parsed->curwords].len		 = length;
+	parsed->words[parsed->curwords].word	 = lexeme;
+	parsed->words[parsed->curwords].nvariant = variant;
+	parsed->words[parsed->curwords].flags	 = flags & TSL_PREFIX;
+	parsed->words[parsed->curwords].alen	 = 0;
+	parsed->words[parsed->curwords].pos.pos	 = LIMITPOS(position);
+	parsed->curwords++;
+}
+
+static uint32
+tp_term_frequency_hash(const void *key, Size keysize)
+{
+	const char *term = *(const char *const *)key;
+
+	(void)keysize;
+	return DatumGetUInt32(hash_any((const unsigned char *)term, strlen(term)));
+}
+
+static int
+tp_term_frequency_match(const void *key1, const void *key2, Size keysize)
+{
+	const char *term1 = *(const char *const *)key1;
+	const char *term2 = *(const char *const *)key2;
+
+	(void)keysize;
+	return strcmp(term1, term2);
+}
+
+static void
+tp_emit_term_frequency(
+		void  *context,
+		char  *lexeme,
+		int	   length,
+		int	   position,
+		uint16 flags,
+		uint16 variant)
+{
+	TpTermFrequencySink	 *sink = context;
+	TpTermFrequencyEntry *entry;
+	bool				  found;
+	int					  limited_position = LIMITPOS(position);
+
+	(void)length;
+	(void)flags;
+	(void)variant;
+
+	entry = hash_search(sink->terms, &lexeme, HASH_ENTER, &found);
+	if (!found)
+	{
+		entry->term			 = lexeme;
+		entry->frequency	 = 1;
+		entry->last_position = limited_position;
+		return;
+	}
+
+	pfree(lexeme);
+	if (entry->frequency < MAXNUMPOS - 1 &&
+		entry->last_position != MAXENTRYPOS - 1 &&
+		entry->last_position != limited_position)
+	{
+		entry->frequency++;
+		entry->last_position = limited_position;
+	}
+}
+
+static void
+tp_parse_text_to_sink(
+		Oid			 config_oid,
+		char		*input,
+		int			 input_length,
+		int			 max_token_length,
+		bool		*normalization_changed,
+		TpLexemeSink sink,
+		void		*sink_context)
 {
 	TSConfigCacheEntry *config;
 	TSParserCacheEntry *parser;
@@ -323,6 +435,7 @@ tp_parse_text(
 	int					type;
 	int					token_length = 0;
 	char			   *token		 = NULL;
+	int					position	 = 0;
 
 	config		 = lookup_ts_config_cache(config_oid);
 	parser		 = lookup_ts_parser_cache(config->prsId);
@@ -360,7 +473,7 @@ tp_parse_text(
 		{
 			TSLexeme *current;
 
-			parsed->pos++;
+			position++;
 			for (current = normalized; current->lexeme; current++)
 			{
 				int lexeme_length  = strlen(current->lexeme);
@@ -383,25 +496,14 @@ tp_parse_text(
 					current->lexeme = clipped;
 				}
 
-				if (parsed->curwords == parsed->lenwords)
-				{
-					parsed->lenwords *= 2;
-					parsed->words = repalloc(
-							parsed->words,
-							parsed->lenwords * sizeof(ParsedWord));
-				}
-
 				if (current->flags & TSL_ADDPOS)
-					parsed->pos++;
-				parsed->words[parsed->curwords].len		 = clipped_length;
-				parsed->words[parsed->curwords].word	 = current->lexeme;
-				parsed->words[parsed->curwords].nvariant = current->nvariant;
-				parsed->words[parsed->curwords].flags	 = current->flags &
-														TSL_PREFIX;
-				parsed->words[parsed->curwords].alen	= 0;
-				parsed->words[parsed->curwords].pos.pos = LIMITPOS(
-						parsed->pos);
-				parsed->curwords++;
+					position++;
+				sink(sink_context,
+					 current->lexeme,
+					 clipped_length,
+					 position,
+					 current->flags,
+					 current->nvariant);
 			}
 			pfree(normalized);
 		}
@@ -417,7 +519,8 @@ tp_make_tsvector(
 		int	  max_token_length,
 		bool *normalization_changed)
 {
-	ParsedText parsed;
+	ParsedText		 parsed;
+	TpParsedTextSink sink;
 
 	if (normalization_changed != NULL)
 		*normalization_changed = false;
@@ -429,22 +532,118 @@ tp_make_tsvector(
 				ObjectIdGetDatum(text_config_oid),
 				PointerGetDatum(input)));
 
-	parsed.lenwords = VARSIZE_ANY_EXHDR(input) / 6;
-	if (parsed.lenwords < 2)
-		parsed.lenwords = 2;
-	else if ((Size)parsed.lenwords > MaxAllocSize / sizeof(ParsedWord))
-		parsed.lenwords = (int32)(MaxAllocSize / sizeof(ParsedWord));
+	/*
+	 * Grow with emitted parser output rather than preallocating from raw
+	 * input size.  Large single tokens and punctuation-heavy inputs can have
+	 * very different input and output cardinalities.
+	 */
+	parsed.lenwords = 32;
 	parsed.curwords = 0;
 	parsed.pos		= 0;
 	parsed.words	= palloc(sizeof(ParsedWord) * parsed.lenwords);
+	sink.parsed		= &parsed;
 
-	tp_parse_text(
+	tp_parse_text_to_sink(
 			text_config_oid,
-			&parsed,
 			VARDATA_ANY(input),
 			VARSIZE_ANY_EXHDR(input),
 			max_token_length,
-			normalization_changed);
+			normalization_changed,
+			tp_emit_parsed_word,
+			&sink);
 
 	return make_tsvector(&parsed);
+}
+
+static int
+tp_term_frequency_entry_cmp(const void *left, const void *right)
+{
+	const TpTermFrequencyEntry *a = left;
+	const TpTermFrequencyEntry *b = right;
+
+	return strcmp(a->term, b->term);
+}
+
+int
+tp_tokenize_document(
+		text   *input,
+		Oid		text_config_oid,
+		int		max_token_length,
+		bool   *normalization_changed,
+		char ***terms_out,
+		int32 **frequencies_out,
+		int	   *term_count_out)
+{
+	HASHCTL				  info;
+	TpTermFrequencySink	  sink;
+	HASH_SEQ_STATUS		  status;
+	TpTermFrequencyEntry *entry;
+	TpTermFrequencyEntry *entries;
+	char				**terms;
+	int32				 *frequencies;
+	int					  count;
+	int					  i;
+	int					  doc_length = 0;
+
+	Assert(max_token_length > 0);
+
+	if (normalization_changed != NULL)
+		*normalization_changed = false;
+
+	memset(&info, 0, sizeof(info));
+	info.keysize   = sizeof(char *);
+	info.entrysize = sizeof(TpTermFrequencyEntry);
+	info.hash	   = tp_term_frequency_hash;
+	info.match	   = tp_term_frequency_match;
+	sink.terms	   = hash_create(
+			"pg_textsearch token frequencies",
+			1024,
+			&info,
+			HASH_ELEM | HASH_FUNCTION | HASH_COMPARE);
+
+	tp_parse_text_to_sink(
+			text_config_oid,
+			VARDATA_ANY(input),
+			VARSIZE_ANY_EXHDR(input),
+			max_token_length,
+			normalization_changed,
+			tp_emit_term_frequency,
+			&sink);
+
+	count = hash_get_num_entries(sink.terms);
+	if (count == 0)
+	{
+		hash_destroy(sink.terms);
+		*terms_out		 = NULL;
+		*frequencies_out = NULL;
+		*term_count_out	 = 0;
+		return 0;
+	}
+
+	entries = palloc(count * sizeof(TpTermFrequencyEntry));
+	i		= 0;
+	hash_seq_init(&status, sink.terms);
+	while ((entry = hash_seq_search(&status)) != NULL)
+		entries[i++] = *entry;
+	Assert(i == count);
+	hash_destroy(sink.terms);
+
+	qsort(entries,
+		  count,
+		  sizeof(TpTermFrequencyEntry),
+		  tp_term_frequency_entry_cmp);
+	terms		= palloc(count * sizeof(char *));
+	frequencies = palloc(count * sizeof(int32));
+	for (i = 0; i < count; i++)
+	{
+		terms[i]	   = entries[i].term;
+		frequencies[i] = entries[i].frequency;
+		doc_length += entries[i].frequency;
+	}
+	pfree(entries);
+
+	*terms_out		 = terms;
+	*frequencies_out = frequencies;
+	*term_count_out	 = count;
+	return doc_length;
 }
