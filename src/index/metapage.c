@@ -9,22 +9,70 @@
  */
 #include <postgres.h>
 
+#include <access/generic_xlog.h>
+#include <access/xlog.h>
 #include <miscadmin.h>
+#include <nodes/parsenodes.h>
 #include <nodes/pg_list.h>
 #include <storage/bufmgr.h>
 #include <storage/bufpage.h>
+#include <storage/sinval.h>
+#include <storage/standby.h>
 #include <utils/memutils.h>
 #include <utils/rel.h>
+#include <utils/syscache.h>
 
+#include "access/am.h"
 #include "constants.h"
 #include "debug/injection.h"
 #include "index/metapage.h"
+#include "types/tokenize.h"
+
+bool
+tp_index_reloption_is_explicit(Relation index, const char *option_name)
+{
+	HeapTuple tuple;
+	bool	  found = false;
+
+	tuple = SearchSysCache1(RELOID, ObjectIdGetDatum(RelationGetRelid(index)));
+	if (!HeapTupleIsValid(tuple))
+		elog(ERROR,
+			 "cache lookup failed for relation %u",
+			 RelationGetRelid(index));
+
+	{
+		bool  is_null;
+		Datum reloptions = SysCacheGetAttr(
+				RELOID, tuple, Anum_pg_class_reloptions, &is_null);
+
+		if (!is_null)
+		{
+			List	 *definitions = untransformRelOptions(reloptions);
+			ListCell *cell;
+
+			foreach (cell, definitions)
+			{
+				DefElem *definition = lfirst_node(DefElem, cell);
+
+				if (strcmp(definition->defname, option_name) == 0)
+				{
+					found = true;
+					break;
+				}
+			}
+			list_free_deep(definitions);
+		}
+	}
+	ReleaseSysCache(tuple);
+
+	return found;
+}
 
 /*
  * Initialize Tapir index metapage
  */
 void
-tp_init_metapage(Page page, Oid text_config_oid)
+tp_init_metapage(Page page, Oid text_config_oid, int max_token_length)
 {
 	TpIndexMetaPage metap;
 	PageHeader		phdr;
@@ -61,6 +109,7 @@ tp_init_metapage(Page page, Oid text_config_oid)
 	metap->memtable_tail_blkno = InvalidBlockNumber;
 	metap->pending_free_head   = InvalidBlockNumber;
 	metap->capabilities		   = TP_METAPAGE_ALL_DOCUMENTS_INDEXED;
+	metap->max_token_length	   = max_token_length;
 
 	/* Update page header to reflect that we've used space for metapage */
 	phdr		   = (PageHeader)page;
@@ -84,6 +133,49 @@ tp_check_level_count_increment(TpIndexMetaPage metap, uint32 level)
 						level)));
 }
 
+void
+tp_mark_normalization_changed(Relation index)
+{
+	Buffer			  metabuf;
+	GenericXLogState *state;
+	Page			  page;
+	TpIndexMetaPage	  metap;
+
+	metabuf = ReadBuffer(index, TP_METAPAGE_BLKNO);
+	LockBuffer(metabuf, BUFFER_LOCK_EXCLUSIVE);
+	metap = (TpIndexMetaPage)PageGetContents(BufferGetPage(metabuf));
+	if ((metap->capabilities & TP_METAPAGE_NORMALIZATION_CHANGED) != 0)
+	{
+		UnlockReleaseBuffer(metabuf);
+		return;
+	}
+
+	state = GenericXLogStart(index);
+	page  = GenericXLogRegisterBuffer(state, metabuf, 0);
+	metap = (TpIndexMetaPage)PageGetContents(page);
+	tp_metapage_upgrade_to_current(index, page);
+	metap->capabilities |= TP_METAPAGE_NORMALIZATION_CHANGED;
+	GenericXLogFinish(state);
+	UnlockReleaseBuffer(metabuf);
+
+	/*
+	 * The capability transition is a physical, monotonic index change and is
+	 * not rolled back if the triggering heap change aborts.  Invalidate plans
+	 * on the heap relation immediately, and WAL-log the same invalidation for
+	 * hot standbys, rather than tying it to transaction commit.
+	 */
+	{
+		SharedInvalidationMessage message = {0};
+
+		message.rc.id	 = SHAREDINVALRELCACHE_ID;
+		message.rc.dbId	 = MyDatabaseId;
+		message.rc.relId = index->rd_index->indrelid;
+		SendSharedInvalidMessages(&message, 1);
+		if (XLogStandbyInfoActive())
+			LogStandbyInvalidations(1, &message, false);
+	}
+}
+
 static void
 tp_validate_metapage_version(Relation index, TpIndexMetaPage metap)
 {
@@ -100,7 +192,8 @@ tp_validate_metapage_version(Relation index, TpIndexMetaPage metap)
 	/*
 	 * Check version compatibility.
 	 *
-	 * v9 appends capability flags.  v8 and v7 are read-compatible;
+	 * v10 appends the token-length setting.  v9 appends capability
+	 * flags.  v8 and v7 are read-compatible;
 	 * v7 is the on-disk memtable redesign (issue #374), while v8
 	 * adds pending_free_head.  v6 is read-compatible (issue #383):
 	 * the layout is
@@ -129,6 +222,7 @@ tp_validate_metapage_version(Relation index, TpIndexMetaPage metap)
 	 * REINDEX as before.
 	 */
 	if (metap->version != TP_METAPAGE_VERSION &&
+		metap->version != TP_METAPAGE_VERSION_V9 &&
 		metap->version != TP_METAPAGE_VERSION_V8 &&
 		metap->version != TP_METAPAGE_VERSION_V7 &&
 		metap->version != TP_METAPAGE_VERSION_V6)
@@ -181,10 +275,16 @@ tp_metapage_copy_from_page(Relation index, Page page)
 	{
 		memcpy(result, metap, sizeof(TpIndexMetaPageData));
 	}
+	else if (metap->version == TP_METAPAGE_VERSION_V9)
+	{
+		memcpy(result, metap, TP_INDEX_METAPAGE_DATA_SIZE_V9);
+		result->max_token_length = TP_LEGACY_MAX_TOKEN_LENGTH;
+	}
 	else if (metap->version == TP_METAPAGE_VERSION_V8)
 	{
 		memcpy(result, metap, TP_INDEX_METAPAGE_DATA_SIZE_V8);
-		result->capabilities = 0;
+		result->capabilities	 = 0;
+		result->max_token_length = TP_LEGACY_MAX_TOKEN_LENGTH;
 	}
 	else if (metap->version == TP_METAPAGE_VERSION_V7)
 	{
@@ -192,6 +292,7 @@ tp_metapage_copy_from_page(Relation index, Page page)
 		memcpy(result, metap, TP_INDEX_METAPAGE_DATA_SIZE_V7);
 		result->pending_free_head = InvalidBlockNumber;
 		result->capabilities	  = 0;
+		result->max_token_length  = TP_LEGACY_MAX_TOKEN_LENGTH;
 	}
 	else
 	{
@@ -201,6 +302,31 @@ tp_metapage_copy_from_page(Relation index, Page page)
 		result->memtable_tail_blkno = InvalidBlockNumber;
 		result->pending_free_head	= InvalidBlockNumber;
 		result->capabilities		= 0;
+		result->max_token_length	= TP_LEGACY_MAX_TOKEN_LENGTH;
+	}
+
+	if (result->max_token_length != TP_LEGACY_MAX_TOKEN_LENGTH &&
+		!tp_text_config_uses_builtin_parser(result->text_config_oid))
+	{
+		if (tp_index_reloption_is_explicit(index, "max_token_length"))
+			ereport(ERROR,
+					(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+					 errmsg("BM25 index \"%s\" stores max_token_length for an "
+							"unsupported custom text search parser",
+							RelationGetRelationName(index)),
+					 errhint("Run ALTER INDEX %s RESET (max_token_length), "
+							 "then REINDEX INDEX %s.",
+							 RelationGetRelationName(index),
+							 RelationGetRelationName(index))));
+		else
+			ereport(ERROR,
+					(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+					 errmsg("BM25 index \"%s\" stores max_token_length for an "
+							"unsupported custom text search parser",
+							RelationGetRelationName(index)),
+					 errhint("Run REINDEX INDEX %s to preserve the custom "
+							 "parser's existing tokenization.",
+							 RelationGetRelationName(index))));
 	}
 
 	return result;
@@ -229,6 +355,33 @@ tp_get_metapage(Relation index)
 	page   = BufferGetPage(buf);
 	result = tp_metapage_copy_from_page(index, page);
 	UnlockReleaseBuffer(buf);
+
+	if (index->rd_options != NULL)
+	{
+		TpOptions *options = (TpOptions *)index->rd_options;
+
+		if (options->max_token_length != result->max_token_length)
+		{
+			bool option_is_explicit =
+					tp_index_reloption_is_explicit(index, "max_token_length");
+
+			if (option_is_explicit ||
+				result->max_token_length != TP_LEGACY_MAX_TOKEN_LENGTH)
+				ereport(ERROR,
+						(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+						 errmsg("BM25 index \"%s\" has an unapplied "
+								"max_token_length option",
+								RelationGetRelationName(index)),
+						 errdetail(
+								 "The index stores max_token_length=%d, "
+								 "but its relation option is %d.",
+								 result->max_token_length,
+								 options->max_token_length),
+						 errhint("Run REINDEX INDEX %s to apply the option.",
+								 RelationGetRelationName(index))));
+		}
+	}
+
 	return result;
 }
 
@@ -279,7 +432,8 @@ tp_metapage_upgrade_to_current(Relation index, Page page)
 
 	if (metap->version != TP_METAPAGE_VERSION_V6 &&
 		metap->version != TP_METAPAGE_VERSION_V7 &&
-		metap->version != TP_METAPAGE_VERSION_V8)
+		metap->version != TP_METAPAGE_VERSION_V8 &&
+		metap->version != TP_METAPAGE_VERSION_V9)
 		ereport(ERROR,
 				(errcode(ERRCODE_DATA_CORRUPTED),
 				 errmsg("pg_textsearch: cannot upgrade metapage "
@@ -334,7 +488,10 @@ tp_metapage_upgrade_to_current(Relation index, Page page)
 	if (metap->version < TP_METAPAGE_VERSION_V8)
 		metap->pending_free_head = InvalidBlockNumber;
 
-	metap->capabilities = 0;
+	if (metap->version < TP_METAPAGE_VERSION_V9)
+		metap->capabilities = 0;
+
+	metap->max_token_length = TP_LEGACY_MAX_TOKEN_LENGTH;
 
 	metap->version = TP_METAPAGE_VERSION;
 

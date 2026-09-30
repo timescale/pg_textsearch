@@ -1,0 +1,31 @@
+/*
+ * Copyright (c) 2025-2026 Tiger Data, Inc.
+ * Licensed under the PostgreSQL License. See LICENSE for details.
+ */
+#pragma once
+
+#include <postgres.h>
+
+#include <tsearch/ts_type.h>
+
+#define TP_TOKEN_WINDOW_BYTES (256 * 1024)
+
+extern bool tp_text_config_uses_builtin_parser(Oid text_config_oid);
+
+extern int
+tp_token_window_end(const char *input, int input_length, int window_start);
+
+extern TSVector tp_make_tsvector(
+		text *input,
+		Oid	  text_config_oid,
+		int	  max_token_length,
+		bool *normalization_changed);
+
+extern int tp_tokenize_document(
+		text   *input,
+		Oid		text_config_oid,
+		int		max_token_length,
+		bool   *normalization_changed,
+		char ***terms_out,
+		int32 **frequencies_out,
+		int	   *term_count_out);

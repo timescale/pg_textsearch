@@ -35,6 +35,7 @@ typedef struct TpBooleanEvalState
 	TpBooleanTerm *terms;
 	int			   term_count;
 	int			   exact_operand_count;
+	int			   max_token_length;
 	bool		   requires_recheck;
 } TpBooleanEvalState;
 
@@ -188,7 +189,7 @@ tp_boolean_find_term(TpBooleanEvalState *state, const char *lexeme, int length)
 }
 
 static TpBooleanEvalState
-tp_boolean_extract_terms(TSQuery query)
+tp_boolean_extract_terms(TSQuery query, bool normalization_changed)
 {
 	TpBooleanEvalState state;
 	QueryItem		  *items	= GETQUERY(query);
@@ -198,6 +199,8 @@ tp_boolean_extract_terms(TSQuery query)
 	state.query = query;
 	state.terms = palloc0(Max(query->size, 1) * sizeof(TpBooleanTerm));
 	state.exact_operand_count = tp_boolean_query_exact_operand_count(query);
+	state.max_token_length	  = normalization_changed ? 1 : 0;
+	state.requires_recheck	  = normalization_changed;
 
 	for (int i = 0; i < query->size; i++)
 	{
@@ -215,6 +218,9 @@ tp_boolean_extract_terms(TSQuery query)
 			QueryOperand  *operand = &item->qoperand;
 			const char	  *lexeme  = operands + operand->distance;
 			TpBooleanTerm *term;
+
+			if (normalization_changed)
+				continue;
 
 			/*
 			 * Segment postings do not retain lexeme weights, and prefix
@@ -285,7 +291,8 @@ tp_boolean_memtable_has_term(
 	TpBooleanTerm *term =
 			tp_boolean_find_term(eval->query, lexeme, operand->length);
 
-	if (operand->prefix || operand->weight != 0)
+	if (eval->query->max_token_length != TP_LEGACY_MAX_TOKEN_LENGTH ||
+		operand->prefix || operand->weight != 0)
 		return TS_MAYBE;
 
 	Assert(term != NULL);
@@ -504,6 +511,9 @@ tp_boolean_create_candidate_stream(
 {
 	TpBooleanCandidateStream *stream;
 
+	if (state->max_token_length != TP_LEGACY_MAX_TOKEN_LENGTH)
+		return tp_boolean_create_all_stream(reader);
+
 	if (item->type == QI_VAL)
 	{
 		QueryOperand *operand = &item->qoperand;
@@ -707,7 +717,8 @@ tp_boolean_segment_has_term(
 			tp_boolean_find_term(eval->query, lexeme, operand->length);
 	TpBooleanTermCursor *cursor;
 
-	if (operand->prefix || operand->weight != 0)
+	if (eval->query->max_token_length != TP_LEGACY_MAX_TOKEN_LENGTH ||
+		operand->prefix || operand->weight != 0)
 		return TS_MAYBE;
 
 	Assert(term != NULL);
@@ -863,8 +874,17 @@ tp_boolean_execute(IndexScanDesc scan, TpLocalIndexState *index_state)
 						"lock")));
 
 	old_context = MemoryContextSwitchTo(so->boolean_context);
-	state		= tp_boolean_extract_terms(so->boolean_query);
+	tp_acquire_index_lock(index_state, LW_SHARED);
+	snapshot = tp_segment_graph_snapshot_create(scan->indexRelation);
+	metap	 = &snapshot->metapage;
+	tp_boolean_check_config(scan->indexRelation, metap);
+
+	state = tp_boolean_extract_terms(
+			so->boolean_query,
+			(metap->capabilities & TP_METAPAGE_NORMALIZATION_CHANGED) != 0);
 	if (state.exact_operand_count > TP_BOOLEAN_MAX_EXACT_OPERANDS)
+	{
+		tp_release_index_lock(index_state);
 		ereport(ERROR,
 				(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
 				 errmsg("BM25 Boolean queries support at most %d exact term "
@@ -873,12 +893,8 @@ tp_boolean_execute(IndexScanDesc scan, TpLocalIndexState *index_state)
 				 errdetail(
 						 "Query contains %d exact term operands.",
 						 state.exact_operand_count)));
+	}
 	so->boolean_recheck = state.requires_recheck;
-
-	tp_acquire_index_lock(index_state, LW_SHARED);
-	snapshot = tp_segment_graph_snapshot_create(scan->indexRelation);
-	metap	 = &snapshot->metapage;
-	tp_boolean_check_config(scan->indexRelation, metap);
 
 	/*
 	 * Spill or compaction can replace the captured chain and segment roots

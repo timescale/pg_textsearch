@@ -11,7 +11,9 @@
 #include <limits.h>
 #include <nodes/pathnodes.h>
 #include <nodes/primnodes.h>
+#include <optimizer/cost.h>
 #include <optimizer/optimizer.h>
+#include <storage/bufmgr.h>
 #include <tsearch/ts_cache.h>
 #include <tsearch/ts_type.h>
 #include <tsearch/ts_utils.h>
@@ -116,11 +118,13 @@ tp_costestimate(
 {
 	GenericCosts	costs;
 	TpIndexMetaPage metap;
-	double			num_tuples		  = TP_DEFAULT_TUPLE_ESTIMATE;
-	bool			has_orderby		  = path->indexorderbys != NIL;
-	bool			has_boolean		  = path->indexclauses != NIL;
-	bool			boolean_full_scan = false;
-	TSQuery			boolean_query	  = NULL;
+	double			num_tuples			  = TP_DEFAULT_TUPLE_ESTIMATE;
+	double			num_index_pages		  = 1.0;
+	bool			has_orderby			  = path->indexorderbys != NIL;
+	bool			has_boolean			  = path->indexclauses != NIL;
+	bool			boolean_full_scan	  = false;
+	bool			normalization_changed = false;
+	TSQuery			boolean_query		  = NULL;
 
 	/*
 	 * Boolean filtering and ranked scans are separate execution modes.
@@ -169,7 +173,8 @@ tp_costestimate(
 
 		if (index_rel)
 		{
-			metap = tp_get_metapage(index_rel);
+			num_index_pages = Max(RelationGetNumberOfBlocks(index_rel), 1);
+			metap			= tp_get_metapage(index_rel);
 			if (has_boolean &&
 				metap->text_config_oid != getTSCurrentConfig(true))
 			{
@@ -183,6 +188,12 @@ tp_costestimate(
 						indexCorrelation,
 						indexPages);
 				return;
+			}
+			if (has_boolean &&
+				(metap->capabilities & TP_METAPAGE_NORMALIZATION_CHANGED) != 0)
+			{
+				boolean_full_scan	  = true;
+				normalization_changed = true;
 			}
 
 			if (metap && metap->total_docs > 0)
@@ -201,10 +212,22 @@ tp_costestimate(
 	genericcostestimate(root, path, loop_count, &costs);
 
 	/* Override with BM25-specific estimates */
-	*indexTotalCost	  = boolean_full_scan
-							  ? costs.indexTotalCost +
-										cpu_operator_cost * num_tuples
-							  : costs.indexTotalCost * TP_INDEX_SCAN_COST_FACTOR;
+	if (normalization_changed)
+		*indexTotalCost = costs.indexTotalCost +
+						  (enable_seqscan ? 1.0e10 : 0.0) +
+						  random_page_cost * num_index_pages +
+						  seq_page_cost *
+								  (ceil(num_tuples * sizeof(ItemPointerData) /
+										BLCKSZ) *
+								   2.0) +
+						  (cpu_index_tuple_cost + 2.0 * cpu_tuple_cost +
+						   cpu_operator_cost) *
+								  num_tuples;
+	else if (boolean_full_scan)
+		*indexTotalCost = costs.indexTotalCost +
+						  cpu_operator_cost * num_tuples;
+	else
+		*indexTotalCost = costs.indexTotalCost * TP_INDEX_SCAN_COST_FACTOR;
 	*indexStartupCost = has_boolean ? *indexTotalCost
 									: costs.indexStartupCost + 0.01;
 

@@ -556,6 +556,7 @@ tp_vacuum_rebuild_segment(
 	TpBuildContext	*build_ctx;
 	BlockNumber		 new_root;
 	Oid				 text_config_oid;
+	int				 max_token_length;
 	IndexInfo		*indexInfo;
 	EState			*estate;
 	ExprContext		*econtext;
@@ -572,7 +573,8 @@ tp_vacuum_rebuild_segment(
 	{
 		TpIndexMetaPage mp = tp_get_metapage(index);
 
-		text_config_oid = mp->text_config_oid;
+		text_config_oid	 = mp->text_config_oid;
+		max_token_length = mp->max_token_length;
 		pfree(mp);
 	}
 
@@ -679,6 +681,8 @@ tp_vacuum_rebuild_segment(
 		doc_length = tp_tokenize_text(
 				document_text,
 				text_config_oid,
+				max_token_length,
+				NULL,
 				&terms,
 				&frequencies,
 				&term_count);

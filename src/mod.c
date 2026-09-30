@@ -824,6 +824,14 @@ _PG_init(void)
 			0.0,
 			1.0,
 			NoLock);
+	add_int_reloption(
+			tp_relopt_kind,
+			"max_token_length",
+			"Maximum indexed token length in bytes",
+			TP_DEFAULT_MAX_TOKEN_LENGTH,
+			1,
+			MAXSTRLEN,
+			AccessExclusiveLock);
 
 	/*
 	 * ShareUpdateExclusiveLock: the value is read after a spill and

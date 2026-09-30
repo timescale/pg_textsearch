@@ -9,14 +9,20 @@
 #include <access/amapi.h>
 #include <access/htup_details.h>
 #include <access/reloptions.h>
+#include <catalog/namespace.h>
 #include <catalog/pg_opclass.h>
 #include <catalog/pg_type.h>
 #include <commands/vacuum.h>
+#include <nodes/parsenodes.h>
+#include <nodes/pg_list.h>
+#include <utils/builtins.h>
+#include <utils/regproc.h>
 #include <utils/syscache.h>
 
 #include "access/am.h"
 #include "planner/cost.h"
 #include "tsearch/ts_utils.h"
+#include "types/tokenize.h"
 
 /* Relation options - initialized in mod.c */
 extern relopt_kind tp_relopt_kind;
@@ -127,9 +133,36 @@ tp_handler(PG_FUNCTION_ARGS)
 /*
  * Parse and validate index options
  */
+static bool
+tp_reloption_is_explicit(Datum reloptions, const char *option_name)
+{
+	List	 *definitions;
+	ListCell *cell;
+	bool	  found = false;
+
+	if (DatumGetPointer(reloptions) == NULL)
+		return false;
+
+	definitions = untransformRelOptions(reloptions);
+	foreach (cell, definitions)
+	{
+		DefElem *definition = lfirst_node(DefElem, cell);
+
+		if (strcmp(definition->defname, option_name) == 0)
+		{
+			found = true;
+			break;
+		}
+	}
+	list_free_deep(definitions);
+
+	return found;
+}
+
 bytea *
 tp_options(Datum reloptions, bool validate)
 {
+	bytea						 *parsed;
 	static const relopt_parse_elt tab[] =
 			{{.optname = "text_config",
 			  .opttype = RELOPT_TYPE_STRING,
@@ -140,6 +173,9 @@ tp_options(Datum reloptions, bool validate)
 			 {.optname = "b",
 			  .opttype = RELOPT_TYPE_REAL,
 			  .offset  = offsetof(TpOptions, b)},
+			 {.optname = "max_token_length",
+			  .opttype = RELOPT_TYPE_INT,
+			  .offset  = offsetof(TpOptions, max_token_length)},
 			 {.optname = "compaction_schedule",
 			  .opttype = RELOPT_TYPE_STRING,
 			  .offset  = offsetof(TpOptions, compaction_schedule_offset)},
@@ -150,13 +186,42 @@ tp_options(Datum reloptions, bool validate)
 			  .opttype = RELOPT_TYPE_ENUM,
 			  .offset  = offsetof(TpOptions, compaction)}};
 
-	return (bytea *)build_reloptions(
+	parsed = (bytea *)build_reloptions(
 			reloptions,
 			validate,
 			tp_relopt_kind,
 			sizeof(TpOptions),
 			tab,
 			lengthof(tab));
+
+	if (validate && parsed != NULL &&
+		tp_reloption_is_explicit(reloptions, "max_token_length"))
+	{
+		TpOptions *options = (TpOptions *)parsed;
+
+		if (options->text_config_offset > 0)
+		{
+			char *text_config_name = (char *)options +
+									 options->text_config_offset;
+			List *names = stringToQualifiedNameList(text_config_name, NULL);
+			Oid	  text_config_oid = get_ts_config_oid(names, false);
+
+			list_free(names);
+			if (!tp_text_config_uses_builtin_parser(text_config_oid))
+				ereport(ERROR,
+						(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+						 errmsg("max_token_length is not supported with text "
+								"search configuration \"%s\"",
+								text_config_name),
+						 errdetail(
+								 "The configuration uses a custom text "
+								 "search parser."),
+						 errhint("Omit max_token_length to preserve the "
+								 "parser's existing tokenization.")));
+		}
+	}
+
+	return parsed;
 }
 
 /*

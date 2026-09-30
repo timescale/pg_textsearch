@@ -44,17 +44,27 @@ CREATE TABLE parallel_test_1worker (
 );
 
 INSERT INTO parallel_test_1worker (content)
-SELECT 'Document ' || i || ' with database query optimization terms'
+SELECT 'Document ' || i || ' with database query optimization terms ' ||
+       repeat('q', 40)
 FROM generate_series(1, 100000) AS i;
 
 ANALYZE parallel_test_1worker;
 
 -- Should show "parallel index build: launched 1 of 1 requested workers"
 CREATE INDEX parallel_test_1worker_idx ON parallel_test_1worker USING bm25(content)
-  WITH (text_config='english');
+  WITH (text_config='english', max_token_length=16);
 
 SELECT COUNT(*) AS database_count FROM (SELECT 1 FROM parallel_test_1worker
 ORDER BY content <@> to_bm25query('database', 'parallel_test_1worker_idx')) sub;
+
+SELECT COUNT(*) AS truncated_count FROM (SELECT 1 FROM parallel_test_1worker
+ORDER BY content <@> to_bm25query(repeat('q', 40), 'parallel_test_1worker_idx')) sub;
+
+RESET enable_seqscan;
+EXPLAIN (COSTS OFF)
+SELECT id FROM parallel_test_1worker
+WHERE content @@ to_tsquery('english', 'missingterm');
+SET enable_seqscan = off;
 
 REINDEX INDEX parallel_test_1worker_idx;
 
