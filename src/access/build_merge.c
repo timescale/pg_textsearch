@@ -7,6 +7,7 @@
 #include <postgres.h>
 
 #include <common/int.h>
+#include <inttypes.h>
 #include <limits.h>
 #include <miscadmin.h>
 #include <storage/buffile.h>
