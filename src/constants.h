@@ -63,7 +63,8 @@
  * pre-v0.5.0 indexes carry an older segment format the current
  * binary cannot read; those continue to require REINDEX.
  */
-#define TP_METAPAGE_VERSION	   9
+#define TP_METAPAGE_VERSION	   10
+#define TP_METAPAGE_VERSION_V9 9 /* read-compatible: no token limit */
 #define TP_METAPAGE_VERSION_V8 8 /* read-compatible: no capability flags */
 #define TP_METAPAGE_VERSION_V7                                            \
 	7							 /* read-compatible: on-disk memtable, no \
@@ -76,6 +77,9 @@
 #define TP_METAPAGE_BLKNO 0
 
 #define TP_METAPAGE_ALL_DOCUMENTS_INDEXED (1U << 0)
+
+#define TP_DEFAULT_MAX_TOKEN_LENGTH 255
+#define TP_LEGACY_MAX_TOKEN_LENGTH	0
 
 /* Segment hierarchy configuration */
 #define TP_MAX_LEVELS				  8 /* Supports 8^8 = 16M segments */

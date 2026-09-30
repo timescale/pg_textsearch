@@ -405,7 +405,8 @@ DROP TABLE compaction_unreducible CASCADE;
 -- index grows by the full size of the run rather than by the pair.
 CREATE TABLE compaction_uncombinable_tail (id bigint PRIMARY KEY, body text);
 CREATE INDEX compaction_uncombinable_tail_idx ON compaction_uncombinable_tail
-    USING bm25(body) WITH (text_config = 'simple');
+    USING bm25(body)
+    WITH (text_config = 'simple', max_token_length = 2047);
 SET pg_textsearch.memtable_pages_threshold = 0;
 SET pg_textsearch.bulk_load_threshold = 0;
 SET pg_textsearch.max_segment_size = '1MB';

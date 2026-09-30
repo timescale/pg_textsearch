@@ -51,6 +51,7 @@
 #include "segment/merge.h"
 #include "segment/segment.h"
 #include "types/array.h"
+#include "types/tokenize.h"
 #include "types/vector.h"
 
 /*
@@ -1007,6 +1008,7 @@ tp_build_extract_options(
 		Relation index,
 		char   **text_config_name,
 		Oid		*text_config_oid,
+		int		*max_token_length,
 		double	*k1,
 		double	*b)
 {
@@ -1014,6 +1016,7 @@ tp_build_extract_options(
 
 	*text_config_name = NULL;
 	*text_config_oid  = InvalidOid;
+	*max_token_length = TP_DEFAULT_MAX_TOKEN_LENGTH;
 
 	/* Extract options from index */
 	options = (TpOptions *)index->rd_options;
@@ -1043,8 +1046,9 @@ tp_build_extract_options(
 							 "bm25(column) WITH (text_config='english')")));
 		}
 
-		*k1 = options->k1;
-		*b	= options->b;
+		*k1				  = options->k1;
+		*b				  = options->b;
+		*max_token_length = options->max_token_length;
 	}
 	else
 	{
@@ -1063,7 +1067,11 @@ tp_build_extract_options(
  */
 static void
 tp_build_init_metapage(
-		Relation index, Oid text_config_oid, double k1, double b)
+		Relation index,
+		Oid		 text_config_oid,
+		int		 max_token_length,
+		double	 k1,
+		double	 b)
 {
 	Buffer			  metabuf;
 	GenericXLogState *state;
@@ -1079,7 +1087,7 @@ tp_build_init_metapage(
 	metapage =
 			GenericXLogRegisterBuffer(state, metabuf, GENERIC_XLOG_FULL_IMAGE);
 
-	tp_init_metapage(metapage, text_config_oid);
+	tp_init_metapage(metapage, text_config_oid, max_token_length);
 	metap	  = (TpIndexMetaPage)PageGetContents(metapage);
 	metap->k1 = k1;
 	metap->b  = b;
@@ -1188,23 +1196,18 @@ tp_tokenize_chunk(
 		const char *chunk,
 		int			chunk_len,
 		Oid			text_config_oid,
+		int			max_token_length,
 		char	 ***terms_out,
 		int32	  **frequencies_out,
 		int		   *term_count_out)
 {
 	text	*chunk_text;
-	Datum	 tsvector_datum;
 	TSVector tsvector;
 	int		 doc_length;
 
 	chunk_text = cstring_to_text_with_len(chunk, chunk_len);
 
-	tsvector_datum = DirectFunctionCall2Coll(
-			to_tsvector_byid,
-			InvalidOid,
-			ObjectIdGetDatum(text_config_oid),
-			PointerGetDatum(chunk_text));
-	tsvector = DatumGetTSVector(tsvector_datum);
+	tsvector = tp_make_tsvector(chunk_text, text_config_oid, max_token_length);
 
 	doc_length = tp_extract_terms_from_tsvector(
 			tsvector, terms_out, frequencies_out, term_count_out);
@@ -1336,6 +1339,7 @@ int
 tp_tokenize_text(
 		text   *document_text,
 		Oid		text_config_oid,
+		int		max_token_length,
 		char ***terms_out,
 		int32 **frequencies_out,
 		int	   *term_count_out)
@@ -1355,15 +1359,10 @@ tp_tokenize_text(
 	 */
 	if (len <= TP_TSVECTOR_CHUNK_BYTES)
 	{
-		Datum	 tsvector_datum;
 		TSVector tsvector;
 
-		tsvector_datum = DirectFunctionCall2Coll(
-				to_tsvector_byid,
-				InvalidOid,
-				ObjectIdGetDatum(text_config_oid),
-				PointerGetDatum(document_text));
-		tsvector = DatumGetTSVector(tsvector_datum);
+		tsvector = tp_make_tsvector(
+				document_text, text_config_oid, max_token_length);
 		return tp_extract_terms_from_tsvector(
 				tsvector, terms_out, frequencies_out, term_count_out);
 	}
@@ -1390,6 +1389,7 @@ tp_tokenize_text(
 				data + offset,
 				take,
 				text_config_oid,
+				max_token_length,
 				&chunk_terms,
 				&chunk_freqs,
 				&chunk_term_count);
@@ -1432,6 +1432,7 @@ tp_process_document_text(
 		text			  *document_text,
 		ItemPointer		   ctid,
 		Oid				   text_config_oid,
+		int				   max_token_length,
 		TpLocalIndexState *index_state,
 		Relation		   index_rel,
 		int32			  *doc_length_out)
@@ -1458,7 +1459,12 @@ tp_process_document_text(
 
 	/* Tokenize document (chunks oversized inputs to fit tsvector cap) */
 	doc_length = tp_tokenize_text(
-			document_text, text_config_oid, &terms, &frequencies, &term_count);
+			document_text,
+			text_config_oid,
+			max_token_length,
+			&terms,
+			&frequencies,
+			&term_count);
 
 	if (index_rel != NULL)
 	{
@@ -1517,6 +1523,7 @@ typedef struct TpBuildCallbackState
 	TpLocalIndexState *index_state;
 	Relation		   index;
 	Oid				   text_config_oid;
+	int				   max_token_length;
 	MemoryContext	   per_doc_ctx;
 	bool			   is_text_array;
 	uint64			   total_docs;
@@ -1573,6 +1580,7 @@ tp_build_callback(
 	doc_length = tp_tokenize_text(
 			document_text,
 			bs->text_config_oid,
+			bs->max_token_length,
 			&terms,
 			&frequencies,
 			&term_count);
@@ -1620,6 +1628,7 @@ tp_build(Relation heap, Relation index, IndexInfo *indexInfo)
 	IndexBuildResult  *result;
 	char			  *text_config_name = NULL;
 	Oid				   text_config_oid	= InvalidOid;
+	int				   max_token_length;
 	double			   k1, b;
 	uint64			   total_docs = 0;
 	uint64			   total_len  = 0;
@@ -1665,7 +1674,12 @@ tp_build(Relation heap, Relation index, IndexInfo *indexInfo)
 
 	/* Extract options from index */
 	tp_build_extract_options(
-			index, &text_config_name, &text_config_oid, &k1, &b);
+			index,
+			&text_config_name,
+			&text_config_oid,
+			&max_token_length,
+			&k1,
+			&b);
 
 	/* Log configuration (only for first partition when active) */
 	if (progress == NULL || progress->partition_count == 0)
@@ -1682,7 +1696,7 @@ tp_build(Relation heap, Relation index, IndexInfo *indexInfo)
 			   index->rd_id, heap->rd_id, index_create_subid);
 
 	/* Initialize metapage */
-	tp_build_init_metapage(index, text_config_oid, k1, b);
+	tp_build_init_metapage(index, text_config_oid, max_token_length, k1, b);
 
 	/*
 	 * Check if parallel build is possible and beneficial.
@@ -1754,6 +1768,7 @@ tp_build(Relation heap, Relation index, IndexInfo *indexInfo)
 					index,
 					indexInfo,
 					text_config_oid,
+					max_token_length,
 					k1,
 					b,
 					is_text_array,
@@ -1833,15 +1848,16 @@ tp_build(Relation heap, Relation index, IndexInfo *indexInfo)
 		build_ctx = tp_build_context_create(budget);
 
 		/* Initialize callback state */
-		bs.build_ctx	   = build_ctx;
-		bs.index_state	   = index_state;
-		bs.index		   = index;
-		bs.text_config_oid = text_config_oid;
-		bs.is_text_array   = is_text_array;
-		bs.per_doc_ctx	   = AllocSetContextCreate(
-				CurrentMemoryContext,
-				"build per-doc temp",
-				ALLOCSET_DEFAULT_SIZES);
+		bs.build_ctx		= build_ctx;
+		bs.index_state		= index_state;
+		bs.index			= index;
+		bs.text_config_oid	= text_config_oid;
+		bs.max_token_length = max_token_length;
+		bs.is_text_array	= is_text_array;
+		bs.per_doc_ctx		= AllocSetContextCreate(
+				 CurrentMemoryContext,
+				 "build per-doc temp",
+				 ALLOCSET_DEFAULT_SIZES);
 		bs.total_docs  = 0;
 		bs.total_len   = 0;
 		bs.tuples_done = 0;
@@ -1953,11 +1969,13 @@ tp_buildempty(Relation index)
 	TpIndexMetaPage metap;
 	char		   *text_config_name = NULL;
 	Oid				text_config_oid	 = InvalidOid;
+	int				max_token_length = TP_DEFAULT_MAX_TOKEN_LENGTH;
 
 	/* Extract options from index */
 	options = (TpOptions *)index->rd_options;
 	if (options)
 	{
+		max_token_length = options->max_token_length;
 		if (options->text_config_offset > 0)
 		{
 			text_config_name = pstrdup(
@@ -2004,7 +2022,7 @@ tp_buildempty(Relation index)
 		metapage = GenericXLogRegisterBuffer(
 				state, metabuf, GENERIC_XLOG_FULL_IMAGE);
 
-		tp_init_metapage(metapage, text_config_oid);
+		tp_init_metapage(metapage, text_config_oid, max_token_length);
 
 		/* Set additional parameters after init */
 		metap	  = (TpIndexMetaPage)PageGetContents(metapage);

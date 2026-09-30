@@ -60,6 +60,7 @@ typedef struct TpOptions
 	int32  text_config_offset; /* offset to text config string */
 	double k1;				   /* BM25 k1 parameter */
 	double b;				   /* BM25 b parameter */
+	int32  max_token_length;   /* maximum lexeme length in bytes */
 	int32  compaction_schedule_offset;
 	int32  compaction_lineage_offset;
 	int	   compaction; /* TpCompactionMode for this index */
@@ -124,6 +125,7 @@ bool tp_process_document_text(
 		text			  *document_text,
 		ItemPointer		   ctid,
 		Oid				   text_config_oid,
+		int				   max_token_length,
 		TpLocalIndexState *index_state,
 		Relation		   index_rel,
 		int32			  *doc_length_out);
@@ -146,6 +148,7 @@ int tp_extract_terms_from_tsvector(
 int tp_tokenize_text(
 		text   *document_text,
 		Oid		text_config_oid,
+		int		max_token_length,
 		char ***terms_out,
 		int32 **frequencies_out,
 		int	   *term_count_out);

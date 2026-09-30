@@ -201,7 +201,7 @@ SET pg_textsearch.segments_per_level = 8;
 
 CREATE TABLE merge_starve (id bigint PRIMARY KEY, content text);
 CREATE INDEX merge_starve_idx ON merge_starve USING bm25(content)
-  WITH (text_config='simple');
+  WITH (text_config='simple', max_token_length=2047);
 
 DO $$
 DECLARE

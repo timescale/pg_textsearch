@@ -114,6 +114,13 @@ typedef struct TpIndexMetaPageData
 	 * not retain documents whose configured tsvector was empty.
 	 */
 	uint32 capabilities;
+
+	/*
+	 * Maximum raw-token and normalized-lexeme length in bytes.  Zero
+	 * preserves the PostgreSQL behavior used by indexes created before
+	 * version 10.  Introduced in TP_METAPAGE_VERSION 10.
+	 */
+	int32 max_token_length;
 } TpIndexMetaPageData;
 
 typedef TpIndexMetaPageData *TpIndexMetaPage;
@@ -164,10 +171,19 @@ StaticAssertDecl(
 		"v8 metapage prefix layout changed - "
 		"backward-compat is broken");
 
+#define TP_INDEX_METAPAGE_DATA_SIZE_V9 \
+	offsetof(TpIndexMetaPageData, max_token_length)
+
+StaticAssertDecl(
+		TP_INDEX_METAPAGE_DATA_SIZE_V9 == 124,
+		"v9 metapage prefix layout changed - "
+		"backward-compat is broken");
+
 /*
  * Metapage operations
  */
-extern void tp_init_metapage(Page page, Oid text_config_oid);
+extern void
+tp_init_metapage(Page page, Oid text_config_oid, int max_token_length);
 /* Caller must hold at least BUFFER_LOCK_SHARE on the metapage buffer. */
 extern TpIndexMetaPage tp_metapage_copy_from_page(Relation index, Page page);
 extern TpIndexMetaPage tp_get_metapage(Relation index);

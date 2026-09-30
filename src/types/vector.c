@@ -860,6 +860,7 @@ to_tpvector(PG_FUNCTION_ARGS)
 	char		   *index_name;
 	Oid				index_oid;
 	Oid				text_config_oid;
+	int				max_token_length;
 	Relation		index_rel = NULL;
 	TpIndexMetaPage metap	  = NULL;
 	int				i;
@@ -885,7 +886,8 @@ to_tpvector(PG_FUNCTION_ARGS)
 
 	metap = tp_get_metapage(index_rel);
 
-	text_config_oid = metap->text_config_oid;
+	text_config_oid	 = metap->text_config_oid;
+	max_token_length = metap->max_token_length;
 	if (!OidIsValid(text_config_oid))
 		ereport(ERROR,
 				(errcode(ERRCODE_DATA_CORRUPTED),
@@ -896,7 +898,12 @@ to_tpvector(PG_FUNCTION_ARGS)
 	index_close(index_rel, AccessShareLock);
 
 	(void)tp_tokenize_text(
-			input_text, text_config_oid, &lexemes, &frequencies, &entry_count);
+			input_text,
+			text_config_oid,
+			max_token_length,
+			&lexemes,
+			&frequencies,
+			&entry_count);
 
 	result = create_tpvector_from_strings(
 			index_name, entry_count, (const char **)lexemes, frequencies);

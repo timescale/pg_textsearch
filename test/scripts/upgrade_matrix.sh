@@ -332,6 +332,75 @@ run_boolean_completeness_upgrade() {
   [ "$count" = "3" ] || fail "1.4.0/boolean: post-REINDEX count $count != 3"
 }
 
+run_token_length_upgrade() {
+  fresh_cluster || { fail "1.4.0/token-length: cluster init failed"; return; }
+  start_pg || { fail "1.4.0/token-length: old server failed to start"; return; }
+  createdb_upg
+  runsql "CREATE EXTENSION pg_textsearch;
+    CREATE TABLE d(id integer primary key, c text NOT NULL);
+    INSERT INTO d VALUES
+      (1, repeat('a', 299) || 'x'),
+      (2, repeat('a', 299) || 'y');
+    CREATE INDEX i ON d USING bm25(c) WITH (text_config='simple');"
+
+  local query_x
+  query_x="SET enable_seqscan=off;
+  SELECT count(*) FROM (
+    SELECT id FROM d
+    ORDER BY c <@> to_bm25query(repeat('a', 299) || 'x', 'i')
+  ) ranked;"
+  [ "$(scalar "$query_x")" = "1" ] ||
+    fail "1.4.0/token-length: old binary did not preserve distinct terms"
+
+  stop_pg
+  build_install_current || { fail "current build/install failed"; return; }
+  start_pg || {
+    fail "1.4.0/token-length: NEW server failed to start"
+    return
+  }
+  runsql "ALTER EXTENSION pg_textsearch UPDATE TO '1.5.0-dev';"
+
+  [ "$(scalar "$query_x")" = "1" ] ||
+    fail "1.4.0/token-length: upgrade reinterpreted existing terms"
+  runsql "INSERT INTO d VALUES (3, repeat('a', 299) || 'z');"
+  [ "$(scalar "SET enable_seqscan=off;
+  SELECT count(*) FROM (
+    SELECT id FROM d
+    ORDER BY c <@> to_bm25query(repeat('a', 299) || 'z', 'i')
+  ) ranked;")" = "1" ] ||
+    fail "1.4.0/token-length: post-upgrade DML changed legacy semantics"
+
+  runsql "ALTER INDEX i SET (max_token_length=255);"
+  local out err_f
+  out="$(mktemp)"; err_f="$(mktemp)"
+  run_capture "$query_x" "$out" "$err_f"
+  if ! grep -qi 'REINDEX' "$err_f"; then
+    fail "1.4.0/token-length: changed option did not require REINDEX"
+  fi
+  rm -f "$out" "$err_f"
+
+  runsql "REINDEX INDEX i;"
+  [ "$(scalar "$query_x")" = "3" ] ||
+    fail "1.4.0/token-length: REINDEX did not adopt prefix truncation"
+
+  local dump_file="$BASE_DIR/token-length.sql"
+  as_pg pg_dump -h "$SOCK_DIR" -p "$TEST_PORT" -d upg -f "$dump_file" ||
+    fail "1.4.0/token-length: pg_dump failed"
+  as_pg createdb -h "$SOCK_DIR" -p "$TEST_PORT" upg_restore ||
+    fail "1.4.0/token-length: restore database creation failed"
+  as_pg psql -h "$SOCK_DIR" -p "$TEST_PORT" -d upg_restore \
+    -q -f "$dump_file" >/dev/null 2>&1 ||
+    fail "1.4.0/token-length: restore failed"
+  local restored
+  restored="$(as_pg psql -h "$SOCK_DIR" -p "$TEST_PORT" -d upg_restore \
+    -tAq -c "$query_x" 2>/dev/null)"
+  [ "$restored" = "3" ] ||
+    fail "1.4.0/token-length: restored option produced $restored matches"
+
+  stop_pg
+  log "  [1.4.0/token-length] legacy, REINDEX, and restore checks passed"
+}
+
 run_v8_tombstone_compaction_upgrade() {
   fresh_cluster || { fail "1.4.0/v8-tombstone: cluster init failed"; return; }
   echo "max_prepared_transactions = 1" >>"$DATA_DIR/postgresql.conf"
@@ -434,6 +503,11 @@ for v in $OLD_VERSIONS; do
       run_boolean_completeness_upgrade
       build_install_old "$v" || {
         fail "$v: could not reinstall old binary after Boolean upgrade test"
+        continue
+      }
+      run_token_length_upgrade
+      build_install_old "$v" || {
+        fail "$v: could not reinstall old binary after token-length test"
         continue
       }
     fi

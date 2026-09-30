@@ -279,7 +279,7 @@ SET pg_textsearch.max_segment_size = '1MB';
 SET pg_textsearch.segments_per_level = 8;
 CREATE TABLE merge_starve (id bigint PRIMARY KEY, content text);
 CREATE INDEX merge_starve_idx ON merge_starve USING bm25(content)
-  WITH (text_config='simple');
+  WITH (text_config='simple', max_token_length=2047);
 NOTICE:  BM25 index build started for relation merge_starve_idx
 NOTICE:  Using text search configuration: simple
 NOTICE:  Using index options: k1=1.20, b=0.75

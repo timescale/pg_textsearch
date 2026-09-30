@@ -184,6 +184,9 @@ tp_costestimate(
 						indexPages);
 				return;
 			}
+			if (has_boolean &&
+				metap->max_token_length != TP_LEGACY_MAX_TOKEN_LENGTH)
+				boolean_full_scan = true;
 
 			if (metap && metap->total_docs > 0)
 				num_tuples = (double)metap->total_docs;

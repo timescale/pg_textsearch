@@ -66,6 +66,7 @@ typedef struct TpParallelBuildShared
 	Oid	   heaprelid;		  /* Heap relation OID */
 	Oid	   indexrelid;		  /* Index relation OID */
 	Oid	   text_config_oid;	  /* Text search config OID */
+	int32  max_token_length;  /* Maximum token length in bytes */
 	double k1;				  /* BM25 k1 parameter */
 	double b;				  /* BM25 b parameter */
 	bool   is_text_array;	  /* Indexed column is text[] */
@@ -118,6 +119,7 @@ extern struct IndexBuildResult *tp_build_parallel(
 		Relation		  index,
 		struct IndexInfo *indexInfo,
 		Oid				  text_config_oid,
+		int				  max_token_length,
 		double			  k1,
 		double			  b,
 		bool			  is_text_array,

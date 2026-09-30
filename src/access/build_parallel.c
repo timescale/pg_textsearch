@@ -128,6 +128,7 @@ tp_init_parallel_shared(
 		Relation			   heap,
 		Relation			   index,
 		Oid					   text_config_oid,
+		int					   max_token_length,
 		double				   k1,
 		double				   b,
 		bool				   is_text_array,
@@ -139,13 +140,14 @@ tp_init_parallel_shared(
 	memset(shared, 0, sizeof(TpParallelBuildShared));
 
 	/* Immutable configuration */
-	shared->heaprelid		= RelationGetRelid(heap);
-	shared->indexrelid		= RelationGetRelid(index);
-	shared->text_config_oid = text_config_oid;
-	shared->k1				= k1;
-	shared->b				= b;
-	shared->is_text_array	= is_text_array;
-	shared->nworkers		= nworkers;
+	shared->heaprelid		 = RelationGetRelid(heap);
+	shared->indexrelid		 = RelationGetRelid(index);
+	shared->text_config_oid	 = text_config_oid;
+	shared->max_token_length = max_token_length;
+	shared->k1				 = k1;
+	shared->b				 = b;
+	shared->is_text_array	 = is_text_array;
+	shared->nworkers		 = nworkers;
 
 	/* Coordination */
 	ConditionVariableInit(&shared->all_done_cv);
@@ -328,6 +330,7 @@ tp_parallel_build_worker_main(dsm_segment *seg, shm_toc *toc)
 		doc_length = tp_tokenize_text(
 				document_text,
 				shared->text_config_oid,
+				shared->max_token_length,
 				&terms,
 				&frequencies,
 				&term_count);
@@ -488,6 +491,7 @@ tp_build_parallel(
 		Relation   index,
 		IndexInfo *indexInfo,
 		Oid		   text_config_oid,
+		int		   max_token_length,
 		double	   k1,
 		double	   b,
 		bool	   is_text_array,
@@ -550,6 +554,7 @@ tp_build_parallel(
 			heap,
 			index,
 			text_config_oid,
+			max_token_length,
 			k1,
 			b,
 			is_text_array,

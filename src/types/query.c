@@ -52,6 +52,7 @@
 #include "segment/segment.h"
 #include "types/array.h"
 #include "types/query.h"
+#include "types/tokenize.h"
 #include "types/vector.h"
 
 /*
@@ -802,7 +803,6 @@ bm25_text_bm25query_score(PG_FUNCTION_ARGS)
 	int32				   *doc_frequencies = NULL;
 	int						doc_term_count	= 0;
 	int						raw_doc_length;
-	Datum					query_tsvector_datum;
 	TSVector				query_tsvector;
 	WordEntry			   *query_entries;
 	char				   *query_lexemes_start;
@@ -922,13 +922,10 @@ bm25_text_bm25query_score(PG_FUNCTION_ARGS)
 				&avg_doc_len);
 
 		/* Tokenize the query text to get query terms (always small) */
-		query_tsvector_datum = DirectFunctionCall2Coll(
-				to_tsvector_byid,
-				InvalidOid,
-				ObjectIdGetDatum(text_config_oid),
-				PointerGetDatum(cstring_to_text(query_text)));
-
-		query_tsvector		= DatumGetTSVector(query_tsvector_datum);
+		query_tsvector = tp_make_tsvector(
+				cstring_to_text(query_text),
+				text_config_oid,
+				metap->max_token_length);
 		query_entries		= ARRPTR(query_tsvector);
 		query_lexemes_start = STRPTR(query_tsvector);
 
@@ -936,6 +933,7 @@ bm25_text_bm25query_score(PG_FUNCTION_ARGS)
 		raw_doc_length = tp_tokenize_text(
 				text_arg,
 				text_config_oid,
+				metap->max_token_length,
 				&doc_terms,
 				&doc_frequencies,
 				&doc_term_count);

@@ -206,6 +206,7 @@ Option | Default | Description
 [`text_config`](https://www.postgresql.org/docs/current/textsearch-configuration.html) | required | PostgreSQL text search configuration
 `k1` | 1.2 | Term frequency saturation (0.1-10.0)
 `b` | 0.75 | Length normalization (0.0-1.0)
+`max_token_length` | 255 | Maximum raw token and normalized lexeme length in bytes (1-2047)
 `compaction` | inline | Spill-time compaction: `inline`, `background`, or `manual`; see [Background Compaction](#background-compaction)
 `compaction_schedule` | `pg_textsearch.background_compaction_schedule` | Optional cron schedule captured when the index enters background mode
 
@@ -561,8 +562,28 @@ partitions when cross-row score comparability matters.
 
 ### Token and Document Limits
 
-PostgreSQL ignores lexemes longer than 2047 bytes. This mainly affects base64
-data, long URLs, and concatenated identifiers.
+`max_token_length` truncates raw parser tokens and normalized dictionary
+lexemes to an encoding-safe byte boundary. The default is 255 bytes. This
+retains searchable prefixes for long URLs, base64 data, and concatenated
+identifiers that PostgreSQL would otherwise ignore above 2047 bytes.
+Different long tokens can truncate to the same prefix and therefore rank as
+the same term.
+
+The setting is stored in the index and is used consistently for index builds,
+inserts, updates, maintenance rebuilds, ranked queries, vectors, and
+standalone scoring. Existing indexes keep their pre-upgrade tokenization
+until they are rebuilt. After changing `max_token_length` with `ALTER INDEX`,
+run `REINDEX INDEX` before using the index; pg_textsearch rejects access while
+an explicit option differs from the stored setting.
+
+Native `text @@ tsquery` evaluation has no per-index normalization context.
+For truncation-enabled indexes, Boolean index scans therefore request heap
+rechecks and use all indexed documents as the candidate superset. Even a short
+query operand is not safe to narrow through truncated postings because a text
+search dictionary can normalize the full raw token differently from its
+truncated prefix. Boolean index scans can therefore approach a full indexed
+document scan before the heap recheck. This preserves sequential/index result
+equivalence without false negatives.
 
 pg_textsearch splits raw inputs larger than 256KB at whitespace or
 multibyte-character boundaries before tokenization, then merges the term
