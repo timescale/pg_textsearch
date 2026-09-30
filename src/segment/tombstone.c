@@ -608,9 +608,12 @@ tp_tombstone_drain(
 			uint32 k;
 
 			for (k = 0; k < victim_count; k++)
-				tp_record_free_index_page(index, victim_blocks[k]);
-			tp_record_free_index_page(index, victim);
-			freed += victim_count + 1;
+			{
+				if (tp_record_free_index_page(index, victim_blocks[k]))
+					freed++;
+			}
+			if (tp_record_free_index_page(index, victim))
+				freed++;
 		}
 
 		if (victim_blocks)

@@ -79,9 +79,11 @@ pinned horizon keeps the valid chain prefix parked.
 
 `freepage_bounds_injection` frees metapage, EOF, and past-EOF blocks through
 `pg_textsearch_test_free_index_page()`, which calls the primitive directly
-because no production caller can reach it with an invalid block. It checks
-that each is skipped with a warning and that valid blocks still park and
-drain.
+because no production caller can reach it with an invalid block. Metapage and
+past-EOF blocks use fixed block numbers so their warnings are asserted
+verbatim; the EOF case derives its block from the index size, so it asserts
+only that the call is skipped rather than failing. Valid blocks must still
+park and drain.
 
 ## Sanitizers
 

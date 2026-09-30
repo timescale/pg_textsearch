@@ -1399,8 +1399,8 @@ tp_reclaim_dead_memtable_pages(Relation indexrel, Relation heaprel)
 				 */
 				UnlockReleaseBuffer(buf);
 				tp_log_page_reuse_conflict(indexrel, blk, dead_fxid);
-				tp_record_free_index_page(indexrel, blk);
-				reclaimed_pages++;
+				if (tp_record_free_index_page(indexrel, blk))
+					reclaimed_pages++;
 				continue;
 			}
 		}

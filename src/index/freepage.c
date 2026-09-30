@@ -46,7 +46,7 @@ tp_log_page_reuse_conflict(
 	XLogInsert(RM_BTREE_ID, XLOG_BTREE_REUSE_PAGE);
 }
 
-void
+bool
 tp_record_free_index_page(Relation index, BlockNumber blk)
 {
 	Buffer			  buf;
@@ -77,7 +77,7 @@ tp_record_free_index_page(Relation index, BlockNumber blk)
 						"in index \"%s\"",
 						blk,
 						RelationGetRelationName(index))));
-		return;
+		return false;
 	}
 
 	buf = ReadBuffer(index, blk);
@@ -110,6 +110,7 @@ tp_record_free_index_page(Relation index, BlockNumber blk)
 	UnlockReleaseBuffer(buf);
 
 	RecordFreeIndexPage(index, blk);
+	return true;
 }
 
 Buffer

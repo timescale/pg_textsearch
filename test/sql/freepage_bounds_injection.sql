@@ -7,7 +7,10 @@ CREATE EXTENSION pg_textsearch_test;
 SET pg_textsearch.memtable_pages_threshold = 0;
 SET pg_textsearch.bulk_load_threshold = 0;
 
-CREATE TABLE freepage_docs (id int, body text);
+-- A temporary table keeps the reclaim horizon session-local, so the
+-- drain assertion below cannot be held back by unrelated transactions
+-- or standby feedback (test/README.md).
+CREATE TEMP TABLE freepage_docs (id int, body text);
 INSERT INTO freepage_docs
     SELECT g, 'alpha beta' FROM generate_series(1, 40) g;
 CREATE INDEX freepage_idx ON freepage_docs USING bm25(body)
@@ -59,6 +62,12 @@ SELECT bm25_pending_free_pages('freepage_idx') AS parked_after_drain;
 INSERT INTO freepage_docs VALUES (82, 'probe');
 DELETE FROM freepage_docs WHERE id = 41;
 SELECT pg_temp.check_usable(82);
+
+-- The probe reaches an internal primitive, so it must refuse any
+-- relation that is not a bm25 index before touching storage.
+\set VERBOSITY terse
+SELECT pg_textsearch_test_free_index_page('freepage_docs'::regclass, 1);
+\set VERBOSITY default
 
 DROP TABLE freepage_docs;
 DROP EXTENSION pg_textsearch_test;

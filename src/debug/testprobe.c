@@ -21,8 +21,11 @@
 #ifdef USE_INJECTION_POINTS
 
 #include <access/relation.h>
+#include <catalog/pg_am.h>
+#include <commands/defrem.h>
 #include <fmgr.h>
 #include <miscadmin.h>
+#include <utils/lsyscache.h>
 #include <utils/rel.h>
 #include <utils/relcache.h>
 
@@ -44,6 +47,18 @@ pg_textsearch_test_free_index_page(PG_FUNCTION_ARGS)
 		elog(ERROR, "invalid test block number");
 
 	index = relation_open(index_oid, RowExclusiveLock);
+
+	/*
+	 * Stamping a page of some other relation would corrupt it, so refuse
+	 * anything that is not a BM25 index before touching storage.
+	 */
+	if (index->rd_rel->relkind != RELKIND_INDEX ||
+		index->rd_rel->relam != get_index_am_oid("bm25", false))
+	{
+		relation_close(index, RowExclusiveLock);
+		elog(ERROR, "\"%s\" is not a bm25 index", get_rel_name(index_oid));
+	}
+
 	tp_record_free_index_page(index, (BlockNumber)block);
 	relation_close(index, RowExclusiveLock);
 
