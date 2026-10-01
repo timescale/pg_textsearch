@@ -25,6 +25,10 @@
  */
 #define TP_INJECTION_SPILL_BEFORE_FINALIZE \
 	"pg-textsearch-spill-before-finalize"
+#define TP_INJECTION_FORCE_MERGE_BEFORE_TRUNCATE \
+	"pg-textsearch-force-merge-before-truncate"
+#define TP_INJECTION_TRUNCATE_AFTER_INSPECTION \
+	"pg-textsearch-truncate-after-inspection"
 #define TP_INJECTION_BEFORE_COMPACTION_PUBLISH \
 	"pg-textsearch-before-compaction-publish"
 #define TP_INJECTION_AFTER_COMPACTION_PUBLISH \
