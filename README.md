@@ -341,26 +341,13 @@ SET max_parallel_maintenance_workers = 4;
 SET maintenance_work_mem = '256MB';
 ```
 
-`maintenance_work_mem` is the total parallel worker batch budget, divided
-among the workers PostgreSQL actually launches. Workers account for batch
-allocations and serialization scratch when deciding to spill to temporary
-files; there is no fixed 64MB minimum allocation per worker. A budget too
-small for the initial worker state is rejected with an error. Partitioned
-tables build each partition separately.
+`maintenance_work_mem` sets the total batch budget shared by parallel workers.
+Lower it to spill batches to disk earlier. Leave memory headroom beyond this
+budget and `shared_buffers` for other server activity;
+`pg_textsearch.memory_limit` controls the memtable cache, not index builds.
 
-Workers allow PostgreSQL's bulk-read buffer strategy for their heap scans,
-so large one-pass scans reuse a buffer ring instead of filling shared buffers.
-
-This budget is **additional to `shared_buffers`**, not a limit on total
-PostgreSQL or container memory. Leave headroom for other backend allocations,
-concurrent operations, and the rest of the server. For example, configuring
-both `shared_buffers` and `maintenance_work_mem` to 24GB can exhaust a 32GB
-container even when the build stays within its batch budget.
-`pg_textsearch.memory_limit` controls the memtable cache, not CREATE INDEX
-worker batches. Reduce `maintenance_work_mem` to spill batches earlier;
-reducing the worker count alone does not reduce the total configured budget.
-See [build-memory benchmarking](benchmarks/README.md#build-memory) for
-measurement and constrained-memory experiments.
+Partitioned tables build each partition separately. See
+[build-memory benchmarking](benchmarks/README.md#build-memory) for details.
 
 ### Query Performance
 
