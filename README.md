@@ -652,6 +652,7 @@ encounter a conflict,
 
 Version | Highlights
 --- | ---
+[`v1.5.0`](https://github.com/timescale/pg_textsearch/releases/tag/v1.5.0) | Background compaction, Boolean and phrase queries, and faster builds and scans
 [`v1.4.0`](https://github.com/timescale/pg_textsearch/releases/tag/v1.4.0) | Faster filtered top-k queries, Chinese search, and large-corpus improvements
 [`v1.3.1`](https://github.com/timescale/pg_textsearch/releases/tag/v1.3.1) | Standby-safe page reclaim and concurrency, VACUUM, and parallel-build fixes
 [`v1.3.0`](https://github.com/timescale/pg_textsearch/releases/tag/v1.3.0) | On-disk memtable with a shared-memory read cache and stateless WAL replay

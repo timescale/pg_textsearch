@@ -64,7 +64,12 @@ In `.github/workflows/upgrade-tests.yml`, add `PREV` to the
 `old_version` matrix so future releases are tested for upgrade
 compatibility from this version.
 
-### 4. Open the PR
+### 4. Update the README version history
+
+Add `CURRENT` to the Version History table in `README.md`, linking to the
+GitHub release and summarizing its main user-facing changes.
+
+### 5. Open the PR
 
 ```sh
 git checkout -b release-CURRENT
@@ -76,7 +81,7 @@ gh pr create --draft --title "Release vCURRENT"
 CI runs the full test suite, including upgrade-tests against every
 matrix version.
 
-### 5. After PR merges
+### 6. After PR merges
 
 The `release.yml` workflow triggers on merge of any PR titled
 `Release v*`. It tags the commit, builds release artifacts for
@@ -89,7 +94,7 @@ including the `upgrade-matrix` data-integrity job
 silent upgrade data loss against the representative old-version
 matrix on PG 17/18.
 
-### 6. Follow up on Debian package publication
+### 7. Follow up on Debian package publication
 
 Once PGDG apt onboarding is complete, follow the
 [Debian package process](#debian-package-publication) below. Apt publication
