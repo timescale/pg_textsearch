@@ -161,13 +161,15 @@ test-segment-io-limits:
 test-compression:
 	@set -e; tmp_dir="$$(mktemp -d)"; \
 	trap 'rm -rf "$$tmp_dir"' EXIT; \
-	$(CC) $(CFLAGS) $(CPPFLAGS) -std=gnu11 \
-		-Isrc \
-		-isystem "$$($(PG_CONFIG) --includedir-server)" \
-		-isystem "$$($(PG_CONFIG) --includedir)" \
-		test/scripts/compression_test.c \
-		-o "$$tmp_dir/compression_test"; \
-	"$$tmp_dir/compression_test"
+	for flags in "" "-DTP_TEST_NO_AVX2"; do \
+		$(CC) $(CFLAGS) $(CPPFLAGS) $$flags -std=gnu11 \
+			-Isrc \
+			-isystem "$$($(PG_CONFIG) --includedir-server)" \
+			-isystem "$$($(PG_CONFIG) --includedir)" \
+			test/scripts/compression_test.c \
+			-o "$$tmp_dir/compression_test"; \
+		"$$tmp_dir/compression_test"; \
+	done
 
 test-mixed-update-query-benchmark:
 	@./test/scripts/mixed_update_query_benchmark_test.sh

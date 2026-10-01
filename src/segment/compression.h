@@ -71,6 +71,7 @@ tp_compress_block(TpBlockPosting *postings, uint32 count, uint8 *out_buf);
 /*
  * Decompress a block of postings.
  *
+ * Selects AVX2 at runtime on supported x86-64 builds, otherwise scalar.
  * Input: at least TP_MAX_COMPRESSED_BLOCK_SIZE accessible bytes.
  * Unaligned loads may read beyond the encoded block's logical length.
  * Output: array of TpBlockPosting (caller-allocated, size count)

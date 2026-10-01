@@ -32,6 +32,9 @@ decode_error(void)
 	abort();
 }
 
+#ifdef TP_TEST_NO_AVX2
+#define __builtin_cpu_supports(feature) 0
+#endif
 #include "../../src/segment/compression.c"
 
 static uint32
@@ -130,8 +133,8 @@ check_invalid(uint8 doc_bits, uint8 freq_bits, uint32 count)
 	expect_error = false;
 }
 
-int
-main(void)
+static void
+check_decoder(const char *name)
 {
 	uint32 cases = 0;
 
@@ -150,6 +153,25 @@ main(void)
 	check_invalid(33, 1, 1);
 	check_invalid(1, 0, 1);
 	check_invalid(1, 17, 1);
-	printf("validated %u compression cases\n", cases);
+	printf("validated %u compression cases (%s)\n", cases, name);
+}
+
+int
+main(void)
+{
+	check_block(25, 3, TP_BLOCK_SIZE, 0);
+#ifdef TP_HAVE_AVX2
+	assert(decompress_impl == (__builtin_cpu_supports("avx2")
+									   ? decompress_block_avx2
+									   : decompress_block_scalar));
+#else
+	assert(decompress_impl == decompress_block_scalar);
+#endif
+	check_decoder("runtime dispatch");
+	if (decompress_impl != decompress_block_scalar)
+	{
+		decompress_impl = decompress_block_scalar;
+		check_decoder("scalar fallback");
+	}
 	return 0;
 }

@@ -28,7 +28,7 @@ The Makefile defines these entry points:
 | `make test-local` | Install and test in a temporary cluster on port 55433 |
 | `make test-shell` | Concurrency, recovery, segment, CIC, multi-index, and reindex |
 | `make test-all` | `make test` plus `make test-shell` |
-| `make test-compression` | Standalone packed-posting decoder coverage |
+| `make test-compression` | Standalone scalar/AVX2 decoder and dispatch coverage |
 | `make test-concurrency` | Multi-backend concurrency and VACUUM/merge races |
 | `make test-memtable-stale-tail` | Corrupt-tail rejection and REINDEX repair |
 | `make test-recovery` | Crash, shutdown-spill, reclaim, and compaction recovery |
@@ -45,6 +45,10 @@ The Makefile defines these entry points:
 | `make test-injection-sql` | Behavior-specific SQL regressions requiring injection points |
 | `make test-injection-shell` | Crash and concurrency injection-point tests |
 | `make test-chinese` | Optional zhparser regression |
+
+The compression harness checks all supported widths, counts, and input
+alignments through runtime dispatch and the scalar fallback. It also rebuilds
+with the CPU probe forced to report no AVX2 support; no backend is required.
 
 `make test-shell` is the standard shell suite. Replication and stress targets
 are separate because they create additional PostgreSQL instances or run for an
