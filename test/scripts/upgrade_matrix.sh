@@ -280,7 +280,7 @@ run_boolean_completeness_upgrade() {
 
   build_install_current || { fail "current build/install failed"; return; }
   start_pg || { fail "1.4.0/boolean: NEW server failed to start"; return; }
-  runsql "ALTER EXTENSION pg_textsearch UPDATE TO '1.5.0-dev';"
+  runsql "ALTER EXTENSION pg_textsearch UPDATE TO '1.5.0';"
 
   local out err_f
   out="$(mktemp)"; err_f="$(mktemp)"
@@ -381,7 +381,7 @@ run_v8_tombstone_compaction_upgrade() {
     fail "1.4.0/v8-tombstone: NEW server failed to start"
     return
   }
-  runsql "ALTER EXTENSION pg_textsearch UPDATE TO '1.5.0-dev';"
+  runsql "ALTER EXTENSION pg_textsearch UPDATE TO '1.5.0';"
 
   local before compact_result after post out err_f
   before="$(scalar "SELECT bm25_pending_free_pages('i');")"
