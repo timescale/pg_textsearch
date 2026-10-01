@@ -12,6 +12,7 @@
 #include <miscadmin.h>
 #include <storage/bufmgr.h>
 #include <storage/indexfsm.h>
+#include <storage/shmem.h>
 #include <utils/memutils.h>
 #include <utils/timestamp.h>
 
