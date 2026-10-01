@@ -13,6 +13,7 @@
 #include <inttypes.h>
 #include <storage/buffile.h>
 #include <storage/bufmgr.h>
+#include <storage/shmem.h>
 #include <utils/memutils.h>
 
 #include "access/build_context.h"
