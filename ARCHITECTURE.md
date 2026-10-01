@@ -72,9 +72,13 @@ block numbers.
 ## Parallel Index Build
 
 Parallel build workers scan disjoint heap ranges and write current-format
-segments as flat temporary `BufFile` streams. These private worker segments
-contain only live documents; an absent alive-bitset section represents that
-all-live state. Empty-token documents still occupy the fieldnorm and CTID
+segments as flat temporary `BufFile` streams. Their TID-range scans enable
+the table AM's bulk-read strategy, allowing large heap scans to reuse a
+buffer ring rather than fill shared buffers alongside the build batches.
+Synchronized scanning remains disabled to preserve the disjoint ranges.
+These private worker segments contain only live documents; an absent
+alive-bitset section represents that all-live state. Empty-token documents
+still occupy the fieldnorm and CTID
 sections and contribute to corpus totals even when a worker segment has no
 dictionary terms.
 

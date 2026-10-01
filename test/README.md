@@ -32,7 +32,7 @@ The Makefile defines these entry points:
 | `make test-concurrency` | Multi-backend concurrency and VACUUM/merge races |
 | `make test-memtable-stale-tail` | Corrupt-tail rejection and REINDEX repair |
 | `make test-recovery` | Crash, shutdown-spill, reclaim, and compaction recovery |
-| `make test-segment` | Multi-backend segment tests |
+| `make test-segment` | Multi-backend segments and parallel-build bulk reads |
 | `make test-stress` | Long-running stress workload |
 | `make test-replication` | Basic physical replication |
 | `make test-replication-extended` | Extended physical replication and WAL audit |
@@ -49,6 +49,12 @@ The Makefile defines these entry points:
 The compression harness checks all supported widths, counts, and input
 alignments through runtime dispatch and the scalar fallback. It also rebuilds
 with the CPU probe forced to report no AVX2 support; no backend is required.
+
+`test/scripts/parallel_build_bulkread.sh` starts a private 16MB-buffer cluster
+and builds an index with two workers on a heap large enough for a bulk-read
+strategy. It checks complete, duplicate-free results and asserts worker
+buffer reuse through `pg_stat_io`, catching scans that fill shared buffers
+instead of reusing the bulk-read ring.
 
 `make test-shell` is the standard shell suite. Replication and stress targets
 are separate because they create additional PostgreSQL instances or run for an

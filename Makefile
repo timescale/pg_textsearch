@@ -255,6 +255,7 @@ test-recovery:
 test-segment:
 	@echo "Running multi-backend segment tests..."
 	@cd test/scripts && ./segment.sh
+	@cd test/scripts && ./parallel_build_bulkread.sh
 
 test-stress:
 	@echo "Running stress tests..."
