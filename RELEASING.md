@@ -89,6 +89,65 @@ including the `upgrade-matrix` data-integrity job
 silent upgrade data loss against the representative old-version
 matrix on PG 17/18.
 
+### 6. Follow up on Debian package publication
+
+Once PGDG apt onboarding is complete, follow the
+[Debian package process](#debian-package-publication) below. Apt publication
+may follow the GitHub release; it does not block the release or the next
+development-version bump.
+
+## Debian Package Publication
+
+PGDG apt publication is being established in
+[#304](https://github.com/timescale/pg_textsearch/issues/304). Our existing
+release ZIPs contain `.deb` files, but do not provide an apt repository.
+The pg_textsearch project should own upstream packaging updates, working
+with PGDG maintainers on acceptance and repository publication.
+
+### Initial onboarding
+
+Start before the 1.5.0 release, without making acceptance a release gate:
+
+1. Open a request with the
+   [PGDG apt maintainers](https://github.com/pgdg-packaging/apt.postgresql.org-issues).
+   Note that PGDG already ships pg_textsearch RPMs. Agree on the packaging
+   maintainer, repository, package names, supported targets, and submission
+   procedure; record those details here once agreed.
+2. Prepare Debian source packaging using `debhelper` and `pg_buildext`,
+   initially for PostgreSQL 17/18. Target Debian bookworm/trixie and
+   amd64/arm64, subject to agreement with PGDG. Include licensing, upstream
+   release tracking, runtime dependencies, and the required extension SQL
+   and upgrade scripts. Coordinate any package-name transition from our
+   existing `pg-textsearch-postgresql-N` packages.
+3. Exercise installed packages in clean environments, including regression
+   tests and supported upgrades. Configure temporary clusters to preload
+   `pg_textsearch` before startup. Document preload configuration and the
+   restart required after replacing the library; do not silently change
+   or restart users' clusters during package installation.
+
+Packaging can be prepared against the release candidate, but publication
+must use the final tagged source. If onboarding finishes after 1.5.0,
+package that release then; packaging alone does not require a new upstream
+patch release.
+
+### Each release after onboarding
+
+1. Update the upstream version and Debian changelog in the agreed packaging
+   repository. Adjust build rules, dependencies, supported PostgreSQL
+   versions, and file lists when the release requires it.
+2. Submit the packaging update through the agreed PGDG process, using the
+   final release source rather than our binary ZIPs.
+3. Check package build and installed-package test results, then confirm
+   apt can install the new version on the agreed targets. Track publication
+   separately from the GitHub release until it is available.
+
+CloudNativePG extension-container integration is a separate downstream
+follow-up, not a release prerequisite. Once apt packages are available,
+revisit the previous
+[container submission](https://github.com/cloudnative-pg/postgres-extensions-containers/pull/84)
+with its contributor, updating repository installation, version tracking,
+preload configuration, and container tests.
+
 ## Bumping to the Next Dev Version
 
 After a release is published, open a follow-up PR:
