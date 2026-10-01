@@ -209,7 +209,7 @@ jobs:
           export PATH=\"$HOME/$PG_INSTALL_DIR/bin:\$PATH\"
           export PGHOST=$PWD/tmp_sanitizer_test
           export PGPORT=55433
-          cd test/scripts && ./segment.sh
+          make test-segment
         "
 
         echo "Running CREATE INDEX CONCURRENTLY tests under sanitizer..."

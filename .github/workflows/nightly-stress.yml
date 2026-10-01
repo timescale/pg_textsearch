@@ -218,9 +218,9 @@ jobs:
     - name: Run segment tests
       timeout-minutes: 20
       run: |
+        set -o pipefail
         export PATH="$HOME/$PG_INSTALL_DIR/bin:$PATH"
-        cd test/scripts
-        ./segment.sh 2>&1 | tee ${{ github.workspace }}/test-results/segment.log
+        make test-segment 2>&1 | tee ${{ github.workspace }}/test-results/segment.log
 
     - name: Check for sanitizer errors
       if: always()
