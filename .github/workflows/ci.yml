@@ -143,7 +143,7 @@ jobs:
         make test-concurrency
 
         echo "Running segment tests..."
-        if (cd test/scripts && ./segment.sh); then
+        if make test-segment; then
           echo "✓ Segment tests passed"
         else
           echo "✗ Segment tests failed"
@@ -824,7 +824,7 @@ jobs:
           export PATH=\"$HOME/$PG_INSTALL_DIR/bin:\$PATH\"
           export PGHOST=$PWD/tmp_sanitizer_test
           export PGPORT=55433
-          cd test/scripts && ./segment.sh
+          make test-segment
         "
 
         echo "Running CREATE INDEX CONCURRENTLY tests under sanitizer..."
@@ -1020,7 +1020,7 @@ jobs:
         # Scripts that require an injection-point server are covered by
         # the PG17 leg of the injection-points job instead.
         (cd test/scripts && ./concurrency.sh) || true
-        (cd test/scripts && ./segment.sh) || true
+        make test-segment || true
         (cd test/scripts && ./recovery.sh) || true
         (cd test/scripts && ./standby_reclaim.sh) || true
         (cd test/scripts && ./compaction_recovery.sh) || true

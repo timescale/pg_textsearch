@@ -248,14 +248,24 @@ tp_parallel_build_worker_main(dsm_segment *seg, shm_toc *toc)
 		if (start_blk < end_blk)
 		{
 			ItemPointerData min_tid, max_tid;
+			uint32			flags = SO_TYPE_TIDRANGESCAN | SO_ALLOW_PAGEMODE |
+						   SO_ALLOW_STRAT;
 
 			ItemPointerSet(&min_tid, start_blk, FirstOffsetNumber);
 			ItemPointerSet(&max_tid, end_blk - 1, MaxOffsetNumber);
+			/*
+			 * table_beginscan_tidrange() omits SO_ALLOW_STRAT. These
+			 * one-pass build scans should reuse a bulk-read ring instead
+			 * of filling shared_buffers alongside the worker batches.
+			 * Keep synchronized scanning disabled for disjoint ranges.
+			 */
 #if PG_VERSION_NUM >= 190000
-			scan = table_beginscan_tidrange(heap, snap, &min_tid, &max_tid, 0);
+			scan = table_beginscan_common(heap, snap, 0, NULL, NULL, flags, 0);
 #else
-			scan = table_beginscan_tidrange(heap, snap, &min_tid, &max_tid);
+			scan = heap->rd_tableam
+						   ->scan_begin(heap, snap, 0, NULL, NULL, flags);
 #endif
+			heap->rd_tableam->scan_set_tidrange(scan, &min_tid, &max_tid);
 		}
 		else
 		{

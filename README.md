@@ -341,9 +341,13 @@ SET max_parallel_maintenance_workers = 4;
 SET maintenance_work_mem = '256MB';
 ```
 
-Each parallel worker receives at least a 64MB internal build budget, so size
-memory for the worker count. Partitioned tables build each partition
-separately.
+`maintenance_work_mem` sets the total batch budget shared by parallel workers.
+Lower it to spill batches to disk earlier. Leave memory headroom beyond this
+budget and `shared_buffers` for other server activity;
+`pg_textsearch.memory_limit` controls the memtable cache, not index builds.
+
+Partitioned tables build each partition separately. See
+[build-memory benchmarking](benchmarks/README.md#build-memory) for details.
 
 ### Query Performance
 

@@ -83,10 +83,18 @@ matrix version.
 
 ### 6. After PR merges
 
-The `release.yml` workflow triggers on merge of any PR titled
-`Release v*`. It tags the commit, builds release artifacts for
-PG17/PG18 on Linux/macOS (amd64/arm64), and publishes a GitHub
-release.
+Merging the PR does not create a tag or publish a release. After the
+PR merges, tag its merged commit and push the tag:
+
+```sh
+git fetch origin
+git tag -a vCURRENT <merged-release-commit> -m "Release vCURRENT"
+git push origin vCURRENT
+```
+
+The tag push triggers `release.yml` and `package-release.yml` to build
+release artifacts and upload them to a draft GitHub release. Review the
+workflow results and assets before publishing the draft.
 
 Pushing the `v*` release tag also triggers `upgrade-tests.yml`,
 including the `upgrade-matrix` data-integrity job
@@ -238,7 +246,8 @@ change in release notes.
 |----------|---------|---------|
 | `ci.yml` | PR, push to main | Build and test on PG17/18 |
 | `upgrade-tests.yml` | PR (sql/control changes), weekly | Test extension upgrades |
-| `release.yml` | PR merge with "Release v" title | Create release and artifacts |
+| `release.yml` | `v*` tag push, manual | Build artifacts and create a draft release |
+| `package-release.yml` | `v*` tag push, manual | Build and upload release packages |
 | `benchmark.yml` | Weekly, manual | Performance regression testing |
 
 ## Troubleshooting

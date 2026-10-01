@@ -175,7 +175,7 @@ if [[ -n "$command_text" ]]; then
 				echo "18.6"
 				;;
 			*"extversion"*)
-				echo "1.5.0-dev"
+				echo "1.5.0"
 				;;
 			*"count(*) FROM pgts_benchmark_"*)
 				echo "10"
