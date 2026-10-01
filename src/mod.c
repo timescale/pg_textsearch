@@ -71,7 +71,7 @@
 #include "segment/graph_snapshot.h"
 
 #if PG_VERSION_NUM >= 180000
-PG_MODULE_MAGIC_EXT(.name = "pg_textsearch", .version = "1.5.0");
+PG_MODULE_MAGIC_EXT(.name = "pg_textsearch", .version = "1.6.0-dev");
 #else
 PG_MODULE_MAGIC;
 #endif
