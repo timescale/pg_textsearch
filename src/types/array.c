@@ -29,17 +29,18 @@ tp_is_text_array_type(Oid typid)
 }
 
 /*
- * Does the index's first key yield a text-like array?
+ * Does the index's first key use a text-array operator class?
+ *
+ * Uses the opclass input type rather than the key type so domains over
+ * text[] are recognized.
  */
 bool
 tp_index_key_is_text_array(Relation index)
 {
-	TupleDesc desc = RelationGetDescr(index);
-
-	if (desc->natts < 1)
+	if (IndexRelationGetNumberOfKeyAttributes(index) < 1)
 		return false;
 
-	return tp_is_text_array_type(TupleDescAttr(desc, 0)->atttypid);
+	return tp_is_text_array_type(index->rd_opcintype[0]);
 }
 
 /*
