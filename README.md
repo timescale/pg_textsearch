@@ -233,9 +233,14 @@ CREATE INDEX ON documents USING bm25 ((lower(content)))
 -- Multi-column search
 CREATE INDEX ON articles USING bm25 ((coalesce(title, '') || ' ' || coalesce(body, '')))
     WITH (text_config='english');
+
+-- Array expression
+CREATE INDEX ON articles USING bm25 ((ARRAY[title, body]))
+    WITH (text_config='english');
 ```
 
-The expression must evaluate to `text` and use only IMMUTABLE functions.
+The expression must evaluate to a text-like type or array (`text`, `varchar`,
+`char`, or arrays thereof) and use only IMMUTABLE functions.
 Queries must repeat the same expression in the `ORDER BY` clause.
 
 ### Partial Indexes

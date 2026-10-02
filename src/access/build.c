@@ -1650,23 +1650,11 @@ tp_build(Relation heap, Relation index, IndexInfo *indexInfo)
 			 RelationGetRelationName(index));
 
 	/*
-	 * Determine if the indexed column is a text array type.
+	 * Determine if the index key yields a text array type.
 	 * If so, we flatten array elements into a single text value
-	 * before tokenization. Expression indexes (attnum == 0)
-	 * are never text arrays.
+	 * before tokenization.
 	 */
-	{
-		AttrNumber attnum = indexInfo->ii_IndexAttrNumbers[0];
-
-		if (attnum > 0)
-		{
-			Oid atttype = TupleDescAttr(RelationGetDescr(heap), attnum - 1)
-								  ->atttypid;
-			is_text_array = tp_is_text_array_type(atttype);
-		}
-		else
-			is_text_array = false;
-	}
+	is_text_array = tp_index_key_is_text_array(index);
 
 	/* Report initialization phase */
 	pgstat_progress_update_param(
@@ -2060,22 +2048,18 @@ tp_insert(
 
 	(void)checkUnique;	  /* unused */
 	(void)indexUnchanged; /* unused */
+	(void)heapRel;		  /* unused */
+	(void)indexInfo;	  /* unused */
 
 	/* Skip NULL documents */
 	if (isnull[0])
 		return true;
 
 	/* --- Phase 1: Tokenize (no lock held) --- */
-	{
-		AttrNumber attnum = indexInfo->ii_IndexAttrNumbers[0];
-		Oid		   atttype =
-				TupleDescAttr(RelationGetDescr(heapRel), attnum - 1)->atttypid;
-
-		if (tp_is_text_array_type(atttype))
-			document_text = tp_flatten_text_array(values[0]);
-		else
-			document_text = DatumGetTextPP(values[0]);
-	}
+	if (tp_index_key_is_text_array(index))
+		document_text = tp_flatten_text_array(values[0]);
+	else
+		document_text = DatumGetTextPP(values[0]);
 	{
 		char *index_name;
 		char *schema_name;
