@@ -130,7 +130,9 @@ Use temporary tables for single-session tests that require immediate VACUUM
 cleanup or page reuse. Their reclaim horizon is session-local, so unrelated
 transactions and standby feedback cannot retain dead tuples or pages. Keep
 shared-buffer, WAL, and standby-reclaim coverage in permanent-table tests
-such as `segment_reclaim_injection.sql` and `standby_reclaim.sh`.
+such as `standby_reclaim.sh`. The single-session
+`segment_reclaim_injection.sql` fixture is temporary so detaching its
+injected hold restores a horizon unaffected by other backends.
 
 ## Debugging Failures
 
