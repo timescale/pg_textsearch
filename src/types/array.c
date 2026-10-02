@@ -14,6 +14,7 @@
 #include <catalog/pg_type.h>
 #include <utils/array.h>
 #include <utils/builtins.h>
+#include <utils/rel.h>
 
 #include "types/array.h"
 
@@ -25,6 +26,20 @@ tp_is_text_array_type(Oid typid)
 {
 	return typid == TEXTARRAYOID || typid == 1015 || /* varchar[] */
 		   typid == 1014;							 /* bpchar[] */
+}
+
+/*
+ * Does the index's first key yield a text-like array?
+ */
+bool
+tp_index_key_is_text_array(Relation index)
+{
+	TupleDesc desc = RelationGetDescr(index);
+
+	if (desc->natts < 1)
+		return false;
+
+	return tp_is_text_array_type(TupleDescAttr(desc, 0)->atttypid);
 }
 
 /*
