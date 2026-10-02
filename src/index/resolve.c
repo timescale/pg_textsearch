@@ -16,6 +16,7 @@
 #include <catalog/pg_index.h>
 #include <catalog/pg_inherits.h>
 #include <catalog/pg_namespace.h>
+#include <commands/defrem.h>
 #include <miscadmin.h>
 #include <nodes/bitmapset.h>
 #include <optimizer/optimizer.h>
@@ -61,8 +62,43 @@ tp_get_qualified_index_name(Relation indexRelation)
 }
 
 /*
+ * Check whether the given OID refers to a BM25 index or a partitioned
+ * BM25 index. Rejects regular tables, views, sequences, and non-BM25
+ * indexes (such as B-tree, GIN, GiST, or BRIN) to prevent type confusion.
+ */
+bool
+tp_is_bm25_index(Oid index_oid)
+{
+	Oid		  bm25_am_oid;
+	HeapTuple classTuple;
+	bool	  result = false;
+
+	if (!OidIsValid(index_oid))
+		return false;
+
+	bm25_am_oid = get_am_oid("bm25", true);
+	if (!OidIsValid(bm25_am_oid))
+		return false;
+
+	classTuple = SearchSysCache1(RELOID, ObjectIdGetDatum(index_oid));
+	if (HeapTupleIsValid(classTuple))
+	{
+		Form_pg_class classForm = (Form_pg_class)GETSTRUCT(classTuple);
+
+		result =
+				((classForm->relkind == RELKIND_INDEX ||
+				  classForm->relkind == RELKIND_PARTITIONED_INDEX) &&
+				 classForm->relam == bm25_am_oid);
+		ReleaseSysCache(classTuple);
+	}
+
+	return result;
+}
+
+/*
  * Resolve index name to OID with schema support.
- * Returns the OID of the index, or InvalidOid if not found.
+ * Returns the index OID, or InvalidOid if no relation has that name.
+ * Errors if the name resolves to a relation that is not a BM25 index.
  * Handles both schema-qualified names (schema.index) and unqualified names.
  */
 Oid
@@ -105,6 +141,11 @@ tp_resolve_index_name_shared(const char *index_name)
 		/* No schema specified - use search path */
 		index_oid = RelnameGetRelid(index_name);
 	}
+
+	if (OidIsValid(index_oid) && !tp_is_bm25_index(index_oid))
+		ereport(ERROR,
+				(errcode(ERRCODE_WRONG_OBJECT_TYPE),
+				 errmsg("\"%s\" is not a bm25 index", index_name)));
 
 	return index_oid;
 }

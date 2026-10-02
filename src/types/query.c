@@ -355,6 +355,12 @@ tpquery_recv(PG_FUNCTION_ARGS)
 	index_oid	   = pq_getmsgint(buf, sizeof(Oid));
 	query_text_len = pq_getmsgint(buf, sizeof(int32));
 
+	if (OidIsValid(index_oid) && !tp_is_bm25_index(index_oid))
+		ereport(ERROR,
+				(errcode(ERRCODE_WRONG_OBJECT_TYPE),
+				 errmsg("bm25query index OID does not refer to a bm25 "
+						"index")));
+
 	/* Validate length to prevent unbounded memory allocation */
 	if (query_text_len < 0 || query_text_len > 1000000) /* 1MB limit */
 		ereport(ERROR,

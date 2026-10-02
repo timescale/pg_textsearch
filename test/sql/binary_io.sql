@@ -11,13 +11,21 @@ INSERT INTO binary_io_docs (content) VALUES
 CREATE INDEX binary_io_idx ON binary_io_docs USING bm25(content)
     WITH (text_config='english');
 
+-- A partitioned parent index has a different relkind from a leaf index.
+CREATE TABLE binary_io_parent (id INT, content TEXT)
+    PARTITION BY RANGE (id);
+CREATE INDEX binary_io_parent_idx ON binary_io_parent USING bm25(content)
+    WITH (text_config='english');
+
 -- Create a table with bm25query column
 CREATE TABLE query_export (id SERIAL, q bm25query);
 
 -- Insert some queries
 INSERT INTO query_export (q) VALUES
     (to_bm25query('hello world', 'binary_io_idx')),
-    (to_bm25query('database search', 'binary_io_idx'));
+    (to_bm25query('database search', 'binary_io_idx')),
+    (to_bm25query('hello')),
+    (to_bm25query('hello', 'binary_io_parent_idx'));
 
 -- Show original data before COPY
 SELECT id, q::text AS original_query FROM query_export ORDER BY id;
@@ -63,11 +71,33 @@ CREATE TABLE vector_import (id int, v bm25vector);
 -- Verify round-trip
 SELECT COUNT(*) AS vector_imported_count FROM vector_import;
 
+-- =============================================================================
+-- Test rejection of non-BM25 relation OIDs in binary bm25query input
+-- =============================================================================
+
+CREATE TABLE query_bad_oid (q bm25query);
+
+-- Craft binary bm25query referencing a B-tree index OID (binary_io_docs_pkey)
+\copy (SELECT E'\\x0201'::bytea || int4send('binary_io_docs_pkey'::regclass::oid::integer) || int4send(5) || convert_to('hello', 'UTF8')) TO '/tmp/query_btree_oid.bin' WITH (FORMAT binary)
+\set VERBOSITY terse
+\copy query_bad_oid FROM '/tmp/query_btree_oid.bin' WITH (FORMAT binary)
+\set VERBOSITY default
+
+-- Craft binary bm25query referencing a heap table OID (binary_io_docs)
+\copy (SELECT E'\\x0201'::bytea || int4send('binary_io_docs'::regclass::oid::integer) || int4send(5) || convert_to('hello', 'UTF8')) TO '/tmp/query_table_oid.bin' WITH (FORMAT binary)
+\set VERBOSITY terse
+\copy query_bad_oid FROM '/tmp/query_table_oid.bin' WITH (FORMAT binary)
+\set VERBOSITY default
+
+SELECT COUNT(*) AS bad_oid_imported_count FROM query_bad_oid;
+
 -- Clean up
-\! rm -f /tmp/query_export.bin /tmp/vector_export.bin
+\! rm -f /tmp/query_export.bin /tmp/vector_export.bin /tmp/query_btree_oid.bin /tmp/query_table_oid.bin
+DROP TABLE query_bad_oid;
 DROP TABLE query_export;
 DROP TABLE query_import;
 DROP TABLE vector_export;
 DROP TABLE vector_import;
 DROP TABLE binary_io_docs CASCADE;
+DROP TABLE binary_io_parent;
 DROP EXTENSION pg_textsearch CASCADE;
