@@ -1911,8 +1911,12 @@ tp_all_bm25_indexes(
 	Relation	class_rel;
 	SysScanDesc scan;
 	HeapTuple	tuple;
-	Oid			bm25_am_oid = get_index_am_oid("bm25", false);
+	Oid			bm25_am_oid = get_index_am_oid("bm25", true);
 	List	   *indexoids	= NIL;
+
+	/* The library may be preloaded in databases without the extension. */
+	if (!OidIsValid(bm25_am_oid))
+		return NIL;
 
 	class_rel = table_open(RelationRelationId, AccessShareLock);
 	scan = systable_beginscan(class_rel, InvalidOid, false, NULL, 0, NULL);

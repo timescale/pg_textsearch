@@ -1,0 +1,73 @@
+-- Preloaded utility hooks must work without CREATE EXTENSION in this database.
+SELECT EXISTS (SELECT FROM pg_am WHERE amname = 'bm25') AS bm25_installed;
+ bm25_installed 
+----------------
+ f
+(1 row)
+
+CREATE SCHEMA preload_test;
+CREATE TABLE preload_test.docs (id integer PRIMARY KEY, content text);
+INSERT INTO preload_test.docs VALUES (1, 'alpha'), (2, 'bravo');
+ALTER TABLE preload_test.docs CLUSTER ON docs_pkey;
+REINDEX DATABASE :"DBNAME";
+REINDEX SCHEMA preload_test;
+REINDEX TABLE preload_test.docs;
+REINDEX INDEX preload_test.docs_pkey;
+VACUUM FULL;
+VACUUM (FULL, SKIP_LOCKED);
+CLUSTER;
+-- Ownership changes use the same database-wide BM25 discovery.
+CREATE ROLE preload_owner;
+ALTER TABLE preload_test.docs OWNER TO preload_owner;
+REASSIGN OWNED BY preload_owner TO CURRENT_USER;
+DROP ROLE preload_owner;
+SELECT * FROM preload_test.docs ORDER BY id;
+ id | content 
+----+---------
+  1 | alpha
+  2 | bravo
+(2 rows)
+
+-- Creating and dropping the extension in this backend must not leave stale
+-- access-method state in the preloaded hooks.
+SET client_min_messages = warning;
+CREATE EXTENSION pg_textsearch;
+CREATE INDEX docs_bm25 ON preload_test.docs USING bm25 (content)
+    WITH (text_config = 'english');
+REINDEX DATABASE :"DBNAME";
+REINDEX SCHEMA preload_test;
+VACUUM FULL;
+CLUSTER;
+SET enable_seqscan = off;
+SELECT id FROM preload_test.docs
+ORDER BY content <@> to_bm25query('alpha', 'preload_test.docs_bm25')
+LIMIT 1;
+ id 
+----
+  1
+(1 row)
+
+RESET enable_seqscan;
+DROP INDEX preload_test.docs_bm25;
+DROP EXTENSION pg_textsearch;
+RESET client_min_messages;
+SELECT EXISTS (SELECT FROM pg_am WHERE amname = 'bm25') AS bm25_installed;
+ bm25_installed 
+----------------
+ f
+(1 row)
+
+REINDEX DATABASE :"DBNAME";
+REINDEX SCHEMA preload_test;
+VACUUM FULL;
+VACUUM (FULL, SKIP_LOCKED);
+CLUSTER;
+SELECT * FROM preload_test.docs ORDER BY id;
+ id | content 
+----+---------
+  1 | alpha
+  2 | bravo
+(2 rows)
+
+DROP TABLE preload_test.docs;
+DROP SCHEMA preload_test;

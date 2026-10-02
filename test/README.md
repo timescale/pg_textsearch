@@ -13,6 +13,10 @@ make test-all        # SQL regression plus the standard shell suite
 The extension must be built for the selected PostgreSQL installation. Shell
 targets assume it is already installed.
 
+The `preload` SQL regression checks maintenance without the extension in the
+current database, including after `CREATE EXTENSION` and `DROP EXTENSION`
+in the same session.
+
 `make test-local` runs `make install` before `initdb`, so the invoking user
 must be non-root and able to write to the selected PostgreSQL installation
 prefix.
@@ -126,7 +130,9 @@ Use temporary tables for single-session tests that require immediate VACUUM
 cleanup or page reuse. Their reclaim horizon is session-local, so unrelated
 transactions and standby feedback cannot retain dead tuples or pages. Keep
 shared-buffer, WAL, and standby-reclaim coverage in permanent-table tests
-such as `segment_reclaim_injection.sql` and `standby_reclaim.sh`.
+such as `standby_reclaim.sh`. The single-session
+`segment_reclaim_injection.sql` fixture is temporary so detaching its
+injected hold restores a horizon unaffected by other backends.
 
 ## Debugging Failures
 
