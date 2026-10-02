@@ -54,13 +54,15 @@ BASE_DIR="${BASE_DIR:-$REPO_ROOT/tmp_upgrade_matrix}"
 DATA_DIR="$BASE_DIR/pgdata"
 SOCK_DIR="$BASE_DIR/sock"
 STRICT_UNSPILLED="${STRICT_UNSPILLED:-0}"
+CURRENT_VERSION="$(sed -n "s/^default_version = '\([^']*\)'/\1/p" "$REPO_ROOT/pg_textsearch.control")"
 
 # Representative default matrix: one release per distinct on-disk
 # format combination.  0.5.0 = metapage v5 (legacy/REINDEX tier);
 # 0.5.1 = metapage v6 + segment v3; 1.0.0 = v6 + segment v4;
 # 1.2.0 = v6 + segment v5; 1.3.0 = metapage v7 (native on-disk L0);
-# 1.4.0 = metapage v8 before indexes recorded zero-lexeme documents.
-OLD_VERSIONS="${OLD_VERSIONS:-0.5.0 0.5.1 1.0.0 1.2.0 1.3.0 1.4.0}"
+# 1.4.0 = metapage v8 before indexes recorded zero-lexeme documents;
+# 1.5.0 = previous stable release.
+OLD_VERSIONS="${OLD_VERSIONS:-0.5.0 0.5.1 1.0.0 1.2.0 1.3.0 1.4.0 1.5.0}"
 if [ "$#" -gt 0 ]; then OLD_VERSIONS="$*"; fi
 
 # Cluster ops must not run as root.  When invoked as root (e.g. inside
@@ -99,7 +101,7 @@ as_pg() {
 # single value; runsql() runs quietly; run_capture() saves stderr.
 _mktemp_sql() { local f; f="$(mktemp "${TMPDIR:-/tmp}/um.XXXXXX.sql")"; printf '%s\n' "$1" >"$f"; chmod 644 "$f"; echo "$f"; }
 scalar() { local f; f="$(_mktemp_sql "$1")"; as_pg psql -h "$SOCK_DIR" -p "$TEST_PORT" -d upg -tAqf "$f" 2>/dev/null; rm -f "$f"; }
-runsql() { local f; f="$(_mktemp_sql "$1")"; as_pg psql -h "$SOCK_DIR" -p "$TEST_PORT" -d upg -q -f "$f" >/dev/null 2>&1; local rc=$?; rm -f "$f"; return $rc; }
+runsql() { local f; f="$(_mktemp_sql "$1")"; as_pg psql -h "$SOCK_DIR" -p "$TEST_PORT" -d upg -v ON_ERROR_STOP=1 -q -f "$f" >/dev/null; local rc=$?; rm -f "$f"; return $rc; }
 run_capture() { local f; f="$(_mktemp_sql "$1")"; as_pg psql -h "$SOCK_DIR" -p "$TEST_PORT" -d upg -tAqf "$f" >"$2" 2>"$3"; rm -f "$f"; }
 
 cleanup() {
@@ -205,6 +207,18 @@ run_compat_shape() { # $1=version $2=shape
   stop_pg
   build_install_current || { fail "current build/install failed"; return; }
   start_pg || { fail "$v/$st: NEW server failed to start (corruption?)"; return; }
+  runsql "ALTER EXTENSION pg_textsearch UPDATE;" || {
+    fail "$v/$st: ALTER EXTENSION UPDATE failed"
+    return
+  }
+  local installed_version loaded_version
+  installed_version="$(scalar "SELECT extversion FROM pg_extension WHERE extname = 'pg_textsearch';")"
+  loaded_version="$(scalar "SHOW pg_textsearch.library_version;")"
+  if [ "$installed_version" != "$CURRENT_VERSION" ] ||
+     [ "$loaded_version" != "$CURRENT_VERSION" ]; then
+    fail "$v/$st: expected $CURRENT_VERSION, SQL=$installed_version library=$loaded_version"
+    return
+  fi
   local mark; mark="$(log_marker)"
   runsql "INSERT INTO d(c) VALUES ('alpha beta gamma writeprobe token');"
   post="$(scalar "$RECALL_Q")"
@@ -280,7 +294,7 @@ run_boolean_completeness_upgrade() {
 
   build_install_current || { fail "current build/install failed"; return; }
   start_pg || { fail "1.4.0/boolean: NEW server failed to start"; return; }
-  runsql "ALTER EXTENSION pg_textsearch UPDATE TO '1.5.0';"
+  runsql "ALTER EXTENSION pg_textsearch UPDATE TO '1.5.1';"
 
   local out err_f
   out="$(mktemp)"; err_f="$(mktemp)"
@@ -381,7 +395,7 @@ run_v8_tombstone_compaction_upgrade() {
     fail "1.4.0/v8-tombstone: NEW server failed to start"
     return
   }
-  runsql "ALTER EXTENSION pg_textsearch UPDATE TO '1.5.0';"
+  runsql "ALTER EXTENSION pg_textsearch UPDATE TO '1.5.1';"
 
   local before compact_result after post out err_f
   before="$(scalar "SELECT bm25_pending_free_pages('i');")"

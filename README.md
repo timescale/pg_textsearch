@@ -233,9 +233,14 @@ CREATE INDEX ON documents USING bm25 ((lower(content)))
 -- Multi-column search
 CREATE INDEX ON articles USING bm25 ((coalesce(title, '') || ' ' || coalesce(body, '')))
     WITH (text_config='english');
+
+-- Array expression
+CREATE INDEX ON articles USING bm25 ((ARRAY[title, body]))
+    WITH (text_config='english');
 ```
 
-The expression must evaluate to `text` and use only IMMUTABLE functions.
+The expression must evaluate to a text-like type or array (`text`, `varchar`,
+`char`, or arrays thereof) and use only IMMUTABLE functions.
 Queries must repeat the same expression in the `ORDER BY` clause.
 
 ### Partial Indexes
@@ -636,6 +641,7 @@ encounter a conflict,
 
 Version | Highlights
 --- | ---
+[`v1.5.1`](https://github.com/timescale/pg_textsearch/releases/tag/v1.5.1) | Fix concurrent spill/merge corruption, expression indexes, and maintenance without the extension
 [`v1.5.0`](https://github.com/timescale/pg_textsearch/releases/tag/v1.5.0) | Background compaction, Boolean and phrase queries, and faster builds and scans
 [`v1.4.0`](https://github.com/timescale/pg_textsearch/releases/tag/v1.4.0) | Faster filtered top-k queries, Chinese search, and large-corpus improvements
 [`v1.3.1`](https://github.com/timescale/pg_textsearch/releases/tag/v1.3.1) | Standby-safe page reclaim and concurrency, VACUUM, and parallel-build fixes

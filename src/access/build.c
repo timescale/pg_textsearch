@@ -781,8 +781,10 @@ tp_link_l0_chain_head(Relation index, BlockNumber segment_root)
  * error can leave unreachable structural pages.  Stop at any DEAD, live,
  * unknown, or orphan page.
  *
- * Caller must hold the per-index LWLock EXCLUSIVE so no allocator can
- * claim a stamped suffix page between inspection and RelationTruncate().
+ * Caller must hold maintenance admission, the exclusive memtable writer
+ * gate, and the per-index LWLock EXCLUSIVE, in that order. Spill construction
+ * allocates without the per-index lock, so the writer gate must also cover
+ * suffix inspection through RelationTruncate().
  */
 void
 tp_truncate_dead_pages(Relation index)
@@ -809,7 +811,10 @@ tp_truncate_dead_pages(Relation index)
 	}
 
 	if (truncate_to < nblocks)
+	{
+		TP_INJECTION_POINT(TP_INJECTION_TRUNCATE_AFTER_INSPECTION);
 		RelationTruncate(index, truncate_to);
+	}
 }
 
 /*
@@ -980,6 +985,9 @@ tp_force_merge(PG_FUNCTION_ARGS)
 
 			tp_force_compact(index_state, index_rel);
 
+			TP_INJECTION_POINT(TP_INJECTION_FORCE_MERGE_BEFORE_TRUNCATE);
+			tp_acquire_memtable_write_lock(index_state, LW_EXCLUSIVE);
+			gate_locked = true;
 			tp_acquire_index_lock(index_state, LW_EXCLUSIVE);
 			tp_truncate_dead_pages(index_rel);
 		}
@@ -1642,23 +1650,11 @@ tp_build(Relation heap, Relation index, IndexInfo *indexInfo)
 			 RelationGetRelationName(index));
 
 	/*
-	 * Determine if the indexed column is a text array type.
+	 * Determine if the index key yields a text array type.
 	 * If so, we flatten array elements into a single text value
-	 * before tokenization. Expression indexes (attnum == 0)
-	 * are never text arrays.
+	 * before tokenization.
 	 */
-	{
-		AttrNumber attnum = indexInfo->ii_IndexAttrNumbers[0];
-
-		if (attnum > 0)
-		{
-			Oid atttype = TupleDescAttr(RelationGetDescr(heap), attnum - 1)
-								  ->atttypid;
-			is_text_array = tp_is_text_array_type(atttype);
-		}
-		else
-			is_text_array = false;
-	}
+	is_text_array = tp_index_key_is_text_array(index);
 
 	/* Report initialization phase */
 	pgstat_progress_update_param(
@@ -2052,22 +2048,18 @@ tp_insert(
 
 	(void)checkUnique;	  /* unused */
 	(void)indexUnchanged; /* unused */
+	(void)heapRel;		  /* unused */
+	(void)indexInfo;	  /* unused */
 
 	/* Skip NULL documents */
 	if (isnull[0])
 		return true;
 
 	/* --- Phase 1: Tokenize (no lock held) --- */
-	{
-		AttrNumber attnum = indexInfo->ii_IndexAttrNumbers[0];
-		Oid		   atttype =
-				TupleDescAttr(RelationGetDescr(heapRel), attnum - 1)->atttypid;
-
-		if (tp_is_text_array_type(atttype))
-			document_text = tp_flatten_text_array(values[0]);
-		else
-			document_text = DatumGetTextPP(values[0]);
-	}
+	if (tp_index_key_is_text_array(index))
+		document_text = tp_flatten_text_array(values[0]);
+	else
+		document_text = DatumGetTextPP(values[0]);
 	{
 		char *index_name;
 		char *schema_name;

@@ -29,7 +29,7 @@ jobs:
       fail-fast: false
       matrix:
         pg_version: [17, 18]
-        old_version: ['0.2.0', '0.3.0', '0.4.0', '0.4.1', '0.4.2', '0.5.0', '0.5.1', '0.6.0', '0.6.1', '1.0.0', '1.1.0', '1.2.0', '1.3.0', '1.3.1', '1.4.0']
+        old_version: ['0.2.0', '0.3.0', '0.4.0', '0.4.1', '0.4.2', '0.5.0', '0.5.1', '0.6.0', '0.6.1', '1.0.0', '1.1.0', '1.2.0', '1.3.0', '1.3.1', '1.4.0', '1.5.0']
 
     steps:
     - name: Checkout current code
@@ -123,8 +123,8 @@ jobs:
         # Compat tier (read-compatible with the new binary, no
         # REINDEX): metapage v6 (issue #383, v0.5.1–1.2.x) and
         # metapage v7 (issue #374, v1.3.0) both upgrade in place on
-        # the first write; v1.3.1+ already write the current v8
-        # metapage.  ALTER EXTENSION UPDATE alone is enough.
+        # the first write; v1.3.1–1.4.x write v8 and v1.5.x writes v9.
+        # ALTER EXTENSION UPDATE alone is enough.
         # Add batch 2, spill, capture baselines.  Pre-v0.5.1
         # versions have a v5 metapage which is still REINDEX-only
         # (legacy tier below).
@@ -133,7 +133,7 @@ jobs:
         # version" assertion (v6 for ≤1.2.x, v7 for 1.3.0, v8 for
         # 1.3.1+); v6/v7 then lazily upgrade to v8 on first write
         # (issue #380).
-        if [[ "${{ matrix.old_version }}" =~ ^(0\.5\.1|0\.6\.[01]|1\.[0-3]\.[0-9]+)$ ]]; then
+        if [[ "${{ matrix.old_version }}" =~ ^(0\.5\.1|0\.6\.[01]|1\.[0-5]\.[0-9]+)$ ]]; then
           psql -h /tmp -d upgrade_test << 'SQL'
           \set ON_ERROR_STOP on
 
@@ -263,7 +263,7 @@ jobs:
       run: |
         export PATH=/usr/lib/postgresql/${{ matrix.pg_version }}/bin:$PATH
 
-        if [[ "${{ matrix.old_version }}" =~ ^(0\.5\.1|0\.6\.[01]|1\.[0-3]\.[0-9]+)$ ]]; then  # read-compatible: v6 (≤1.2.x) / v7 (1.3.x), no REINDEX
+        if [[ "${{ matrix.old_version }}" =~ ^(0\.5\.1|0\.6\.[01]|1\.[0-5]\.[0-9]+)$ ]]; then
           echo "=== Testing new binary reads old segments (pre-ALTER EXTENSION) ==="
           psql -h /tmp -d upgrade_test << 'SQL'
           \set ON_ERROR_STOP on
@@ -354,7 +354,7 @@ jobs:
       run: |
         export PATH=/usr/lib/postgresql/${{ matrix.pg_version }}/bin:$PATH
 
-        if [[ "${{ matrix.old_version }}" =~ ^(0\.5\.1|0\.6\.[01]|1\.[0-3]\.[0-9]+)$ ]]; then  # read-compatible: v6 (≤1.2.x) / v7 (1.3.x), no REINDEX
+        if [[ "${{ matrix.old_version }}" =~ ^(0\.5\.1|0\.6\.[01]|1\.[0-5]\.[0-9]+)$ ]]; then
           echo "=== Compat tier: ALTER EXTENSION UPDATE (no REINDEX) ==="
           psql -h /tmp -d upgrade_test << 'SQL'
           \set ON_ERROR_STOP on
@@ -403,18 +403,19 @@ jobs:
 
         # Source metapage version for the Phase 1a "still old version"
         # assertion: v1.3.0 natively writes v7 (issue #374); v1.3.1+
-        # already write the current v8 metapage; v0.5.1–1.2.x write v6
-        # (issue #383).  v6/v7 lazily upgrade to v8 on first write; a v8
-        # source is already current and simply stays v8.
+        # through v1.4.x write v8; v1.5.x writes v9.
+        # v0.5.1–1.2.x write v6 (issue #383).
         if [[ "${{ matrix.old_version }}" == "1.3.0" ]]; then
           OLD_METAPAGE_VERSION=7
-        elif [[ "${{ matrix.old_version }}" =~ ^1\.3\.[1-9][0-9]*$ ]]; then
+        elif [[ "${{ matrix.old_version }}" =~ ^1\.5\. ]]; then
+          OLD_METAPAGE_VERSION=9
+        elif [[ "${{ matrix.old_version }}" =~ ^1\.(3\.[1-9][0-9]*|4\.[0-9]+)$ ]]; then
           OLD_METAPAGE_VERSION=8
         else
           OLD_METAPAGE_VERSION=6
         fi
 
-        if [[ "${{ matrix.old_version }}" =~ ^(0\.5\.1|0\.6\.[01]|1\.[0-3]\.[0-9]+)$ ]]; then  # read-compatible: v6 (≤1.2.x) / v7 (1.3.x), no REINDEX
+        if [[ "${{ matrix.old_version }}" =~ ^(0\.5\.1|0\.6\.[01]|1\.[0-5]\.[0-9]+)$ ]]; then
           echo "=== Compat tier: multi-phase segment validation ==="
           psql -h /tmp -d upgrade_test \
             -v expected_version="$EXPECTED_VERSION" \
@@ -901,6 +902,7 @@ jobs:
         export PG_CONFIG=/usr/lib/postgresql/${{ matrix.pg_version }}/bin/pg_config
         # Representative set: one release per distinct metapage/segment
         # on-disk format combination (v5 legacy, v6+segv3/v4/v5, v7,
-        # and v8 before zero-lexeme documents were indexed).
-        export OLD_VERSIONS="0.5.0 0.5.1 1.0.0 1.2.0 1.3.0 1.4.0"
+        # and v8 before zero-lexeme documents were indexed), plus the
+        # previous stable release.
+        export OLD_VERSIONS="0.5.0 0.5.1 1.0.0 1.2.0 1.3.0 1.4.0 1.5.0"
         bash test/scripts/upgrade_matrix.sh

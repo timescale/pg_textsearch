@@ -94,7 +94,43 @@ FROM docs_array
 ORDER BY content <@> 'postgres'
 LIMIT 1;
 
+-- Domains over text[] use the array opclass and must be flattened.
+CREATE DOMAIN text_array_domain AS text[];
+CREATE TABLE docs_domain (id int, content text_array_domain);
+INSERT INTO docs_domain VALUES (1, ARRAY['domainbuild', 'common']);
+
+CREATE INDEX docs_domain_idx ON docs_domain USING bm25 (content)
+    WITH (text_config='simple');
+
+SELECT id,
+       round((content <@>
+              to_bm25query('domainbuild', 'docs_domain_idx'))::numeric,
+             4) AS score
+FROM docs_domain
+ORDER BY content <@> to_bm25query('domainbuild', 'docs_domain_idx')
+LIMIT 5;
+
+INSERT INTO docs_domain VALUES (2, ARRAY['domaininsert', 'common']);
+SELECT id,
+       round((content <@>
+              to_bm25query('domaininsert', 'docs_domain_idx'))::numeric,
+             4) AS score
+FROM docs_domain
+ORDER BY content <@> to_bm25query('domaininsert', 'docs_domain_idx')
+LIMIT 5;
+
+UPDATE docs_domain SET content = ARRAY['domainupdate'] WHERE id = 1;
+SELECT id,
+       round((content <@>
+              to_bm25query('domainupdate', 'docs_domain_idx'))::numeric,
+             4) AS score
+FROM docs_domain
+ORDER BY content <@> to_bm25query('domainupdate', 'docs_domain_idx')
+LIMIT 5;
+
 -- Clean up
+DROP TABLE docs_domain;
+DROP DOMAIN text_array_domain;
 DROP TABLE docs_array CASCADE;
 DROP TABLE docs_scalar CASCADE;
 DROP EXTENSION pg_textsearch CASCADE;

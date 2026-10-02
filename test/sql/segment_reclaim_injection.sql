@@ -5,14 +5,15 @@
 -- the same VACUUM reclaim them immediately.  Pin the horizon with an
 -- injection point so parking is observable, then release it and confirm
 -- a later VACUUM drains the parked pages.
+-- A temporary table isolates reclaim from unrelated snapshots. Permanent
+-- table WAL and standby safety are covered by standby_reclaim.sh.
 \pset format unaligned
 SET client_min_messages = warning;
 CREATE EXTENSION pg_textsearch;
 CREATE EXTENSION injection_points;
 CREATE EXTENSION pg_textsearch_test;
 
-CREATE TABLE reclaim_hold_docs (id int, body text)
-    WITH (autovacuum_enabled = false);
+CREATE TEMP TABLE reclaim_hold_docs (id int, body text);
 INSERT INTO reclaim_hold_docs
 SELECT g, 'alpha beta gamma term' || (g % 50)
 FROM generate_series(1, 1500) g;
