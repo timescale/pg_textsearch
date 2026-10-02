@@ -248,6 +248,61 @@ ORDER BY (data->>'content') <@> 'database'
 LIMIT 3;
 
 -- ============================================================
+-- Non-NULL INSERT/UPDATE values must use the expression's type,
+-- not heap attribute zero. Run these under ASan as well.
+-- ============================================================
+
+INSERT INTO expr_lower (content) VALUES ('Insertedneedle');
+SELECT id FROM expr_lower
+ORDER BY lower(content) <@>
+         to_bm25query('insertedneedle', 'expr_lower_idx')
+LIMIT 5;
+
+UPDATE expr_lower SET content = 'Updatedneedle' WHERE id = 4;
+SELECT id FROM expr_lower
+ORDER BY lower(content) <@>
+         to_bm25query('updatedneedle', 'expr_lower_idx')
+LIMIT 5;
+
+-- Array-valued expressions need flattening in both build and insert.
+CREATE TABLE expr_array (id int, title text, body text);
+INSERT INTO expr_array VALUES (1, 'buildneedle', 'common');
+
+CREATE INDEX expr_array_idx ON expr_array
+    USING bm25 ((ARRAY[title, body]))
+    WITH (text_config='simple');
+
+SELECT id FROM expr_array
+ORDER BY ARRAY[title, body] <@>
+         to_bm25query('buildneedle', 'expr_array_idx')
+LIMIT 5;
+
+INSERT INTO expr_array VALUES (2, 'insertneedle', 'common');
+SELECT id FROM expr_array
+ORDER BY ARRAY[title, body] <@>
+         to_bm25query('insertneedle', 'expr_array_idx')
+LIMIT 5;
+
+UPDATE expr_array SET body = 'common updateneedle' WHERE id = 1;
+SELECT id FROM expr_array
+ORDER BY ARRAY[title, body] <@>
+         to_bm25query('updateneedle', 'expr_array_idx')
+LIMIT 5;
+
+-- Ignore recently-dead rows in the reported REINDEX build count.
+SET client_min_messages = warning;
+REINDEX INDEX expr_array_idx;
+RESET client_min_messages;
+SELECT array_agg(id ORDER BY id) AS rebuilt_ids FROM (
+    SELECT id FROM expr_array
+    ORDER BY ARRAY[title, body] <@>
+             to_bm25query('common', 'expr_array_idx')
+    LIMIT 5
+) hits;
+
+DROP TABLE expr_array;
+
+-- ============================================================
 -- Error cases
 -- ============================================================
 \set ON_ERROR_STOP off

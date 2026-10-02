@@ -14,6 +14,7 @@
 #include <catalog/pg_type.h>
 #include <utils/array.h>
 #include <utils/builtins.h>
+#include <utils/rel.h>
 
 #include "types/array.h"
 
@@ -25,6 +26,21 @@ tp_is_text_array_type(Oid typid)
 {
 	return typid == TEXTARRAYOID || typid == 1015 || /* varchar[] */
 		   typid == 1014;							 /* bpchar[] */
+}
+
+/*
+ * Does the index's first key use a text-array operator class?
+ *
+ * Uses the opclass input type rather than the key type so domains over
+ * text[] are recognized.
+ */
+bool
+tp_index_key_is_text_array(Relation index)
+{
+	if (IndexRelationGetNumberOfKeyAttributes(index) < 1)
+		return false;
+
+	return tp_is_text_array_type(index->rd_opcintype[0]);
 }
 
 /*

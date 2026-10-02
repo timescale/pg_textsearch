@@ -66,6 +66,27 @@ NOTICE:  Using text search configuration: english
 NOTICE:  Using index options: k1=1.20, b=0.75
 NOTICE:  parallel index build: launched 1 of 1 requested workers
 NOTICE:  BM25 index build completed: 100000 documents, avg_length=6.00
+-- Parallel workers must flatten array-valued index expressions too.
+CREATE INDEX parallel_test_array_expr_idx ON parallel_test_1worker
+    USING bm25 ((ARRAY[content, 'arrayneedle']))
+    WITH (text_config='english');
+NOTICE:  BM25 index build started for relation parallel_test_array_expr_idx
+NOTICE:  Using text search configuration: english
+NOTICE:  Using index options: k1=1.20, b=0.75
+NOTICE:  parallel index build: launched 1 of 1 requested workers
+NOTICE:  BM25 index build completed: 100000 documents, avg_length=7.00
+SELECT count(*) AS array_expression_hits FROM (
+    SELECT id FROM parallel_test_1worker
+    ORDER BY ARRAY[content, 'arrayneedle'] <@>
+             to_bm25query('arrayneedle', 'parallel_test_array_expr_idx')
+    LIMIT 5
+) hits;
+ array_expression_hits 
+-----------------------
+                     5
+(1 row)
+
+DROP INDEX parallel_test_array_expr_idx;
 --------------------------------------------------------------------------------
 -- Test 3: Two workers (common case)
 --------------------------------------------------------------------------------
