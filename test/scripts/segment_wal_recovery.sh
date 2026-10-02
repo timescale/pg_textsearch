@@ -146,7 +146,7 @@ EOF
 
 "${PGBINDIR}/createdb" -h "${DATA_DIR}" -p "${TEST_PORT}" \
     "${TEST_DB}"
-run_sql_quiet "CREATE EXTENSION pg_textsearch VERSION '1.5.0';"
+run_sql_quiet "CREATE EXTENSION pg_textsearch VERSION '1.5.1';"
 
 # -------------------------------------------------------
 # Part 1: WAL coverage check
