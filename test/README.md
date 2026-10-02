@@ -76,6 +76,11 @@ deterministic pause, so they stay useful on packaged builds.
 `nonblocking_compaction.sh` needs injection points throughout and skips
 entirely.
 
+`nonblocking_spill.sh` also races force-merge suffix truncation with spills
+in both lock-acquisition orders. It pauses between suffix inspection and
+truncation, checks writer-gate exclusion, and verifies segment page references
+and exact ranked results before and after crash recovery.
+
 CI builds PostgreSQL 17, 18, and 19 with injection points enabled and caches
 the installed prefixes. The sanitizer builds use the same configure option.
 

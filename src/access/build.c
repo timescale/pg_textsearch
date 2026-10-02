@@ -781,8 +781,10 @@ tp_link_l0_chain_head(Relation index, BlockNumber segment_root)
  * error can leave unreachable structural pages.  Stop at any DEAD, live,
  * unknown, or orphan page.
  *
- * Caller must hold the per-index LWLock EXCLUSIVE so no allocator can
- * claim a stamped suffix page between inspection and RelationTruncate().
+ * Caller must hold maintenance admission, the exclusive memtable writer
+ * gate, and the per-index LWLock EXCLUSIVE, in that order. Spill construction
+ * allocates without the per-index lock, so the writer gate must also cover
+ * suffix inspection through RelationTruncate().
  */
 void
 tp_truncate_dead_pages(Relation index)
@@ -809,7 +811,10 @@ tp_truncate_dead_pages(Relation index)
 	}
 
 	if (truncate_to < nblocks)
+	{
+		TP_INJECTION_POINT(TP_INJECTION_TRUNCATE_AFTER_INSPECTION);
 		RelationTruncate(index, truncate_to);
+	}
 }
 
 /*
@@ -980,6 +985,9 @@ tp_force_merge(PG_FUNCTION_ARGS)
 
 			tp_force_compact(index_state, index_rel);
 
+			TP_INJECTION_POINT(TP_INJECTION_FORCE_MERGE_BEFORE_TRUNCATE);
+			tp_acquire_memtable_write_lock(index_state, LW_EXCLUSIVE);
+			gate_locked = true;
 			tp_acquire_index_lock(index_state, LW_EXCLUSIVE);
 			tp_truncate_dead_pages(index_rel);
 		}
