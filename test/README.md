@@ -13,6 +13,10 @@ make test-all        # SQL regression plus the standard shell suite
 The extension must be built for the selected PostgreSQL installation. Shell
 targets assume it is already installed.
 
+The `preload` SQL regression checks maintenance without the extension in the
+current database, including after `CREATE EXTENSION` and `DROP EXTENSION`
+in the same session.
+
 `make test-local` runs `make install` before `initdb`, so the invoking user
 must be non-root and able to write to the selected PostgreSQL installation
 prefix.
