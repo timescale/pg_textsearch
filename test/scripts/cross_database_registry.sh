@@ -420,7 +420,7 @@ EOF
 
     run_createdb "${SEED_DB}"
     run_sql_quiet "${SEED_DB}" "
-        CREATE EXTENSION pg_textsearch VERSION '1.5.0';
+        CREATE EXTENSION pg_textsearch VERSION '1.6.0-dev';
         CREATE TABLE docs (id bigserial PRIMARY KEY, body text NOT NULL);
         CREATE INDEX docs_idx ON docs USING bm25 (body)
             WITH (text_config = 'english');
