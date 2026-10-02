@@ -540,6 +540,11 @@ reclaim completed: the page is detached from every owning structure and any
 required standby conflict WAL was inserted before it entered the FSM. A DEAD
 memtable page, a valid structural page, an unknown page, or an unreachable
 orphan stops truncation even when no current graph edge references it.
+Truncation retains maintenance admission and takes the exclusive memtable
+writer gate before the exclusive per-index lock, holding both from suffix
+inspection through `RelationTruncate()`. The writer gate excludes spill
+construction, which allocates pages without the per-index lock; maintenance
+admission excludes compaction and VACUUM allocation.
 
 If VACUUM is admitted first, compaction waits and later builds from the updated
 alive bits. If compaction is admitted first, VACUUM waits and then discovers

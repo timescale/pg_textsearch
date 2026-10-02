@@ -17,6 +17,8 @@ LOGFILE="${DATA_DIR}/postgres.log"
 CLIENT_DIR="${DATA_DIR}/clients"
 POINT_SPILL_BEFORE_FINALIZE='pg-textsearch-spill-before-finalize'
 POINT_TOMBSTONE_AFTER_UNLINK='pg-textsearch-tombstone-after-unlink'
+POINT_BEFORE_TRUNCATE='pg-textsearch-force-merge-before-truncate'
+POINT_AFTER_INSPECTION='pg-textsearch-truncate-after-inspection'
 
 fail() {
     echo "ERROR: $*" >&2
@@ -96,6 +98,7 @@ wait_for_wait_event() {
     local backend=$1
     local wait_event=$2
     local deadline=$((SECONDS + 10))
+    local actual
 
     while ((SECONDS < deadline)); do
         if [ "$(sql -c "
@@ -106,7 +109,10 @@ wait_for_wait_event() {
         fi
         sleep 0.05
     done
-    fail "backend ${backend} did not wait on ${wait_event}"
+    actual=$(sql -c "
+        SELECT wait_event_type || ':' || wait_event
+        FROM pg_stat_activity WHERE pid = ${backend};")
+    fail "backend ${backend} did not wait on ${wait_event} (got ${actual})"
 }
 
 wait_for_exit() {
@@ -446,5 +452,157 @@ for phase in freeze publish; do
     ")" = "{1,0,0,0,0,0,0,0}" ] ||
         fail "shutdown ${phase} did not publish its uncontended spill"
 done
+
+# Removing the truncator's writer gate must fail both lock-order checks.
+# VACUUM leaves a large recyclable suffix behind a small surviving segment.
+for ordering in spill_first truncate_first; do
+    sql -c "
+        CREATE TABLE ${ordering}_docs (id integer PRIMARY KEY, body text);
+        INSERT INTO ${ordering}_docs
+        SELECT gs, 'truncateterm original ' || gs
+        FROM generate_series(1, 500) gs;
+        CREATE INDEX ${ordering}_idx ON ${ordering}_docs USING bm25(body)
+            WITH (text_config = 'english', compaction = 'manual');
+        INSERT INTO ${ordering}_docs
+        SELECT gs, 'discardterm ' || md5(gs::text)
+        FROM generate_series(1001, 11000) gs;
+        SELECT bm25_spill_index('${ordering}_idx');
+        DELETE FROM ${ordering}_docs WHERE id > 1000;" >/dev/null
+    sql -c "VACUUM ${ordering}_docs;" >/dev/null
+    sql -c "SELECT txid_current();" >/dev/null
+    sql -c "SELECT txid_current();" >/dev/null
+    sql -c "VACUUM ${ordering}_docs;" >/dev/null
+    [ "$(sql -c "
+        SELECT bm25_pending_free_pages('${ordering}_idx');")" = "0" ] ||
+        fail "${ordering}: fixture still has parked pages"
+
+    PGAPPNAME=truncate-merge sql -c "
+        SET statement_timeout = '60s';
+        SELECT injection_points_set_local();
+        SELECT injection_points_attach('${POINT_BEFORE_TRUNCATE}', 'wait');
+        SELECT injection_points_attach('${POINT_AFTER_INSPECTION}', 'wait');
+        SELECT bm25_force_merge('${ordering}_idx');" \
+        >"${CLIENT_DIR}/${ordering}_merge.log" 2>&1 &
+    merge_client=$!
+    merge_backend=$(backend_pid truncate-merge)
+    wait_for_wait_event "${merge_backend}" "${POINT_BEFORE_TRUNCATE}"
+
+    # The force-merge's initial spill is already over. Add a fresh chain
+    # without letting a session-exit spill consume it.
+    sql -c "
+        INSERT INTO ${ordering}_docs
+        SELECT gs, 'truncateterm pending ' || gs
+        FROM generate_series(501, 1000) gs;
+        CREATE TABLE ${ordering}_expected AS
+        SELECT id, body <@> to_bm25query(
+            'truncateterm', '${ordering}_idx') AS score
+        FROM ${ordering}_docs
+        ORDER BY body <@> to_bm25query('truncateterm', '${ordering}_idx')
+        LIMIT 1000;" >/dev/null
+    bytes_before=$(sql -c "
+        SELECT pg_relation_size('${ordering}_idx');")
+
+    if [ "${ordering}" = truncate_first ]; then
+        sql -c "SELECT injection_points_wakeup(
+            '${POINT_BEFORE_TRUNCATE}');" >/dev/null
+        wait_for_wait_event "${merge_backend}" "${POINT_AFTER_INSPECTION}"
+    fi
+
+    PGAPPNAME=truncate-spill sql -c "
+        SET statement_timeout = '60s';
+        SELECT injection_points_set_local();
+        SELECT injection_points_attach(
+            '${POINT_SPILL_BEFORE_FINALIZE}', 'wait');
+        SELECT bm25_spill_index('${ordering}_idx');" \
+        >"${CLIENT_DIR}/${ordering}_spill.log" 2>&1 &
+    spill_client=$!
+    spill_backend=$(backend_pid truncate-spill)
+
+    if [ "${ordering}" = spill_first ]; then
+        wait_for_injection "${spill_backend}"
+        # Construction has released the index lock, but not the writer
+        # gate. Truncation must wait for that in-flight allocation owner.
+        sql -c "SELECT injection_points_wakeup(
+            '${POINT_BEFORE_TRUNCATE}');" >/dev/null
+        wait_for_wait_event "${merge_backend}" tapir_memtable_write_lock
+        sql -c "SELECT injection_points_wakeup(
+            '${POINT_SPILL_BEFORE_FINALIZE}');" >/dev/null
+        wait_for_exit "${spill_client}" 10 "spill before truncation"
+        wait_for_wait_event "${merge_backend}" "${POINT_AFTER_INSPECTION}"
+        sql -c "SELECT injection_points_wakeup(
+            '${POINT_AFTER_INSPECTION}');" >/dev/null
+        wait_for_exit "${merge_client}" 10 "merge after spill"
+    else
+        # An inspected suffix is still in the FSM. No spill may start
+        # allocating it before RelationTruncate completes.
+        wait_for_wait_event "${spill_backend}" tapir_memtable_write_lock
+        sql -c "SELECT injection_points_wakeup(
+            '${POINT_AFTER_INSPECTION}');" >/dev/null
+        wait_for_exit "${merge_client}" 10 "merge before spill"
+        wait_for_injection "${spill_backend}"
+        sql -c "SELECT injection_points_wakeup(
+            '${POINT_SPILL_BEFORE_FINALIZE}');" >/dev/null
+        wait_for_exit "${spill_client}" 10 "spill after truncation"
+    fi
+
+    bytes_after=$(sql -c "
+        SELECT pg_relation_size('${ordering}_idx');")
+    [ "${bytes_after}" -lt "${bytes_before}" ] ||
+        fail "${ordering}: fixture did not exercise suffix truncation"
+done
+
+# Read every segment page map (including root/page-index references), then
+# compare every ranked ID and score with the pre-spill chain result.
+check_truncated_indexes() {
+    local ordering
+
+    for ordering in spill_first truncate_first; do
+        sql -c "
+            SET enable_seqscan = off;
+            DO \$\$
+            DECLARE
+                summary text := bm25_summarize_index('${ordering}_idx');
+            BEGIN
+                IF summary !~ 'docs_persisted: 1000'
+                   OR (SELECT COALESCE(sum(n_records), 0)
+                       FROM bm25_memtable_chain('${ordering}_idx')) <> 0
+                THEN
+                    RAISE EXCEPTION 'invalid post-truncate graph: %', summary;
+                END IF;
+                IF EXISTS (
+                    WITH actual AS (
+                        SELECT id, body <@> to_bm25query(
+                            'truncateterm', '${ordering}_idx') AS score
+                        FROM ${ordering}_docs
+                        ORDER BY body <@> to_bm25query(
+                            'truncateterm', '${ordering}_idx')
+                        LIMIT 1000
+                    )
+                    (SELECT * FROM actual
+                     EXCEPT ALL SELECT * FROM ${ordering}_expected)
+                    UNION ALL
+                    (SELECT * FROM ${ordering}_expected
+                     EXCEPT ALL SELECT * FROM actual)
+                ) THEN
+                    RAISE EXCEPTION 'truncation changed ranked results';
+                END IF;
+                IF (SELECT count(*) FROM ${ordering}_expected) <> 1000 THEN
+                    RAISE EXCEPTION 'incomplete pre-spill query result';
+                END IF;
+            END
+            \$\$;" >/dev/null || fail "${ordering}: graph/result check failed"
+    done
+}
+
+check_truncated_indexes
+# Spill is a physical change in a read-only SQL transaction. Force a later
+# commit record to flush its WAL before testing recovery of the new graph.
+sql -c "
+    UPDATE truncate_first_expected SET score = score WHERE id = 1;" \
+    >/dev/null
+pg_ctl stop -D "${DATA_DIR}" -m immediate -w >/dev/null
+pg_ctl start -D "${DATA_DIR}" -l "${LOGFILE}" -w >/dev/null ||
+    fail "PostgreSQL recovery startup failed"
+check_truncated_indexes
 
 echo "nonblocking spill test passed"
