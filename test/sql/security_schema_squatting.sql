@@ -78,9 +78,25 @@ SELECT id FROM security_renamed.squat_docs
 ORDER BY content OPERATOR(security_renamed.<@>) 'target'::text LIMIT 1;
 RESET search_path;
 RESET enable_seqscan;
-DROP TABLE security_renamed.squat_docs;
+DROP INDEX security_renamed.squat_text_idx;
+DROP INDEX security_renamed.squat_array_idx;
 SET client_min_messages = warning;
 DROP SCHEMA security_evil CASCADE;
+DROP EXTENSION pg_textsearch;
+
+-- Warm the absent-extension cache, then recreate with new object OIDs.
+-- This must also work on PG17 releases without an extension syscache.
+SELECT 1 AS without_extension;
+CREATE EXTENSION pg_textsearch SCHEMA security_renamed;
+SET search_path = security_renamed, public;
+CREATE INDEX squat_text_idx ON squat_docs USING bm25(content)
+    WITH (text_config='english');
+SET enable_seqscan = off;
+SELECT id FROM squat_docs ORDER BY content <@> 'target'::text LIMIT 1;
+SELECT id FROM squat_docs ORDER BY content <@> 'target'::bm25query LIMIT 1;
+RESET enable_seqscan;
+RESET search_path;
+DROP TABLE security_renamed.squat_docs;
 DROP EXTENSION pg_textsearch;
 DROP SCHEMA security_renamed;
 RESET client_min_messages;

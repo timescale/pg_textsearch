@@ -1,5 +1,7 @@
 -- A non-owner can request DEBUG1 messages, but not pre-RLS CTIDs/scores.
 \pset format unaligned
+-- Keep DEBUG1 assertions independent of the server's statement logging.
+SET log_statement = none;
 CREATE EXTENSION pg_textsearch;
 CREATE ROLE debug_rls_reader;
 CREATE TABLE debug_rls (id integer, content text);
@@ -39,4 +41,5 @@ RESET pg_textsearch.log_scores;
 DROP TABLE debug_rls;
 DROP ROLE debug_rls_reader;
 DROP EXTENSION pg_textsearch;
+RESET log_statement;
 \pset format aligned

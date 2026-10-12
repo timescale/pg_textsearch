@@ -226,8 +226,16 @@ get_bm25_oids(BM25OidCache *cache)
 				TYPEOID, bm25_cache_invalidation_callback, (Datum)0);
 		CacheRegisterSyscacheCallback(
 				OPEROID, bm25_cache_invalidation_callback, (Datum)0);
+		/*
+		 * Older PG17 releases have no extension syscache.  Their AM/type/
+		 * operator invalidations also cover extension create/drop; this
+		 * extension is not relocatable.  The PG17 backpatch defines
+		 * EXTENSIONOID as a macro, whereas PG18+ uses an enum member.
+		 */
+#if defined(EXTENSIONOID) || PG_VERSION_NUM >= 180000
 		CacheRegisterSyscacheCallback(
 				EXTENSIONOID, bm25_cache_invalidation_callback, (Datum)0);
+#endif
 		invalidation_registered = true;
 	}
 
