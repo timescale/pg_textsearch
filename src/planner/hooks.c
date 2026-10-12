@@ -24,6 +24,7 @@
 #include <catalog/pg_type.h>
 #include <catalog/pg_type_d.h>
 #include <commands/defrem.h>
+#include <commands/extension.h>
 #include <nodes/makefuncs.h>
 #include <nodes/nodeFuncs.h>
 #include <nodes/plannodes.h>
@@ -85,7 +86,7 @@ static bool			invalidation_registered = false;
 
 /* pg_textsearch schema OID cache for qualified lookups (Issue #3).
  * Prevents search-path-based type/operator squatting. */
-static Oid pg_textsearch_schema_oid = InvalidOid;
+static Oid	pg_textsearch_schema_oid	  = InvalidOid;
 static bool pg_textsearch_schema_resolved = false;
 
 /*
@@ -130,7 +131,7 @@ bm25_cache_invalidation_callback(
 		int cacheid		 pg_attribute_unused(),
 		uint32 hashvalue pg_attribute_unused())
 {
-	oid_cache_state = CACHE_UNKNOWN;
+	oid_cache_state				  = CACHE_UNKNOWN;
 	pg_textsearch_schema_resolved = false; /* Also invalidate schema cache */
 }
 
@@ -154,7 +155,7 @@ resolve_pg_textsearch_schema_oid(void)
 		schema_oid = get_extension_schema(extension_oid);
 	}
 
-	pg_textsearch_schema_oid = schema_oid;
+	pg_textsearch_schema_oid	  = schema_oid;
 	pg_textsearch_schema_resolved = true;
 	return schema_oid;
 }
@@ -192,9 +193,11 @@ lookup_bm25_oids_internal(BM25OidCache *cache)
 		return false;
 
 	/* Look up bm25query type using qualified schema OID (not search_path) */
-	cache->tpquery_type_oid =
-			GetSysCacheOid2(TYPENAMENSP, Anum_pg_type_oid,
-							CStringGetDatum("bm25query"), ObjectIdGetDatum(schema_oid));
+	cache->tpquery_type_oid = GetSysCacheOid2(
+			TYPENAMENSP,
+			Anum_pg_type_oid,
+			CStringGetDatum("bm25query"),
+			ObjectIdGetDatum(schema_oid));
 	if (!OidIsValid(cache->tpquery_type_oid))
 		return false;
 

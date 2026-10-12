@@ -179,9 +179,10 @@ tp_rescan_process_orderby(
 			int64  hint_k;
 			double hint_selectivity;
 
-			/* Security check: reject NULL ORDER BY clause (Issue #1).
-			 * A NULL query in ORDER BY cannot be scored; skip this scan. */
-			if (SK_ISNULL(orderby))
+			/*
+			 * Reject a NULL query before dereferencing the scan-key argument.
+			 */
+			if (orderby->sk_flags & SK_ISNULL)
 			{
 				ereport(ERROR,
 						(errmsg("NULL ORDER BY clause with BM25 operator")));
