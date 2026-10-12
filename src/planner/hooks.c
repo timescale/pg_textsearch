@@ -83,6 +83,11 @@ static CacheState	oid_cache_state = CACHE_UNKNOWN;
 static BM25OidCache cached_oids;
 static bool			invalidation_registered = false;
 
+/* pg_textsearch schema OID cache for qualified lookups (Issue #3).
+ * Prevents search-path-based type/operator squatting. */
+static Oid pg_textsearch_schema_oid = InvalidOid;
+static bool pg_textsearch_schema_resolved = false;
+
 /*
  * Structure to track explicit index requirements for a relation/column.
  * Used during planning to force the planner to use the specified index.
@@ -126,17 +131,47 @@ bm25_cache_invalidation_callback(
 		uint32 hashvalue pg_attribute_unused())
 {
 	oid_cache_state = CACHE_UNKNOWN;
+	pg_textsearch_schema_resolved = false; /* Also invalidate schema cache */
+}
+
+/* Resolve the pg_textsearch extension schema OID (Issue #3).
+ * This is used for qualified type/operator lookups to prevent search-path
+ * squatting. Returns InvalidOid if the extension is not installed. */
+static Oid
+resolve_pg_textsearch_schema_oid(void)
+{
+	Oid extension_oid;
+	Oid schema_oid = InvalidOid;
+
+	if (pg_textsearch_schema_resolved)
+		return pg_textsearch_schema_oid;
+
+	/* Find the pg_textsearch extension */
+	extension_oid = get_extension_oid("pg_textsearch", true);
+	if (OidIsValid(extension_oid))
+	{
+		/* Get the schema OID from the extension's definition */
+		schema_oid = get_extension_schema(extension_oid);
+	}
+
+	pg_textsearch_schema_oid = schema_oid;
+	pg_textsearch_schema_resolved = true;
+	return schema_oid;
 }
 
 /*
  * Look up OIDs for BM25 extension objects (uncached).
  * Returns false if extension is not installed.
+ *
+ * Security fix (Issue #3): Use qualified lookups for bm25query type and
+ * <@> operators to prevent search-path-based type/operator squatting.
  */
 static bool
 lookup_bm25_oids_internal(BM25OidCache *cache)
 {
 	HeapTuple tuple;
 	List	 *opname;
+	Oid		  schema_oid;
 
 	memset(cache, 0, sizeof(BM25OidCache));
 
@@ -151,12 +186,20 @@ lookup_bm25_oids_internal(BM25OidCache *cache)
 	if (!OidIsValid(cache->bm25_am_oid))
 		return false;
 
-	/* Look up bm25query type using the search path */
-	cache->tpquery_type_oid = TypenameGetTypid("bm25query");
+	/* Resolve pg_textsearch schema OID for qualified lookups */
+	schema_oid = resolve_pg_textsearch_schema_oid();
+	if (!OidIsValid(schema_oid))
+		return false;
+
+	/* Look up bm25query type using qualified schema OID (not search_path) */
+	cache->tpquery_type_oid =
+			GetSysCacheOid2(TYPENAMENSP, Anum_pg_type_oid,
+							CStringGetDatum("bm25query"), ObjectIdGetDatum(schema_oid));
 	if (!OidIsValid(cache->tpquery_type_oid))
 		return false;
 
-	/* Look up the <@> operator for (text, bm25query) */
+	/* Look up the <@> operator for (text, bm25query) with qualified schema.
+	 * Use OpernameGetOprid with a qualified name to avoid search_path. */
 	opname = list_make1(makeString("<@>"));
 	cache->text_tpquery_operator_oid =
 			OpernameGetOprid(opname, TEXTOID, cache->tpquery_type_oid);
