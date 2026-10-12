@@ -17,9 +17,11 @@
 #include <catalog/indexing.h>
 #include <catalog/namespace.h>
 #include <catalog/pg_am.h>
+#include <catalog/pg_extension.h>
 #include <catalog/pg_index.h>
 #include <catalog/pg_inherits.h>
 #include <catalog/pg_opclass.h>
+#include <catalog/pg_operator.h>
 #include <catalog/pg_proc.h>
 #include <catalog/pg_type.h>
 #include <catalog/pg_type_d.h>
@@ -71,7 +73,8 @@ typedef struct BM25OidCache
 
 /*
  * Backend-local cache to avoid repeated syscache lookups.
- * Cache is invalidated when pg_am changes (extension install/drop).
+ * Cache is invalidated when the extension or its AM, type, or operators
+ * change.
  */
 typedef enum
 {
@@ -83,11 +86,6 @@ typedef enum
 static CacheState	oid_cache_state = CACHE_UNKNOWN;
 static BM25OidCache cached_oids;
 static bool			invalidation_registered = false;
-
-/* pg_textsearch schema OID cache for qualified lookups (Issue #3).
- * Prevents search-path-based type/operator squatting. */
-static Oid	pg_textsearch_schema_oid	  = InvalidOid;
-static bool pg_textsearch_schema_resolved = false;
 
 /*
  * Structure to track explicit index requirements for a relation/column.
@@ -123,7 +121,7 @@ typedef struct ResolveIndexContext
 } ResolveIndexContext;
 
 /*
- * Syscache invalidation callback - reset cache when pg_am or pg_type changes.
+ * Syscache invalidation callback for the catalogs used by the OID lookup.
  */
 static void
 bm25_cache_invalidation_callback(
@@ -131,47 +129,21 @@ bm25_cache_invalidation_callback(
 		int cacheid		 pg_attribute_unused(),
 		uint32 hashvalue pg_attribute_unused())
 {
-	oid_cache_state				  = CACHE_UNKNOWN;
-	pg_textsearch_schema_resolved = false; /* Also invalidate schema cache */
-}
-
-/* Resolve the pg_textsearch extension schema OID (Issue #3).
- * This is used for qualified type/operator lookups to prevent search-path
- * squatting. Returns InvalidOid if the extension is not installed. */
-static Oid
-resolve_pg_textsearch_schema_oid(void)
-{
-	Oid extension_oid;
-	Oid schema_oid = InvalidOid;
-
-	if (pg_textsearch_schema_resolved)
-		return pg_textsearch_schema_oid;
-
-	/* Find the pg_textsearch extension */
-	extension_oid = get_extension_oid("pg_textsearch", true);
-	if (OidIsValid(extension_oid))
-	{
-		/* Get the schema OID from the extension's definition */
-		schema_oid = get_extension_schema(extension_oid);
-	}
-
-	pg_textsearch_schema_oid	  = schema_oid;
-	pg_textsearch_schema_resolved = true;
-	return schema_oid;
+	oid_cache_state = CACHE_UNKNOWN;
 }
 
 /*
  * Look up OIDs for BM25 extension objects (uncached).
  * Returns false if extension is not installed.
  *
- * Security fix (Issue #3): Use qualified lookups for bm25query type and
+ * Use qualified lookups for bm25query type and
  * <@> operators to prevent search-path-based type/operator squatting.
  */
 static bool
 lookup_bm25_oids_internal(BM25OidCache *cache)
 {
 	HeapTuple tuple;
-	List	 *opname;
+	Oid		  extension_oid;
 	Oid		  schema_oid;
 
 	memset(cache, 0, sizeof(BM25OidCache));
@@ -188,7 +160,10 @@ lookup_bm25_oids_internal(BM25OidCache *cache)
 		return false;
 
 	/* Resolve pg_textsearch schema OID for qualified lookups */
-	schema_oid = resolve_pg_textsearch_schema_oid();
+	extension_oid = get_extension_oid("pg_textsearch", true);
+	if (!OidIsValid(extension_oid))
+		return false;
+	schema_oid = get_extension_schema(extension_oid);
 	if (!OidIsValid(schema_oid))
 		return false;
 
@@ -201,29 +176,36 @@ lookup_bm25_oids_internal(BM25OidCache *cache)
 	if (!OidIsValid(cache->tpquery_type_oid))
 		return false;
 
-	/* Look up the <@> operator for (text, bm25query) with qualified schema.
-	 * Use OpernameGetOprid with a qualified name to avoid search_path. */
-	opname = list_make1(makeString("<@>"));
-	cache->text_tpquery_operator_oid =
-			OpernameGetOprid(opname, TEXTOID, cache->tpquery_type_oid);
-	list_free(opname);
-
-	/* Look up the <@> operator for (text, text) */
-	opname						  = list_make1(makeString("<@>"));
-	cache->text_text_operator_oid = OpernameGetOprid(opname, TEXTOID, TEXTOID);
-	list_free(opname);
-
-	/* Look up the <@> operator for (text[], bm25query) */
-	opname = list_make1(makeString("<@>"));
-	cache->textarray_tpquery_operator_oid =
-			OpernameGetOprid(opname, TEXTARRAYOID, cache->tpquery_type_oid);
-	list_free(opname);
-
-	/* Look up the <@> operator for (text[], text) */
-	opname = list_make1(makeString("<@>"));
-	cache->textarray_text_operator_oid =
-			OpernameGetOprid(opname, TEXTARRAYOID, TEXTOID);
-	list_free(opname);
+	/* Resolve all four signatures in the extension namespace, never
+	 * search_path. */
+	cache->text_tpquery_operator_oid = GetSysCacheOid4(
+			OPERNAMENSP,
+			Anum_pg_operator_oid,
+			CStringGetDatum("<@>"),
+			ObjectIdGetDatum(TEXTOID),
+			ObjectIdGetDatum(cache->tpquery_type_oid),
+			ObjectIdGetDatum(schema_oid));
+	cache->text_text_operator_oid = GetSysCacheOid4(
+			OPERNAMENSP,
+			Anum_pg_operator_oid,
+			CStringGetDatum("<@>"),
+			ObjectIdGetDatum(TEXTOID),
+			ObjectIdGetDatum(TEXTOID),
+			ObjectIdGetDatum(schema_oid));
+	cache->textarray_tpquery_operator_oid = GetSysCacheOid4(
+			OPERNAMENSP,
+			Anum_pg_operator_oid,
+			CStringGetDatum("<@>"),
+			ObjectIdGetDatum(TEXTARRAYOID),
+			ObjectIdGetDatum(cache->tpquery_type_oid),
+			ObjectIdGetDatum(schema_oid));
+	cache->textarray_text_operator_oid = GetSysCacheOid4(
+			OPERNAMENSP,
+			Anum_pg_operator_oid,
+			CStringGetDatum("<@>"),
+			ObjectIdGetDatum(TEXTARRAYOID),
+			ObjectIdGetDatum(TEXTOID),
+			ObjectIdGetDatum(schema_oid));
 
 	return true;
 }
@@ -242,6 +224,10 @@ get_bm25_oids(BM25OidCache *cache)
 				AMOID, bm25_cache_invalidation_callback, (Datum)0);
 		CacheRegisterSyscacheCallback(
 				TYPEOID, bm25_cache_invalidation_callback, (Datum)0);
+		CacheRegisterSyscacheCallback(
+				OPEROID, bm25_cache_invalidation_callback, (Datum)0);
+		CacheRegisterSyscacheCallback(
+				EXTENSIONOID, bm25_cache_invalidation_callback, (Datum)0);
 		invalidation_registered = true;
 	}
 

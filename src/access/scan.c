@@ -679,9 +679,10 @@ tp_gettuple(IndexScanDesc scan, ScanDirection dir)
 		scan->xs_orderbyvals[0]	 = Float8GetDatum((float8)bm25_score);
 		scan->xs_orderbynulls[0] = false;
 
-		/* Security: only log BM25 scores if explicitly enabled via
-		 * tp_log_scores flag (Issue #2). Prevents CTID/score leakage
-		 * before RLS filtering when log_min_messages is set low. */
+		/*
+		 * These results have not passed heap visibility or RLS checks.
+		 * Require the superuser-only opt-in even at DEBUG message levels.
+		 */
 		if (tp_log_scores)
 		{
 			elog(NOTICE,

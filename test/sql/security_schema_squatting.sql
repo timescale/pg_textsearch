@@ -1,51 +1,87 @@
--- Test for Issue #3: Search-path-sensitive type/operator lookup squatting
--- Ensures that bm25query type and <@> operators are resolved from pg_textsearch
--- schema, not from an attacker-controlled schema earlier in search_path
+-- The extension need not be installed in public or first in search_path.
+\pset format unaligned
+CREATE SCHEMA security_real;
+CREATE EXTENSION pg_textsearch SCHEMA security_real;
+SET search_path = security_real, public;
+CREATE TABLE squat_docs (id integer, content text, tags text[]);
+INSERT INTO squat_docs VALUES
+    (1, 'target', ARRAY['target']),
+    (2, 'other', ARRAY['other']);
+CREATE INDEX squat_text_idx ON squat_docs USING bm25(content)
+    WITH (text_config='english');
+CREATE INDEX squat_array_idx ON squat_docs USING bm25(tags)
+    WITH (text_config='english');
+SET enable_seqscan = off;
 
--- Create test table
-CREATE TABLE test_schema_squatting (id INT, content TEXT);
-INSERT INTO test_schema_squatting VALUES
-	(1, 'PostgreSQL full text search'),
-	(2, 'BM25 ranking algorithm'),
-	(3, 'information retrieval');
+CREATE SCHEMA security_evil;
+CREATE TYPE security_evil.bm25query AS (dummy integer);
+CREATE FUNCTION security_evil.score(text, text) RETURNS float8
+    LANGUAGE plpgsql AS $$ BEGIN RETURN 42; END $$;
+CREATE FUNCTION security_evil.score(text, security_real.bm25query) RETURNS float8
+    LANGUAGE plpgsql AS $$ BEGIN RETURN 43; END $$;
+CREATE FUNCTION security_evil.score(text[], text) RETURNS float8
+    LANGUAGE plpgsql AS $$ BEGIN RETURN 44; END $$;
+CREATE FUNCTION security_evil.score(text[], security_real.bm25query) RETURNS float8
+    LANGUAGE plpgsql AS $$ BEGIN RETURN 45; END $$;
+CREATE OPERATOR security_evil.<@> (
+    LEFTARG = text, RIGHTARG = text, FUNCTION = security_evil.score);
+CREATE OPERATOR security_evil.<@> (
+    LEFTARG = text, RIGHTARG = security_real.bm25query,
+    FUNCTION = security_evil.score);
+CREATE OPERATOR security_evil.<@> (
+    LEFTARG = text[], RIGHTARG = text, FUNCTION = security_evil.score);
+CREATE OPERATOR security_evil.<@> (
+    LEFTARG = text[], RIGHTARG = security_real.bm25query,
+    FUNCTION = security_evil.score);
+SET search_path = security_evil, security_real, public;
+-- Invalidate even an already-warm OID cache under the hostile search_path.
+CREATE TYPE security_evil.cache_reset AS (dummy integer);
 
--- Create BM25 index
-CREATE INDEX idx_schema_squatting_bm25 ON test_schema_squatting
-	USING bm25 (content) WITH (key='id');
+-- Real operators must still be recognized/re-written for all four signatures.
+EXPLAIN (COSTS OFF)
+SELECT id FROM squat_docs
+ORDER BY content OPERATOR(security_real.<@>) 'target'::text LIMIT 1;
+SELECT id FROM squat_docs
+ORDER BY content OPERATOR(security_real.<@>) 'target'::text LIMIT 1;
+EXPLAIN (COSTS OFF)
+SELECT id FROM squat_docs
+ORDER BY content OPERATOR(security_real.<@>) 'target'::security_real.bm25query LIMIT 1;
+SELECT id FROM squat_docs
+ORDER BY content OPERATOR(security_real.<@>) 'target'::security_real.bm25query LIMIT 1;
+EXPLAIN (COSTS OFF)
+SELECT id FROM squat_docs
+ORDER BY tags OPERATOR(security_real.<@>) 'target'::text LIMIT 1;
+SELECT id FROM squat_docs
+ORDER BY tags OPERATOR(security_real.<@>) 'target'::text LIMIT 1;
+EXPLAIN (COSTS OFF)
+SELECT id FROM squat_docs
+ORDER BY tags OPERATOR(security_real.<@>) 'target'::security_real.bm25query LIMIT 1;
+SELECT id FROM squat_docs
+ORDER BY tags OPERATOR(security_real.<@>) 'target'::security_real.bm25query LIMIT 1;
 
--- Test 1: Normal query (baseline)
-SELECT id, content FROM test_schema_squatting
-	WHERE content <@> 'PostgreSQL'::bm25query
-	ORDER BY content <@> 'PostgreSQL'::bm25query
-	LIMIT 2;
+-- Parser-selected shadow operators are legitimate user operators, not BM25.
+-- Constant left operands must not trigger the extension's column-only check.
+SELECT 'x' <@> 'target'::text AS shadow_text,
+       'x' <@> 'target'::security_real.bm25query AS shadow_query,
+       ARRAY['x'] <@> 'target'::text AS shadow_array_text,
+       ARRAY['x'] <@> 'target'::security_real.bm25query AS shadow_array_query;
+SELECT content OPERATOR(security_evil.<@>) 'target'::text AS shadow_text,
+       content OPERATOR(security_evil.<@>) 'target'::security_real.bm25query AS shadow_query,
+       tags OPERATOR(security_evil.<@>) 'target'::text AS shadow_array_text,
+       tags OPERATOR(security_evil.<@>) 'target'::security_real.bm25query AS shadow_array_query
+FROM squat_docs ORDER BY id;
 
--- Test 2: Create an evil schema with shadow types and operators
-CREATE SCHEMA evil;
-
--- Attempt to create shadow type (should fail if pg_textsearch schema is pinned)
--- OR succeed but be ignored because type resolution is qualified
-CREATE TYPE evil.bm25query AS (dummy INT);
-
--- Prepend evil schema to search_path to try to shadow the real bm25query
-SET search_path TO evil, public, pg_textsearch;
-
--- Test 3: Query should still use the correct bm25query from pg_textsearch
--- (not from evil schema), because the planner uses qualified lookups
-SELECT id, content FROM test_schema_squatting
-	WHERE content <@> 'PostgreSQL'::bm25query
-	ORDER BY content <@> 'PostgreSQL'::bm25query
-	LIMIT 2;
-
--- Reset search_path
+-- Namespace renames must not leave stale schema names in the OID cache.
+ALTER SCHEMA security_real RENAME TO security_renamed;
+SET search_path = security_evil, security_renamed, public;
+SELECT id FROM security_renamed.squat_docs
+ORDER BY content OPERATOR(security_renamed.<@>) 'target'::text LIMIT 1;
 RESET search_path;
-
--- Test 4: Verify the query still works with normal search_path
-SELECT id, content FROM test_schema_squatting
-	WHERE content <@> 'ranking'::bm25query
-	ORDER BY content <@> 'ranking'::bm25query
-	LIMIT 2;
-
--- Clean up
-DROP INDEX idx_schema_squatting_bm25;
-DROP TABLE test_schema_squatting;
-DROP SCHEMA evil CASCADE;
+RESET enable_seqscan;
+DROP TABLE security_renamed.squat_docs;
+SET client_min_messages = warning;
+DROP SCHEMA security_evil CASCADE;
+DROP EXTENSION pg_textsearch;
+DROP SCHEMA security_renamed;
+RESET client_min_messages;
+\pset format aligned

@@ -1,0 +1,133 @@
+-- The extension need not be installed in public or first in search_path.
+\pset format unaligned
+CREATE SCHEMA security_real;
+CREATE EXTENSION pg_textsearch SCHEMA security_real;
+SET search_path = security_real, public;
+CREATE TABLE squat_docs (id integer, content text, tags text[]);
+INSERT INTO squat_docs VALUES
+    (1, 'target', ARRAY['target']),
+    (2, 'other', ARRAY['other']);
+CREATE INDEX squat_text_idx ON squat_docs USING bm25(content)
+    WITH (text_config='english');
+NOTICE:  BM25 index build started for relation squat_text_idx
+NOTICE:  Using text search configuration: english
+NOTICE:  Using index options: k1=1.20, b=0.75
+NOTICE:  BM25 index build completed: 2 documents, avg_length=0.50
+CREATE INDEX squat_array_idx ON squat_docs USING bm25(tags)
+    WITH (text_config='english');
+NOTICE:  BM25 index build started for relation squat_array_idx
+NOTICE:  Using text search configuration: english
+NOTICE:  Using index options: k1=1.20, b=0.75
+NOTICE:  BM25 index build completed: 2 documents, avg_length=0.50
+SET enable_seqscan = off;
+CREATE SCHEMA security_evil;
+CREATE TYPE security_evil.bm25query AS (dummy integer);
+CREATE FUNCTION security_evil.score(text, text) RETURNS float8
+    LANGUAGE plpgsql AS $$ BEGIN RETURN 42; END $$;
+CREATE FUNCTION security_evil.score(text, security_real.bm25query) RETURNS float8
+    LANGUAGE plpgsql AS $$ BEGIN RETURN 43; END $$;
+CREATE FUNCTION security_evil.score(text[], text) RETURNS float8
+    LANGUAGE plpgsql AS $$ BEGIN RETURN 44; END $$;
+CREATE FUNCTION security_evil.score(text[], security_real.bm25query) RETURNS float8
+    LANGUAGE plpgsql AS $$ BEGIN RETURN 45; END $$;
+CREATE OPERATOR security_evil.<@> (
+    LEFTARG = text, RIGHTARG = text, FUNCTION = security_evil.score);
+CREATE OPERATOR security_evil.<@> (
+    LEFTARG = text, RIGHTARG = security_real.bm25query,
+    FUNCTION = security_evil.score);
+CREATE OPERATOR security_evil.<@> (
+    LEFTARG = text[], RIGHTARG = text, FUNCTION = security_evil.score);
+CREATE OPERATOR security_evil.<@> (
+    LEFTARG = text[], RIGHTARG = security_real.bm25query,
+    FUNCTION = security_evil.score);
+SET search_path = security_evil, security_real, public;
+-- Invalidate even an already-warm OID cache under the hostile search_path.
+CREATE TYPE security_evil.cache_reset AS (dummy integer);
+-- Real operators must still be recognized/re-written for all four signatures.
+EXPLAIN (COSTS OFF)
+SELECT id FROM squat_docs
+ORDER BY content OPERATOR(security_real.<@>) 'target'::text LIMIT 1;
+QUERY PLAN
+Limit
+  ->  Index Scan using squat_text_idx on squat_docs
+        Order By: (content OPERATOR(security_real.<@>) 'squat_text_idx:target'::security_real.bm25query)
+(3 rows)
+SELECT id FROM squat_docs
+ORDER BY content OPERATOR(security_real.<@>) 'target'::text LIMIT 1;
+id
+1
+(1 row)
+EXPLAIN (COSTS OFF)
+SELECT id FROM squat_docs
+ORDER BY content OPERATOR(security_real.<@>) 'target'::security_real.bm25query LIMIT 1;
+QUERY PLAN
+Limit
+  ->  Index Scan using squat_text_idx on squat_docs
+        Order By: (content OPERATOR(security_real.<@>) 'squat_text_idx:target'::security_real.bm25query)
+(3 rows)
+SELECT id FROM squat_docs
+ORDER BY content OPERATOR(security_real.<@>) 'target'::security_real.bm25query LIMIT 1;
+id
+1
+(1 row)
+EXPLAIN (COSTS OFF)
+SELECT id FROM squat_docs
+ORDER BY tags OPERATOR(security_real.<@>) 'target'::text LIMIT 1;
+QUERY PLAN
+Limit
+  ->  Index Scan using squat_array_idx on squat_docs
+        Order By: (tags OPERATOR(security_real.<@>) 'squat_array_idx:target'::security_real.bm25query)
+(3 rows)
+SELECT id FROM squat_docs
+ORDER BY tags OPERATOR(security_real.<@>) 'target'::text LIMIT 1;
+id
+1
+(1 row)
+EXPLAIN (COSTS OFF)
+SELECT id FROM squat_docs
+ORDER BY tags OPERATOR(security_real.<@>) 'target'::security_real.bm25query LIMIT 1;
+QUERY PLAN
+Limit
+  ->  Index Scan using squat_array_idx on squat_docs
+        Order By: (tags OPERATOR(security_real.<@>) 'squat_array_idx:target'::security_real.bm25query)
+(3 rows)
+SELECT id FROM squat_docs
+ORDER BY tags OPERATOR(security_real.<@>) 'target'::security_real.bm25query LIMIT 1;
+id
+1
+(1 row)
+-- Parser-selected shadow operators are legitimate user operators, not BM25.
+-- Constant left operands must not trigger the extension's column-only check.
+SELECT 'x' <@> 'target'::text AS shadow_text,
+       'x' <@> 'target'::security_real.bm25query AS shadow_query,
+       ARRAY['x'] <@> 'target'::text AS shadow_array_text,
+       ARRAY['x'] <@> 'target'::security_real.bm25query AS shadow_array_query;
+shadow_text|shadow_query|shadow_array_text|shadow_array_query
+42|43|44|45
+(1 row)
+SELECT content OPERATOR(security_evil.<@>) 'target'::text AS shadow_text,
+       content OPERATOR(security_evil.<@>) 'target'::security_real.bm25query AS shadow_query,
+       tags OPERATOR(security_evil.<@>) 'target'::text AS shadow_array_text,
+       tags OPERATOR(security_evil.<@>) 'target'::security_real.bm25query AS shadow_array_query
+FROM squat_docs ORDER BY id;
+shadow_text|shadow_query|shadow_array_text|shadow_array_query
+42|43|44|45
+42|43|44|45
+(2 rows)
+-- Namespace renames must not leave stale schema names in the OID cache.
+ALTER SCHEMA security_real RENAME TO security_renamed;
+SET search_path = security_evil, security_renamed, public;
+SELECT id FROM security_renamed.squat_docs
+ORDER BY content OPERATOR(security_renamed.<@>) 'target'::text LIMIT 1;
+id
+1
+(1 row)
+RESET search_path;
+RESET enable_seqscan;
+DROP TABLE security_renamed.squat_docs;
+SET client_min_messages = warning;
+DROP SCHEMA security_evil CASCADE;
+DROP EXTENSION pg_textsearch;
+DROP SCHEMA security_renamed;
+RESET client_min_messages;
+\pset format aligned
