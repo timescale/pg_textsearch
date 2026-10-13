@@ -63,6 +63,11 @@ restart the server:
 shared_preload_libraries = 'pg_textsearch'  # add to existing list if needed
 ```
 
+## Upgrading
+
+For upgrade steps to v1.5.1 and index rebuild guidance, see
+[UPGRADING.md](UPGRADING.md).
+
 Enable the extension in each database:
 
 ```sql
