@@ -358,6 +358,49 @@ FROM (
 (1 row)
 
 DROP TABLE rescan_ties;
+-- NULL parameters must reach the AM, not be folded to a constant sort key.
+\pset format unaligned
+SET plan_cache_mode = force_generic_plan;
+PREPARE rescan_null_query(bm25query) AS
+    SELECT id FROM rescan_test ORDER BY content <@> $1 LIMIT 1;
+EXPLAIN (COSTS OFF) EXECUTE rescan_null_query(NULL);
+QUERY PLAN
+Limit
+  ->  Index Scan using rescan_idx on rescan_test
+        Order By: (content <@> $1)
+(3 rows)
+EXECUTE rescan_null_query(NULL);
+ERROR:  NULL ORDER BY clause with BM25 operator
+-- The backend remains usable after rejecting the NULL scan key.
+EXECUTE rescan_null_query('techniques');
+id
+51
+(1 row)
+DEALLOCATE rescan_null_query;
+-- Reuse the same documents to exercise the text[] operator's scan keys.
+CREATE INDEX rescan_array_idx ON rescan_test USING bm25 ((ARRAY[content]))
+    WITH (text_config='english');
+NOTICE:  BM25 index build started for relation rescan_array_idx
+NOTICE:  Using text search configuration: english
+NOTICE:  Using index options: k1=1.20, b=0.75
+NOTICE:  BM25 index build completed: 52 documents, avg_length=6.90
+PREPARE rescan_null_array(bm25query) AS
+    SELECT id FROM rescan_test ORDER BY ARRAY[content] <@> $1 LIMIT 1;
+EXPLAIN (COSTS OFF) EXECUTE rescan_null_array(NULL);
+QUERY PLAN
+Limit
+  ->  Index Scan using rescan_array_idx on rescan_test
+        Order By: (ARRAY[content] <@> $1)
+(3 rows)
+EXECUTE rescan_null_array(NULL);
+ERROR:  NULL ORDER BY clause with BM25 operator
+EXECUTE rescan_null_array('techniques');
+id
+51
+(1 row)
+DEALLOCATE rescan_null_array;
+RESET plan_cache_mode;
+\pset format aligned
 DROP TABLE rescan_test CASCADE;
 DROP TABLE rescan_large CASCADE;
 DROP EXTENSION pg_textsearch CASCADE;

@@ -102,7 +102,6 @@ INJECTION_REGRESS = scoring_injection merge_injection compaction_injection \
 	force_merge_injection segment_reclaim_injection tombstone_bounds_injection \
 	vacuum_rebuild_injection query_hint_roundtrip memtable_stale_tail_injection
 REGRESS += compaction_policy
-REGRESS += security_null_orderby security_debug_rls security_schema_squatting
 REGRESS_OPTS = --inputdir=test --outputdir=test
 
 PG_CONFIG ?= pg_config

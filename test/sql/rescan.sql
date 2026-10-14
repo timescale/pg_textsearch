@@ -309,6 +309,29 @@ FROM (
 ) s;
 DROP TABLE rescan_ties;
 
+-- NULL parameters must reach the AM, not be folded to a constant sort key.
+\pset format unaligned
+SET plan_cache_mode = force_generic_plan;
+PREPARE rescan_null_query(bm25query) AS
+    SELECT id FROM rescan_test ORDER BY content <@> $1 LIMIT 1;
+EXPLAIN (COSTS OFF) EXECUTE rescan_null_query(NULL);
+EXECUTE rescan_null_query(NULL);
+-- The backend remains usable after rejecting the NULL scan key.
+EXECUTE rescan_null_query('techniques');
+DEALLOCATE rescan_null_query;
+
+-- Reuse the same documents to exercise the text[] operator's scan keys.
+CREATE INDEX rescan_array_idx ON rescan_test USING bm25 ((ARRAY[content]))
+    WITH (text_config='english');
+PREPARE rescan_null_array(bm25query) AS
+    SELECT id FROM rescan_test ORDER BY ARRAY[content] <@> $1 LIMIT 1;
+EXPLAIN (COSTS OFF) EXECUTE rescan_null_array(NULL);
+EXECUTE rescan_null_array(NULL);
+EXECUTE rescan_null_array('techniques');
+DEALLOCATE rescan_null_array;
+RESET plan_cache_mode;
+\pset format aligned
+
 DROP TABLE rescan_test CASCADE;
 DROP TABLE rescan_large CASCADE;
 DROP EXTENSION pg_textsearch CASCADE;
