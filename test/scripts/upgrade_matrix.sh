@@ -61,8 +61,8 @@ CURRENT_VERSION="$(sed -n "s/^default_version = '\([^']*\)'/\1/p" "$REPO_ROOT/pg
 # 0.5.1 = metapage v6 + segment v3; 1.0.0 = v6 + segment v4;
 # 1.2.0 = v6 + segment v5; 1.3.0 = metapage v7 (native on-disk L0);
 # 1.4.0 = metapage v8 before indexes recorded zero-lexeme documents;
-# 1.5.0 = previous stable release.
-OLD_VERSIONS="${OLD_VERSIONS:-0.5.0 0.5.1 1.0.0 1.2.0 1.3.0 1.4.0 1.5.0}"
+# 1.5.0 = metapage v9; 1.5.1 = previous stable release.
+OLD_VERSIONS="${OLD_VERSIONS:-0.5.0 0.5.1 1.0.0 1.2.0 1.3.0 1.4.0 1.5.0 1.5.1}"
 if [ "$#" -gt 0 ]; then OLD_VERSIONS="$*"; fi
 
 # Cluster ops must not run as root.  When invoked as root (e.g. inside
@@ -294,7 +294,7 @@ run_boolean_completeness_upgrade() {
 
   build_install_current || { fail "current build/install failed"; return; }
   start_pg || { fail "1.4.0/boolean: NEW server failed to start"; return; }
-  runsql "ALTER EXTENSION pg_textsearch UPDATE TO '1.5.1';"
+  runsql "ALTER EXTENSION pg_textsearch UPDATE TO '$CURRENT_VERSION';"
 
   local out err_f
   out="$(mktemp)"; err_f="$(mktemp)"
@@ -395,7 +395,7 @@ run_v8_tombstone_compaction_upgrade() {
     fail "1.4.0/v8-tombstone: NEW server failed to start"
     return
   }
-  runsql "ALTER EXTENSION pg_textsearch UPDATE TO '1.5.1';"
+  runsql "ALTER EXTENSION pg_textsearch UPDATE TO '$CURRENT_VERSION';"
 
   local before compact_result after post out err_f
   before="$(scalar "SELECT bm25_pending_free_pages('i');")"
