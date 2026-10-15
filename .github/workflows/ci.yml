@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [ main ]
+    branches: [ main, 'release/*' ]
     paths:
       - 'src/**'
       - 'test/**'
@@ -15,7 +15,7 @@ on:
       - '.github/scripts/build-postgres-sanitizer.sh'
       - 'scripts/msvc-build.ps1'
   pull_request:
-    branches: [ main ]
+    branches: [ main, 'release/*' ]
     paths:
       - 'src/**'
       - 'test/**'
