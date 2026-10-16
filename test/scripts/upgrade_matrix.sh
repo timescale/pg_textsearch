@@ -60,7 +60,8 @@ STRICT_UNSPILLED="${STRICT_UNSPILLED:-0}"
 # 0.5.1 = metapage v6 + segment v3; 1.0.0 = v6 + segment v4;
 # 1.2.0 = v6 + segment v5; 1.3.0 = metapage v7 (native on-disk L0);
 # 1.4.0 = metapage v8 before indexes recorded zero-lexeme documents.
-OLD_VERSIONS="${OLD_VERSIONS:-0.5.0 0.5.1 1.0.0 1.2.0 1.3.0 1.4.0}"
+# 1.5.0/1.5.1 exercise the maintenance-release upgrade chain.
+OLD_VERSIONS="${OLD_VERSIONS:-0.5.0 0.5.1 1.0.0 1.2.0 1.3.0 1.4.0 1.5.0 1.5.1}"
 if [ "$#" -gt 0 ]; then OLD_VERSIONS="$*"; fi
 
 # Cluster ops must not run as root.  When invoked as root (e.g. inside
