@@ -148,7 +148,25 @@ CREATE INDEX schema_text_idx ON schema_docs USING bm25(content)
 CREATE INDEX schema_array_idx ON schema_docs USING bm25(tags)
     WITH (text_config='english');
 
+-- Score stubs must resolve even with the extension absent from search_path.
+SET search_path = public;
+SELECT id FROM bm25_real.schema_docs
+ORDER BY content OPERATOR(bm25_real.<@>) 'target'::text LIMIT 1;
+SELECT id FROM bm25_real.schema_docs
+ORDER BY content OPERATOR(bm25_real.<@>)
+    bm25_real.to_bm25query('target', 'bm25_real.schema_text_idx') LIMIT 1;
+SELECT id FROM bm25_real.schema_docs
+ORDER BY tags OPERATOR(bm25_real.<@>) 'target'::text LIMIT 1;
+SELECT id FROM bm25_real.schema_docs
+ORDER BY tags OPERATOR(bm25_real.<@>)
+    bm25_real.to_bm25query('target', 'bm25_real.schema_array_idx') LIMIT 1;
+
 CREATE SCHEMA bm25_shadow;
+CREATE FUNCTION bm25_shadow.bm25_get_current_score() RETURNS float8
+    LANGUAGE plpgsql VOLATILE AS $$
+    BEGIN
+        RAISE EXCEPTION 'shadow score function must not execute';
+    END $$;
 CREATE TYPE bm25_shadow.bm25query AS (dummy integer);
 CREATE FUNCTION bm25_shadow.score(text, text) RETURNS float8
     LANGUAGE plpgsql AS $$ BEGIN RETURN 42; END $$;
@@ -169,6 +187,9 @@ CREATE OPERATOR bm25_shadow.<@> (
     LEFTARG = text[], RIGHTARG = bm25_real.bm25query,
     FUNCTION = bm25_shadow.score);
 SET search_path = bm25_shadow, bm25_real, public;
+-- Exercise the warm cache before a type change invalidates it.
+SELECT id FROM schema_docs
+ORDER BY content OPERATOR(bm25_real.<@>) 'target'::text LIMIT 1;
 -- Invalidate even an already-warm OID cache under the hostile search_path.
 CREATE TYPE bm25_shadow.cache_reset AS (dummy integer);
 
@@ -215,6 +236,9 @@ ALTER SCHEMA bm25_real RENAME TO bm25_renamed;
 SET search_path = bm25_shadow, bm25_renamed, public;
 SELECT id FROM bm25_renamed.schema_docs
 ORDER BY content OPERATOR(bm25_renamed.<@>) 'target'::text LIMIT 1;
+SET search_path = public;
+SELECT id FROM bm25_renamed.schema_docs
+ORDER BY tags OPERATOR(bm25_renamed.<@>) 'target'::text LIMIT 1;
 RESET search_path;
 RESET enable_seqscan;
 DROP INDEX bm25_renamed.schema_text_idx;

@@ -64,6 +64,7 @@ static set_rel_pathlist_hook_type	prev_set_rel_pathlist_hook	 = NULL;
 typedef struct BM25OidCache
 {
 	Oid bm25_am_oid;
+	Oid extension_schema_oid;
 	Oid tpquery_type_oid;
 	Oid text_tpquery_operator_oid;
 	Oid text_text_operator_oid;
@@ -166,6 +167,7 @@ lookup_bm25_oids_internal(BM25OidCache *cache)
 	schema_oid = get_extension_schema(extension_oid);
 	if (!OidIsValid(schema_oid))
 		return false;
+	cache->extension_schema_oid = schema_oid;
 
 	/* Look up bm25query type using qualified schema OID (not search_path) */
 	cache->tpquery_type_oid = GetSysCacheOid2(
@@ -229,10 +231,11 @@ get_bm25_oids(BM25OidCache *cache)
 		/*
 		 * Older PG17 releases have no extension syscache.  Their AM/type/
 		 * operator invalidations also cover extension create/drop; this
-		 * extension is not relocatable.  The PG17 backpatch defines
-		 * EXTENSIONOID as a macro, whereas PG18+ uses an enum member.
+		 * extension is not relocatable.  Do not use the PG17 backpatch:
+		 * binaries built with newer headers may run on older minors
+		 * where its cache ID does not exist.
 		 */
-#if defined(EXTENSIONOID) || PG_VERSION_NUM >= 180000
+#if PG_VERSION_NUM >= 180000
 		CacheRegisterSyscacheCallback(
 				EXTENSIONOID, bm25_cache_invalidation_callback, (Datum)0);
 #endif
@@ -1080,14 +1083,19 @@ is_bm25_score_opexpr(Node *node, BM25OidCache *oids)
  * Create a FuncExpr calling bm25_get_current_score().
  */
 static FuncExpr *
-make_stub_funcexpr(void)
+make_stub_funcexpr(Oid schema_oid)
 {
 	FuncExpr *funcexpr;
 	Oid		  funcoid;
 
-	/* Look up bm25_get_current_score function */
+	/* Resolve the current schema name so namespace renames remain safe. */
 	funcoid = LookupFuncName(
-			list_make1(makeString("bm25_get_current_score")), 0, NULL, false);
+			list_make2(
+					makeString(get_namespace_name(schema_oid)),
+					makeString("bm25_get_current_score")),
+			0,
+			NULL,
+			false);
 	if (!OidIsValid(funcoid))
 		return NULL;
 
@@ -1137,7 +1145,7 @@ replace_scores_in_targetlist(List *targetlist, BM25OidCache *oids)
 		if (is_bm25_score_opexpr((Node *)tle->expr, oids) &&
 			equal(tle->expr, orderby_expr))
 		{
-			FuncExpr *stub = make_stub_funcexpr();
+			FuncExpr *stub = make_stub_funcexpr(oids->extension_schema_oid);
 
 			if (stub != NULL)
 				tle->expr = (Expr *)stub;
