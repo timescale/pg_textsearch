@@ -11,9 +11,9 @@ TEST_DB=compaction_recovery_test
 PRIMARY_DIR="${SCRIPT_DIR}/../tmp_compaction_recovery_primary"
 STANDBY_DIR="${SCRIPT_DIR}/../tmp_compaction_recovery_standby"
 
-# Avoid Unix-socket path limits in deeply nested worktrees.
-REPL_HOST=127.0.0.1
-REPL_SOCKET_DIR=
+# Private /tmp sockets avoid both long workspace paths and TCP port
+# collisions with ephemeral client connections on CI runners (#566).
+REPL_SOCKET_ONLY=1
 
 # shellcheck source=replication_lib.sh
 source "${SCRIPT_DIR}/replication_lib.sh"

@@ -128,7 +128,7 @@ install-test-injection:
 test-injection-sql:
 	@$(pg_regress_installcheck) $(REGRESS_OPTS) $(INJECTION_REGRESS)
 
-test-injection-shell:
+test-injection-shell: test-replication-transport
 	@cd test/scripts && ./inline_compaction_locking.sh injection
 	@cd test/scripts && ./crash_safety_spill.sh
 	@cd test/scripts && ./nonblocking_compaction.sh
@@ -142,8 +142,9 @@ install-test-injection test-injection-sql test-injection-shell:
 endif
 
 # SQL regression tests
-test: test-segment-io-limits test-compression \
-	test-mixed-update-query-benchmark test-filtered-seed-benchmark \
+test: test-replication-transport test-segment-io-limits \
+	test-compression test-mixed-update-query-benchmark \
+	test-filtered-seed-benchmark \
 	test-build-memory-benchmark
 	@echo "Running SQL regression tests..."
 	@$(pg_regress_installcheck) $(REGRESS_OPTS) $(REGRESS)
@@ -181,15 +182,20 @@ test-filtered-seed-benchmark:
 test-build-memory-benchmark:
 	@python3 test/scripts/build_memory_benchmark_test.py
 
+# No server required: shared replication transport and cleanup contract.
+test-replication-transport:
+	@bash test/scripts/replication_transport_test.sh
+
 test-durable:
 	@echo "Running managed pg_durable compaction tests..."
 	@cd test/scripts && ./durable_compaction.sh
 
-installcheck: test-segment-io-limits test-compression \
-	test-mixed-update-query-benchmark test-filtered-seed-benchmark \
-	test-build-memory-benchmark
-test-local: test-segment-io-limits test-compression \
-	test-mixed-update-query-benchmark test-filtered-seed-benchmark \
+installcheck: test-replication-transport test-segment-io-limits \
+	test-compression test-mixed-update-query-benchmark \
+	test-filtered-seed-benchmark test-build-memory-benchmark
+test-local: test-replication-transport test-segment-io-limits \
+	test-compression test-mixed-update-query-benchmark \
+	test-filtered-seed-benchmark \
 	test-build-memory-benchmark
 
 # Custom local test target with dedicated PostgreSQL instance
@@ -513,6 +519,7 @@ help:
 	test test-segment-io-limits test-compression \
 	test-mixed-update-query-benchmark \
 	test-filtered-seed-benchmark test-build-memory-benchmark \
+	test-replication-transport \
 	test-durable \
 	test-injection-sql test-injection-shell install-test-injection \
 	clean-test-dirs installcheck test-rls-locking test-concurrency \
