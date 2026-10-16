@@ -11,6 +11,7 @@ on:
       - 'pg_textsearch.control'
       - '.clang-format'
       - '.github/workflows/ci.yml'
+      - '.github/scripts/ci-needs-code-checks.sh'
       - '.github/scripts/build-postgres-injection.sh'
       - '.github/scripts/build-postgres-sanitizer.sh'
       - 'scripts/msvc-build.ps1'
@@ -48,25 +49,9 @@ jobs:
             exit 0
           fi
 
-          # Disable rename detection so moving code out of a watched path
-          # still counts. NUL delimiters handle arbitrary file names.
-          # Run diff separately so a failure cannot become a false skip.
-          git diff --no-renames --name-only -z \
-            "$BASE_SHA...$HEAD_SHA" > "$RUNNER_TEMP/ci-changed-files"
-
-          run_tests=false
-          while IFS= read -r -d '' path; do
-            case "$path" in
-              src/* | test/* | sql/* | Makefile | pg_textsearch.control | \
-              .clang-format | .github/workflows/ci.yml | \
-              .github/scripts/build-postgres-injection.sh | \
-              .github/scripts/build-postgres-sanitizer.sh | \
-              scripts/msvc-build.ps1)
-                run_tests=true
-                break
-                ;;
-            esac
-          done < "$RUNNER_TEMP/ci-changed-files"
+          # Keep the assignment separate so detector errors fail the step.
+          run_tests=$(.github/scripts/ci-needs-code-checks.sh \
+            "$BASE_SHA" "$HEAD_SHA")
           echo "run_tests=$run_tests" >> "$GITHUB_OUTPUT"
 
   test:
