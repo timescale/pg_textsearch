@@ -33,6 +33,7 @@ OBJS = \
 	src/access/build_context.obj \
 	src/access/build_parallel.obj \
 	src/access/compaction_api.obj \
+	src/access/index_info.obj \
 	src/access/scan.obj \
 	src/access/vacuum.obj \
 	src/memtable/arena.obj \

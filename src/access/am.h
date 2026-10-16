@@ -94,6 +94,24 @@ float8 tp_get_cached_score(void);
 PGDLLEXPORT Datum tp_handler(PG_FUNCTION_ARGS);
 
 /*
+ * Privilege required by tp_open_bm25_index().
+ */
+typedef enum TpIndexAccess
+{
+	TP_INDEX_ACCESS_ANY,	 /* no privilege check */
+	TP_INDEX_ACCESS_OWNER,	 /* caller must own the index */
+	TP_INDEX_ACCESS_MAINTAIN /* owner, or MAINTAIN on the table */
+} TpIndexAccess;
+
+/*
+ * Open a physical bm25 index by OID (access/handler.c).  Errors if the OID
+ * names no relation, a non-bm25 relation, or a partitioned bm25 index, or if
+ * the caller lacks the requested access.
+ */
+Relation
+tp_open_bm25_index(Oid indexoid, LOCKMODE lockmode, TpIndexAccess access);
+
+/*
  * Build utilities (am/build.c)
  */
 

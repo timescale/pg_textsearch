@@ -233,6 +233,121 @@ tp_get_metapage(Relation index)
 }
 
 /*
+ * Inspect a header without opening index state or invoking the normal
+ * reader's compatibility guard. Incompatible/unknown versions still have
+ * an inspectable magic/version prefix; never decode their other fields.
+ *
+ * Each known layout is named explicitly so that a version bump cannot
+ * silently decode new headers with an old layout.
+ */
+StaticAssertDecl(
+		TP_METAPAGE_VERSION == TP_METAPAGE_VERSION_V9,
+		"new metapage version: teach tp_inspect_metapage_page "
+		"its layout, then update this assertion");
+
+void
+tp_inspect_metapage_page(Page page, TpIndexHeaderInfo *info)
+{
+	PageHeader		phdr = (PageHeader)page;
+	TpIndexMetaPage metap;
+	Size			content_offset = MAXALIGN(SizeOfPageHeaderData);
+	Size			required_size;
+
+	memset(info, 0, sizeof(*info));
+	info->header_present = true;
+
+	/*
+	 * The buffer manager's PageIsVerified() already rejects inconsistent
+	 * lower/upper/special bounds, and reads below only touch fixed offsets
+	 * within the page.  It does not check the page size and layout version,
+	 * which with data checksums off can be corrupted while the rest of the
+	 * page looks intact, nor whether the used area covers the magic and
+	 * version fields.  An all-zero page, which PageIsVerified() accepts,
+	 * fails these checks too.
+	 */
+	if (PageGetPageSize(page) != BLCKSZ ||
+		PageGetPageLayoutVersion(page) != PG_PAGE_LAYOUT_VERSION ||
+		phdr->pd_lower < content_offset + sizeof(uint32) * 2)
+		ereport(ERROR,
+				(errcode(ERRCODE_INDEX_CORRUPTED),
+				 errmsg("invalid bm25 metapage header")));
+
+	metap = (TpIndexMetaPage)PageGetContents(page);
+	if (metap->magic != TP_METAPAGE_MAGIC)
+		ereport(ERROR,
+				(errcode(ERRCODE_INDEX_CORRUPTED),
+				 errmsg("invalid bm25 metapage magic number")));
+
+	info->version = metap->version;
+	switch (metap->version)
+	{
+	case TP_METAPAGE_VERSION_V6:
+		required_size = TP_INDEX_METAPAGE_DATA_SIZE_V6;
+		break;
+	case TP_METAPAGE_VERSION_V7:
+		required_size = TP_INDEX_METAPAGE_DATA_SIZE_V7;
+		break;
+	case TP_METAPAGE_VERSION_V8:
+		required_size = TP_INDEX_METAPAGE_DATA_SIZE_V8;
+		break;
+	case TP_METAPAGE_VERSION_V9:
+		required_size = TP_INDEX_METAPAGE_DATA_SIZE_V9;
+		break;
+	default:
+		return;
+	}
+
+	if (phdr->pd_lower < content_offset + required_size)
+		ereport(ERROR,
+				(errcode(ERRCODE_INDEX_CORRUPTED),
+				 errmsg("truncated bm25 metapage for version %u",
+						metap->version)));
+
+	info->legacy_docid_pointer_known   = true;
+	info->legacy_docid_pointer_present = BlockNumberIsValid(
+			metap->_unused_docid_page);
+	if (metap->version == TP_METAPAGE_VERSION_V9)
+	{
+		info->capabilities_present = true;
+		info->capabilities		   = metap->capabilities;
+	}
+}
+
+TpIndexHeaderInfo
+tp_inspect_metapage(Relation index)
+{
+	Buffer			  buf;
+	TpIndexHeaderInfo info;
+
+	if (RelationGetNumberOfBlocks(index) == 0)
+	{
+		/*
+		 * CREATE INDEX CONCURRENTLY commits an invalid index, with an empty
+		 * relation, before building it.  If the build fails before writing
+		 * the metapage, that index is left with no header at all.  Report
+		 * that rather than erroring, so that inspecting every index (e.g.
+		 * through a LATERAL join) survives such a leftover.  A valid index
+		 * without block 0 is corrupt.
+		 */
+		if (index->rd_index != NULL && !index->rd_index->indisvalid)
+		{
+			memset(&info, 0, sizeof(info));
+			return info;
+		}
+		ereport(ERROR,
+				(errcode(ERRCODE_INDEX_CORRUPTED),
+				 errmsg("bm25 index \"%s\" has no metapage",
+						RelationGetRelationName(index))));
+	}
+
+	buf = ReadBuffer(index, TP_METAPAGE_BLKNO);
+	LockBuffer(buf, BUFFER_LOCK_SHARE);
+	tp_inspect_metapage_page(BufferGetPage(buf), &info);
+	UnlockReleaseBuffer(buf);
+	return info;
+}
+
+/*
  * Read memtable_head_blkno from a metapage buffer page in a
  * version-tolerant way (issue #383).  See header for contract.
  */

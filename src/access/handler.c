@@ -8,10 +8,17 @@
 
 #include <access/amapi.h>
 #include <access/htup_details.h>
+#include <access/relation.h>
 #include <access/reloptions.h>
+#include <catalog/index.h>
+#include <catalog/pg_class.h>
 #include <catalog/pg_opclass.h>
 #include <catalog/pg_type.h>
 #include <commands/vacuum.h>
+#include <miscadmin.h>
+#include <utils/acl.h>
+#include <utils/lsyscache.h>
+#include <utils/rel.h>
 #include <utils/syscache.h>
 
 #include "access/am.h"
@@ -204,4 +211,126 @@ tp_validate(Oid opclassoid)
 	ReleaseSysCache(tup);
 
 	return result;
+}
+
+/*
+ * Report a relation OID that does not name an existing relation.  Used on
+ * every path so that superusers and nonowners alike see a user-facing error
+ * rather than an internal cache-lookup or relation-open failure.
+ */
+static void
+tp_report_missing_relation(Oid relid)
+{
+	ereport(ERROR,
+			(errcode(ERRCODE_UNDEFINED_OBJECT),
+			 errmsg("relation with OID %u does not exist", relid)));
+}
+
+/*
+ * Whether the caller has the requested access.  For MAINTAIN, check the
+ * index's table, as REINDEX does; heap_oid may be InvalidOid when the OID
+ * does not name an index, in which case the relation itself is checked so
+ * that the caller can learn it is not a bm25 index only if privileged.
+ */
+static bool
+tp_has_index_access(Oid indexoid, Oid heap_oid, TpIndexAccess access)
+{
+	Oid target;
+
+	if (access == TP_INDEX_ACCESS_ANY)
+		return true;
+	if (object_ownercheck(RelationRelationId, indexoid, GetUserId()))
+		return true;
+	if (access == TP_INDEX_ACCESS_OWNER)
+		return false;
+
+	target = OidIsValid(heap_oid) ? heap_oid : indexoid;
+	return pg_class_aclcheck(target, GetUserId(), ACL_MAINTAIN) == ACLCHECK_OK;
+}
+
+/*
+ * Raise an error unless the caller has the requested access.  The OWNER
+ * error matches aclcheck_error(); the MAINTAIN error has the same form,
+ * with a detail naming the privilege that would suffice.
+ */
+static void
+tp_check_index_access(
+		Oid indexoid, Oid heap_oid, TpIndexAccess access, const char *relname)
+{
+	if (tp_has_index_access(indexoid, heap_oid, access))
+		return;
+
+	if (access == TP_INDEX_ACCESS_OWNER)
+		aclcheck_error(ACLCHECK_NOT_OWNER, OBJECT_INDEX, relname);
+	ereport(ERROR,
+			(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
+			 errmsg("permission denied for index %s", relname),
+			 errdetail(
+					 "Only the owner of the index, or a role with the "
+					 "MAINTAIN privilege on its table, may do this.")));
+}
+
+/*
+ * Open a physical bm25 index by OID, validating that it is in fact a bm25
+ * index with storage and that the caller has the requested access.
+ */
+Relation
+tp_open_bm25_index(Oid indexoid, LOCKMODE lockmode, TpIndexAccess access)
+{
+	Relation index_rel;
+
+	/*
+	 * Reject unprivileged callers before queuing for a heavyweight lock.
+	 * Recheck after opening because ALTER OWNER or GRANT/REVOKE can complete
+	 * while this caller waits.  Check existence first: object_ownercheck()
+	 * treats a missing OID as an internal error.
+	 */
+	if (access != TP_INDEX_ACCESS_ANY)
+	{
+		char *relname = get_rel_name(indexoid);
+
+		if (relname == NULL)
+			tp_report_missing_relation(indexoid);
+		tp_check_index_access(
+				indexoid, IndexGetRelation(indexoid, true), access, relname);
+	}
+
+	/* The relation may also be dropped while this caller waits. */
+	index_rel = try_relation_open(indexoid, lockmode);
+	if (index_rel == NULL)
+		tp_report_missing_relation(indexoid);
+
+	if (index_rel->rd_indam == NULL ||
+		index_rel->rd_indam->ambuild != tp_build)
+	{
+		char *relname = pstrdup(RelationGetRelationName(index_rel));
+
+		relation_close(index_rel, lockmode);
+		ereport(ERROR,
+				(errcode(ERRCODE_WRONG_OBJECT_TYPE),
+				 errmsg("\"%s\" is not a bm25 index", relname)));
+	}
+
+	if (index_rel->rd_rel->relkind == RELKIND_PARTITIONED_INDEX)
+	{
+		char *relname = pstrdup(RelationGetRelationName(index_rel));
+
+		relation_close(index_rel, lockmode);
+		ereport(ERROR,
+				(errcode(ERRCODE_WRONG_OBJECT_TYPE),
+				 errmsg("\"%s\" is a partitioned bm25 index", relname),
+				 errhint("Use a physical partition index instead.")));
+	}
+
+	/*
+	 * The index is locked, so it and its table exist and these lookups
+	 * cannot fail.  On error, transaction abort releases the relation.
+	 */
+	tp_check_index_access(
+			indexoid,
+			index_rel->rd_index->indrelid,
+			access,
+			RelationGetRelationName(index_rel));
+
+	return index_rel;
 }

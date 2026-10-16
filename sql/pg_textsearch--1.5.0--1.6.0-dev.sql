@@ -14,3 +14,17 @@ BEGIN
             'Add pg_textsearch to shared_preload_libraries and restart.';
     END IF;
 END $$;
+
+-- Inspect current header facts without reading index contents.
+CREATE FUNCTION @extschema@.bm25_index_info(
+    idx regclass,
+    OUT metapage_version bigint,
+    OUT capabilities bigint,
+    OUT all_documents_indexed boolean,
+    OUT legacy_docid_pointer_present boolean)
+RETURNS record
+AS 'MODULE_PATHNAME', 'tp_index_info'
+LANGUAGE C VOLATILE STRICT PARALLEL RESTRICTED;
+
+COMMENT ON FUNCTION @extschema@.bm25_index_info(regclass) IS
+    'Report current BM25 header facts. Requires ownership of the index or MAINTAIN on its table (the privilege REINDEX requires). NULL means a field is absent or its layout is unknown, or, for every field, that the index has no header yet; capability bits and legacy pointers do not attest to index completeness.';

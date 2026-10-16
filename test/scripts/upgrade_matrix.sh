@@ -54,6 +54,8 @@ BASE_DIR="${BASE_DIR:-$REPO_ROOT/tmp_upgrade_matrix}"
 DATA_DIR="$BASE_DIR/pgdata"
 SOCK_DIR="$BASE_DIR/sock"
 STRICT_UNSPILLED="${STRICT_UNSPILLED:-0}"
+CURRENT_VERSION="$(awk -F"'" '/^default_version/ {print $2}' \
+  "$REPO_ROOT/pg_textsearch.control")"
 
 # Representative default matrix: one release per distinct on-disk
 # format combination.  0.5.0 = metapage v5 (legacy/REINDEX tier);
@@ -97,9 +99,12 @@ as_pg() {
 # psql helpers: SQL always travels through a world-readable temp FILE,
 # never an inline -c string, to survive su-quoting.  scalar() echoes a
 # single value; runsql() runs quietly; run_capture() saves stderr.
+# runsql() ignores SQL errors (psql exits 0 without ON_ERROR_STOP);
+# use runsql_checked() where a failed statement must fail the scenario.
 _mktemp_sql() { local f; f="$(mktemp "${TMPDIR:-/tmp}/um.XXXXXX.sql")"; printf '%s\n' "$1" >"$f"; chmod 644 "$f"; echo "$f"; }
 scalar() { local f; f="$(_mktemp_sql "$1")"; as_pg psql -h "$SOCK_DIR" -p "$TEST_PORT" -d upg -tAqf "$f" 2>/dev/null; rm -f "$f"; }
 runsql() { local f; f="$(_mktemp_sql "$1")"; as_pg psql -h "$SOCK_DIR" -p "$TEST_PORT" -d upg -q -f "$f" >/dev/null 2>&1; local rc=$?; rm -f "$f"; return $rc; }
+runsql_checked() { local f; f="$(_mktemp_sql "$1")"; as_pg psql -h "$SOCK_DIR" -p "$TEST_PORT" -d upg -v ON_ERROR_STOP=1 -q -f "$f" >/dev/null 2>&1; local rc=$?; rm -f "$f"; return $rc; }
 run_capture() { local f; f="$(_mktemp_sql "$1")"; as_pg psql -h "$SOCK_DIR" -p "$TEST_PORT" -d upg -tAqf "$f" >"$2" 2>"$3"; rm -f "$f"; }
 
 cleanup() {
@@ -192,6 +197,41 @@ SELECT count(*) FROM (
 # ------------------------------------------------------------------ #
 is_legacy() { [[ "$1" =~ ^0\.[0-4]\. ]] || [[ "$1" == 0.5.0 ]]; }
 
+# Header facts of index i as
+#   version|capabilities|all_documents_indexed|legacy_docid_pointer_present
+# with NULL for absent fields.  bm25_index_info() exists only in the
+# current SQL, so the extension is updated inside a transaction that is
+# rolled back: every other step keeps running against the OLD SQL
+# catalog, which is the window users hit between swapping the binary
+# and running ALTER EXTENSION UPDATE.
+header_facts() {
+  scalar "BEGIN;
+    ALTER EXTENSION pg_textsearch UPDATE TO '$CURRENT_VERSION';
+    SELECT concat_ws('|', metapage_version,
+      coalesce(capabilities::text, 'NULL'),
+      coalesce(all_documents_indexed::text, 'NULL'),
+      coalesce(legacy_docid_pointer_present::text, 'NULL'))
+    FROM bm25_index_info('i');
+    ROLLBACK;"
+}
+
+# Read the header facts twice -- inspection must not upgrade an old
+# header -- and match them against a glob pattern.  Sets HEADER_FACTS
+# (a global, so that fail() runs in this shell rather than a subshell).
+HEADER_FACTS=""
+check_header_facts() { # $1=label $2=expected glob pattern
+  local repeated
+  HEADER_FACTS="$(header_facts)"
+  repeated="$(header_facts)"
+  [ "$HEADER_FACTS" = "$repeated" ] ||
+    fail "$1: inspection changed header facts ($HEADER_FACTS -> $repeated)"
+  # shellcheck disable=SC2053  # $2 is intentionally a glob pattern
+  [[ "$HEADER_FACTS" == $2 ]] ||
+    fail "$1: header facts [$HEADER_FACTS] do not match [$2]"
+}
+
+REBUILT_FACTS='9|1|true|false'
+
 run_compat_shape() { # $1=version $2=shape
   local v="$1" st="$2"
   fresh_cluster || { fail "$v/$st: cluster init failed"; return; }
@@ -205,15 +245,67 @@ run_compat_shape() { # $1=version $2=shape
   stop_pg
   build_install_current || { fail "current build/install failed"; return; }
   start_pg || { fail "$v/$st: NEW server failed to start (corruption?)"; return; }
+  # Old headers are reported as they are on disk.  Only v6 can carry the
+  # legacy docid pointer; v7+ never wrote it.
+  local expect old_facts legacy written_facts
+  case "$v" in
+    1.5.*) expect='9|1|true|false' ;;
+    1.3.1|1.4.*) expect='8|NULL|NULL|false' ;;
+    1.3.0) expect='7|NULL|NULL|false' ;;
+    *) expect='6|NULL|NULL|*' ;;
+  esac
+  check_header_facts "$v/$st" "$expect"
+  old_facts="$HEADER_FACTS"
+  legacy="${old_facts##*|}"
+  case "$legacy" in
+    true|false) ;;
+    *) fail "$v/$st: legacy pointer of a v6-v9 header is [$legacy], not true/false" ;;
+  esac
+
   local mark; mark="$(log_marker)"
-  runsql "INSERT INTO d(c) VALUES ('alpha beta gamma writeprobe token');"
+  # The new binary must be able to write to the old index and find what
+  # it wrote; otherwise an unchanged header below would pass vacuously.
+  runsql_checked "INSERT INTO d(c) VALUES ('alpha beta gamma writeprobe token');" ||
+    fail "$v/$st: write probe INSERT failed after the binary swap"
+  local probe
+  probe="$(scalar "SET enable_seqscan=off;
+    SELECT count(*) FROM (
+      SELECT c FROM d ORDER BY c <@> to_bm25query('writeprobe','i') LIMIT 1
+    ) s WHERE c LIKE '%writeprobe%';")"
+  [ "$probe" = 1 ] ||
+    fail "$v/$st: index scan did not return the write probe (got [$probe])"
   post="$(scalar "$RECALL_Q")"
   forensic="$(log_since "$mark" | grep -c 'that may have held unspilled documents')"
+
+  # The write upgrades the header in place only if it changes the
+  # metapage (e.g. by extending the memtable chain).  Either way the
+  # header is never reported as complete, and the legacy pointer is
+  # preserved until REINDEX.
+  check_header_facts "$v/$st/written" "*"
+  written_facts="$HEADER_FACTS"
+  local upgraded=0
+  if [ "$written_facts" != "$old_facts" ]; then
+    upgraded=1
+    [ "${old_facts%%|*}" != 9 ] && [ "$written_facts" = "9|0|false|$legacy" ] ||
+      fail "$v/$st: written header [$written_facts] is neither unchanged nor the in-place upgrade of [$old_facts]"
+  fi
+  # The forensic WARNING is emitted by the in-place upgrade of a v6
+  # header that still holds the legacy pointer, and only then.
+  if [ "$upgraded" = 1 ] && [ "${old_facts%%|*}" = 6 ] && [ "$legacy" = true ]; then
+    [ "$forensic" -gt 0 ] ||
+      fail "$v/$st: upgraded a header with the legacy pointer but no forensic WARNING"
+  else
+    [ "$forensic" = 0 ] ||
+      fail "$v/$st: forensic WARNING without upgrading a header holding the legacy pointer"
+  fi
+
   runsql "REINDEX INDEX i;"
   reidx="$(scalar "$RECALL_Q")"
+  check_header_facts "$v/$st/rebuilt" "$REBUILT_FACTS"
   stop_pg
 
   log "  [$v/$st] truth=$truth pre=$pre post=$post reindex=$reidx forensic=$forensic"
+  log "  [$v/$st] header old=$old_facts written=$written_facts"
 
   # Oracle sanity: the OLD binary must have perfect recall.
   [ "$pre" = "$truth" ] || fail "$v/$st: OLD-binary recall $pre != truth $truth (oracle broken)"
@@ -248,6 +340,8 @@ run_legacy() { # $1=version
   stop_pg
   build_install_current || { fail "current build/install failed"; return; }
   start_pg || { fail "$v(legacy): NEW server failed to start"; return; }
+  # Inspection reports a v5 version the normal reader rejects.
+  check_header_facts "$v/legacy" '5|NULL|NULL|NULL'
 
   # Query WITHOUT reindex must ERROR cleanly and NOT crash the server.
   local out err_f; out="$(mktemp)"; err_f="$(mktemp)"
@@ -262,6 +356,7 @@ run_legacy() { # $1=version
 
   runsql "REINDEX INDEX i;"
   local reidx; reidx="$(scalar "$RECALL_Q")"
+  check_header_facts "$v/legacy/rebuilt" "$REBUILT_FACTS"
   stop_pg
   log "  [$v/legacy] truth=$truth pre=$pre post-REINDEX=$reidx"
   [ "$pre" = "$truth" ]   || fail "$v(legacy): OLD-binary recall $pre != truth $truth"

@@ -313,6 +313,20 @@ LANGUAGE C VOLATILE STRICT PARALLEL RESTRICTED;
 COMMENT ON FUNCTION @extschema@.bm25_needs_compaction(regclass) IS
     'Report whether bm25_compact_step would run a pass on this index. A level that holds segments_per_level segments but cannot be reduced -- every candidate group exceeds max_segment_size -- reports false, so this is safe as a retry condition.';
 
+-- Inspect current header facts without reading index contents.
+CREATE FUNCTION @extschema@.bm25_index_info(
+    idx regclass,
+    OUT metapage_version bigint,
+    OUT capabilities bigint,
+    OUT all_documents_indexed boolean,
+    OUT legacy_docid_pointer_present boolean)
+RETURNS record
+AS 'MODULE_PATHNAME', 'tp_index_info'
+LANGUAGE C VOLATILE STRICT PARALLEL RESTRICTED;
+
+COMMENT ON FUNCTION @extschema@.bm25_index_info(regclass) IS
+    'Report current BM25 header facts. Requires ownership of the index or MAINTAIN on its table (the privilege REINDEX requires). NULL means a field is absent or its layout is unknown, or, for every field, that the index has no header yet; capability bits and legacy pointers do not attest to index completeness.';
+
 -- Fast summary function showing only statistics (no content dump)
 CREATE FUNCTION @extschema@.bm25_summarize_index(text) RETURNS text
     AS 'MODULE_PATHNAME', 'tp_summarize_index'

@@ -100,6 +100,10 @@ jobs:
         # Build with -Werror via PG_CFLAGS (CFLAGS is overridden by pgxs)
         make PG_CFLAGS="-Werror -Wno-error=unused-parameter"
         sudo env "PATH=$PATH" make install
+        # Test-only header fixtures: build as the runner, install as root
+        # because the packaged server's directories are root-owned.
+        make build-index-info-test
+        sudo env "PATH=$PATH" make install-index-info-test
 
     - name: Run cross-database registry regression
       timeout-minutes: 5
@@ -147,7 +151,8 @@ jobs:
         fi
 
         createdb -h $PWD/tmp_check_shared -p 55433 contrib_regression
-        if ! make installcheck PGHOST=$PWD/tmp_check_shared PGPORT=55433; then
+        if ! make installcheck PGHOST=$PWD/tmp_check_shared PGPORT=55433 ||
+           ! make test-index-info-sql PGHOST=$PWD/tmp_check_shared PGPORT=55433; then
           echo "Tests failed. Showing regression diffs:"
           if [ -f test/regression.diffs ]; then
             cat test/regression.diffs
@@ -501,7 +506,8 @@ jobs:
           exit 1
         fi
         createdb -h $PWD/tmp_check_shared -p 55433 contrib_regression
-        if ! make installcheck PGHOST=$PWD/tmp_check_shared PGPORT=55433; then
+        if ! make installcheck PGHOST=$PWD/tmp_check_shared PGPORT=55433 ||
+           ! make test-index-info PGHOST=$PWD/tmp_check_shared PGPORT=55433; then
           echo "Tests failed. Showing regression diffs:"
           [ -f test/regression.diffs ] && cat test/regression.diffs
           echo "PostgreSQL server log (last 200 lines):"
@@ -796,6 +802,9 @@ jobs:
         echo "Running SQL regression tests under sanitizer..."
         make installcheck PGHOST=$PWD/tmp_sanitizer_test PGPORT=55433
 
+        echo "Running synthetic header inspection tests under sanitizer..."
+        make test-index-info PGHOST=$PWD/tmp_sanitizer_test PGPORT=55433
+
         echo "Running stale memtable-tail tests under sanitizer..."
         timeout 120s make test-memtable-stale-tail
 
@@ -1025,6 +1034,9 @@ jobs:
         # Build with coverage flags - disable optimization for accurate line counts
         make PG_CFLAGS="--coverage -O0 -g" SHLIB_LINK="--coverage"
         sudo env "PATH=$PATH" make install
+        # Test-only header fixtures exercise the parser's error branches.
+        make build-index-info-test
+        sudo env "PATH=$PATH" make install-index-info-test
 
     - name: Setup test database
       run: |
@@ -1050,6 +1062,7 @@ jobs:
       run: |
         export PATH="/usr/lib/postgresql/17/bin:$PATH"
         make test PGHOST=$PWD/tmp_check_shared PGPORT=55433 || true
+        make test-index-info-sql PGHOST=$PWD/tmp_check_shared PGPORT=55433 || true
         # Stop and restart Postgres to flush coverage data from backend
         pg_ctl stop -D tmp_check_shared/data -l tmp_check_shared/data/logfile
         pg_ctl start -D tmp_check_shared/data -l tmp_check_shared/data/logfile -w

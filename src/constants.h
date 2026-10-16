@@ -64,6 +64,7 @@
  * binary cannot read; those continue to require REINDEX.
  */
 #define TP_METAPAGE_VERSION	   9
+#define TP_METAPAGE_VERSION_V9 9 /* adds capability flags */
 #define TP_METAPAGE_VERSION_V8 8 /* read-compatible: no capability flags */
 #define TP_METAPAGE_VERSION_V7                                            \
 	7							 /* read-compatible: on-disk memtable, no \

@@ -35,67 +35,6 @@ typedef struct TpCompactionTarget
 } TpCompactionTarget;
 
 /*
- * Open a bm25 index by OID, validating that it is in fact a bm25
- * index and (optionally) that the caller owns it.
- */
-static Relation
-tp_open_bm25_index(Oid indexoid, LOCKMODE lockmode, bool need_owner)
-{
-	Relation index_rel;
-
-	/*
-	 * Reject nonowners before queuing for a heavyweight lock. Recheck after
-	 * opening because ALTER OWNER can complete while this caller waits.
-	 */
-	if (need_owner &&
-		!object_ownercheck(RelationRelationId, indexoid, GetUserId()))
-	{
-		char *relname = get_rel_name(indexoid);
-
-		if (relname == NULL)
-			ereport(ERROR,
-					(errcode(ERRCODE_UNDEFINED_OBJECT),
-					 errmsg("relation with OID %u does not exist", indexoid)));
-		aclcheck_error(ACLCHECK_NOT_OWNER, OBJECT_INDEX, relname);
-	}
-
-	index_rel = relation_open(indexoid, lockmode);
-
-	if (index_rel->rd_indam == NULL ||
-		index_rel->rd_indam->ambuild != tp_build)
-	{
-		char *relname = pstrdup(RelationGetRelationName(index_rel));
-
-		relation_close(index_rel, lockmode);
-		ereport(ERROR,
-				(errcode(ERRCODE_WRONG_OBJECT_TYPE),
-				 errmsg("\"%s\" is not a bm25 index", relname)));
-	}
-
-	if (index_rel->rd_rel->relkind == RELKIND_PARTITIONED_INDEX)
-	{
-		char *relname = pstrdup(RelationGetRelationName(index_rel));
-
-		relation_close(index_rel, lockmode);
-		ereport(ERROR,
-				(errcode(ERRCODE_WRONG_OBJECT_TYPE),
-				 errmsg("\"%s\" is a partitioned bm25 index", relname),
-				 errhint("Use a physical partition index instead.")));
-	}
-
-	if (need_owner &&
-		!object_ownercheck(RelationRelationId, indexoid, GetUserId()))
-	{
-		char *relname = pstrdup(RelationGetRelationName(index_rel));
-
-		relation_close(index_rel, lockmode);
-		aclcheck_error(ACLCHECK_NOT_OWNER, OBJECT_INDEX, relname);
-	}
-
-	return index_rel;
-}
-
-/*
  * Return NULL when a captured worker target no longer names the same
  * physical bm25 index.
  */
@@ -180,7 +119,8 @@ tp_level_counts(PG_FUNCTION_ARGS)
 	ArrayType			*result;
 	int					 i;
 
-	index_rel = tp_open_bm25_index(indexoid, AccessShareLock, false);
+	index_rel =
+			tp_open_bm25_index(indexoid, AccessShareLock, TP_INDEX_ACCESS_ANY);
 
 	metap = tp_get_metapage(index_rel);
 	for (i = 0; i < TP_MAX_LEVELS; i++)
@@ -204,7 +144,8 @@ tp_needs_compaction(PG_FUNCTION_ARGS)
 	TpLocalIndexState *index_state;
 	bool			   available;
 
-	index_rel	= tp_open_bm25_index(indexoid, AccessShareLock, false);
+	index_rel =
+			tp_open_bm25_index(indexoid, AccessShareLock, TP_INDEX_ACCESS_ANY);
 	index_state = tp_get_local_index_state(indexoid);
 	if (index_state == NULL)
 	{
@@ -246,7 +187,8 @@ tp_compact_index(PG_FUNCTION_ARGS)
 				(errcode(ERRCODE_READ_ONLY_SQL_TRANSACTION),
 				 errmsg("cannot compact a bm25 index during recovery")));
 
-	index_rel = tp_open_bm25_index(indexoid, RowExclusiveLock, true);
+	index_rel = tp_open_bm25_index(
+			indexoid, RowExclusiveLock, TP_INDEX_ACCESS_OWNER);
 
 	if (!RelationUsesLocalBuffers(index_rel))
 		PreventCommandIfReadOnly("bm25 index compaction");
@@ -306,7 +248,8 @@ tp_compact_index_step(PG_FUNCTION_ARGS)
 				(errcode(ERRCODE_READ_ONLY_SQL_TRANSACTION),
 				 errmsg("cannot compact a bm25 index during recovery")));
 
-	index_rel = tp_open_bm25_index(indexoid, RowExclusiveLock, true);
+	index_rel = tp_open_bm25_index(
+			indexoid, RowExclusiveLock, TP_INDEX_ACCESS_OWNER);
 
 	if (!RelationUsesLocalBuffers(index_rel))
 		PreventCommandIfReadOnly("bm25 index compaction");

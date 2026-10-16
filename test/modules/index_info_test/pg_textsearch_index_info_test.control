@@ -1,0 +1,5 @@
+comment = 'Test-only BM25 header inspection fixtures'
+default_version = '1.0'
+module_pathname = '$libdir/pg_textsearch_index_info_test'
+relocatable = true
+superuser = true

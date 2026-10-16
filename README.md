@@ -475,6 +475,56 @@ SELECT bm25_spill_index('docs_idx');
 
 ## Monitoring
 
+### Index header
+
+The index owner, a role with `MAINTAIN` on the table (the privilege
+`REINDEX` requires), or a member of `pg_maintain` can inspect an index's
+current header, without superuser privileges. Unlike `REINDEX`, the owner can
+inspect even after revoking its own `MAINTAIN`. Note that `MAINTAIN` and
+`pg_maintain` also allow `VACUUM`, `ANALYZE`, `REINDEX`, and similar
+maintenance commands.
+
+```sql
+SELECT * FROM bm25_index_info('public.docs_idx'::regclass);
+```
+
+Column | Meaning
+--- | ---
+`metapage_version` | Format version currently stored in the header; NULL if the index has no header yet
+`capabilities` | Raw capability bits; NULL in headers without this field
+`all_documents_indexed` | Value of the all-documents capability bit
+`legacy_docid_pointer_present` | Whether the legacy docid pointer is present
+
+This reads only the header and does not change it. Fields that cannot be
+safely decoded are NULL. Unsupported versions can still report their
+version; malformed headers raise an error. An invalid index whose build never
+wrote a header, such as one left by a failed `CREATE INDEX CONCURRENTLY`,
+reports NULL for every column; drop it or `REINDEX` it. For a partitioned
+index, inspect its physical partition indexes instead of the parent.
+
+To inventory every BM25 index in a database, run as a role that may inspect
+them all (for example a member of `pg_maintain`):
+
+```sql
+SELECT c.oid::regclass AS index, i.indisvalid, h.*
+FROM pg_class AS c
+JOIN pg_am AS am ON am.oid = c.relam
+JOIN pg_index AS i ON i.indexrelid = c.oid
+CROSS JOIN LATERAL bm25_index_info(c.oid::regclass) AS h
+WHERE am.amname = 'bm25' AND c.relkind = 'i'
+ORDER BY 1;
+```
+
+`relkind = 'i'` lists the indexes of partitions and skips partitioned
+parents, which have no header.
+
+These are header facts, not a check of index contents: a capability bit is
+not a scan for missing rows, and a legacy pointer can be stale bookkeeping.
+The header version also does not identify the original build version.
+This function is new in the 1.6.0 development version, not in v1.5.1.
+
+### Index usage
+
 ```sql
 -- Check index usage
 SELECT s.schemaname, s.relname AS tablename,

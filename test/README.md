@@ -42,6 +42,7 @@ The Makefile defines these entry points:
 | `make test-replication-extended` | Extended physical replication and WAL audit |
 | `make test-logical-replication` | Logical replication |
 | `make test-cic` | `CREATE INDEX CONCURRENTLY` |
+| `make test-index-info` | Header inspection privileges, rechecks after lock waits (needs dblink), and synthetic layouts |
 | `make test-multi-index` | Multi-index, user, and schema behavior |
 | `make test-reindex` | Rebuild, rollback, and prepared-transaction caches |
 | `make test-cross-database-registry` | Database isolation and DROP cleanup |

@@ -165,6 +165,40 @@ StaticAssertDecl(
 		"backward-compat is broken");
 
 /*
+ * v9 data size: everything through capabilities.  Excludes the
+ * struct's trailing alignment padding (sizeof is 128), so header
+ * inspection requires only bytes that carry v9 fields.
+ */
+#define TP_INDEX_METAPAGE_DATA_SIZE_V9             \
+	(offsetof(TpIndexMetaPageData, capabilities) + \
+	 sizeof(((TpIndexMetaPageData *)0)->capabilities))
+
+StaticAssertDecl(
+		TP_INDEX_METAPAGE_DATA_SIZE_V9 == 124,
+		"v9 metapage prefix layout changed - "
+		"backward-compat is broken");
+
+/*
+ * Header facts only. Presence flags distinguish absent/unknown fields from
+ * stored zero values. This is not an on-disk structure.
+ */
+typedef struct TpIndexHeaderInfo
+{
+	bool   header_present; /* false: no block 0 yet (unbuilt index) */
+	uint32 version;
+	uint32 capabilities;
+	bool   capabilities_present;
+	bool   legacy_docid_pointer_known;
+	bool   legacy_docid_pointer_present;
+} TpIndexHeaderInfo;
+
+/* Caller holds at least BUFFER_LOCK_SHARE on the page. */
+extern PGDLLEXPORT void
+tp_inspect_metapage_page(Page page, TpIndexHeaderInfo *info);
+/* Exported for the test-only fixture module, like the function above. */
+extern PGDLLEXPORT TpIndexHeaderInfo tp_inspect_metapage(Relation index);
+
+/*
  * Metapage operations
  */
 extern void tp_init_metapage(Page page, Oid text_config_oid);
