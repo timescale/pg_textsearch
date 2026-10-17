@@ -450,6 +450,8 @@ score_memtable_single_term(
 		doc_len = tp_source_get_doc_length(source, ctid);
 		if (doc_len <= 0)
 			doc_len = 1; /* Fallback for missing entries */
+		/* Match segment and standalone scoring before selecting top-k. */
+		doc_len = decode_fieldnorm(encode_fieldnorm(doc_len));
 
 		score = compute_bm25_score(idf, tf, doc_len, k1, b, avg_doc_len);
 
@@ -747,6 +749,8 @@ score_memtable_multi_term(
 			doc_len = tp_source_get_doc_length(source, ctid);
 			if (doc_len <= 0)
 				doc_len = 1;
+			/* Match segment and standalone scoring before selecting top-k. */
+			doc_len = decode_fieldnorm(encode_fieldnorm(doc_len));
 
 			/* Compute BM25 term contribution */
 			term_score = compute_bm25_score(

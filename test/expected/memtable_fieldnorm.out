@@ -1,0 +1,126 @@
+-- Issue #557: ranked memtable scans must use the same quantized document
+-- lengths as standalone scoring and immutable segments. These two rows
+-- reverse rank when the long row uses its raw length instead.
+CREATE EXTENSION IF NOT EXISTS pg_textsearch;
+SET client_min_messages = warning;
+SET enable_seqscan = off;
+CREATE TABLE fieldnorm_docs (id int, single_term text, multi_term text);
+CREATE INDEX fieldnorm_single ON fieldnorm_docs USING bm25(single_term)
+    WITH (text_config = 'simple');
+CREATE INDEX fieldnorm_multi ON fieldnorm_docs USING bm25(multi_term)
+    WITH (text_config = 'simple');
+INSERT INTO fieldnorm_docs VALUES
+    (1, 'needle', 'needle pin'),
+    (2, repeat('needle ', 6) || repeat('padding ', 37),
+        repeat('needle pin ', 6) || repeat('padding ', 74));
+-- Each LIMIT must select row 2, not merely sort the wrong selected rows.
+-- The two-row scan must also be in standalone score order.
+CREATE FUNCTION check_fieldnorm_order() RETURNS TABLE (
+    single_top1 int, single_order int[], multi_top1 int, multi_order int[])
+LANGUAGE plpgsql AS $$
+BEGIN
+    -- Replan after each planner/cache setting change.
+    RETURN QUERY EXECUTE $query$
+    SELECT
+        (SELECT id FROM fieldnorm_docs
+         ORDER BY single_term <@> to_bm25query('needle', 'fieldnorm_single')
+         LIMIT 1),
+        (SELECT array_agg(id) FROM (
+            SELECT id FROM fieldnorm_docs
+            ORDER BY single_term <@>
+                to_bm25query('needle', 'fieldnorm_single') LIMIT 2) s),
+        (SELECT id FROM fieldnorm_docs
+         ORDER BY multi_term <@>
+             to_bm25query('needle pin', 'fieldnorm_multi') LIMIT 1),
+        (SELECT array_agg(id) FROM (
+            SELECT id FROM fieldnorm_docs
+            ORDER BY multi_term <@>
+                to_bm25query('needle pin', 'fieldnorm_multi') LIMIT 2) s)
+    $query$;
+END;
+$$;
+-- Cache and on-disk chain must agree with the exact standalone sort.
+SET pg_textsearch.memtable_cache_enabled = on;
+SELECT * FROM check_fieldnorm_order();
+ single_top1 | single_order | multi_top1 | multi_order 
+-------------+--------------+------------+-------------
+           2 | {2,1}        |          2 | {2,1}
+(1 row)
+
+SET pg_textsearch.memtable_cache_enabled = off;
+SELECT * FROM check_fieldnorm_order();
+ single_top1 | single_order | multi_top1 | multi_order 
+-------------+--------------+------------+-------------
+           2 | {2,1}        |          2 | {2,1}
+(1 row)
+
+SET enable_seqscan = on;
+SET enable_indexscan = off;
+SET enable_bitmapscan = off;
+SELECT * FROM check_fieldnorm_order();
+ single_top1 | single_order | multi_top1 | multi_order 
+-------------+--------------+------------+-------------
+           2 | {2,1}        |          2 | {2,1}
+(1 row)
+
+RESET enable_indexscan;
+RESET enable_bitmapscan;
+SET enable_seqscan = off;
+-- Physical storage changes must not change the winning row or its order.
+SELECT bm25_spill_index('fieldnorm_single');
+ bm25_spill_index 
+------------------
+                2
+(1 row)
+
+SELECT bm25_spill_index('fieldnorm_multi');
+ bm25_spill_index 
+------------------
+                2
+(1 row)
+
+SELECT * FROM check_fieldnorm_order();
+ single_top1 | single_order | multi_top1 | multi_order 
+-------------+--------------+------------+-------------
+           2 | {2,1}        |          2 | {2,1}
+(1 row)
+
+-- The same ranking must hold when a raw-length memtable row competes
+-- with an already quantized segment row in the shared top-k heap.
+TRUNCATE fieldnorm_docs;
+INSERT INTO fieldnorm_docs VALUES (1, 'needle', 'needle pin');
+SELECT bm25_spill_index('fieldnorm_single');
+ bm25_spill_index 
+------------------
+                2
+(1 row)
+
+SELECT bm25_spill_index('fieldnorm_multi');
+ bm25_spill_index 
+------------------
+                2
+(1 row)
+
+INSERT INTO fieldnorm_docs VALUES
+    (2, repeat('needle ', 6) || repeat('padding ', 37),
+        repeat('needle pin ', 6) || repeat('padding ', 74));
+SET pg_textsearch.memtable_cache_enabled = on;
+SELECT * FROM check_fieldnorm_order();
+ single_top1 | single_order | multi_top1 | multi_order 
+-------------+--------------+------------+-------------
+           2 | {2,1}        |          2 | {2,1}
+(1 row)
+
+SET pg_textsearch.memtable_cache_enabled = off;
+SELECT * FROM check_fieldnorm_order();
+ single_top1 | single_order | multi_top1 | multi_order 
+-------------+--------------+------------+-------------
+           2 | {2,1}        |          2 | {2,1}
+(1 row)
+
+DROP FUNCTION check_fieldnorm_order();
+DROP TABLE fieldnorm_docs;
+RESET enable_seqscan;
+RESET client_min_messages;
+RESET pg_textsearch.memtable_cache_enabled;
+DROP EXTENSION pg_textsearch;
