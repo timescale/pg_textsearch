@@ -89,12 +89,18 @@ extern bool tp_alive_bitset_mark_dead(TpAliveBitset *bitset, uint32 doc_id);
 /*
  * Write the in-memory bitset back to segment pages and
  * update the segment header's alive_count.  Uses
- * GenericXLog for crash safety.  The header update is
- * batched into the final bitset page's GenericXLog
- * transaction for atomicity.
+ * GenericXLog for crash safety.  Each page's newly cleared
+ * bits and corresponding header count decrement share one
+ * WAL record, keeping partial progress consistent.  dead_per_page contains
+ * counts of successful mark_dead calls per logical bitmap page, starting
+ * with the page containing alive_bitset_offset; written counts are reset.
+ * Caller must serialize load/mark/write and discard state after an ERROR.
  */
 extern void tp_alive_bitset_write(
-		TpAliveBitset *bitset, TpSegmentReader *reader, Relation index);
+		TpAliveBitset	*bitset,
+		TpSegmentReader *reader,
+		Relation		 index,
+		uint32			*dead_per_page);
 
 /*
  * Free an in-memory bitset.
