@@ -841,6 +841,12 @@ jobs:
           cd test/scripts && ./recovery.sh
         "
 
+        echo "Running alive bitset crash recovery tests under sanitizer..."
+        timeout 600s bash -c "
+          export PATH=\"$HOME/$PG_INSTALL_DIR/bin:\$PATH\"
+          cd test/scripts && ./alive_bitset_recovery.sh
+        "
+
         # Deferred-reclaim crash recovery (issue #380): parks displaced
         # segment pages, crashes (immediate stop), asserts WAL replay
         # reconstructs the tombstone chain.  Spins up its own instance;
