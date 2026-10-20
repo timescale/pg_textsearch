@@ -1189,6 +1189,52 @@ FROM (SELECT * FROM bmw EXCEPT SELECT * FROM exhaustive) diff;
 
 DROP TABLE bmw_length_variance;
 -- ============================================================
+-- Memtable scoring uses quantized document lengths
+-- ============================================================
+-- Segments and the standalone operator score with the
+-- fieldnorm-quantized length (95 -> 88). The memtable path must
+-- do the same, or the top-k changes when the memtable spills.
+-- With exact lengths doc 2 scores higher; quantized, doc 1 does.
+CREATE TABLE bmw_fieldnorm (id INT PRIMARY KEY, content TEXT);
+CREATE INDEX bmw_fieldnorm_idx ON bmw_fieldnorm USING bm25(content)
+    WITH (text_config='simple', k1=1.2, b=0.75);
+NOTICE:  BM25 index build started for relation bmw_fieldnorm_idx
+NOTICE:  Using text search configuration: simple
+NOTICE:  Using index options: k1=1.20, b=0.75
+NOTICE:  BM25 index build completed: 0 documents, avg_length=0.00
+INSERT INTO bmw_fieldnorm VALUES
+    (1, 'needle needle ' || repeat('pad ', 93)),
+    (2, 'needle ' || repeat('pad ', 34));
+SELECT id, ROUND((content <@> to_bm25query('needle',
+                  'bmw_fieldnorm_idx'))::numeric, 4) AS score
+FROM bmw_fieldnorm
+ORDER BY content <@> to_bm25query('needle', 'bmw_fieldnorm_idx')
+LIMIT 2;
+ id |  score  
+----+---------
+  1 | -0.2280
+  2 | -0.2248
+(2 rows)
+
+SELECT bm25_spill_index('bmw_fieldnorm_idx') IS NOT NULL AS spilled;
+ spilled 
+---------
+ t
+(1 row)
+
+SELECT id, ROUND((content <@> to_bm25query('needle',
+                  'bmw_fieldnorm_idx'))::numeric, 4) AS score
+FROM bmw_fieldnorm
+ORDER BY content <@> to_bm25query('needle', 'bmw_fieldnorm_idx')
+LIMIT 2;
+ id |  score  
+----+---------
+  1 | -0.2280
+  2 | -0.2248
+(2 rows)
+
+DROP TABLE bmw_fieldnorm;
+-- ============================================================
 -- Cleanup
 -- ============================================================
 DROP EXTENSION pg_textsearch CASCADE;
