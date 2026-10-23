@@ -537,11 +537,11 @@ posting_source_load_block(TpPostingMergeSource *ps)
 		/* Compressed block - read and decompress */
 		uint8 compressed_buf[TP_MAX_COMPRESSED_BLOCK_SIZE];
 
-		tp_segment_read(
+		tp_segment_read_compressed_block(
 				ps->reader,
 				ps->skip_entry.posting_offset,
-				compressed_buf,
-				TP_MAX_COMPRESSED_BLOCK_SIZE);
+				ps->skip_entry.doc_count,
+				compressed_buf);
 
 		tp_decompress_block(
 				compressed_buf,
