@@ -207,7 +207,36 @@ NOTICE:  BM25 index build started for relation schema_array_idx
 NOTICE:  Using text search configuration: english
 NOTICE:  Using index options: k1=1.20, b=0.75
 NOTICE:  BM25 index build completed: 2 documents, avg_length=0.50
+-- Score stubs must resolve even with the extension absent from search_path.
+SET search_path = public;
+SELECT id FROM bm25_real.schema_docs
+ORDER BY content OPERATOR(bm25_real.<@>) 'target'::text LIMIT 1;
+id
+1
+(1 row)
+SELECT id FROM bm25_real.schema_docs
+ORDER BY content OPERATOR(bm25_real.<@>)
+    bm25_real.to_bm25query('target', 'bm25_real.schema_text_idx') LIMIT 1;
+id
+1
+(1 row)
+SELECT id FROM bm25_real.schema_docs
+ORDER BY tags OPERATOR(bm25_real.<@>) 'target'::text LIMIT 1;
+id
+1
+(1 row)
+SELECT id FROM bm25_real.schema_docs
+ORDER BY tags OPERATOR(bm25_real.<@>)
+    bm25_real.to_bm25query('target', 'bm25_real.schema_array_idx') LIMIT 1;
+id
+1
+(1 row)
 CREATE SCHEMA bm25_shadow;
+CREATE FUNCTION bm25_shadow.bm25_get_current_score() RETURNS float8
+    LANGUAGE plpgsql VOLATILE AS $$
+    BEGIN
+        RAISE EXCEPTION 'shadow score function must not execute';
+    END $$;
 CREATE TYPE bm25_shadow.bm25query AS (dummy integer);
 CREATE FUNCTION bm25_shadow.score(text, text) RETURNS float8
     LANGUAGE plpgsql AS $$ BEGIN RETURN 42; END $$;
@@ -228,6 +257,12 @@ CREATE OPERATOR bm25_shadow.<@> (
     LEFTARG = text[], RIGHTARG = bm25_real.bm25query,
     FUNCTION = bm25_shadow.score);
 SET search_path = bm25_shadow, bm25_real, public;
+-- Exercise the warm cache before a type change invalidates it.
+SELECT id FROM schema_docs
+ORDER BY content OPERATOR(bm25_real.<@>) 'target'::text LIMIT 1;
+id
+1
+(1 row)
 -- Invalidate even an already-warm OID cache under the hostile search_path.
 CREATE TYPE bm25_shadow.cache_reset AS (dummy integer);
 -- Real operators must still be recognized/re-written for all four signatures.
@@ -310,6 +345,12 @@ ALTER SCHEMA bm25_real RENAME TO bm25_renamed;
 SET search_path = bm25_shadow, bm25_renamed, public;
 SELECT id FROM bm25_renamed.schema_docs
 ORDER BY content OPERATOR(bm25_renamed.<@>) 'target'::text LIMIT 1;
+id
+1
+(1 row)
+SET search_path = public;
+SELECT id FROM bm25_renamed.schema_docs
+ORDER BY tags OPERATOR(bm25_renamed.<@>) 'target'::text LIMIT 1;
 id
 1
 (1 row)
