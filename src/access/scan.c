@@ -180,6 +180,15 @@ tp_rescan_process_orderby(
 			double hint_selectivity;
 
 			/*
+			 * Reject a NULL query before dereferencing the scan-key argument.
+			 */
+			if (orderby->sk_flags & SK_ISNULL)
+			{
+				ereport(ERROR,
+						(errmsg("NULL ORDER BY clause with BM25 operator")));
+			}
+
+			/*
 			 * Use sk_subtype to determine the argument type.
 			 * sk_subtype contains the right-hand operand's type OID.
 			 */
@@ -670,12 +679,18 @@ tp_gettuple(IndexScanDesc scan, ScanDirection dir)
 		scan->xs_orderbyvals[0]	 = Float8GetDatum((float8)bm25_score);
 		scan->xs_orderbynulls[0] = false;
 
-		/* Log BM25 score if enabled */
-		elog(tp_log_scores ? NOTICE : DEBUG1,
-			 "BM25 index scan: tid=(%u,%u), BM25_score=%.4f",
-			 BlockIdGetBlockNumber(&scan->xs_heaptid.ip_blkid),
-			 scan->xs_heaptid.ip_posid,
-			 bm25_score);
+		/*
+		 * These results have not passed heap visibility or RLS checks.
+		 * Require the superuser-only opt-in even at DEBUG message levels.
+		 */
+		if (tp_log_scores)
+		{
+			elog(NOTICE,
+				 "BM25 index scan: tid=(%u,%u), BM25_score=%.4f",
+				 BlockIdGetBlockNumber(&scan->xs_heaptid.ip_blkid),
+				 scan->xs_heaptid.ip_posid,
+				 bm25_score);
+		}
 
 		/* Cache score for stub function to retrieve */
 		tp_cached_score = (float8)bm25_score;

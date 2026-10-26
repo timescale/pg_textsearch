@@ -490,6 +490,13 @@ A user who already knows a term can infer frequency information affected by
 inaccessible rows, though the index does not reveal unknown terms. This is
 analogous to [Elastic's security limitation](https://www.elastic.co/docs/deploy-manage/security/limitations).
 
+Standalone scoring is rejected when PostgreSQL applies RLS to the invoking
+role on the indexed table. This includes direct scoring-function calls and
+sequential-scan scoring; SELECT privileges alone do not authorize access to
+whole-index statistics. PostgreSQL's owner, FORCE RLS, and BYPASSRLS rules
+still apply. BM25 index scans continue to filter returned rows through RLS,
+but their ranking statistics are not isolated per tenant.
+
 `pg_textsearch.allow_rls` defaults to `on`. Set it to `off` as a superuser to
 reject creating or rebuilding BM25 indexes on RLS-protected tables and
 enabling RLS where BM25 indexes already exist. This does not disable
@@ -641,6 +648,7 @@ encounter a conflict,
 
 Version | Highlights
 --- | ---
+[`v1.5.2`](https://github.com/timescale/pg_textsearch/releases/tag/v1.5.2) | Fix NULL ranked-query crashes, pre-RLS debug score disclosure, and search-path-sensitive planner lookups
 [`v1.5.1`](https://github.com/timescale/pg_textsearch/releases/tag/v1.5.1) | Fix concurrent spill/merge corruption, expression indexes, and maintenance without the extension
 [`v1.5.0`](https://github.com/timescale/pg_textsearch/releases/tag/v1.5.0) | Background compaction, Boolean and phrase queries, and faster builds and scans
 [`v1.4.0`](https://github.com/timescale/pg_textsearch/releases/tag/v1.4.0) | Faster filtered top-k queries, Chinese search, and large-corpus improvements
