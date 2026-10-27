@@ -134,6 +134,7 @@ test-injection-shell: test-replication-transport
 	@cd test/scripts && ./nonblocking_compaction.sh
 	@cd test/scripts && ./nonblocking_spill.sh
 	@cd test/scripts && ./compaction_recovery.sh
+	@cd test/scripts && ./alive_bitset_recovery.sh
 	@cd test/scripts && ./parallel_vacuum.sh injection
 	@cd test/scripts && ./standby_reclaim.sh
 else
@@ -258,6 +259,7 @@ test-recovery:
 	@cd test/scripts && ./recovery.sh
 	@cd test/scripts && ./shutdown_spill.sh
 	@cd test/scripts && ./compaction_recovery.sh
+	@cd test/scripts && ./alive_bitset_recovery.sh
 
 test-segment:
 	@echo "Running multi-backend segment tests..."

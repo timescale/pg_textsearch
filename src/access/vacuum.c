@@ -44,6 +44,7 @@
 #include "segment/dictionary.h"
 #include "segment/graph_snapshot.h"
 #include "segment/io.h"
+#include "segment/pagemapper.h"
 #include "segment/segment.h"
 #include "segment/tombstone.h"
 
@@ -774,6 +775,11 @@ tp_vacuum_mark_dead(
 {
 	TpSegmentReader *reader;
 	TpAliveBitset	*bitset;
+	uint64			 bitset_offset;
+	uint32			 nbytes;
+	uint32			 first_page;
+	uint32			 num_pages;
+	uint32			*dead_per_page;
 
 	reader = tp_segment_open_ex(index, root_block, false);
 	if (!reader || !reader->header)
@@ -790,10 +796,33 @@ tp_vacuum_mark_dead(
 		return;
 	}
 
-	for (uint32 i = 0; i < dead_count; i++)
-		tp_alive_bitset_mark_dead(bitset, dead_doc_ids[i]);
+	/* Hold the maintenance lock throughout load, mark, and write. */
+	bitset_offset = reader->header->alive_bitset_offset;
+	nbytes		  = tp_alive_bitset_size(bitset->num_docs);
+	first_page	  = tp_logical_page(bitset_offset);
+	num_pages	  = nbytes == 0 ? 0
+								: tp_logical_page(bitset_offset + nbytes - 1) -
+									  first_page + 1;
+	dead_per_page = palloc0(num_pages * sizeof(uint32));
 
-	tp_alive_bitset_write(bitset, reader, index);
+	/* Count only new deaths, including when retrying a partial write. */
+	for (uint32 i = 0; i < dead_count; i++)
+	{
+		uint32 doc_id = dead_doc_ids[i];
+
+		if (tp_alive_bitset_mark_dead(bitset, doc_id))
+		{
+			uint32 page = tp_logical_page(bitset_offset + (doc_id >> 3)) -
+						  first_page;
+
+			Assert(page < num_pages);
+			dead_per_page[page]++;
+		}
+	}
+
+	tp_alive_bitset_write(bitset, reader, index, dead_per_page);
+
+	pfree(dead_per_page);
 
 	tp_alive_bitset_free(bitset);
 	tp_segment_close(reader);
