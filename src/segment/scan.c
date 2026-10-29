@@ -534,7 +534,7 @@ tp_segment_posting_iterator_next(
 
 	/* Build output posting (fieldnorm is inline in bp) */
 	iter->output_posting.frequency	= bp->frequency;
-	iter->output_posting.doc_length = (uint16)decode_fieldnorm(bp->fieldnorm);
+	iter->output_posting.doc_length = decode_fieldnorm(bp->fieldnorm);
 
 	*posting = &iter->output_posting;
 	iter->current_in_block++;
@@ -731,8 +731,7 @@ tp_segment_posting_iterator_seek(
 			}
 
 			iter->output_posting.frequency	= bp->frequency;
-			iter->output_posting.doc_length = (uint16)decode_fieldnorm(
-					bp->fieldnorm);
+			iter->output_posting.doc_length = decode_fieldnorm(bp->fieldnorm);
 
 			*posting = &iter->output_posting;
 			return true;
