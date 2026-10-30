@@ -61,8 +61,8 @@ CURRENT_VERSION="$(sed -n "s/^default_version = '\([^']*\)'/\1/p" "$REPO_ROOT/pg
 # 0.5.1 = metapage v6 + segment v3; 1.0.0 = v6 + segment v4;
 # 1.2.0 = v6 + segment v5; 1.3.0 = metapage v7 (native on-disk L0);
 # 1.4.0 = metapage v8 before indexes recorded zero-lexeme documents;
-# 1.5.0 = previous stable release.
-OLD_VERSIONS="${OLD_VERSIONS:-0.5.0 0.5.1 1.0.0 1.2.0 1.3.0 1.4.0 1.5.0}"
+# 1.5.0/1.5.1 exercise the maintenance-release upgrade chain.
+OLD_VERSIONS="${OLD_VERSIONS:-0.5.0 0.5.1 1.0.0 1.2.0 1.3.0 1.4.0 1.5.0 1.5.1}"
 if [ "$#" -gt 0 ]; then OLD_VERSIONS="$*"; fi
 
 # Cluster ops must not run as root.  When invoked as root (e.g. inside
@@ -117,7 +117,10 @@ build_install_old() { # $1 = version
   local v="$1" dir="/tmp/pg_textsearch-$v"
   rm -rf "$dir" "/tmp/ptsrc-$v.tar.gz"
   local url="https://github.com/timescale/pg_textsearch/releases/download/v$v/pg_textsearch-$v.tar.gz"
-  curl -fsSL -o "/tmp/ptsrc-$v.tar.gz" "$url" || return 2
+  # Retry transient download failures, but never skip the upgrade gate.
+  curl -fsSL --retry 3 --retry-connrefused --retry-delay 2 \
+    --connect-timeout 15 --max-time 120 \
+    -o "/tmp/ptsrc-$v.tar.gz" "$url" || return 2
   tar -xzf "/tmp/ptsrc-$v.tar.gz" -C /tmp || return 2
   ( cd "$dir" && make -s PG_CONFIG="$PG_CONFIG" clean >/dev/null 2>&1;
     make -s PG_CONFIG="$PG_CONFIG" >/dev/null 2>&1 &&

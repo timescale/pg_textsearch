@@ -39,7 +39,7 @@ jobs:
     - name: Test upgrade from previous stable release
       run: |
         export PG_CONFIG=/usr/lib/postgresql/${{ matrix.pg_version }}/bin/pg_config
-        STRICT_UNSPILLED=1 bash test/scripts/upgrade_matrix.sh 1.5.0
+        STRICT_UNSPILLED=1 bash test/scripts/upgrade_matrix.sh 1.5.1
 
   build-packages:
     needs: test-upgrades

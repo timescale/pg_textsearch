@@ -43,7 +43,7 @@ jobs:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
-          # Main pushes and manual dispatches retain the full CI suite.
+          # Branch pushes and manual dispatches retain the full CI suite.
           if [[ "$EVENT_NAME" != "pull_request" ]]; then
             echo "run_tests=true" >> "$GITHUB_OUTPUT"
             exit 0
@@ -1311,9 +1311,11 @@ jobs:
       uses: actions/cache/restore@v4
       with:
         path: coverage-baseline.txt
-        key: coverage-baseline-never-matches
+        # Never fall back to another branch's baseline. The v2 prefix
+        # also excludes the old main-only, unscoped cache entries.
+        key: coverage-baseline-v2-${{ github.base_ref }}-never-matches
         restore-keys: |
-          coverage-baseline-
+          coverage-baseline-v2-${{ github.base_ref }}-
 
     - name: Coverage gate
       id: coverage-gate
@@ -1364,11 +1366,14 @@ jobs:
         fi
 
     - name: Save coverage baseline
-      if: github.ref == 'refs/heads/main'
+      if: >-
+        github.event_name != 'pull_request' &&
+        (github.ref == 'refs/heads/main' ||
+         startsWith(github.ref, 'refs/heads/release/'))
       uses: actions/cache/save@v4
       with:
         path: coverage-baseline.txt
-        key: coverage-baseline-${{ github.sha }}
+        key: coverage-baseline-v2-${{ github.ref_name }}-${{ github.sha }}
 
     - name: Generate HTML report
       run: |
