@@ -50,7 +50,9 @@ jobs:
         # Download the source tarball from GitHub releases
         DOWNLOAD_URL="https://github.com/timescale/pg_textsearch/releases/download/v${{ matrix.old_version }}/pg_textsearch-${{ matrix.old_version }}.tar.gz"
         echo "Downloading from: $DOWNLOAD_URL"
-        if curl -fsSL -o pg_textsearch-old.tar.gz "$DOWNLOAD_URL"; then
+        if curl -fsSL --retry 3 --retry-connrefused --retry-delay 2 \
+            --connect-timeout 15 --max-time 120 \
+            -o pg_textsearch-old.tar.gz "$DOWNLOAD_URL"; then
           tar -xzf pg_textsearch-old.tar.gz
           ls -la
         else
