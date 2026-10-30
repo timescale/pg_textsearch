@@ -8,7 +8,7 @@ name: Chinese CI
 
 on:
   push:
-    branches: [ main ]
+    branches: [ main, 'release/*' ]
     paths:
       - 'src/**'
       - 'sql/**'
@@ -18,7 +18,7 @@ on:
       - 'test/expected/chinese.out'
       - '.github/workflows/chinese-ci.yml'
   pull_request:
-    branches: [ main ]
+    branches: [ main, 'release/*' ]
     paths:
       - 'src/**'
       - 'sql/**'
