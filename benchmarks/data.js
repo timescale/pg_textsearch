@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1793341282706,
+  "lastUpdate": 1793341290309,
   "repoUrl": "https://github.com/timescale/pg_textsearch",
   "entries": {
     "cranfield Benchmarks": [
@@ -50106,6 +50106,133 @@ window.BENCHMARK_DATA = {
           {
             "name": "msmarco (8.8M docs) - Query Latency After Update VACUUM",
             "value": 7.44,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "John Pruitt",
+            "username": "jgpruitt",
+            "email": "jgpruitt@gmail.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "4efe5248464eb20c8c2545b6d6fd5dfa20609b41",
+          "message": "test: avoid TCP port collisions in recovery tests (#567)\n\n## Summary\n\nCloses #566.\n\nMove `compaction_recovery.sh` and `standby_reclaim.sh` to private, short\nUnix-socket directories with TCP listeners disabled. This removes their\ndependency on fixed TCP ports without reintroducing workspace\nsocket-path length limits.\n\n## Failure mechanism\n\nIn the affected CI runs, PostgreSQL could not bind the configured IPv4\nlocalhost port but successfully started on IPv6. `pg_ctl start -w`\ntherefore reported success, while the scripts’ subsequent connections to\n`127.0.0.1` failed with `Connection refused`.\n\nThe original socket owner is unknown. An ephemeral-port collision is\nplausible, but this change does not depend on that hypothesis: these\ntests no longer open TCP listeners.\n\nEvidence:\n-\nhttps://github.com/timescale/pg_textsearch/actions/runs/38963119105/job/117182902192\n-\nhttps://github.com/timescale/pg_textsearch/actions/runs/38963119105/job/117182902089\n-\nhttps://github.com/timescale/pg_textsearch/actions/runs/38966039790/job/117193204020\n\n## Changes\n\n- Add opt-in `REPL_SOCKET_ONLY=1` support to the shared replication\nhelpers.\n- Allocate a private `/tmp/pgts-repl.XXXXXX` directory at primary setup,\nexport it as `PGHOST`, and configure `listen_addresses` to be empty.\n- Let standbys inherit the socket-only transport through\n`pg_basebackup`; remove the owned directory after node shutdown during\ncleanup.\n- Enable this mode in the two affected recovery scripts. Other callers\nretain their existing transport settings.\n- Add a no-server harness regression test covering\nprimary/cascading-standby configuration, unique directories, default and\nexplicit TCP modes, preservation of caller-owned directories, and\nfailure cleanup/status propagation. Run it through the existing\nSQL/local/injection test targets.\n\n## Validation\n\nValidated in isolated Linux aarch64 Podman containers using PostgreSQL\n18.4 built with assertions, debugging, and injection points enabled:\n\n- Built and installed PostgreSQL, the extension, and its injection-point\ntest module.\n- Bound IPv4 TCP ports `55438`, `55439`, `55464`, and `55465` without\nlistening. Both recovery scripts from unmodified `main` reproduced the\noriginal bind-conflict/connection-refused failure.\n- Both complete patched recovery scripts passed with all four TCP ports\nstill occupied; no private socket directories leaked.\n- `make installcheck`: **all 92 SQL tests passed**, including\ninjection-point tests, plus prerequisite harness/compression/benchmark\nchecks.\n- `make` passed.\n- `make format-check` passed using CI’s pinned `clang-format 21.1.8`.\n- New harness test passed locally; Bash syntax checks, its ShellCheck\ncheck, and `git diff --check` passed.\n\nThe full regression run used a disposable tmpfs-backed database after an\ninitial attempt exhausted the nearly-full Podman VM disk during\n`parallel_build`. The successful rerun completed the entire suite.\nTemporary validation containers were removed; no unrelated\ncontainers/images or existing database clusters were modified.\n\nNo extension C code or SQL behavior changes.",
+          "timestamp": "2026-10-16T21:56:27Z",
+          "url": "https://github.com/timescale/pg_textsearch/commit/4efe5248464eb20c8c2545b6d6fd5dfa20609b41"
+        },
+        "date": 1793341289373,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "msmarco (8.8M docs) - Index Build Time",
+            "value": 225141.684,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - 1 Token Query (p50)",
+            "value": 0.74,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - 2 Token Query (p50)",
+            "value": 1.28,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - 3 Token Query (p50)",
+            "value": 2.28,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - 4 Token Query (p50)",
+            "value": 3.8,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - 5 Token Query (p50)",
+            "value": 5.94,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - 6 Token Query (p50)",
+            "value": 8.93,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - 7 Token Query (p50)",
+            "value": 13.46,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - 8+ Token Query (p50)",
+            "value": 20.38,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - Weighted Latency (p50, ms)",
+            "value": 3.89,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - Weighted Throughput (avg ms/query)",
+            "value": 4.96,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - Index Size",
+            "value": 2432.6,
+            "unit": "MB"
+          },
+          {
+            "name": "msmarco (8.8M docs) - Partial VACUUM (concentrated delete)",
+            "value": 1157.954,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - Full VACUUM (uniform delete)",
+            "value": 7352.729,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - Full VACUUM (uniform update)",
+            "value": 4183.196,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - Index Size After Partial VACUUM",
+            "value": 2435,
+            "unit": "MB"
+          },
+          {
+            "name": "msmarco (8.8M docs) - Index Size After Full VACUUM",
+            "value": 2435,
+            "unit": "MB"
+          },
+          {
+            "name": "msmarco (8.8M docs) - Query Latency After Partial VACUUM",
+            "value": 7.53,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - Query Latency After Full VACUUM",
+            "value": 7.23,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - Index Size After Update VACUUM",
+            "value": 2435,
+            "unit": "MB"
+          },
+          {
+            "name": "msmarco (8.8M docs) - Query Latency After Update VACUUM",
+            "value": 7.24,
             "unit": "ms"
           }
         ]
