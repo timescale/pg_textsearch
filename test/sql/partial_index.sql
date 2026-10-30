@@ -232,6 +232,41 @@ LIMIT 5;
 DROP TABLE partial_only CASCADE;
 
 -- ============================================================
+-- Cost: a partial index covering a small share of the heap
+-- ============================================================
+
+-- The ordered scan returns at most the index's 10 documents,
+-- so it must not be priced as fetching all 10000 heap tuples.
+RESET enable_seqscan;
+
+CREATE TABLE partial_cost (
+    id SERIAL PRIMARY KEY,
+    content TEXT,
+    category TEXT
+);
+
+INSERT INTO partial_cost (content, category)
+SELECT 'database document ' || i,
+       CASE WHEN i % 1000 = 0 THEN 'tech' ELSE 'other' END
+FROM generate_series(1, 10000) i;
+
+CREATE INDEX partial_cost_idx ON partial_cost
+    USING bm25 (content)
+    WITH (text_config='english')
+    WHERE category = 'tech';
+
+ANALYZE partial_cost;
+
+EXPLAIN (COSTS OFF)
+SELECT id
+FROM partial_cost
+WHERE category = 'tech'
+ORDER BY content <@> to_bm25query('database', 'partial_cost_idx')
+LIMIT 20;
+
+DROP TABLE partial_cost CASCADE;
+
+-- ============================================================
 -- Cleanup
 -- ============================================================
 
