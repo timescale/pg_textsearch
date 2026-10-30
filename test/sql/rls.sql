@@ -80,6 +80,103 @@ RESET enable_seqscan;
 DROP TABLE rls_visibility;
 DROP ROLE rls_visibility_reader;
 
+-- SELECT privileges do not authorize standalone reads of hidden-row statistics.
+SET client_min_messages = warning;
+\pset format unaligned
+\set VERBOSITY terse
+CREATE ROLE rls_score_owner;
+CREATE ROLE rls_score_reader;
+CREATE ROLE rls_score_bypass BYPASSRLS;
+CREATE TABLE rls_score_docs (id integer, content text);
+INSERT INTO rls_score_docs VALUES (1, 'zzsecretzz falcon'), (2, 'public');
+CREATE INDEX rls_score_idx ON rls_score_docs USING bm25(content)
+    WITH (text_config='simple');
+ALTER TABLE rls_score_docs OWNER TO rls_score_owner;
+ALTER TABLE rls_score_docs ENABLE ROW LEVEL SECURITY;
+CREATE POLICY rls_score_none ON rls_score_docs USING (false);
+GRANT SELECT ON rls_score_docs TO rls_score_reader, rls_score_bypass;
+
+-- Cache a generic plan as the owner, then execute it as a restricted role.
+SET plan_cache_mode = force_generic_plan;
+PREPARE rls_score_probe(text) AS
+    SELECT bm25_text_bm25query_score(
+        $1, to_bm25query($1, 'rls_score_idx')) < 0 AS found;
+SET ROLE rls_score_owner;
+EXECUTE rls_score_probe('zzsecretzz');
+RESET ROLE;
+SET ROLE rls_score_reader;
+SELECT count(*) AS visible_rows FROM rls_score_docs;
+SELECT 'zzsecretzz'::text <@>
+    (SELECT to_bm25query('zzsecretzz', 'rls_score_idx'));
+SELECT 'zzabsentzz'::text <@>
+    (SELECT to_bm25query('zzabsentzz', 'rls_score_idx'));
+SELECT ARRAY['falcon'] <@>
+    (SELECT to_bm25query('falcon', 'rls_score_idx'));
+EXECUTE rls_score_probe('zzsecretzz');
+SELECT bm25_textarray_bm25query_score(
+    ARRAY['falcon'], to_bm25query('falcon', 'rls_score_idx'));
+SET row_security = off;
+EXECUTE rls_score_probe('zzsecretzz');
+RESET row_security;
+RESET ROLE;
+
+-- A column-only SELECT grant must not avoid the same guard.
+REVOKE SELECT ON rls_score_docs FROM rls_score_reader;
+GRANT SELECT (content) ON rls_score_docs TO rls_score_reader;
+SET ROLE rls_score_reader;
+EXECUTE rls_score_probe('zzsecretzz');
+RESET ROLE;
+
+-- Policies cannot be applied to a synthetic document, even if permissive.
+ALTER POLICY rls_score_none ON rls_score_docs USING (true);
+SET ROLE rls_score_reader;
+EXECUTE rls_score_probe('zzsecretzz');
+RESET ROLE;
+ALTER TABLE rls_score_docs FORCE ROW LEVEL SECURITY;
+SET ROLE rls_score_owner;
+EXECUTE rls_score_probe('zzsecretzz');
+RESET ROLE;
+SET ROLE rls_score_bypass;
+EXECUTE rls_score_probe('zzsecretzz');
+RESET ROLE;
+EXECUTE rls_score_probe('zzsecretzz');
+
+-- Re-evaluate RLS after DDL even when reusing a previously denied plan.
+ALTER TABLE rls_score_docs DISABLE ROW LEVEL SECURITY;
+SET ROLE rls_score_reader;
+EXECUTE rls_score_probe('zzsecretzz');
+RESET ROLE;
+ALTER TABLE rls_score_docs ENABLE ROW LEVEL SECURITY;
+SET ROLE rls_score_reader;
+EXECUTE rls_score_probe('zzsecretzz');
+RESET ROLE;
+DEALLOCATE rls_score_probe;
+RESET plan_cache_mode;
+
+-- Check the named partitioned parent before resolving a physical child.
+CREATE TABLE rls_score_parent (id integer, content text)
+    PARTITION BY RANGE (id);
+CREATE TABLE rls_score_child PARTITION OF rls_score_parent
+    FOR VALUES FROM (0) TO (10);
+INSERT INTO rls_score_parent VALUES (1, 'falcon');
+CREATE INDEX rls_score_parent_idx ON rls_score_parent USING bm25(content)
+    WITH (text_config='simple');
+ALTER TABLE rls_score_parent ENABLE ROW LEVEL SECURITY;
+GRANT SELECT ON rls_score_parent TO rls_score_reader;
+SET ROLE rls_score_reader;
+SELECT 'falcon'::text <@>
+    (SELECT to_bm25query('falcon', 'rls_score_parent_idx'));
+RESET ROLE;
+
+DROP TABLE rls_score_parent;
+DROP TABLE rls_score_docs;
+DROP ROLE rls_score_owner;
+DROP ROLE rls_score_reader;
+DROP ROLE rls_score_bypass;
+\set VERBOSITY default
+\pset format aligned
+RESET client_min_messages;
+
 CREATE TABLE rls_existing (id integer, content text);
 INSERT INTO rls_existing VALUES (1, 'known secret term');
 ALTER TABLE rls_existing ENABLE ROW LEVEL SECURITY;
