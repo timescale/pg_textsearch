@@ -32,6 +32,9 @@ $$;
 
 SET enable_seqscan = off;
 \pset format unaligned
+-- Keep DEBUG1 assertions independent of the server's statement logging.
+SET log_statement = none;
+SET pg_textsearch.log_scores = off;
 SELECT id AS unrestricted_top
 FROM rls_visibility
 ORDER BY content <@> to_bm25query('target', 'rls_visibility_idx')
@@ -43,11 +46,34 @@ SELECT pg_temp.first_plan_child($query$
     ORDER BY content <@> to_bm25query('target', 'rls_visibility_idx')
     LIMIT 1
 $query$) = 'Index Scan' AS rls_uses_bm25_index;
+-- A non-owner can request DEBUG1, but not pre-RLS CTIDs or scores.
+SET client_min_messages = debug1;
 SELECT id AS rls_visible_top
 FROM rls_visibility
 ORDER BY content <@> to_bm25query('target', 'rls_visibility_idx')
 LIMIT 1;
+-- Neither enabling score logging nor relaxing the RLS guard is permitted.
+SET pg_textsearch.log_scores = on;
+SET pg_textsearch.allow_rls = off;
+RESET client_min_messages;
 RESET ROLE;
+
+-- Administrators can explicitly opt in to score diagnostics.
+SET pg_textsearch.log_scores = on;
+SELECT id FROM rls_visibility
+ORDER BY content <@> to_bm25query('target', 'rls_visibility_idx')
+LIMIT 2;
+SET pg_textsearch.log_scores = off;
+SET ROLE rls_visibility_reader;
+SET client_min_messages = debug1;
+SELECT id AS rls_visible_without_logging
+FROM rls_visibility
+ORDER BY content <@> to_bm25query('target', 'rls_visibility_idx')
+LIMIT 1;
+RESET client_min_messages;
+RESET ROLE;
+RESET pg_textsearch.log_scores;
+RESET log_statement;
 \pset format aligned
 RESET enable_seqscan;
 

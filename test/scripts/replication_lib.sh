@@ -30,10 +30,12 @@ YELLOW='\033[1;33m'
 NC='\033[0m'
 
 # Route all psql / pg_basebackup connections through a writable
-# socket directory by default. Callers may select TCP and disable
-# Unix sockets when their workspace path exceeds the platform limit.
+# socket directory by default. Callers may select TCP explicitly, or
+# set REPL_SOCKET_ONLY=1 for a private, short /tmp socket directory
+# with no TCP listeners (independent of workspace path length).
 REPL_SOCKET_DIR=${REPL_SOCKET_DIR-/tmp}
 export PGHOST=${REPL_HOST:-${REPL_SOCKET_DIR}}
+REPL_OWNED_SOCKET_DIR=
 
 # Injection points only exist on a server built with
 # --enable-injection-points. Sourcing scripts use this to skip the
@@ -92,6 +94,9 @@ repl_cleanup() {
                "${STANDBY2_DIR:-}"; do
         [ -z "$dir" ] || rm -rf "${dir}"
     done
+    if [ -n "${REPL_OWNED_SOCKET_DIR:-}" ]; then
+        rm -rf "${REPL_OWNED_SOCKET_DIR}"
+    fi
     exit $exit_code
 }
 
@@ -185,6 +190,18 @@ wait_for_standby_catchup() {
 # PRIMARY_DIR/PRIMARY_PORT.
 # -------------------------------------------------------------------
 setup_primary() {
+    local listen_addresses=localhost
+    if [ "${REPL_SOCKET_ONLY:-0}" -eq 1 ]; then
+        # Keep sockets out of long checkout paths and isolate concurrent
+        # tests even when they use the same PostgreSQL port numbers.
+        if [ -z "${REPL_OWNED_SOCKET_DIR}" ]; then
+            REPL_OWNED_SOCKET_DIR=$(mktemp -d /tmp/pgts-repl.XXXXXX)
+        fi
+        REPL_SOCKET_DIR=${REPL_OWNED_SOCKET_DIR}
+        export PGHOST=${REPL_SOCKET_DIR}
+        listen_addresses=
+    fi
+
     log "Setting up primary instance on port ${PRIMARY_PORT}..."
     rm -rf "${PRIMARY_DIR}"
     mkdir -p "${PRIMARY_DIR}"
@@ -194,6 +211,7 @@ setup_primary() {
 
     cat >> "${PRIMARY_DIR}/postgresql.conf" <<EOF
 port = ${PRIMARY_PORT}
+listen_addresses = '${listen_addresses}'
 unix_socket_directories = '${REPL_SOCKET_DIR}'
 shared_buffers = 128MB
 max_connections = 30
