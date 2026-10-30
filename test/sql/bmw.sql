@@ -965,21 +965,96 @@ INSERT INTO bmw_fieldnorm VALUES
     (1, 'needle needle ' || repeat('pad ', 93)),
     (2, 'needle ' || repeat('pad ', 34));
 
+-- Memtable only: doc 1 ranks first and is the only row at LIMIT 1,
+-- with and without the memtable cache
 SELECT id, ROUND((content <@> to_bm25query('needle',
                   'bmw_fieldnorm_idx'))::numeric, 4) AS score
 FROM bmw_fieldnorm
 ORDER BY content <@> to_bm25query('needle', 'bmw_fieldnorm_idx')
+LIMIT 2;
+
+SELECT id, ROUND((content <@> to_bm25query('needle',
+                  'bmw_fieldnorm_idx'))::numeric, 4) AS score
+FROM bmw_fieldnorm
+ORDER BY content <@> to_bm25query('needle', 'bmw_fieldnorm_idx')
+LIMIT 1;
+
+SET pg_textsearch.memtable_cache_enabled = off;
+SELECT id, ROUND((content <@> to_bm25query('needle',
+                  'bmw_fieldnorm_idx'))::numeric, 4) AS score
+FROM bmw_fieldnorm
+ORDER BY content <@> to_bm25query('needle', 'bmw_fieldnorm_idx')
+LIMIT 1;
+
+RESET pg_textsearch.memtable_cache_enabled;
+
+-- Two terms, both contributing to each score
+SELECT id, ROUND((content <@> to_bm25query('needle pad',
+                  'bmw_fieldnorm_idx'))::numeric, 4) AS score
+FROM bmw_fieldnorm
+ORDER BY content <@> to_bm25query('needle pad', 'bmw_fieldnorm_idx')
 LIMIT 2;
 
 SELECT bm25_spill_index('bmw_fieldnorm_idx') IS NOT NULL AS spilled;
 
+-- Segment only: same ranking and scores as the memtable
 SELECT id, ROUND((content <@> to_bm25query('needle',
                   'bmw_fieldnorm_idx'))::numeric, 4) AS score
 FROM bmw_fieldnorm
 ORDER BY content <@> to_bm25query('needle', 'bmw_fieldnorm_idx')
 LIMIT 2;
 
+SELECT id, ROUND((content <@> to_bm25query('needle',
+                  'bmw_fieldnorm_idx'))::numeric, 4) AS score
+FROM bmw_fieldnorm
+ORDER BY content <@> to_bm25query('needle', 'bmw_fieldnorm_idx')
+LIMIT 1;
+
+SELECT id, ROUND((content <@> to_bm25query('needle pad',
+                  'bmw_fieldnorm_idx'))::numeric, 4) AS score
+FROM bmw_fieldnorm
+ORDER BY content <@> to_bm25query('needle pad', 'bmw_fieldnorm_idx')
+LIMIT 2;
+
 DROP TABLE bmw_fieldnorm;
+
+-- Mixed sources: the longer doc 1 (95 -> 88 tokens) stays in the
+-- memtable, doc 2 is in a segment
+CREATE TABLE bmw_fieldnorm_mixed (id INT PRIMARY KEY, content TEXT);
+CREATE INDEX bmw_fieldnorm_mixed_idx ON bmw_fieldnorm_mixed USING bm25(content)
+    WITH (text_config='simple', k1=1.2, b=0.75);
+INSERT INTO bmw_fieldnorm_mixed VALUES (2, 'needle ' || repeat('pad ', 34));
+SELECT bm25_spill_index('bmw_fieldnorm_mixed_idx') IS NOT NULL AS spilled;
+INSERT INTO bmw_fieldnorm_mixed VALUES
+    (1, 'needle needle ' || repeat('pad ', 93));
+
+SELECT id, ROUND((content <@> to_bm25query('needle',
+                  'bmw_fieldnorm_mixed_idx'))::numeric, 4) AS score
+FROM bmw_fieldnorm_mixed
+ORDER BY content <@> to_bm25query('needle', 'bmw_fieldnorm_mixed_idx')
+LIMIT 2;
+
+SELECT id, ROUND((content <@> to_bm25query('needle',
+                  'bmw_fieldnorm_mixed_idx'))::numeric, 4) AS score
+FROM bmw_fieldnorm_mixed
+ORDER BY content <@> to_bm25query('needle', 'bmw_fieldnorm_mixed_idx')
+LIMIT 1;
+
+SET pg_textsearch.memtable_cache_enabled = off;
+SELECT id, ROUND((content <@> to_bm25query('needle',
+                  'bmw_fieldnorm_mixed_idx'))::numeric, 4) AS score
+FROM bmw_fieldnorm_mixed
+ORDER BY content <@> to_bm25query('needle', 'bmw_fieldnorm_mixed_idx')
+LIMIT 1;
+
+RESET pg_textsearch.memtable_cache_enabled;
+SELECT id, ROUND((content <@> to_bm25query('needle pad',
+                  'bmw_fieldnorm_mixed_idx'))::numeric, 4) AS score
+FROM bmw_fieldnorm_mixed
+ORDER BY content <@> to_bm25query('needle pad', 'bmw_fieldnorm_mixed_idx')
+LIMIT 2;
+
+DROP TABLE bmw_fieldnorm_mixed;
 
 -- ============================================================
 -- Cleanup
