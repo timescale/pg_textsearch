@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1793427684452,
+  "lastUpdate": 1793427689480,
   "repoUrl": "https://github.com/timescale/pg_textsearch",
   "entries": {
     "cranfield Benchmarks": [
@@ -50270,6 +50270,133 @@ window.BENCHMARK_DATA = {
           {
             "name": "msmarco (8.8M docs) - Query Latency After Update VACUUM",
             "value": 7.24,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Raphael Fakhri",
+            "username": "RaphaelFakhri",
+            "email": "rjf11@mail.aub.edu"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "09a66ace3c318201f7f5fce198fd3becadb831d2",
+          "message": "Quantize memtable document lengths in BM25 index scans (#575)\n\n## Problem\n\nThe BM25 index scan scores memtable rows with their exact document\nlength. Segments and the standalone `<@>` operator use the\nfieldnorm-quantized length (`decode_fieldnorm(encode_fieldnorm(len))`),\nand `bm25_text_bm25query_score` notes that it does this so the operator\nmatches index scans.\n\nFor documents longer than 39 tokens the two lengths differ, so the top-k\nheap ranks memtable rows by scores that differ from the scores the query\nreports. `ORDER BY col <@> q LIMIT n` can return rows out of score order\nor leave out better-scoring rows until the memtable is spilled. After\n`bm25_spill_index()` the same query returns the correct top N.\n\nFixes #557. Also covers #573, which reports the same root cause.\n\n## Approach\n\nApply the same fieldnorm encode/decode to the memtable document length\nin `score_memtable_single_term()` and in the multi-term memtable scorer\nin `src/scoring/bmw.c`, before the score enters the top-k heap. Stored\nlengths, corpus statistics, and the on-disk format are unchanged, so no\nreindex is needed.\n\n## Tests\n\n- Adds a case to `test/sql/bmw.sql`: two memtable documents where the\nexact lengths rank doc 2 first and the quantized lengths rank doc 1\nfirst. The ordered index scan must return the same order before and\nafter `bm25_spill_index()`.\n- Updates `test/expected/strings.out`: the `log_scores` notice for the\n23,614-character document now reports `-4.2254`, the same score the\nquery returns for that row. The old expected value `-4.2077` came from\nthe exact-length path.\n- Without the `bmw.c` change, `make installcheck REGRESS=\"bmw strings\"`\nfails both tests. With it, both pass.\n- `make installcheck` on PostgreSQL 17.11: all 82 tests pass.\n- The reproduction script from #557 now reports no missing rows and 0\norder violations before the spill. Without the change it reports 2\nmissing rows and 7 order violations.\n- `clang-format` 21.1.8 (the CI version) reports no changes under\n`src/`.\n\n## User-visible effects\n\nIndex scans over unspilled data return the same top N, in the same\norder, as a sequential scan or a scan after a spill. Scores logged with\n`pg_textsearch.log_scores` for memtable rows longer than 39 tokens now\nmatch the scores the query returns.",
+          "timestamp": "2026-10-30T20:32:24Z",
+          "url": "https://github.com/timescale/pg_textsearch/commit/09a66ace3c318201f7f5fce198fd3becadb831d2"
+        },
+        "date": 1793427688530,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "msmarco (8.8M docs) - Index Build Time",
+            "value": 226571.79,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - 1 Token Query (p50)",
+            "value": 0.71,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - 2 Token Query (p50)",
+            "value": 1.28,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - 3 Token Query (p50)",
+            "value": 2.34,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - 4 Token Query (p50)",
+            "value": 3.7,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - 5 Token Query (p50)",
+            "value": 6.05,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - 6 Token Query (p50)",
+            "value": 8.97,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - 7 Token Query (p50)",
+            "value": 13.36,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - 8+ Token Query (p50)",
+            "value": 20.5,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - Weighted Latency (p50, ms)",
+            "value": 3.9,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - Weighted Throughput (avg ms/query)",
+            "value": 4.98,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - Index Size",
+            "value": 2432.6,
+            "unit": "MB"
+          },
+          {
+            "name": "msmarco (8.8M docs) - Partial VACUUM (concentrated delete)",
+            "value": 1816.086,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - Full VACUUM (uniform delete)",
+            "value": 6627.725,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - Full VACUUM (uniform update)",
+            "value": 5242.631,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - Index Size After Partial VACUUM",
+            "value": 2435,
+            "unit": "MB"
+          },
+          {
+            "name": "msmarco (8.8M docs) - Index Size After Full VACUUM",
+            "value": 2435,
+            "unit": "MB"
+          },
+          {
+            "name": "msmarco (8.8M docs) - Query Latency After Partial VACUUM",
+            "value": 7.82,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - Query Latency After Full VACUUM",
+            "value": 7.68,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - Index Size After Update VACUUM",
+            "value": 2435,
+            "unit": "MB"
+          },
+          {
+            "name": "msmarco (8.8M docs) - Query Latency After Update VACUUM",
+            "value": 7.44,
             "unit": "ms"
           }
         ]
