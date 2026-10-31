@@ -451,6 +451,9 @@ score_memtable_single_term(
 		if (doc_len <= 0)
 			doc_len = 1; /* Fallback for missing entries */
 
+		/* Quantize like segments so scores do not change on spill */
+		doc_len = (int32)decode_fieldnorm(encode_fieldnorm((uint32)doc_len));
+
 		score = compute_bm25_score(idf, tf, doc_len, k1, b, avg_doc_len);
 
 		if (!tp_topk_dominated(heap, score))
@@ -747,6 +750,10 @@ score_memtable_multi_term(
 			doc_len = tp_source_get_doc_length(source, ctid);
 			if (doc_len <= 0)
 				doc_len = 1;
+
+			/* Quantize like segments so scores do not change on spill */
+			doc_len = (int32)decode_fieldnorm(
+					encode_fieldnorm((uint32)doc_len));
 
 			/* Compute BM25 term contribution */
 			term_score = compute_bm25_score(
