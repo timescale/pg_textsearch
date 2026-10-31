@@ -122,8 +122,8 @@ StaticAssertDecl(
 StaticAssertDecl(sizeof(TpCtidMapEntry) == 6, "TpCtidMapEntry size");
 StaticAssertDecl(offsetof(TpCtidMapEntry, ctid) == 0, "TpCtidMapEntry.ctid");
 
-/* Posting handed to the scorer: packed, 14 bytes */
-StaticAssertDecl(sizeof(TpSegmentPosting) == 14, "TpSegmentPosting size");
+/* Posting handed to the scorer: packed, 16 bytes */
+StaticAssertDecl(sizeof(TpSegmentPosting) == 16, "TpSegmentPosting size");
 StaticAssertDecl(
 		offsetof(TpSegmentPosting, ctid) == 0, "TpSegmentPosting.ctid");
 StaticAssertDecl(
