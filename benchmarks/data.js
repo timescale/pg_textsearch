@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1793427699666,
+  "lastUpdate": 1793429557446,
   "repoUrl": "https://github.com/timescale/pg_textsearch",
   "entries": {
     "cranfield Benchmarks": [
@@ -79054,6 +79054,38 @@ window.BENCHMARK_DATA = {
           {
             "name": "cranfield_gin - Index Build Time",
             "value": 25.728,
+            "unit": "ms"
+          },
+          {
+            "name": "cranfield_gin - Index Size",
+            "value": 0.82,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Raphael Fakhri",
+            "username": "RaphaelFakhri",
+            "email": "rjf11@mail.aub.edu"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "09a66ace3c318201f7f5fce198fd3becadb831d2",
+          "message": "Quantize memtable document lengths in BM25 index scans (#575)\n\n## Problem\n\nThe BM25 index scan scores memtable rows with their exact document\nlength. Segments and the standalone `<@>` operator use the\nfieldnorm-quantized length (`decode_fieldnorm(encode_fieldnorm(len))`),\nand `bm25_text_bm25query_score` notes that it does this so the operator\nmatches index scans.\n\nFor documents longer than 39 tokens the two lengths differ, so the top-k\nheap ranks memtable rows by scores that differ from the scores the query\nreports. `ORDER BY col <@> q LIMIT n` can return rows out of score order\nor leave out better-scoring rows until the memtable is spilled. After\n`bm25_spill_index()` the same query returns the correct top N.\n\nFixes #557. Also covers #573, which reports the same root cause.\n\n## Approach\n\nApply the same fieldnorm encode/decode to the memtable document length\nin `score_memtable_single_term()` and in the multi-term memtable scorer\nin `src/scoring/bmw.c`, before the score enters the top-k heap. Stored\nlengths, corpus statistics, and the on-disk format are unchanged, so no\nreindex is needed.\n\n## Tests\n\n- Adds a case to `test/sql/bmw.sql`: two memtable documents where the\nexact lengths rank doc 2 first and the quantized lengths rank doc 1\nfirst. The ordered index scan must return the same order before and\nafter `bm25_spill_index()`.\n- Updates `test/expected/strings.out`: the `log_scores` notice for the\n23,614-character document now reports `-4.2254`, the same score the\nquery returns for that row. The old expected value `-4.2077` came from\nthe exact-length path.\n- Without the `bmw.c` change, `make installcheck REGRESS=\"bmw strings\"`\nfails both tests. With it, both pass.\n- `make installcheck` on PostgreSQL 17.11: all 82 tests pass.\n- The reproduction script from #557 now reports no missing rows and 0\norder violations before the spill. Without the change it reports 2\nmissing rows and 7 order violations.\n- `clang-format` 21.1.8 (the CI version) reports no changes under\n`src/`.\n\n## User-visible effects\n\nIndex scans over unspilled data return the same top N, in the same\norder, as a sequential scan or a scan after a spill. Scores logged with\n`pg_textsearch.log_scores` for memtable rows longer than 39 tokens now\nmatch the scores the query returns.",
+          "timestamp": "2026-10-30T20:32:24Z",
+          "url": "https://github.com/timescale/pg_textsearch/commit/09a66ace3c318201f7f5fce198fd3becadb831d2"
+        },
+        "date": 1793429456939,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "cranfield_gin - Index Build Time",
+            "value": 30.717,
             "unit": "ms"
           },
           {
