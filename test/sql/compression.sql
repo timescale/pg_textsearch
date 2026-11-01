@@ -202,4 +202,42 @@ ORDER BY content <@> to_bm25query('date', 'mixed_idx2')) sub;
 
 -- Clean up
 DROP TABLE mixed_docs2;
+
+-- Small compressed blocks near the last data page must not read a full
+-- maximum-size block from disk. Long lexemes place postings near that boundary.
+SET default_text_search_config = 'pg_catalog.simple';
+SET enable_seqscan = off;
+CREATE TABLE compression_boundary (id integer, content text);
+INSERT INTO compression_boundary
+SELECT 1, string_agg(repeat(chr(97 + i), 1950), ' ' ORDER BY i)
+FROM generate_series(0, 7) AS i;
+CREATE INDEX compression_boundary_idx ON compression_boundary
+    USING bm25 (content)
+    WITH (text_config = 'simple', compaction = 'manual');
+
+-- Exercise both Boolean and ranked segment scans after CREATE INDEX.
+SELECT id FROM compression_boundary
+WHERE content @@ to_tsquery('simple', repeat('h', 1950)) ORDER BY id;
+SELECT id FROM (SELECT id FROM compression_boundary
+ORDER BY content <@> to_bm25query(repeat('h', 1950),
+                                 'compression_boundary_idx')) sub ORDER BY id;
+
+-- A second small segment also exercises compressed reads during compaction.
+INSERT INTO compression_boundary
+SELECT 2, content FROM compression_boundary WHERE id = 1;
+SELECT bm25_spill_index('compression_boundary_idx') IS NOT NULL AS spilled;
+SELECT sum(n) AS segments_before
+FROM unnest(bm25_level_counts('compression_boundary_idx')) AS n;
+SELECT bm25_force_merge('compression_boundary_idx');
+SELECT sum(n) AS segments_after
+FROM unnest(bm25_level_counts('compression_boundary_idx')) AS n;
+SELECT id FROM compression_boundary
+WHERE content @@ to_tsquery('simple', repeat('h', 1950)) ORDER BY id;
+SELECT id FROM (SELECT id FROM compression_boundary
+ORDER BY content <@> to_bm25query(repeat('h', 1950),
+                                 'compression_boundary_idx')) sub ORDER BY id;
+
+DROP TABLE compression_boundary;
+RESET enable_seqscan;
+RESET default_text_search_config;
 DROP EXTENSION pg_textsearch CASCADE;
