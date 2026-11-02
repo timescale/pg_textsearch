@@ -11,6 +11,7 @@
 
 #include <string.h>
 
+#include "port/pg_bswap.h"
 #include "segment/compression.h"
 
 #if defined(__x86_64__) && !defined(_MSC_VER) && defined(__has_builtin)
@@ -82,6 +83,10 @@ bitpack_extract(const uint8 *in, uint32 bit_offset, uint32 mask)
 
 	/* The caller's full-size buffer permits reads past a packed section. */
 	memcpy(&raw, in + (bit_offset >> 3), sizeof(raw));
+#ifdef WORDS_BIGENDIAN
+	/* The bit stream is LSB-first; normalize the native-endian load. */
+	raw = pg_bswap64(raw);
+#endif
 	return (uint32)(raw >> (bit_offset & 7)) & mask;
 }
 
