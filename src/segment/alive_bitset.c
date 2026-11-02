@@ -12,6 +12,7 @@
 #include <utils/memutils.h>
 #include <utils/rel.h>
 
+#include "debug/injection.h"
 #include "segment/alive_bitset.h"
 #include "segment/io.h"
 #include "segment/pagemapper.h"
@@ -122,44 +123,48 @@ tp_alive_bitset_mark_dead(TpAliveBitset *bitset, uint32 doc_id)
 }
 
 /*
- * Write the in-memory bitset back to segment pages using
- * GenericXLog, then update alive_count in the segment header.
+ * Write the in-memory bitset back to segment pages using GenericXLog.
  *
- * The header update is batched into the final bitset page's
- * GenericXLog transaction so that the bitset data and
- * alive_count are crash-atomic.  If the header page happens
- * to be the same physical page as the last bitset page, both
- * updates go into a single GenericXLog with one buffer.
+ * Each page's newly cleared bits and the corresponding alive_count decrement
+ * must share one WAL record.  A multi-page write can stop between records;
+ * the header must describe the bits already persisted at every such boundary.
+ * dead_per_page counts successful mark_dead calls per logical bitmap page,
+ * starting at the page containing alive_bitset_offset.  Consume each count
+ * after its WAL record completes.  Callers serialize loading, marking, and
+ * writing against other bitmap writers and segment replacement; on ERROR,
+ * discard the in-memory bitset and counts before retrying.
  */
 void
 tp_alive_bitset_write(
-		TpAliveBitset *bitset, TpSegmentReader *reader, Relation index)
+		TpAliveBitset	*bitset,
+		TpSegmentReader *reader,
+		Relation		 index,
+		uint32			*dead_per_page)
 {
 	uint64 bitset_offset;
 	uint32 nbytes;
 	uint32 bytes_written;
+	uint32 page_index = 0;
 
 	bitset_offset = reader->header->alive_bitset_offset;
 	nbytes		  = tp_alive_bitset_size(bitset->num_docs);
 	bytes_written = 0;
 
-	/*
-	 * Write bitset data page by page.  On the last page,
-	 * batch the header alive_count update into the same
-	 * GenericXLog transaction for crash atomicity.
-	 */
 	while (bytes_written < nbytes)
 	{
 		uint64			  logical_offset;
 		uint32			  logical_page;
 		uint32			  page_off;
 		uint32			  bytes_on_page;
+		uint32			  newly_dead = dead_per_page[page_index];
 		BlockNumber		  physical_block;
 		Buffer			  buf;
-		Page			  page;
-		GenericXLogState *xstate;
-		bool			  is_last_page;
 		Buffer			  header_buf = InvalidBuffer;
+		Page			  page;
+		Page			  header_page;
+		uint8			 *page_bits;
+		TpSegmentHeader	 *hdr;
+		GenericXLogState *xstate;
 
 		logical_offset = bitset_offset + bytes_written;
 		logical_page   = tp_logical_page(logical_offset);
@@ -172,53 +177,38 @@ tp_alive_bitset_write(
 		if (bytes_on_page > nbytes - bytes_written)
 			bytes_on_page = nbytes - bytes_written;
 
-		is_last_page = (bytes_written + bytes_on_page >= nbytes);
-
 		buf = ReadBuffer(index, physical_block);
 		LockBuffer(buf, BUFFER_LOCK_EXCLUSIVE);
-		xstate = GenericXLogStart(index);
-		page   = GenericXLogRegisterBuffer(xstate, buf, 0);
+		xstate	  = GenericXLogStart(index);
+		page	  = GenericXLogRegisterBuffer(xstate, buf, 0);
+		page_bits = (uint8 *)page + SizeOfPageHeaderData + page_off;
 
-		memcpy((char *)page + SizeOfPageHeaderData + page_off,
-			   bitset->bits + bytes_written,
-			   bytes_on_page);
+		memcpy(page_bits, bitset->bits + bytes_written, bytes_on_page);
 
-		/*
-		 * On the last bitset page, also update alive_count
-		 * in the segment header within the same GenericXLog
-		 * transaction for crash atomicity.
-		 */
-		if (is_last_page)
+		if (newly_dead > 0)
 		{
 			if (physical_block == reader->root_block)
-			{
-				/*
-				 * Header is on the same page — update the
-				 * already-registered buffer.
-				 */
-				TpSegmentHeader *hdr = (TpSegmentHeader *)PageGetContents(
-						page);
-				hdr->alive_count = bitset->alive_count;
-			}
+				header_page = page;
 			else
 			{
-				Page header_page;
-
 				header_buf = ReadBuffer(index, reader->root_block);
 				LockBuffer(header_buf, BUFFER_LOCK_EXCLUSIVE);
 				header_page = GenericXLogRegisterBuffer(xstate, header_buf, 0);
-				((TpSegmentHeader *)PageGetContents(header_page))
-						->alive_count = bitset->alive_count;
 			}
+			hdr = (TpSegmentHeader *)PageGetContents(header_page);
+			Assert(hdr->alive_count >= newly_dead);
+			hdr->alive_count -= newly_dead;
 		}
 
 		GenericXLogFinish(xstate);
+		dead_per_page[page_index++] = 0;
 		UnlockReleaseBuffer(buf);
 
 		if (BufferIsValid(header_buf))
 			UnlockReleaseBuffer(header_buf);
 
 		bytes_written += bytes_on_page;
+		TP_INJECTION_POINT(TP_INJECTION_ALIVE_BITSET_AFTER_PAGE);
 	}
 }
 
