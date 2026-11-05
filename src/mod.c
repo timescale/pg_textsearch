@@ -4841,8 +4841,16 @@ tp_process_utility_impl(
 			Oid	  relation_oid;
 			List *owner_targets = NIL;
 
-			relation_oid = AlterTableLookupRelation(
-					stmt, AlterTableGetLockLevel(stmt->cmds));
+			/*
+			 * Leave relation-kind validation to the next utility hook. Other
+			 * extensions can implement materialized views using plain views.
+			 */
+			relation_oid = RangeVarGetRelidExtended(
+					stmt->relation,
+					AlterTableGetLockLevel(stmt->cmds),
+					stmt->missing_ok ? RVR_MISSING_OK : 0,
+					RangeVarCallbackOwnsRelation,
+					NULL);
 			if (OidIsValid(relation_oid) &&
 				object_ownercheck(
 						RelationRelationId, relation_oid, GetUserId()))

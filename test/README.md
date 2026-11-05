@@ -148,3 +148,15 @@ For `make test-local`, PostgreSQL logs are written to
 `tmp_check_shared/data/logfile` while the temporary cluster exists. Shell tests
 print their commands and diagnostics directly; rerun the corresponding
 individual target to isolate a failure.
+
+## TimescaleDB compatibility
+
+`make test-timescaledb-owner` runs an optional integration regression in a
+fresh temporary cluster. Install TimescaleDB for the selected `PG_CONFIG`
+first, then build and install pg_textsearch. Run as a non-root PostgreSQL
+user. The test preloads `timescaledb,pg_textsearch` and checks continuous
+aggregate ownership both before and after `CREATE EXTENSION pg_textsearch`,
+including internal-object owners, native relations with BM25 indexes, and
+object-type/ownership rejection. It creates no persistent database objects
+and does not connect to an existing server. This target is separate from
+`test-shell` because TimescaleDB is an optional third-party dependency.
