@@ -337,6 +337,10 @@ test-cross-database-registry:
 test-drop-rollback:
 	@bash test/scripts/drop_index_rollback.sh
 
+# Optional cross-extension regression; TimescaleDB must also be installed.
+test-timescaledb-owner:
+	@bash test/scripts/timescaledb_owner.sh
+
 test-shell: test-concurrency test-recovery test-segment test-cic test-multi-index test-reindex test-cross-database-registry test-drop-rollback
 	@echo "All shell-based tests completed"
 
@@ -493,6 +497,7 @@ help:
 	@echo "  make test-durable     - Run managed pg_durable compaction tests"
 	@echo "  make test-cross-database-registry - Run issue #464 registry regression"
 	@echo "  make test-drop-rollback - Run multi-backend DROP rollback regression"
+	@echo "  make test-timescaledb-owner - Run optional TimescaleDB ownership regression"
 	@echo "  make expected     - Generate expected output files from test results"
 	@echo ""
 	@echo "Code formatting targets:"
@@ -529,7 +534,7 @@ help:
 	test-recovery test-segment test-stress test-cic test-chinese \
 	test-replication test-replication-extended \
 	test-logical-replication test-multi-index test-reindex \
-	test-cross-database-registry test-drop-rollback \
+	test-cross-database-registry test-drop-rollback test-timescaledb-owner \
 	test-shell test-all expected lint-format format format-check \
 	format-diff format-single coverage coverage-build coverage-clean \
 	coverage-report help
