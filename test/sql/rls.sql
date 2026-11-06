@@ -80,6 +80,56 @@ RESET enable_seqscan;
 DROP TABLE rls_visibility;
 DROP ROLE rls_visibility_reader;
 
+-- An indexed query may project its own ORDER BY score under RLS. The planner
+-- reads the score the index scan already computed for that expression, whether
+-- the ORDER BY column is hidden or named in the SELECT list, so no standalone
+-- scoring of the filtered row is needed. Different BM25 expressions in the
+-- SELECT list are still scored standalone and still rejected under RLS.
+SET client_min_messages = warning;
+\set VERBOSITY terse
+CREATE ROLE rls_projected_reader;
+CREATE TABLE rls_projected (id integer, content text, tags text[]);
+INSERT INTO rls_projected VALUES
+    (1, 'needle needle needle needle', ARRAY['needle needle needle needle']),
+    (2, 'needle padding padding padding', ARRAY['needle padding padding padding']);
+CREATE INDEX rls_projected_idx ON rls_projected USING bm25(content)
+    WITH (text_config='simple');
+CREATE INDEX rls_projected_tags_idx ON rls_projected USING bm25(tags)
+    WITH (text_config='simple');
+ALTER TABLE rls_projected ENABLE ROW LEVEL SECURITY;
+CREATE POLICY rls_projected_policy ON rls_projected
+    TO rls_projected_reader USING (id = 2);
+GRANT SELECT ON rls_projected TO rls_projected_reader;
+SET enable_seqscan = off;
+SET ROLE rls_projected_reader;
+EXPLAIN (VERBOSE, COSTS OFF)
+SELECT id, content <@> to_bm25query('needle', 'rls_projected_idx') AS score
+FROM rls_projected ORDER BY score LIMIT 1;
+SELECT id, content <@> to_bm25query('needle', 'rls_projected_idx') AS score
+FROM rls_projected ORDER BY score LIMIT 1;
+SELECT id, content <@> 'needle' AS score
+FROM rls_projected ORDER BY score LIMIT 1;
+SELECT id, tags <@> to_bm25query('needle', 'rls_projected_tags_idx') AS score
+FROM rls_projected ORDER BY score LIMIT 1;
+-- The hidden ORDER BY column and an explicit stub call behave the same way.
+SELECT id, bm25_get_current_score() AS score
+FROM rls_projected
+ORDER BY content <@> to_bm25query('needle', 'rls_projected_idx') LIMIT 1;
+-- A different query text in the SELECT list is not the index's score.
+EXPLAIN (VERBOSE, COSTS OFF)
+SELECT id, content <@> to_bm25query('padding', 'rls_projected_idx') AS other,
+       content <@> to_bm25query('needle', 'rls_projected_idx') AS score
+FROM rls_projected ORDER BY score LIMIT 1;
+SELECT id, content <@> to_bm25query('padding', 'rls_projected_idx') AS other,
+       content <@> to_bm25query('needle', 'rls_projected_idx') AS score
+FROM rls_projected ORDER BY score LIMIT 1;
+RESET ROLE;
+RESET enable_seqscan;
+DROP TABLE rls_projected;
+DROP ROLE rls_projected_reader;
+\set VERBOSITY default
+RESET client_min_messages;
+
 -- SELECT privileges do not authorize standalone reads of hidden-row statistics.
 SET client_min_messages = warning;
 \pset format unaligned

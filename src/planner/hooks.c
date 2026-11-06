@@ -1114,31 +1114,53 @@ make_stub_funcexpr(Oid schema_oid)
 }
 
 /*
- * Replace BM25 score expressions in a plan node's targetlist.
+ * Check if an IndexScan plan node scans a BM25 index.
  */
-static void
-replace_scores_in_targetlist(List *targetlist, BM25OidCache *oids)
+static bool
+is_bm25_indexscan(IndexScan *indexscan, BM25OidCache *oids)
 {
-	ListCell *lc;
-	Expr	 *orderby_expr = NULL;
+	HeapTuple classTuple;
+	bool	  result = false;
 
-	/* First pass: find the resjunk ORDER BY expression */
-	foreach (lc, targetlist)
+	classTuple = SearchSysCache1(RELOID, ObjectIdGetDatum(indexscan->indexid));
+	if (HeapTupleIsValid(classTuple))
 	{
-		TargetEntry *tle = (TargetEntry *)lfirst(lc);
+		Form_pg_class classForm = (Form_pg_class)GETSTRUCT(classTuple);
 
-		if (tle->resjunk && is_bm25_score_opexpr((Node *)tle->expr, oids))
-		{
-			orderby_expr = tle->expr;
-			break;
-		}
+		result = classForm->relam == oids->bm25_am_oid;
+		ReleaseSysCache(classTuple);
 	}
 
-	if (orderby_expr == NULL)
+	return result;
+}
+
+/*
+ * Replace BM25 score expressions in a BM25 IndexScan's targetlist.
+ *
+ * The index scan computes the score for exactly the expression recorded in
+ * indexorderbyorig. Any targetlist entry equal to that expression, whether
+ * it is the resjunk ORDER BY column or a projected SELECT column that the
+ * ORDER BY refers to by name, can read the score the scan already produced
+ * instead of re-scoring the row standalone. Other BM25 expressions in the
+ * targetlist (a different query text, for example) are left untouched.
+ *
+ * setrefs.c runs fix_scan_expr over both indexorderbyorig and the scan's
+ * targetlist, so their Vars carry the same varno and compare equal().
+ */
+static void
+replace_scores_in_indexscan(IndexScan *indexscan, BM25OidCache *oids)
+{
+	ListCell *lc;
+	Node	 *orderby_expr;
+
+	if (list_length(indexscan->indexorderbyorig) != 1)
 		return;
 
-	/* Second pass: replace the ORDER BY expr and any matching SELECT exprs */
-	foreach (lc, targetlist)
+	orderby_expr = (Node *)linitial(indexscan->indexorderbyorig);
+	if (!is_bm25_score_opexpr(orderby_expr, oids))
+		return;
+
+	foreach (lc, indexscan->scan.plan.targetlist)
 	{
 		TargetEntry *tle = (TargetEntry *)lfirst(lc);
 
@@ -1165,26 +1187,8 @@ plan_has_bm25_indexscan(Plan *plan, BM25OidCache *oids)
 		return false;
 
 	/* Check if this is a BM25 IndexScan */
-	if (IsA(plan, IndexScan))
-	{
-		IndexScan *indexscan = (IndexScan *)plan;
-		Oid		   indexamid;
-		HeapTuple  classTuple;
-
-		/* Look up the index's access method */
-		classTuple =
-				SearchSysCache1(RELOID, ObjectIdGetDatum(indexscan->indexid));
-		if (HeapTupleIsValid(classTuple))
-		{
-			Form_pg_class classForm = (Form_pg_class)GETSTRUCT(classTuple);
-
-			indexamid = classForm->relam;
-			ReleaseSysCache(classTuple);
-
-			if (indexamid == oids->bm25_am_oid)
-				return true;
-		}
-	}
+	if (IsA(plan, IndexScan) && is_bm25_indexscan((IndexScan *)plan, oids))
+		return true;
 
 	/* Recurse into child plans */
 	if (plan_has_bm25_indexscan(plan->lefttree, oids))
@@ -1250,8 +1254,9 @@ replace_scores_in_plan(Plan *plan, BM25OidCache *oids)
 	if (plan == NULL)
 		return;
 
-	/* Process this node's targetlist */
-	replace_scores_in_targetlist(plan->targetlist, oids);
+	/* Only BM25 IndexScans compute scores worth reusing */
+	if (IsA(plan, IndexScan) && is_bm25_indexscan((IndexScan *)plan, oids))
+		replace_scores_in_indexscan((IndexScan *)plan, oids);
 
 	/* Recurse into child plans */
 	replace_scores_in_plan(plan->lefttree, oids);
