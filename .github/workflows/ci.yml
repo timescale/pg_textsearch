@@ -59,6 +59,7 @@ jobs:
     if: needs.changes.outputs.run_tests == 'true'
     runs-on: ubuntu-latest
     strategy:
+      fail-fast: false
       matrix:
         pg_version: [17, 18]
 
@@ -69,7 +70,7 @@ jobs:
       run: |
         sudo apt-get update
         sudo apt-get install -y wget ca-certificates
-        wget --quiet -O - https://www.postgresql.org/media/keys/ACCC4CF8.asc | sudo gpg --dearmor --yes -o /usr/share/keyrings/postgresql-archive-keyring.gpg
+        wget --quiet --tries=5 --waitretry=5 --retry-on-http-error=429,500,502,503,504 -O - https://www.postgresql.org/media/keys/ACCC4CF8.asc | sudo gpg --dearmor --yes -o /usr/share/keyrings/postgresql-archive-keyring.gpg
         echo "deb [signed-by=/usr/share/keyrings/postgresql-archive-keyring.gpg] http://apt.postgresql.org/pub/repos/apt/ $(lsb_release -cs)-pgdg main" | sudo tee /etc/apt/sources.list.d/pgdg.list
         sudo apt-get update
         sudo apt-get install -y postgresql-${{ matrix.pg_version }} postgresql-server-dev-${{ matrix.pg_version }}
@@ -78,7 +79,7 @@ jobs:
       run: |
         # Add TimescaleDB apt repository
         echo "deb [signed-by=/usr/share/keyrings/timescaledb-archive-keyring.gpg] https://packagecloud.io/timescale/timescaledb/ubuntu/ $(lsb_release -cs) main" | sudo tee /etc/apt/sources.list.d/timescaledb.list
-        wget --quiet -O - https://packagecloud.io/timescale/timescaledb/gpgkey | sudo gpg --dearmor --yes -o /usr/share/keyrings/timescaledb-archive-keyring.gpg
+        wget --quiet --tries=5 --waitretry=5 --retry-on-http-error=429,500,502,503,504 -O - https://packagecloud.io/timescale/timescaledb/gpgkey | sudo gpg --dearmor --yes -o /usr/share/keyrings/timescaledb-archive-keyring.gpg
         sudo apt-get update
         # Install TimescaleDB for the specific PostgreSQL version
         sudo apt-get install -y timescaledb-2-postgresql-${{ matrix.pg_version }} || echo "TimescaleDB installation failed, hypertable tests will be skipped"
@@ -406,7 +407,7 @@ jobs:
       run: |
         sudo apt-get update
         sudo apt-get install -y wget ca-certificates build-essential bc
-        wget --quiet -O - https://www.postgresql.org/media/keys/ACCC4CF8.asc | sudo gpg --dearmor --yes -o /usr/share/keyrings/postgresql-archive-keyring.gpg
+        wget --quiet --tries=5 --waitretry=5 --retry-on-http-error=429,500,502,503,504 -O - https://www.postgresql.org/media/keys/ACCC4CF8.asc | sudo gpg --dearmor --yes -o /usr/share/keyrings/postgresql-archive-keyring.gpg
         echo "deb [signed-by=/usr/share/keyrings/postgresql-archive-keyring.gpg] http://apt.postgresql.org/pub/repos/apt/ $(lsb_release -cs)-pgdg main" | sudo tee /etc/apt/sources.list.d/pgdg.list
         sudo apt-get update
         sudo apt-get install -y postgresql-${{ matrix.config.pg_version }} postgresql-server-dev-${{ matrix.config.pg_version }}
@@ -599,7 +600,7 @@ jobs:
       run: |
         sudo apt-get update
         sudo apt-get install -y wget ca-certificates build-essential bc
-        wget --quiet -O - https://www.postgresql.org/media/keys/ACCC4CF8.asc | sudo gpg --dearmor --yes -o /usr/share/keyrings/postgresql-archive-keyring.gpg
+        wget --quiet --tries=5 --waitretry=5 --retry-on-http-error=429,500,502,503,504 -O - https://www.postgresql.org/media/keys/ACCC4CF8.asc | sudo gpg --dearmor --yes -o /usr/share/keyrings/postgresql-archive-keyring.gpg
         echo "deb [signed-by=/usr/share/keyrings/postgresql-archive-keyring.gpg] http://apt.postgresql.org/pub/repos/apt/ $(lsb_release -cs)-pgdg main" | sudo tee /etc/apt/sources.list.d/pgdg.list
         sudo apt-get update
         sudo apt-get install -y postgresql-17 postgresql-server-dev-17
@@ -952,7 +953,7 @@ jobs:
       run: |
         sudo apt-get update
         sudo apt-get install -y wget ca-certificates gnupg
-        wget --quiet -O - https://www.postgresql.org/media/keys/ACCC4CF8.asc | sudo gpg --dearmor -o /usr/share/keyrings/postgresql-archive-keyring.gpg
+        wget --quiet --tries=5 --waitretry=5 --retry-on-http-error=429,500,502,503,504 -O - https://www.postgresql.org/media/keys/ACCC4CF8.asc | sudo gpg --dearmor -o /usr/share/keyrings/postgresql-archive-keyring.gpg
         echo "deb [signed-by=/usr/share/keyrings/postgresql-archive-keyring.gpg] http://apt.postgresql.org/pub/repos/apt/ $(lsb_release -cs)-pgdg main" | sudo tee /etc/apt/sources.list.d/pgdg.list
         sudo apt-get update
         sudo apt-get install -y postgresql-18 postgresql-server-dev-18 \
@@ -1002,7 +1003,7 @@ jobs:
       run: |
         sudo apt-get update
         sudo apt-get install -y wget ca-certificates gnupg
-        wget --quiet -O - https://www.postgresql.org/media/keys/ACCC4CF8.asc | sudo gpg --dearmor -o /usr/share/keyrings/postgresql-archive-keyring.gpg
+        wget --quiet --tries=5 --waitretry=5 --retry-on-http-error=429,500,502,503,504 -O - https://www.postgresql.org/media/keys/ACCC4CF8.asc | sudo gpg --dearmor -o /usr/share/keyrings/postgresql-archive-keyring.gpg
         echo "deb [signed-by=/usr/share/keyrings/postgresql-archive-keyring.gpg] http://apt.postgresql.org/pub/repos/apt/ $(lsb_release -cs)-pgdg main" | sudo tee /etc/apt/sources.list.d/pgdg.list
         sudo apt-get update
         sudo apt-get install -y postgresql-17 postgresql-server-dev-17
@@ -1010,7 +1011,7 @@ jobs:
     - name: Install TimescaleDB
       run: |
         echo "deb [signed-by=/usr/share/keyrings/timescaledb-archive-keyring.gpg] https://packagecloud.io/timescale/timescaledb/ubuntu/ $(lsb_release -cs) main" | sudo tee /etc/apt/sources.list.d/timescaledb.list
-        wget --quiet -O - https://packagecloud.io/timescale/timescaledb/gpgkey | sudo gpg --dearmor --yes -o /usr/share/keyrings/timescaledb-archive-keyring.gpg
+        wget --quiet --tries=5 --waitretry=5 --retry-on-http-error=429,500,502,503,504 -O - https://packagecloud.io/timescale/timescaledb/gpgkey | sudo gpg --dearmor --yes -o /usr/share/keyrings/timescaledb-archive-keyring.gpg
         sudo apt-get update
         sudo apt-get install -y timescaledb-2-postgresql-17 || echo "TimescaleDB installation failed, hypertable tests will be skipped"
 
@@ -1294,17 +1295,17 @@ jobs:
              --output-file coverage.info \
              --base-directory $PWD \
              --no-external \
-             --ignore-errors mismatch
+             --ignore-errors mismatch,inconsistent
 
         # Remove test files from coverage report (we only care about src/)
         lcov --remove coverage.info \
              '*/test/*' \
              '*/tmp_check_shared/*' \
              --output-file coverage.info \
-             --ignore-errors unused
+             --ignore-errors unused,inconsistent
 
         # Show summary
-        lcov --list coverage.info
+        lcov --list coverage.info --ignore-errors inconsistent
 
     - name: Restore coverage baseline
       if: github.event_name == 'pull_request'
@@ -1327,7 +1328,7 @@ jobs:
         fi
 
         # Extract current line coverage percentage
-        CURRENT=$(lcov --summary coverage.info 2>&1 \
+        CURRENT=$(lcov --summary coverage.info --ignore-errors inconsistent 2>&1 \
           | grep "lines" | sed 's/.*: \([0-9.]*\)%.*/\1/')
         echo "Current line coverage: ${CURRENT}%"
         echo "line_coverage=$CURRENT" >> "$GITHUB_OUTPUT"
@@ -1421,7 +1422,7 @@ jobs:
         # Extract and display summary stats
         if [ -f coverage.info ]; then
           echo '```' >> $GITHUB_STEP_SUMMARY
-          lcov --summary coverage.info 2>&1 | tail -10 >> $GITHUB_STEP_SUMMARY
+          lcov --summary coverage.info --ignore-errors inconsistent 2>&1 | tail -10 >> $GITHUB_STEP_SUMMARY
           echo '```' >> $GITHUB_STEP_SUMMARY
         fi
 

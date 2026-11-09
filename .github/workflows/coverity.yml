@@ -30,7 +30,7 @@ jobs:
       run: |
         sudo apt-get update
         sudo apt-get install -y wget ca-certificates build-essential
-        wget --quiet -O - https://www.postgresql.org/media/keys/ACCC4CF8.asc | sudo gpg --dearmor --yes -o /usr/share/keyrings/postgresql-archive-keyring.gpg
+        wget --quiet --tries=5 --waitretry=5 --retry-on-http-error=429,500,502,503,504 -O - https://www.postgresql.org/media/keys/ACCC4CF8.asc | sudo gpg --dearmor --yes -o /usr/share/keyrings/postgresql-archive-keyring.gpg
         echo "deb [signed-by=/usr/share/keyrings/postgresql-archive-keyring.gpg] http://apt.postgresql.org/pub/repos/apt/ $(lsb_release -cs)-pgdg main" | sudo tee /etc/apt/sources.list.d/pgdg.list
         sudo apt-get update
         sudo apt-get install -y postgresql-${{ matrix.pg }} postgresql-server-dev-${{ matrix.pg }}
