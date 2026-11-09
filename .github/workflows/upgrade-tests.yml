@@ -63,6 +63,11 @@ jobs:
     - name: Build and install old version v${{ matrix.old_version }}
       run: |
         cd pg_textsearch-${{ matrix.old_version }}
+        # Old release Makefiles assign PG_CONFIG with '=' rather than '?=', so
+        # the environment variable is ignored and whichever pg_config is first
+        # on PATH wins. The runner image ships a newer PostgreSQL without
+        # server headers, so put the matrix version first.
+        export PATH=/usr/lib/postgresql/${{ matrix.pg_version }}/bin:$PATH
         export PG_CONFIG=/usr/lib/postgresql/${{ matrix.pg_version }}/bin/pg_config
         make clean || true
         make
