@@ -70,7 +70,10 @@ jobs:
         export PATH=/usr/lib/postgresql/${{ matrix.pg_version }}/bin:$PATH
         export PG_CONFIG=/usr/lib/postgresql/${{ matrix.pg_version }}/bin/pg_config
         make clean || true
-        make
+        # v0.2.0 calls log() without <math.h>; GCC 15 rejects implicit
+        # declarations by default. Released tarballs cannot be patched, so
+        # relax that one diagnostic for the old build only.
+        make COPT=-Wno-error=implicit-function-declaration
         sudo env "PATH=$PATH" make install
 
     - name: Start PostgreSQL with old binary and create test data
