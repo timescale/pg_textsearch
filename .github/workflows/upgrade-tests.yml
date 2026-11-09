@@ -39,8 +39,8 @@ jobs:
       run: |
         sudo apt-get update
         sudo apt-get install -y wget ca-certificates gnupg
-        sudo sh -c 'echo "deb http://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" > /etc/apt/sources.list.d/pgdg.list'
-        wget --quiet -O - https://www.postgresql.org/media/keys/ACCC4CF8.asc | sudo apt-key add -
+        sudo sh -c 'echo "deb [signed-by=/usr/share/keyrings/postgresql-archive-keyring.gpg] http://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" > /etc/apt/sources.list.d/pgdg.list'
+        wget --quiet --tries=5 --waitretry=5 --retry-on-http-error=429,500,502,503,504 -O - https://www.postgresql.org/media/keys/ACCC4CF8.asc | sudo gpg --dearmor --yes -o /usr/share/keyrings/postgresql-archive-keyring.gpg
         sudo apt-get update
         sudo apt-get install -y postgresql-${{ matrix.pg_version }} postgresql-server-dev-${{ matrix.pg_version }}
         sudo systemctl stop postgresql
@@ -63,10 +63,18 @@ jobs:
     - name: Build and install old version v${{ matrix.old_version }}
       run: |
         cd pg_textsearch-${{ matrix.old_version }}
+        # Old release Makefiles assign PG_CONFIG with '=' rather than '?=', so
+        # the environment variable is ignored and whichever pg_config is first
+        # on PATH wins. The runner image ships a newer PostgreSQL without
+        # server headers, so put the matrix version first.
+        export PATH=/usr/lib/postgresql/${{ matrix.pg_version }}/bin:$PATH
         export PG_CONFIG=/usr/lib/postgresql/${{ matrix.pg_version }}/bin/pg_config
         make clean || true
-        make
-        sudo make install
+        # v0.2.0 calls log() without <math.h>; GCC 15 rejects implicit
+        # declarations by default. Released tarballs cannot be patched, so
+        # relax that one diagnostic for the old build only.
+        make COPT=-Wno-error=implicit-function-declaration
+        sudo env "PATH=$PATH" make install
 
     - name: Start PostgreSQL with old binary and create test data
       run: |
@@ -80,7 +88,7 @@ jobs:
         echo "unix_socket_directories = '/tmp'" >> $PGDATA/postgresql.conf
         echo "shared_preload_libraries = '${LIB_NAME}'" >> $PGDATA/postgresql.conf
 
-        pg_ctl -D $PGDATA start -w -l $PGDATA/logfile
+        pg_ctl -D $PGDATA start -w -l $PGDATA/logfile || { cat $PGDATA/logfile; exit 1; }
         createdb -h /tmp upgrade_test
 
     - name: Install old extension and create test data
@@ -256,10 +264,10 @@ jobs:
         cd $GITHUB_WORKSPACE
         make clean
         make
-        sudo make install
+        sudo env "PATH=$PATH" make install
 
         # Restart with new binary
-        pg_ctl -D $PGDATA start -w -l $PGDATA/logfile
+        pg_ctl -D $PGDATA start -w -l $PGDATA/logfile || { cat $PGDATA/logfile; exit 1; }
 
     - name: Verify queries before ALTER EXTENSION (compat tier)
       run: |
@@ -818,8 +826,8 @@ jobs:
       run: |
         sudo apt-get update
         sudo apt-get install -y wget ca-certificates gnupg
-        sudo sh -c 'echo "deb http://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" > /etc/apt/sources.list.d/pgdg.list'
-        wget --quiet -O - https://www.postgresql.org/media/keys/ACCC4CF8.asc | sudo apt-key add -
+        sudo sh -c 'echo "deb [signed-by=/usr/share/keyrings/postgresql-archive-keyring.gpg] http://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" > /etc/apt/sources.list.d/pgdg.list'
+        wget --quiet --tries=5 --waitretry=5 --retry-on-http-error=429,500,502,503,504 -O - https://www.postgresql.org/media/keys/ACCC4CF8.asc | sudo gpg --dearmor --yes -o /usr/share/keyrings/postgresql-archive-keyring.gpg
         sudo apt-get update
         sudo apt-get install -y postgresql-${{ matrix.pg_version }} postgresql-server-dev-${{ matrix.pg_version }}
         sudo systemctl stop postgresql
@@ -829,7 +837,7 @@ jobs:
         export PG_CONFIG=/usr/lib/postgresql/${{ matrix.pg_version }}/bin/pg_config
         make clean
         make
-        sudo make install
+        sudo make PG_CONFIG="$PG_CONFIG" install
 
     - name: Test clean installation
       run: |
@@ -842,7 +850,7 @@ jobs:
         echo "unix_socket_directories = '/tmp'" >> $PGDATA/postgresql.conf
         echo "shared_preload_libraries = '${LIB_NAME}'" >> $PGDATA/postgresql.conf
 
-        pg_ctl -D $PGDATA start -w -l $PGDATA/logfile
+        pg_ctl -D $PGDATA start -w -l $PGDATA/logfile || { cat $PGDATA/logfile; exit 1; }
         createdb -h /tmp clean_test
 
         psql -h /tmp -d clean_test << 'SQL'
@@ -893,8 +901,8 @@ jobs:
       run: |
         sudo apt-get update
         sudo apt-get install -y wget ca-certificates gnupg
-        sudo sh -c 'echo "deb http://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" > /etc/apt/sources.list.d/pgdg.list'
-        wget --quiet -O - https://www.postgresql.org/media/keys/ACCC4CF8.asc | sudo apt-key add -
+        sudo sh -c 'echo "deb [signed-by=/usr/share/keyrings/postgresql-archive-keyring.gpg] http://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" > /etc/apt/sources.list.d/pgdg.list'
+        wget --quiet --tries=5 --waitretry=5 --retry-on-http-error=429,500,502,503,504 -O - https://www.postgresql.org/media/keys/ACCC4CF8.asc | sudo gpg --dearmor --yes -o /usr/share/keyrings/postgresql-archive-keyring.gpg
         sudo apt-get update
         sudo apt-get install -y postgresql-${{ matrix.pg_version }} postgresql-server-dev-${{ matrix.pg_version }}
         sudo systemctl stop postgresql

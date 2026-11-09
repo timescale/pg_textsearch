@@ -98,9 +98,9 @@ jobs:
         git clone --depth 1 https://github.com/brendangregg/FlameGraph.git
 
         # PostgreSQL
-        wget --quiet -O - https://www.postgresql.org/media/keys/ACCC4CF8.asc | \
-            sudo apt-key add -
-        echo "deb http://apt.postgresql.org/pub/repos/apt/ $(lsb_release -cs)-pgdg main" | \
+        wget --quiet --tries=5 --waitretry=5 --retry-on-http-error=429,500,502,503,504 -O - https://www.postgresql.org/media/keys/ACCC4CF8.asc | \
+            sudo gpg --dearmor --yes -o /usr/share/keyrings/postgresql-archive-keyring.gpg
+        echo "deb [signed-by=/usr/share/keyrings/postgresql-archive-keyring.gpg] http://apt.postgresql.org/pub/repos/apt/ $(lsb_release -cs)-pgdg main" | \
             sudo tee /etc/apt/sources.list.d/pgdg.list
         sudo apt-get update
         sudo apt-get install -y postgresql-17 postgresql-server-dev-17 \
@@ -112,7 +112,7 @@ jobs:
         make clean
         # Release optimization but keep frame pointers for profiling
         CFLAGS="-O2 -fno-omit-frame-pointer -g" make
-        sudo make install
+        sudo env "PATH=$PATH" make install
 
     - name: Configure PostgreSQL
       run: |
@@ -564,8 +564,8 @@ jobs:
         pip install 'wikiextractor==3.0.6'
 
         # Install PostgreSQL 17
-        wget --quiet -O - https://www.postgresql.org/media/keys/ACCC4CF8.asc | sudo apt-key add -
-        echo "deb http://apt.postgresql.org/pub/repos/apt/ $(lsb_release -cs)-pgdg main" | \
+        wget --quiet --tries=5 --waitretry=5 --retry-on-http-error=429,500,502,503,504 -O - https://www.postgresql.org/media/keys/ACCC4CF8.asc | sudo gpg --dearmor --yes -o /usr/share/keyrings/postgresql-archive-keyring.gpg
+        echo "deb [signed-by=/usr/share/keyrings/postgresql-archive-keyring.gpg] http://apt.postgresql.org/pub/repos/apt/ $(lsb_release -cs)-pgdg main" | \
             sudo tee /etc/apt/sources.list.d/pgdg.list
         sudo apt-get update
         sudo apt-get install -y postgresql-17 postgresql-server-dev-17
@@ -1110,9 +1110,9 @@ jobs:
         pip install 'wikiextractor==3.0.6'
 
         # PostgreSQL
-        wget --quiet -O - https://www.postgresql.org/media/keys/ACCC4CF8.asc | \
-            sudo apt-key add -
-        echo "deb http://apt.postgresql.org/pub/repos/apt/ $(lsb_release -cs)-pgdg main" | \
+        wget --quiet --tries=5 --waitretry=5 --retry-on-http-error=429,500,502,503,504 -O - https://www.postgresql.org/media/keys/ACCC4CF8.asc | \
+            sudo gpg --dearmor --yes -o /usr/share/keyrings/postgresql-archive-keyring.gpg
+        echo "deb [signed-by=/usr/share/keyrings/postgresql-archive-keyring.gpg] http://apt.postgresql.org/pub/repos/apt/ $(lsb_release -cs)-pgdg main" | \
             sudo tee /etc/apt/sources.list.d/pgdg.list
         sudo apt-get update
         sudo apt-get install -y postgresql-17 postgresql-server-dev-17
@@ -1122,7 +1122,7 @@ jobs:
         export PATH="/usr/lib/postgresql/17/bin:$PATH"
         make clean
         CFLAGS="-O3 -DNDEBUG" make
-        sudo make install
+        sudo env "PATH=$PATH" make install
 
     - name: Configure PostgreSQL for benchmarks
       run: |
@@ -1690,9 +1690,9 @@ jobs:
         pip install 'wikiextractor==3.0.6'
 
         # PostgreSQL
-        wget --quiet -O - https://www.postgresql.org/media/keys/ACCC4CF8.asc | \
-            sudo apt-key add -
-        echo "deb http://apt.postgresql.org/pub/repos/apt/ $(lsb_release -cs)-pgdg main" | \
+        wget --quiet --tries=5 --waitretry=5 --retry-on-http-error=429,500,502,503,504 -O - https://www.postgresql.org/media/keys/ACCC4CF8.asc | \
+            sudo gpg --dearmor --yes -o /usr/share/keyrings/postgresql-archive-keyring.gpg
+        echo "deb [signed-by=/usr/share/keyrings/postgresql-archive-keyring.gpg] http://apt.postgresql.org/pub/repos/apt/ $(lsb_release -cs)-pgdg main" | \
             sudo tee /etc/apt/sources.list.d/pgdg.list
         sudo apt-get update
         sudo apt-get install -y postgresql-17 postgresql-server-dev-17
@@ -1702,7 +1702,7 @@ jobs:
         export PATH="/usr/lib/postgresql/17/bin:$PATH"
         make clean
         CFLAGS="-O3 -DNDEBUG" make
-        sudo make install
+        sudo env "PATH=$PATH" make install
 
     - name: Configure PostgreSQL for benchmarks
       run: |
@@ -2362,9 +2362,9 @@ jobs:
         pip install 'wikiextractor==3.0.6'
 
         # PostgreSQL
-        wget --quiet -O - https://www.postgresql.org/media/keys/ACCC4CF8.asc | \
-            sudo apt-key add -
-        echo "deb http://apt.postgresql.org/pub/repos/apt/ $(lsb_release -cs)-pgdg main" | \
+        wget --quiet --tries=5 --waitretry=5 --retry-on-http-error=429,500,502,503,504 -O - https://www.postgresql.org/media/keys/ACCC4CF8.asc | \
+            sudo gpg --dearmor --yes -o /usr/share/keyrings/postgresql-archive-keyring.gpg
+        echo "deb [signed-by=/usr/share/keyrings/postgresql-archive-keyring.gpg] http://apt.postgresql.org/pub/repos/apt/ $(lsb_release -cs)-pgdg main" | \
             sudo tee /etc/apt/sources.list.d/pgdg.list
         sudo apt-get update
         sudo apt-get install -y postgresql-17 postgresql-server-dev-17
@@ -2805,8 +2805,8 @@ jobs:
     - name: Install PostgreSQL 17
       run: |
         sudo apt-get update
-        wget --quiet -O - https://www.postgresql.org/media/keys/ACCC4CF8.asc | sudo apt-key add -
-        echo "deb http://apt.postgresql.org/pub/repos/apt/ $(lsb_release -cs)-pgdg main" | \
+        wget --quiet --tries=5 --waitretry=5 --retry-on-http-error=429,500,502,503,504 -O - https://www.postgresql.org/media/keys/ACCC4CF8.asc | sudo gpg --dearmor --yes -o /usr/share/keyrings/postgresql-archive-keyring.gpg
+        echo "deb [signed-by=/usr/share/keyrings/postgresql-archive-keyring.gpg] http://apt.postgresql.org/pub/repos/apt/ $(lsb_release -cs)-pgdg main" | \
             sudo tee /etc/apt/sources.list.d/pgdg.list
         sudo apt-get update
         sudo apt-get install -y postgresql-17 postgresql-server-dev-17
@@ -2815,7 +2815,7 @@ jobs:
       run: |
         export PATH="/usr/lib/postgresql/17/bin:$PATH"
         make -j$(nproc)
-        sudo make install
+        sudo env "PATH=$PATH" make install
 
     - name: Setup database
       run: |
