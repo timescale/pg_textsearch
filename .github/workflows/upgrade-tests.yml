@@ -85,7 +85,7 @@ jobs:
         echo "unix_socket_directories = '/tmp'" >> $PGDATA/postgresql.conf
         echo "shared_preload_libraries = '${LIB_NAME}'" >> $PGDATA/postgresql.conf
 
-        pg_ctl -D $PGDATA start -w -l $PGDATA/logfile
+        pg_ctl -D $PGDATA start -w -l $PGDATA/logfile || { cat $PGDATA/logfile; exit 1; }
         createdb -h /tmp upgrade_test
 
     - name: Install old extension and create test data
@@ -264,7 +264,7 @@ jobs:
         sudo make install
 
         # Restart with new binary
-        pg_ctl -D $PGDATA start -w -l $PGDATA/logfile
+        pg_ctl -D $PGDATA start -w -l $PGDATA/logfile || { cat $PGDATA/logfile; exit 1; }
 
     - name: Verify queries before ALTER EXTENSION (compat tier)
       run: |
@@ -847,7 +847,7 @@ jobs:
         echo "unix_socket_directories = '/tmp'" >> $PGDATA/postgresql.conf
         echo "shared_preload_libraries = '${LIB_NAME}'" >> $PGDATA/postgresql.conf
 
-        pg_ctl -D $PGDATA start -w -l $PGDATA/logfile
+        pg_ctl -D $PGDATA start -w -l $PGDATA/logfile || { cat $PGDATA/logfile; exit 1; }
         createdb -h /tmp clean_test
 
         psql -h /tmp -d clean_test << 'SQL'
