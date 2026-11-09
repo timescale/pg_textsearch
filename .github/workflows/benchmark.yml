@@ -112,7 +112,7 @@ jobs:
         make clean
         # Release optimization but keep frame pointers for profiling
         CFLAGS="-O2 -fno-omit-frame-pointer -g" make
-        sudo make install
+        sudo env "PATH=$PATH" make install
 
     - name: Configure PostgreSQL
       run: |
@@ -1122,7 +1122,7 @@ jobs:
         export PATH="/usr/lib/postgresql/17/bin:$PATH"
         make clean
         CFLAGS="-O3 -DNDEBUG" make
-        sudo make install
+        sudo env "PATH=$PATH" make install
 
     - name: Configure PostgreSQL for benchmarks
       run: |
@@ -1702,7 +1702,7 @@ jobs:
         export PATH="/usr/lib/postgresql/17/bin:$PATH"
         make clean
         CFLAGS="-O3 -DNDEBUG" make
-        sudo make install
+        sudo env "PATH=$PATH" make install
 
     - name: Configure PostgreSQL for benchmarks
       run: |
@@ -2815,7 +2815,7 @@ jobs:
       run: |
         export PATH="/usr/lib/postgresql/17/bin:$PATH"
         make -j$(nproc)
-        sudo make install
+        sudo env "PATH=$PATH" make install
 
     - name: Setup database
       run: |

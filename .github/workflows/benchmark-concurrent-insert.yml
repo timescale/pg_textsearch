@@ -76,7 +76,7 @@ jobs:
       run: |
         export PATH="/usr/lib/postgresql/17/bin:$PATH"
         make clean && make -j$(nproc)
-        sudo make install
+        sudo env "PATH=$PATH" make install
 
     - name: Configure and start PostgreSQL
       run: |

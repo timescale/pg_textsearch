@@ -71,7 +71,7 @@ jobs:
         export PG_CONFIG=/usr/lib/postgresql/${{ matrix.pg_version }}/bin/pg_config
         make clean || true
         make
-        sudo make install
+        sudo env "PATH=$PATH" make install
 
     - name: Start PostgreSQL with old binary and create test data
       run: |
@@ -261,7 +261,7 @@ jobs:
         cd $GITHUB_WORKSPACE
         make clean
         make
-        sudo make install
+        sudo env "PATH=$PATH" make install
 
         # Restart with new binary
         pg_ctl -D $PGDATA start -w -l $PGDATA/logfile || { cat $PGDATA/logfile; exit 1; }
@@ -834,7 +834,7 @@ jobs:
         export PG_CONFIG=/usr/lib/postgresql/${{ matrix.pg_version }}/bin/pg_config
         make clean
         make
-        sudo make install
+        sudo make PG_CONFIG="$PG_CONFIG" install
 
     - name: Test clean installation
       run: |

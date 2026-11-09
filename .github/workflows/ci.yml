@@ -613,7 +613,7 @@ jobs:
     - name: Build and install extension
       run: |
         export PATH="/usr/lib/postgresql/17/bin:$PATH"
-        make clean && make && sudo make install
+        make clean && make && sudo env "PATH=$PATH" make install
 
     - name: Run performance benchmarks
       timeout-minutes: 20
@@ -1146,7 +1146,7 @@ jobs:
         curl -fsSL -o /tmp/old.tar.gz \
           "https://github.com/timescale/pg_textsearch/releases/download/v1.0.0/pg_textsearch-1.0.0.tar.gz"
         tar -xzf /tmp/old.tar.gz -C /tmp
-        (cd /tmp/pg_textsearch-1.0.0 && make clean && make && sudo make install)
+        (cd /tmp/pg_textsearch-1.0.0 && make clean && make && sudo env "PATH=$PATH" make install)
 
         # Start PG with old binary and create a v6-metapage index with
         # V4 segments.
