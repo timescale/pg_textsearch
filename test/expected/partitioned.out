@@ -393,7 +393,7 @@ LIMIT 5;
  Limit
    ->  Result
          ->  Merge Append
-               Sort Key: ((partitioned_scoring.content <@> 'scoring_bm25_idx:database'::bm25query))
+               Sort Key: (bm25_get_current_score())
                ->  Index Scan using partition_small_content_idx on partition_small partitioned_scoring_1
                      Order By: (content <@> 'scoring_bm25_idx:database'::bm25query)
                ->  Index Scan using partition_large_content_idx on partition_large partitioned_scoring_2
@@ -409,10 +409,10 @@ ORDER BY content <@> to_bm25query('database', 'scoring_bm25_idx')
 LIMIT 5;
            content           | score  
 -----------------------------+--------
+ database management system  | 1.4816
+ database query optimization | 1.4816
  database search query       | 0.4901
  postgresql database system  | 0.4901
- database management system  | 0.4901
- database query optimization | 0.4901
 (4 rows)
 
 -- Verify the returned scores are all non-zero (would fail if planner hook broken)

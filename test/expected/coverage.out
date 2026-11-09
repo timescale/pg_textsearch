@@ -95,7 +95,7 @@ ORDER BY content <@> 'hello'::text
 LIMIT 3;
           content          |        score        
 ---------------------------+---------------------
- hello world test document | -1.3570750951766968
+ hello world test document | -1.3570749759674072
 (1 row)
 
 SET enable_seqscan = on;
