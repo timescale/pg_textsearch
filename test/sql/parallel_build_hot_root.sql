@@ -7,10 +7,6 @@
 -- it.
 CREATE EXTENSION IF NOT EXISTS pg_textsearch;
 
--- Build notices name the number of workers actually launched, which is
--- machine dependent; keep them out of the expected output.
-SET client_min_messages = warning;
-
 -- Lower threshold so the test table qualifies for a parallel build
 SET min_parallel_table_scan_size = 0;
 SET maintenance_work_mem = '256MB';
@@ -32,6 +28,11 @@ UPDATE hot_root SET payload = 1;
 
 ALTER TABLE hot_root SET (parallel_workers = 2);
 SET max_parallel_maintenance_workers = 2;
+
+-- The build notice "launched 2 of 2 requested workers" is part of the
+-- expected output on purpose: if fewer workers start, the build falls back
+-- to the serial path, which never had this bug, and the test must fail
+-- instead of passing silently.
 
 CREATE INDEX hot_root_idx ON hot_root USING bm25(content)
   WITH (text_config='simple');
@@ -59,3 +60,4 @@ UNION ALL
 SELECT 'needle100000' AS term, count(*) AS rows FROM (SELECT id FROM hot_root WHERE (content <@> to_bm25query('needle100000','hot_root_idx')) < 0 ORDER BY content <@> to_bm25query('needle100000','hot_root_idx') LIMIT 5) t;
 
 DROP TABLE hot_root;
+DROP EXTENSION pg_textsearch CASCADE;
