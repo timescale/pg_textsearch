@@ -214,6 +214,217 @@ BEGIN
             nested_ids, baseline_ids;
     END IF;
 END $$;
+-- Outer requirements must not leak into child planners or another alias.
+-- Exercise an InitPlan, FROM subquery, materialized/inlined CTE, and pullup.
+DO $$
+DECLARE
+    command text;
+    actual int[];
+BEGIN
+    FOREACH command IN ARRAY ARRAY[
+        $q$SELECT ARRAY(SELECT id FROM planner_scope_docs
+            ORDER BY content <@> 'running' LIMIT 3)
+           FROM planner_scope_docs WHERE id=1
+           ORDER BY content <@> to_bm25query('running','planner_scope_simple')
+           LIMIT 1$q$,
+        $q$SELECT ranked.ids FROM planner_scope_docs,
+           (SELECT ARRAY(SELECT id FROM planner_scope_docs
+             ORDER BY content <@> 'running' LIMIT 3) AS ids OFFSET 0) ranked
+           WHERE id=1
+           ORDER BY content <@> to_bm25query('running','planner_scope_simple')
+           LIMIT 1$q$,
+        $q$WITH ranked AS MATERIALIZED
+           (SELECT id FROM planner_scope_docs
+            ORDER BY content <@> 'running' LIMIT 3)
+           SELECT ARRAY(SELECT id FROM ranked) FROM planner_scope_docs
+           WHERE id=1
+           ORDER BY content <@> to_bm25query('running','planner_scope_simple')
+           LIMIT 1$q$,
+        $q$WITH ranked AS NOT MATERIALIZED
+           (SELECT id FROM planner_scope_docs
+            ORDER BY content <@> 'running' LIMIT 3)
+           SELECT ARRAY(SELECT id FROM ranked) FROM planner_scope_docs
+           WHERE id=1
+           ORDER BY content <@> to_bm25query('running','planner_scope_simple')
+           LIMIT 1$q$,
+        $q$SELECT ARRAY(SELECT b.id FROM planner_scope_docs a,
+             planner_scope_docs b
+           WHERE a.id=1 AND
+             (a.content <@> to_bm25query('running','planner_scope_simple'))
+             IS NOT NULL
+           ORDER BY b.content <@> 'running' LIMIT 3)$q$,
+        $q$SELECT ARRAY(SELECT b.id FROM
+             (SELECT * FROM planner_scope_docs WHERE id=1) a,
+             planner_scope_docs b
+           WHERE (a.content <@> to_bm25query('running','planner_scope_simple'))
+             IS NOT NULL
+           ORDER BY b.content <@> 'running' LIMIT 3)$q$
+    ]
+    LOOP
+        EXECUTE command INTO actual;
+        SELECT array_agg(id ORDER BY id) INTO actual FROM unnest(actual) id;
+        IF actual IS DISTINCT FROM ARRAY[1,2,3] THEN
+            RAISE EXCEPTION 'outer index changed nested/alias results: %: %',
+                command, actual;
+        END IF;
+    END LOOP;
+END $$;
+-- Check the selected path as well as the returned rows.
+DO $$
+DECLARE
+    plan json;
+    message text;
+BEGIN
+    PERFORM set_config('enable_sort', 'off', true);
+    EXECUTE $q$EXPLAIN (FORMAT JSON, COSTS OFF)
+        SELECT b.id FROM planner_scope_docs a, planner_scope_docs b
+        WHERE a.id=1 AND
+          (a.content <@> to_bm25query('running','planner_scope_simple'))
+          IS NOT NULL
+        ORDER BY b.content <@> 'running' LIMIT 3$q$ INTO plan;
+    IF NOT jsonb_path_exists(plan::jsonb,
+        '$.** ? (@."Node Type" == "Index Scan" && @."Index Name" == "planner_scope_english" && @."Alias" == "b")') THEN
+        RAISE EXCEPTION 'alias b did not use the full BM25 index: %', plan;
+    END IF;
+    -- The same alias must not be redirected to an unproven partial index.
+    -- The existing explicit-index validation rejects the full-index path.
+    BEGIN
+        EXECUTE $q$EXPLAIN (FORMAT JSON, COSTS OFF)
+            SELECT id FROM planner_scope_docs
+            ORDER BY content <@>
+                to_bm25query('running','planner_scope_simple') LIMIT 3$q$
+            INTO plan;
+        RAISE EXCEPTION 'unproven partial index was accepted: %', plan;
+    EXCEPTION WHEN wrong_object_type THEN
+        GET STACKED DIAGNOSTICS message = MESSAGE_TEXT;
+        IF message <> 'query specifies index "planner_scope_simple" but planner chose index "planner_scope_english"' THEN
+            RAISE EXCEPTION 'unexpected explicit-index error: %', message;
+        END IF;
+    END;
+    -- With its predicate supplied, the named partial index remains usable.
+    EXECUTE $q$EXPLAIN (FORMAT JSON, COSTS OFF)
+        SELECT id FROM planner_scope_docs WHERE id=1
+        ORDER BY content <@>
+            to_bm25query('running','planner_scope_simple') LIMIT 1$q$
+        INTO plan;
+    IF NOT jsonb_path_exists(plan::jsonb,
+        '$.** ? (@."Node Type" == "Index Scan" && @."Index Name" == "planner_scope_simple")') THEN
+        RAISE EXCEPTION 'proven partial index was not used: %', plan;
+    END IF;
+END $$;
+-- Keep alias requirements isolated across many independently planned CTEs.
+DO $$
+DECLARE
+    ctes text;
+    counts text;
+    n integer;
+BEGIN
+    SELECT string_agg(format('scope_%s AS MATERIALIZED (%s)', i,
+        CASE WHEN i % 2 = 0 THEN
+            $q$SELECT b.id FROM planner_scope_docs a, planner_scope_docs b
+               WHERE a.id=1 AND
+                 (a.content <@> to_bm25query('running','planner_scope_simple'))
+                 IS NOT NULL
+               ORDER BY b.content <@> 'running' LIMIT 3$q$
+        ELSE
+            $q$SELECT id FROM planner_scope_docs
+               ORDER BY content <@> 'running' LIMIT 3$q$
+        END), ', ' ORDER BY i) INTO ctes FROM generate_series(1,64) i;
+    SELECT string_agg(format('SELECT count(*) AS n FROM scope_%s', i),
+        ' UNION ALL ' ORDER BY i) INTO counts FROM generate_series(1,64) i;
+    EXECUTE format('WITH %s SELECT sum(n) FROM (%s) counts', ctes, counts)
+        INTO n;
+    IF n IS DISTINCT FROM 192 THEN
+        RAISE EXCEPTION 'independent CTEs changed alias results: %', n;
+    END IF;
+END $$;
+-- Recursive planning and caught errors must restore the outer context.
+CREATE FUNCTION planner_scope_recursive() RETURNS integer
+LANGUAGE plpgsql IMMUTABLE AS $$
+DECLARE
+    n integer;
+BEGIN
+    EXECUTE $q$SELECT count(*) FROM (
+        SELECT id FROM planner_scope_docs
+        ORDER BY content <@> 'running' LIMIT 3) ranked$q$ INTO n;
+    IF n <> 3 THEN
+        RAISE EXCEPTION 'recursive ranked result: %', n;
+    END IF;
+    BEGIN
+        EXECUTE 'SELECT 1/0';
+    EXCEPTION WHEN division_by_zero THEN
+        NULL;
+    END;
+    SELECT count(*) INTO n FROM pg_backend_memory_contexts
+    WHERE name = 'BM25 planner requirements';
+    IF n <> 1 THEN
+        RAISE EXCEPTION 'outer planner context lost or leaked: %', n;
+    END IF;
+    RETURN 1;
+END $$;
+CREATE FUNCTION planner_scope_failed_child() RETURNS boolean
+LANGUAGE plpgsql AS $$
+BEGIN
+    BEGIN
+        EXECUTE $q$SELECT a.id FROM
+            (SELECT id FROM planner_scope_docs
+             ORDER BY content <@> 'running' LIMIT 3) a,
+            (SELECT 1/0 AS bad OFFSET 0) b WHERE b.bad=0$q$;
+    EXCEPTION WHEN division_by_zero THEN
+        RETURN true;
+    END;
+    RETURN false;
+END $$;
+DO $$
+DECLARE
+    n integer;
+    actual int[];
+    valid boolean;
+    mode text;
+BEGIN
+    SELECT count(*) = 3 AND bool_and(marker = 1) INTO valid FROM (
+        SELECT id, planner_scope_recursive() AS marker
+        FROM planner_scope_docs
+        ORDER BY content <@> 'running' LIMIT 3) ranked;
+    IF valid IS DISTINCT FROM true THEN
+        RAISE EXCEPTION 'recursive planning changed outer results';
+    END IF;
+    IF NOT planner_scope_failed_child() THEN
+        RAISE EXCEPTION 'child planning error was not caught';
+    END IF;
+    SELECT ARRAY(SELECT b.id FROM planner_scope_docs a, planner_scope_docs b
+        WHERE a.id=1 AND
+          (a.content <@> to_bm25query('running','planner_scope_simple'))
+          IS NOT NULL
+        ORDER BY b.content <@> 'running' LIMIT 3) INTO actual;
+    SELECT array_agg(id ORDER BY id) INTO actual FROM unnest(actual) id;
+    IF actual IS DISTINCT FROM ARRAY[1,2,3] THEN
+        RAISE EXCEPTION 'alias isolation lost after planning error: %', actual;
+    END IF;
+    FOREACH mode IN ARRAY ARRAY['force_generic_plan','force_custom_plan']
+    LOOP
+        PERFORM set_config('plan_cache_mode', mode, true);
+        EXECUTE $q$PREPARE planner_scope_prepared(text) AS
+            WITH ranked AS MATERIALIZED (
+                SELECT id FROM planner_scope_docs
+                ORDER BY content <@>
+                    to_bm25query($1,'planner_scope_english') LIMIT 3)
+            SELECT array_agg(id ORDER BY id) FROM ranked$q$;
+        EXECUTE $q$EXECUTE planner_scope_prepared('running')$q$ INTO actual;
+        IF actual IS DISTINCT FROM ARRAY[1,2,3] THEN
+            RAISE EXCEPTION '% changed nested prepared results: %',
+                mode, actual;
+        END IF;
+        EXECUTE 'DEALLOCATE planner_scope_prepared';
+    END LOOP;
+    SELECT count(*) INTO n FROM pg_backend_memory_contexts
+    WHERE name = 'BM25 planner requirements';
+    IF n <> 0 THEN
+        RAISE EXCEPTION 'completed or failed planner leaked % contexts', n;
+    END IF;
+END $$;
+DROP FUNCTION planner_scope_recursive();
+DROP FUNCTION planner_scope_failed_child();
 DROP TABLE planner_scope_docs;
 
 -- Test 11: Implicit text <@> text in DELETE subquery (issue #213)
