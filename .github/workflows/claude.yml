@@ -22,9 +22,15 @@ jobs:
     # than a Claude GitHub App installation token. These are therefore the
     # complete, auditable set of permissions the agent holds: enough to push
     # to a branch, comment, and read CI results in this repository, nothing
-    # more. The token expires when the job ends. Pushes made with it do not
-    # start other workflows, so an agent-authored commit cannot fan out into
-    # release, benchmark, or Coverity jobs that hold their own credentials.
+    # more. The token expires when the job ends.
+    #
+    # Pushes made with GITHUB_TOKEN do not start workflows, so an agent commit
+    # cannot immediately trigger release, benchmark, or Coverity jobs that hold
+    # their own credentials. Scheduled workflows are a separate path: they
+    # build whatever is on main, so this relies on main's branch protection
+    # (pull request + approval required) rejecting a direct push from
+    # github-actions[bot]. Keep that protection in place; relaxing it would
+    # let an agent-authored commit reach those jobs on the next schedule.
     permissions:
       contents: write
       pull-requests: write
