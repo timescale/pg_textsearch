@@ -16,6 +16,8 @@
 #include <postgres.h>
 
 #include <access/generic_xlog.h>
+#include <access/heapam.h>
+#include <access/htup_details.h>
 #include <access/parallel.h>
 #include <access/table.h>
 #include <access/tableam.h>
@@ -315,6 +317,15 @@ tp_parallel_build_worker_main(dsm_segment *seg, shm_toc *toc)
 			"parallel build per-doc temp",
 			ALLOCSET_DEFAULT_SIZES);
 
+	/*
+	 * State for translating live-tuple TIDs to HOT-chain root TIDs,
+	 * cached per heap page exactly as heapam_index_build_range_scan()
+	 * does for the serial path.
+	 */
+	BlockNumber		root_blkno = InvalidBlockNumber;
+	OffsetNumber	root_offsets[MaxHeapTuplesPerPage];
+	ItemPointerData	root_tid;
+
 	/* Process tuples from this worker's block range */
 	while (scan != NULL &&
 		   table_scan_getnextslot_tidrange(scan, ForwardScanDirection, slot))
@@ -342,6 +353,46 @@ tp_parallel_build_worker_main(dsm_segment *seg, shm_toc *toc)
 
 		if (!ItemPointerIsValid(ctid))
 			goto next_tuple;
+
+		/*
+		 * Index entries must reference the ROOT of the HOT chain.
+		 *
+		 * table_scan_getnextslot_tidrange() hands us the TID of the live
+		 * tuple, which for a HOT-updated row is a HEAP_ONLY_TUPLE.  An
+		 * index entry pointing at such a line pointer cannot be followed:
+		 * heap_hot_search_buffer() expects to start at a chain root, so
+		 * index_fetch_heap() finds nothing and the row goes silently
+		 * missing from index scans -- while a sequential scan or a TID
+		 * scan still sees it.
+		 *
+		 * The serial build path does not have this problem because
+		 * table_index_build_scan() -> heapam_index_build_range_scan()
+		 * translates HOT chain members to their root using
+		 * heap_get_root_tuples().  This path scans the heap itself and
+		 * must do the same.
+		 */
+		{
+			BlockNumber	 blkno	= ItemPointerGetBlockNumber(ctid);
+			OffsetNumber offnum = ItemPointerGetOffsetNumber(ctid);
+
+			if (blkno != root_blkno)
+			{
+				Buffer buf = ReadBuffer(heap, blkno);
+
+				LockBuffer(buf, BUFFER_LOCK_SHARE);
+				heap_get_root_tuples(BufferGetPage(buf), root_offsets);
+				UnlockReleaseBuffer(buf);
+				root_blkno = blkno;
+			}
+
+			root_tid = *ctid;
+			if (offnum >= FirstOffsetNumber &&
+				offnum <= MaxHeapTuplesPerPage &&
+				OffsetNumberIsValid(root_offsets[offnum - 1]))
+				ItemPointerSetOffsetNumber(&root_tid,
+										   root_offsets[offnum - 1]);
+			ctid = &root_tid;
+		}
 
 		/*
 		 * Switch to temporary context before text extraction
