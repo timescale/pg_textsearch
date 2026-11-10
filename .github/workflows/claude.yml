@@ -18,31 +18,57 @@ jobs:
       (github.event_name == 'pull_request_review' && contains(github.event.review.body, '@claude')) ||
       (github.event_name == 'issues' && (contains(github.event.issue.body, '@claude') || contains(github.event.issue.title, '@claude')))
     runs-on: ubuntu-latest
+    # The agent authenticates to GitHub with the job-scoped GITHUB_TOKEN rather
+    # than a Claude GitHub App installation token. These are therefore the
+    # complete, auditable set of permissions the agent holds: enough to push
+    # to a branch, comment, and read CI results in this repository, nothing
+    # more. The token expires when the job ends.
+    #
+    # Pushes made with GITHUB_TOKEN do not start workflows, so an agent commit
+    # cannot immediately trigger release, benchmark, or Coverity jobs that hold
+    # their own credentials. Scheduled workflows are a separate path: they
+    # build whatever is on main, so this relies on main's branch protection
+    # (pull request + approval required) rejecting a direct push from
+    # github-actions[bot]. Keep that protection in place; relaxing it would
+    # let an agent-authored commit reach those jobs on the next schedule.
     permissions:
-      contents: read
-      pull-requests: read
-      issues: read
-      id-token: write
-      actions: read # Required for Claude to read CI results on PRs
+      contents: write
+      pull-requests: write
+      issues: write
+      actions: read
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           fetch-depth: 1
 
+      # Pinned to a commit rather than the floating v1 tag. The pinned
+      # revision restores .claude/, .mcp.json, CLAUDE.md and related config
+      # paths from the PR base branch before Claude Code starts, so a PR
+      # author cannot supply hooks, MCP servers, or instructions to the
+      # session by committing them to the PR branch. Bump deliberately, and
+      # re-check src/github/operations/restore-config.ts when doing so.
       - name: Run Claude Code
         id: claude
-        uses: anthropics/claude-code-action@v1
+        uses: anthropics/claude-code-action@61a9c274fa7110a66dfafc1bbbced03833eb25fe # v1.0.269
         with:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
 
-          # This is an optional setting that allows Claude to read CI results on PRs
-          additional_permissions: |
-            actions: read
+          # Use the job's GITHUB_TOKEN (scoped by `permissions:` above). When
+          # this is set the action does not exchange an OIDC token for a
+          # Claude App installation token, so id-token: write is not needed.
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+
+          # Defence in depth on top of the base-branch config restore:
+          # - no Claude Code hooks run from any settings source;
+          # - only the MCP servers the action itself configures are loaded,
+          #   never a .mcp.json from the checkout.
+          settings: |
+            {"disableAllHooks": true}
+          claude_args: --strict-mcp-config
+
           # Optional: Give a custom prompt to Claude. If this is not specified, Claude will perform the instructions specified in the comment that tagged it.
           # prompt: 'Update the pull request description to include a summary of changes.'
 
-          # Optional: Add claude_args to customize behavior and configuration
           # See https://github.com/anthropics/claude-code-action/blob/main/docs/usage.md
           # or https://docs.anthropic.com/en/docs/claude-code/sdk#command-line for available options
-          # claude_args: '--model claude-opus-4-1-20250805 --allowed-tools Bash(gh pr:*)'
