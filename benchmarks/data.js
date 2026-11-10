@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794297742534,
+  "lastUpdate": 1794297747243,
   "repoUrl": "https://github.com/timescale/pg_textsearch",
   "entries": {
     "cranfield Benchmarks": [
@@ -153049,6 +153049,38 @@ window.BENCHMARK_DATA = {
           {
             "name": "wikipedia_gin_concurrent - Concurrent Insert Time",
             "value": 20362.960524,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "John Pruitt",
+            "username": "jgpruitt",
+            "email": "jgpruitt@gmail.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "e78372cd82287245d8e550908a2c64e265fdf573",
+          "message": "Resolve the planner score stub by OID in the extension namespace (#596)\n\n## Summary\n\n`make_stub_funcexpr()` resolved `bm25_get_current_score()` with an\nunqualified `LookupFuncName()`, so the planner looked up its own helper\nthrough the **querying role's `search_path`**. A role with `CREATE` on a\nschema that precedes the extension schema could define its own\nzero-argument `bm25_get_current_score()` and have it planned into, and\nexecuted by, any BM25 `ORDER BY` query run by any user with that\n`search_path`, with that user's privileges.\n\nThis resolves the stub once in `lookup_bm25_oids_internal()` with a\n`PROCNAMEARGSNSP` syscache lookup pinned to the extension namespace OID,\nalongside the type and operator lookups that #558 already moved off\n`search_path`, and caches it in `BM25OidCache`. A `PROCOID` invalidation\ncallback keeps the cached OID current across drop/recreate.\n`make_stub_funcexpr()` now takes the cache and returns `NULL` when the\nOID is invalid, leaving the original expression in place.\n\nBecause a syscache lookup performs no ACL check, this also fixes #595: a\nname-based lookup (qualified or not) requires the querying role to hold\n`USAGE` on the extension schema, which breaks readers querying through\nan owner's view. That role can now run the index-ordered query with the\nextension schema absent from `search_path` and without `USAGE` on it.\n\n## Relationship to #565\n\nSupersedes the stub-lookup commit of #565 by @the-osiris, which\nschema-qualified the name instead. The namespace-OID approach closes the\nsame `search_path` hole and the USAGE problem in one change, and lets\nthe security fix land independently of the RLS and PG17 work in that PR.\nThe `extension_schema_oid` caching idea is from #565; credited as\nco-author. After this merges, #565 will conflict in\n`make_stub_funcexpr()`; taking `main`'s version resolves it.\n\n## Tests\n\n`test/sql/schema.sql`, inside the existing hostile-`search_path` block:\n\n- A shadow `bm25_shadow.bm25_get_current_score()` earlier in\n`search_path` that `RAISE`s if ever planned in. On unpatched `main` this\n**is invoked**: `ERROR: shadow bm25_get_current_score invoked`. `EXPLAIN\nVERBOSE` now shows `bm25_real.bm25_get_current_score()`.\n- A reader with `SELECT` on a `public` view over an indexed table,\n`search_path = public`, and `has_schema_privilege('bm25_real','USAGE') =\nfalse`, runs the view. On `main`: `function bm25_get_current_score()\ndoes not exist`.\n\nFull `make installcheck` 82/82 on PG 18.6 debug/assert; clang-format\n21.1.8 clean.\n\nCloses #595. Addresses finding 2 of Linear AGE-975.\n\nCo-authored-by: Kunal Singh <91742676+the-osiris@users.noreply.github.com>",
+          "timestamp": "2026-11-10T01:26:58Z",
+          "url": "https://github.com/timescale/pg_textsearch/commit/e78372cd82287245d8e550908a2c64e265fdf573"
+        },
+        "date": 1794297746475,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "wikipedia_gin_concurrent - Index Build Time",
+            "value": 0.445,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia_gin_concurrent - Concurrent Insert Time",
+            "value": 20040.755016,
             "unit": "ms"
           }
         ]
