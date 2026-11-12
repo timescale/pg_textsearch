@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794464304419,
+  "lastUpdate": 1794464309609,
   "repoUrl": "https://github.com/timescale/pg_textsearch",
   "entries": {
     "cranfield Benchmarks": [
@@ -51582,6 +51582,133 @@ window.BENCHMARK_DATA = {
           {
             "name": "msmarco (8.8M docs) - Query Latency After Update VACUUM",
             "value": 7.53,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "John Pruitt",
+            "username": "jgpruitt",
+            "email": "jgpruitt@gmail.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "01d637c0313609631713e32ed29c9b56e0b6fb2e",
+          "message": "Drop pg_attribute_unused() from static inline helpers in dump.h (#599)\n\n## Summary\n\n`test-pg19-beta (gcc)` fails on the ubuntu-26.04 runner (GCC 15):\n\n```\n.//src/debug/dump.h:35:1: error: 'maybe_unused' attribute ignored [-Werror=attributes]\n   35 | pg_attribute_unused() dump_init_file(DumpOutput *out, FILE *fp)\n```\n\nPostgreSQL 19 defines `pg_attribute_unused()` as C23 `[[maybe_unused]]`.\n`dump.h` put it between the return type and the function name, a\nposition where a standard attribute does not appertain to the\ndeclaration, so GCC 15 ignores it and `-Werror=attributes` turns that\ninto an error. GCC 13 on the 24.04 image accepted it silently.\n\nThe attribute was never doing anything: neither GCC nor Clang warns\nabout unused `static inline` functions defined in a header (verified\nwith `-Wall -Wextra -Wunused-function` on a TU that includes `dump.h`\nand uses nothing from it). Remove it from the five sites.\n\nNon-gating job (`all-tests-passed` excludes PG19 beta), so not blocking\nanything, but it should be green. Builds clean on PG18.6; `preload\ndropped basic` regressions pass locally. Depends on #598 for the rest of\nCI to run.",
+          "timestamp": "2026-11-10T21:09:47Z",
+          "url": "https://github.com/timescale/pg_textsearch/commit/01d637c0313609631713e32ed29c9b56e0b6fb2e"
+        },
+        "date": 1794464308965,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "msmarco (8.8M docs) - Index Build Time",
+            "value": 146616.445,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - 1 Token Query (p50)",
+            "value": 0.42,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - 2 Token Query (p50)",
+            "value": 0.81,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - 3 Token Query (p50)",
+            "value": 1.64,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - 4 Token Query (p50)",
+            "value": 2.72,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - 5 Token Query (p50)",
+            "value": 4.24,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - 6 Token Query (p50)",
+            "value": 6.7,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - 7 Token Query (p50)",
+            "value": 10.16,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - 8+ Token Query (p50)",
+            "value": 15.76,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - Weighted Latency (p50, ms)",
+            "value": 2.81,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - Weighted Throughput (avg ms/query)",
+            "value": 3.61,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - Index Size",
+            "value": 2432.6,
+            "unit": "MB"
+          },
+          {
+            "name": "msmarco (8.8M docs) - Partial VACUUM (concentrated delete)",
+            "value": 1079.505,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - Full VACUUM (uniform delete)",
+            "value": 9712.61,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - Full VACUUM (uniform update)",
+            "value": 7879.481,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - Index Size After Partial VACUUM",
+            "value": 2435,
+            "unit": "MB"
+          },
+          {
+            "name": "msmarco (8.8M docs) - Index Size After Full VACUUM",
+            "value": 2435,
+            "unit": "MB"
+          },
+          {
+            "name": "msmarco (8.8M docs) - Query Latency After Partial VACUUM",
+            "value": 5.7,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - Query Latency After Full VACUUM",
+            "value": 5.67,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - Index Size After Update VACUUM",
+            "value": 2435,
+            "unit": "MB"
+          },
+          {
+            "name": "msmarco (8.8M docs) - Query Latency After Update VACUUM",
+            "value": 5.95,
             "unit": "ms"
           }
         ]
