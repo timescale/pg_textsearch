@@ -43,6 +43,20 @@ LIMIT 10;
 SELECT 'hello' <@> to_bm25query('postgres', 'content_idx') AS score;
 ERROR:  left operand of <@> must reference a table column
 HINT:  Use column_name <@> bm25query, not a constant.
+-- Non-BM25 index (e.g. B-tree) and heap table names must be rejected
+CREATE INDEX title_btree_idx ON explicit_index_test (title);
+SELECT to_bm25query('postgres', 'title_btree_idx');
+ERROR:  "title_btree_idx" is not a bm25 index
+SELECT to_bm25query('postgres', 'explicit_index_test');
+ERROR:  "explicit_index_test" is not a bm25 index
+SELECT 'title_btree_idx:postgres'::bm25query;
+ERROR:  "title_btree_idx" is not a bm25 index
+LINE 1: SELECT 'title_btree_idx:postgres'::bm25query;
+               ^
+SELECT 'explicit_index_test:postgres'::bm25query;
+ERROR:  "explicit_index_test" is not a bm25 index
+LINE 1: SELECT 'explicit_index_test:postgres'::bm25query;
+               ^
 -- Clean up
 DROP TABLE explicit_index_test;
 -----------------------------------------------------------------------
