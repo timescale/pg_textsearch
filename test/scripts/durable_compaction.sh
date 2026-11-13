@@ -7263,12 +7263,13 @@ SQL
         fi
         sleep 0.1
     done
+    # PostgreSQL minors differ in extension lock modes; older ones can hold both.
     if [ "$(sql_super -c "SELECT
-          count(*) FILTER (
+          count(DISTINCT object_lock.objid) FILTER (
             WHERE object_lock.classid =
                     'pg_catalog.pg_extension'::pg_catalog.regclass
               AND object_lock.objid = ${extension_oid}
-              AND object_lock.mode = 'AccessShareLock')
+              AND object_lock.mode IN ('AccessShareLock', 'ExclusiveLock'))
           || ':' ||
           count(*) FILTER (
             WHERE object_lock.classid =
