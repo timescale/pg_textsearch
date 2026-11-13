@@ -7263,7 +7263,8 @@ SQL
         fi
         sleep 0.1
     done
-    # PostgreSQL minors differ in extension lock modes; older ones can hold both.
+    # PostgreSQL minors differ in extension lock modes;
+    # older ones can hold both.
     if [ "$(sql_super -c "SELECT
           count(DISTINCT object_lock.objid) FILTER (
             WHERE object_lock.classid =
