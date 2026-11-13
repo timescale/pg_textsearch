@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794468106519,
+  "lastUpdate": 1794554533812,
   "repoUrl": "https://github.com/timescale/pg_textsearch",
   "entries": {
     "Concurrent INSERT (pg_textsearch)": [
@@ -13830,6 +13830,68 @@ window.BENCHMARK_DATA = {
           {
             "name": "pg_textsearch INSERT latency (c=8)",
             "value": 0.815,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "John Pruitt",
+            "username": "jgpruitt",
+            "email": "jgpruitt@gmail.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "01d637c0313609631713e32ed29c9b56e0b6fb2e",
+          "message": "Drop pg_attribute_unused() from static inline helpers in dump.h (#599)\n\n## Summary\n\n`test-pg19-beta (gcc)` fails on the ubuntu-26.04 runner (GCC 15):\n\n```\n.//src/debug/dump.h:35:1: error: 'maybe_unused' attribute ignored [-Werror=attributes]\n   35 | pg_attribute_unused() dump_init_file(DumpOutput *out, FILE *fp)\n```\n\nPostgreSQL 19 defines `pg_attribute_unused()` as C23 `[[maybe_unused]]`.\n`dump.h` put it between the return type and the function name, a\nposition where a standard attribute does not appertain to the\ndeclaration, so GCC 15 ignores it and `-Werror=attributes` turns that\ninto an error. GCC 13 on the 24.04 image accepted it silently.\n\nThe attribute was never doing anything: neither GCC nor Clang warns\nabout unused `static inline` functions defined in a header (verified\nwith `-Wall -Wextra -Wunused-function` on a TU that includes `dump.h`\nand uses nothing from it). Remove it from the five sites.\n\nNon-gating job (`all-tests-passed` excludes PG19 beta), so not blocking\nanything, but it should be green. Builds clean on PG18.6; `preload\ndropped basic` regressions pass locally. Depends on #598 for the rest of\nCI to run.",
+          "timestamp": "2026-11-10T21:09:47Z",
+          "url": "https://github.com/timescale/pg_textsearch/commit/01d637c0313609631713e32ed29c9b56e0b6fb2e"
+        },
+        "date": 1794554482094,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "pg_textsearch INSERT TPS (c=1)",
+            "value": 2109.45725,
+            "unit": "tps"
+          },
+          {
+            "name": "pg_textsearch INSERT latency (c=1)",
+            "value": 0.474,
+            "unit": "ms"
+          },
+          {
+            "name": "pg_textsearch INSERT TPS (c=2)",
+            "value": 4043.424516,
+            "unit": "tps"
+          },
+          {
+            "name": "pg_textsearch INSERT latency (c=2)",
+            "value": 0.495,
+            "unit": "ms"
+          },
+          {
+            "name": "pg_textsearch INSERT TPS (c=4)",
+            "value": 6704.702429,
+            "unit": "tps"
+          },
+          {
+            "name": "pg_textsearch INSERT latency (c=4)",
+            "value": 0.597,
+            "unit": "ms"
+          },
+          {
+            "name": "pg_textsearch INSERT TPS (c=8)",
+            "value": 9605.694482,
+            "unit": "tps"
+          },
+          {
+            "name": "pg_textsearch INSERT latency (c=8)",
+            "value": 0.833,
             "unit": "ms"
           }
         ]
