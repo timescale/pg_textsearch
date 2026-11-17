@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [ main ]
+    branches: [ main, 'release/*' ]
     paths:
       - 'src/**'
       - 'test/**'
@@ -11,28 +11,55 @@ on:
       - 'pg_textsearch.control'
       - '.clang-format'
       - '.github/workflows/ci.yml'
+      - '.github/scripts/ci-needs-code-checks.sh'
       - '.github/scripts/build-postgres-injection.sh'
       - '.github/scripts/build-postgres-sanitizer.sh'
       - 'scripts/msvc-build.ps1'
+  # Always start PR CI so branch protection receives all-tests-passed.
+  # The changes job applies the code-path filter inside the workflow.
   pull_request:
-    branches: [ main ]
-    paths:
-      - 'src/**'
-      - 'test/**'
-      - 'sql/**'
-      - 'Makefile'
-      - 'pg_textsearch.control'
-      - '.clang-format'
-      - '.github/workflows/ci.yml'
-      - '.github/scripts/build-postgres-injection.sh'
-      - '.github/scripts/build-postgres-sanitizer.sh'
-      - 'scripts/msvc-build.ps1'
+    branches: [ main, 'release/*' ]
   workflow_dispatch:
 
 jobs:
+  changes:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      run_tests: ${{ steps.paths.outputs.run_tests }}
+    steps:
+      - uses: actions/checkout@v4
+        if: github.event_name == 'pull_request'
+        with:
+          # Compare the event's exact base/head across their merge base.
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Determine whether code checks are needed
+        id: paths
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          # Branch pushes and manual dispatches retain the full CI suite.
+          if [[ "$EVENT_NAME" != "pull_request" ]]; then
+            echo "run_tests=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # Keep the assignment separate so detector errors fail the step.
+          run_tests=$(.github/scripts/ci-needs-code-checks.sh \
+            "$BASE_SHA" "$HEAD_SHA")
+          echo "run_tests=$run_tests" >> "$GITHUB_OUTPUT"
+
   test:
+    needs: changes
+    if: needs.changes.outputs.run_tests == 'true'
     runs-on: ubuntu-latest
     strategy:
+      fail-fast: false
       matrix:
         pg_version: [17, 18]
 
@@ -43,16 +70,16 @@ jobs:
       run: |
         sudo apt-get update
         sudo apt-get install -y wget ca-certificates
-        wget --quiet -O - https://www.postgresql.org/media/keys/ACCC4CF8.asc | sudo apt-key add -
-        echo "deb http://apt.postgresql.org/pub/repos/apt/ $(lsb_release -cs)-pgdg main" | sudo tee /etc/apt/sources.list.d/pgdg.list
+        wget --quiet --tries=5 --waitretry=5 --retry-on-http-error=429,500,502,503,504 -O - https://www.postgresql.org/media/keys/ACCC4CF8.asc | sudo gpg --dearmor --yes -o /usr/share/keyrings/postgresql-archive-keyring.gpg
+        echo "deb [signed-by=/usr/share/keyrings/postgresql-archive-keyring.gpg] http://apt.postgresql.org/pub/repos/apt/ $(lsb_release -cs)-pgdg main" | sudo tee /etc/apt/sources.list.d/pgdg.list
         sudo apt-get update
         sudo apt-get install -y postgresql-${{ matrix.pg_version }} postgresql-server-dev-${{ matrix.pg_version }}
 
     - name: Install TimescaleDB
       run: |
         # Add TimescaleDB apt repository
-        echo "deb https://packagecloud.io/timescale/timescaledb/ubuntu/ $(lsb_release -cs) main" | sudo tee /etc/apt/sources.list.d/timescaledb.list
-        wget --quiet -O - https://packagecloud.io/timescale/timescaledb/gpgkey | sudo apt-key add -
+        echo "deb [signed-by=/usr/share/keyrings/timescaledb-archive-keyring.gpg] https://packagecloud.io/timescale/timescaledb/ubuntu/ $(lsb_release -cs) main" | sudo tee /etc/apt/sources.list.d/timescaledb.list
+        wget --quiet --tries=5 --waitretry=5 --retry-on-http-error=429,500,502,503,504 -O - https://packagecloud.io/timescale/timescaledb/gpgkey | sudo gpg --dearmor --yes -o /usr/share/keyrings/timescaledb-archive-keyring.gpg
         sudo apt-get update
         # Install TimescaleDB for the specific PostgreSQL version
         sudo apt-get install -y timescaledb-2-postgresql-${{ matrix.pg_version }} || echo "TimescaleDB installation failed, hypertable tests will be skipped"
@@ -257,6 +284,8 @@ jobs:
         retention-days: 7
 
   injection-points:
+    needs: changes
+    if: needs.changes.outputs.run_tests == 'true'
     name: PG${{ matrix.pg }} Injection Points
     runs-on: ubuntu-22.04
     timeout-minutes: 45
@@ -360,6 +389,8 @@ jobs:
 
 
   build-test-multiple-configs:
+    needs: changes
+    if: needs.changes.outputs.run_tests == 'true'
     runs-on: ubuntu-latest
     strategy:
       matrix:
@@ -376,8 +407,8 @@ jobs:
       run: |
         sudo apt-get update
         sudo apt-get install -y wget ca-certificates build-essential bc
-        wget --quiet -O - https://www.postgresql.org/media/keys/ACCC4CF8.asc | sudo apt-key add -
-        echo "deb http://apt.postgresql.org/pub/repos/apt/ $(lsb_release -cs)-pgdg main" | sudo tee /etc/apt/sources.list.d/pgdg.list
+        wget --quiet --tries=5 --waitretry=5 --retry-on-http-error=429,500,502,503,504 -O - https://www.postgresql.org/media/keys/ACCC4CF8.asc | sudo gpg --dearmor --yes -o /usr/share/keyrings/postgresql-archive-keyring.gpg
+        echo "deb [signed-by=/usr/share/keyrings/postgresql-archive-keyring.gpg] http://apt.postgresql.org/pub/repos/apt/ $(lsb_release -cs)-pgdg main" | sudo tee /etc/apt/sources.list.d/pgdg.list
         sudo apt-get update
         sudo apt-get install -y postgresql-${{ matrix.config.pg_version }} postgresql-server-dev-${{ matrix.config.pg_version }}
 
@@ -395,6 +426,8 @@ jobs:
   # block merges (continue-on-error), and it can be dropped in favor of
   # the apt matrices once PG19 reaches GA and PGDG ships packages.
   test-pg19-beta:
+    needs: changes
+    if: needs.changes.outputs.run_tests == 'true'
     runs-on: ubuntu-latest
     continue-on-error: true
     strategy:
@@ -482,6 +515,8 @@ jobs:
         make test-injection-shell
 
   build-msvc:
+    needs: changes
+    if: needs.changes.outputs.run_tests == 'true'
     name: PG${{ matrix.pg_version }} MSVC Build
     runs-on: windows-2022
     timeout-minutes: 20
@@ -555,6 +590,8 @@ jobs:
         ./scripts/msvc-build.ps1 -PgRoot $env:PGROOT -ExpectedMajor ${{ matrix.pg_version }}
 
   performance-test:
+    needs: changes
+    if: needs.changes.outputs.run_tests == 'true'
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v4
@@ -563,8 +600,8 @@ jobs:
       run: |
         sudo apt-get update
         sudo apt-get install -y wget ca-certificates build-essential bc
-        wget --quiet -O - https://www.postgresql.org/media/keys/ACCC4CF8.asc | sudo apt-key add -
-        echo "deb http://apt.postgresql.org/pub/repos/apt/ $(lsb_release -cs)-pgdg main" | sudo tee /etc/apt/sources.list.d/pgdg.list
+        wget --quiet --tries=5 --waitretry=5 --retry-on-http-error=429,500,502,503,504 -O - https://www.postgresql.org/media/keys/ACCC4CF8.asc | sudo gpg --dearmor --yes -o /usr/share/keyrings/postgresql-archive-keyring.gpg
+        echo "deb [signed-by=/usr/share/keyrings/postgresql-archive-keyring.gpg] http://apt.postgresql.org/pub/repos/apt/ $(lsb_release -cs)-pgdg main" | sudo tee /etc/apt/sources.list.d/pgdg.list
         sudo apt-get update
         sudo apt-get install -y postgresql-17 postgresql-server-dev-17
 
@@ -577,7 +614,7 @@ jobs:
     - name: Build and install extension
       run: |
         export PATH="/usr/lib/postgresql/17/bin:$PATH"
-        make clean && make && sudo make install
+        make clean && make && sudo env "PATH=$PATH" make install
 
     - name: Run performance benchmarks
       timeout-minutes: 20
@@ -597,6 +634,8 @@ jobs:
         retention-days: 7
 
   format-check:
+    needs: changes
+    if: needs.changes.outputs.run_tests == 'true'
     name: Check C Code Formatting
     runs-on: ubuntu-latest
 
@@ -633,6 +672,8 @@ jobs:
         echo "  clang-format -i src/filename.c"
 
   sanitizer:
+    needs: changes
+    if: needs.changes.outputs.run_tests == 'true'
     name: PG${{ matrix.pg }} Sanitizer
     runs-on: ubuntu-22.04
     timeout-minutes: 45
@@ -896,6 +937,8 @@ jobs:
   # The coverage job exercises managed compaction on PostgreSQL 17. Run the
   # same end-to-end lifecycle suite separately on the other required version.
   managed-compaction-pg18:
+    needs: changes
+    if: needs.changes.outputs.run_tests == 'true'
     runs-on: ubuntu-latest
 
     env:
@@ -910,7 +953,7 @@ jobs:
       run: |
         sudo apt-get update
         sudo apt-get install -y wget ca-certificates gnupg
-        wget --quiet -O - https://www.postgresql.org/media/keys/ACCC4CF8.asc | sudo gpg --dearmor -o /usr/share/keyrings/postgresql-archive-keyring.gpg
+        wget --quiet --tries=5 --waitretry=5 --retry-on-http-error=429,500,502,503,504 -O - https://www.postgresql.org/media/keys/ACCC4CF8.asc | sudo gpg --dearmor -o /usr/share/keyrings/postgresql-archive-keyring.gpg
         echo "deb [signed-by=/usr/share/keyrings/postgresql-archive-keyring.gpg] http://apt.postgresql.org/pub/repos/apt/ $(lsb_release -cs)-pgdg main" | sudo tee /etc/apt/sources.list.d/pgdg.list
         sudo apt-get update
         sudo apt-get install -y postgresql-18 postgresql-server-dev-18 \
@@ -942,6 +985,8 @@ jobs:
           PG_CONFIG=/usr/lib/postgresql/18/bin/pg_config
 
   coverage:
+    needs: changes
+    if: needs.changes.outputs.run_tests == 'true'
     runs-on: ubuntu-latest
 
     env:
@@ -958,15 +1003,15 @@ jobs:
       run: |
         sudo apt-get update
         sudo apt-get install -y wget ca-certificates gnupg
-        wget --quiet -O - https://www.postgresql.org/media/keys/ACCC4CF8.asc | sudo gpg --dearmor -o /usr/share/keyrings/postgresql-archive-keyring.gpg
+        wget --quiet --tries=5 --waitretry=5 --retry-on-http-error=429,500,502,503,504 -O - https://www.postgresql.org/media/keys/ACCC4CF8.asc | sudo gpg --dearmor -o /usr/share/keyrings/postgresql-archive-keyring.gpg
         echo "deb [signed-by=/usr/share/keyrings/postgresql-archive-keyring.gpg] http://apt.postgresql.org/pub/repos/apt/ $(lsb_release -cs)-pgdg main" | sudo tee /etc/apt/sources.list.d/pgdg.list
         sudo apt-get update
         sudo apt-get install -y postgresql-17 postgresql-server-dev-17
 
     - name: Install TimescaleDB
       run: |
-        echo "deb https://packagecloud.io/timescale/timescaledb/ubuntu/ $(lsb_release -cs) main" | sudo tee /etc/apt/sources.list.d/timescaledb.list
-        wget --quiet -O - https://packagecloud.io/timescale/timescaledb/gpgkey | sudo apt-key add -
+        echo "deb [signed-by=/usr/share/keyrings/timescaledb-archive-keyring.gpg] https://packagecloud.io/timescale/timescaledb/ubuntu/ $(lsb_release -cs) main" | sudo tee /etc/apt/sources.list.d/timescaledb.list
+        wget --quiet --tries=5 --waitretry=5 --retry-on-http-error=429,500,502,503,504 -O - https://packagecloud.io/timescale/timescaledb/gpgkey | sudo gpg --dearmor --yes -o /usr/share/keyrings/timescaledb-archive-keyring.gpg
         sudo apt-get update
         sudo apt-get install -y timescaledb-2-postgresql-17 || echo "TimescaleDB installation failed, hypertable tests will be skipped"
 
@@ -1102,7 +1147,7 @@ jobs:
         curl -fsSL -o /tmp/old.tar.gz \
           "https://github.com/timescale/pg_textsearch/releases/download/v1.0.0/pg_textsearch-1.0.0.tar.gz"
         tar -xzf /tmp/old.tar.gz -C /tmp
-        (cd /tmp/pg_textsearch-1.0.0 && make clean && make && sudo make install)
+        (cd /tmp/pg_textsearch-1.0.0 && make clean && make && sudo env "PATH=$PATH" make install)
 
         # Start PG with old binary and create a v6-metapage index with
         # V4 segments.
@@ -1250,26 +1295,28 @@ jobs:
              --output-file coverage.info \
              --base-directory $PWD \
              --no-external \
-             --ignore-errors mismatch
+             --ignore-errors mismatch,inconsistent
 
         # Remove test files from coverage report (we only care about src/)
         lcov --remove coverage.info \
              '*/test/*' \
              '*/tmp_check_shared/*' \
              --output-file coverage.info \
-             --ignore-errors unused
+             --ignore-errors unused,inconsistent
 
         # Show summary
-        lcov --list coverage.info
+        lcov --list coverage.info --ignore-errors inconsistent
 
     - name: Restore coverage baseline
       if: github.event_name == 'pull_request'
       uses: actions/cache/restore@v4
       with:
         path: coverage-baseline.txt
-        key: coverage-baseline-never-matches
+        # Never fall back to another branch's baseline. The v2 prefix
+        # also excludes the old main-only, unscoped cache entries.
+        key: coverage-baseline-v2-${{ github.base_ref }}-never-matches
         restore-keys: |
-          coverage-baseline-
+          coverage-baseline-v2-${{ github.base_ref }}-
 
     - name: Coverage gate
       id: coverage-gate
@@ -1281,7 +1328,7 @@ jobs:
         fi
 
         # Extract current line coverage percentage
-        CURRENT=$(lcov --summary coverage.info 2>&1 \
+        CURRENT=$(lcov --summary coverage.info --ignore-errors inconsistent 2>&1 \
           | grep "lines" | sed 's/.*: \([0-9.]*\)%.*/\1/')
         echo "Current line coverage: ${CURRENT}%"
         echo "line_coverage=$CURRENT" >> "$GITHUB_OUTPUT"
@@ -1320,11 +1367,14 @@ jobs:
         fi
 
     - name: Save coverage baseline
-      if: github.ref == 'refs/heads/main'
+      if: >-
+        github.event_name != 'pull_request' &&
+        (github.ref == 'refs/heads/main' ||
+         startsWith(github.ref, 'refs/heads/release/'))
       uses: actions/cache/save@v4
       with:
         path: coverage-baseline.txt
-        key: coverage-baseline-${{ github.sha }}
+        key: coverage-baseline-v2-${{ github.ref_name }}-${{ github.sha }}
 
     - name: Generate HTML report
       run: |
@@ -1372,11 +1422,13 @@ jobs:
         # Extract and display summary stats
         if [ -f coverage.info ]; then
           echo '```' >> $GITHUB_STEP_SUMMARY
-          lcov --summary coverage.info 2>&1 | tail -10 >> $GITHUB_STEP_SUMMARY
+          lcov --summary coverage.info --ignore-errors inconsistent 2>&1 | tail -10 >> $GITHUB_STEP_SUMMARY
           echo '```' >> $GITHUB_STEP_SUMMARY
         fi
 
   pgspot:
+    needs: changes
+    if: needs.changes.outputs.run_tests == 'true'
     name: Check Extension SQL
     runs-on: ubuntu-latest
 
@@ -1402,17 +1454,48 @@ jobs:
   # Umbrella job for branch protection rules
   all-tests-passed:
     runs-on: ubuntu-latest
-    needs: [test, injection-points, build-test-multiple-configs, build-msvc, performance-test, format-check, sanitizer, managed-compaction-pg18, coverage, pgspot]
+    # PG19 beta remains experimental and does not block this gate.
+    needs:
+      - changes
+      - test
+      - injection-points
+      - build-test-multiple-configs
+      - build-msvc
+      - performance-test
+      - format-check
+      - sanitizer
+      - managed-compaction-pg18
+      - coverage
+      - pgspot
     if: always()
     steps:
-      - name: Check all jobs succeeded
+      - name: Check required job results
+        env:
+          NEEDS_JSON: ${{ toJSON(needs) }}
         run: |
-          if [[ "${{ contains(needs.*.result, 'failure') }}" == "true" ]]; then
-            echo "One or more jobs failed"
+          if ! jq -e '
+            .changes.result == "success" and
+            (.changes.outputs.run_tests == "true" or
+             .changes.outputs.run_tests == "false")
+          ' <<< "$NEEDS_JSON" > /dev/null; then
+            echo "Change detection failed or returned an invalid result"
             exit 1
           fi
-          if [[ "${{ contains(needs.*.result, 'cancelled') }}" == "true" ]]; then
-            echo "One or more jobs were cancelled"
+
+          if [[ "$(jq -r '.changes.outputs.run_tests' \
+            <<< "$NEEDS_JSON")" == "true" ]]; then
+            expected=success
+          else
+            expected=skipped
+          fi
+
+          # Code checks must all succeed, or all be intentionally skipped
+          # for a PR outside the watched paths. Reject unexpected skips.
+          if ! jq -e --arg expected "$expected" '
+            del(.changes) | all(.[]; .result == $expected)
+          ' <<< "$NEEDS_JSON" > /dev/null; then
+            echo "Expected every required code check to be $expected"
+            jq 'map_values(.result)' <<< "$NEEDS_JSON"
             exit 1
           fi
           echo "All checks passed!"

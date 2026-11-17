@@ -37,6 +37,13 @@ LIMIT 10;
 -- This should ERROR: left operand is a constant, not a column
 SELECT 'hello' <@> to_bm25query('postgres', 'content_idx') AS score;
 
+-- Non-BM25 index (e.g. B-tree) and heap table names must be rejected
+CREATE INDEX title_btree_idx ON explicit_index_test (title);
+SELECT to_bm25query('postgres', 'title_btree_idx');
+SELECT to_bm25query('postgres', 'explicit_index_test');
+SELECT 'title_btree_idx:postgres'::bm25query;
+SELECT 'explicit_index_test:postgres'::bm25query;
+
 -- Clean up
 DROP TABLE explicit_index_test;
 
