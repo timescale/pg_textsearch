@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794899346953,
+  "lastUpdate": 1794899351784,
   "repoUrl": "https://github.com/timescale/pg_textsearch",
   "entries": {
     "cranfield Benchmarks": [
@@ -222341,6 +222341,93 @@ window.BENCHMARK_DATA = {
           {
             "name": "wikipedia_insert (0 docs) - Weighted Latency (p50, ms)",
             "value": 0.76,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia_insert (0 docs) - Weighted Throughput (avg ms/query)",
+            "value": 0.77,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia_insert (0 docs) - Index Size",
+            "value": 401.68,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tjgreen@gmail.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "7da7da58acaee9996c7c84aca02488419a5d93fb",
+          "message": "Validate BM25 index relation types in query input (#607)\n\nReject tables and non-BM25 indexes when resolving explicit index names,\nand validate stored index OIDs under lock before standalone scoring.\nBinary COPY and replication preserve query values without catalog\nvalidation, including references to dropped indexes.\n\nPreserves partitioned BM25 indexes and queries without an explicit\nindex, with regression coverage for name validation, binary round-trips,\nand use-time rejection.\n\nPorts #514, originally contributed by @pavankrishna13, onto current\nmain.\n\n---------\n\nCo-authored-by: Todd J. Green <1738591+tjgreen42@users.noreply.github.com>",
+          "timestamp": "2026-11-17T04:52:08Z",
+          "url": "https://github.com/timescale/pg_textsearch/commit/7da7da58acaee9996c7c84aca02488419a5d93fb"
+        },
+        "date": 1794899351161,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "wikipedia_insert (0 docs) - Index Build Time",
+            "value": 0.82,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia_insert (0 docs) - Insert Time",
+            "value": 29660.431,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia_insert (0 docs) - 1 Token Query (p50)",
+            "value": 0.32,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia_insert (0 docs) - 2 Token Query (p50)",
+            "value": 0.5,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia_insert (0 docs) - 3 Token Query (p50)",
+            "value": 0.65,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia_insert (0 docs) - 4 Token Query (p50)",
+            "value": 0.79,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia_insert (0 docs) - 5 Token Query (p50)",
+            "value": 0.94,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia_insert (0 docs) - 6 Token Query (p50)",
+            "value": 1.1,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia_insert (0 docs) - 7 Token Query (p50)",
+            "value": 1.26,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia_insert (0 docs) - 8+ Token Query (p50)",
+            "value": 1.76,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia_insert (0 docs) - Weighted Latency (p50, ms)",
+            "value": 0.75,
             "unit": "ms"
           },
           {
