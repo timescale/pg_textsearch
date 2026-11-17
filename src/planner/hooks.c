@@ -69,6 +69,7 @@ typedef struct BM25OidCache
 	Oid text_text_operator_oid;
 	Oid textarray_tpquery_operator_oid;
 	Oid textarray_text_operator_oid;
+	Oid score_stub_func_oid; /* bm25_get_current_score() */
 } BM25OidCache;
 
 /*
@@ -207,6 +208,20 @@ lookup_bm25_oids_internal(BM25OidCache *cache)
 			ObjectIdGetDatum(TEXTOID),
 			ObjectIdGetDatum(schema_oid));
 
+	/*
+	 * Resolve the zero-argument score stub in the extension namespace by OID.
+	 * The planner injects this call into plans on the user's behalf, so it
+	 * must neither follow the user's search_path (a role with CREATE on an
+	 * earlier schema could supply its own function) nor require the user to
+	 * hold USAGE on the extension schema (a name-based lookup would).
+	 */
+	cache->score_stub_func_oid = GetSysCacheOid3(
+			PROCNAMEARGSNSP,
+			Anum_pg_proc_oid,
+			CStringGetDatum("bm25_get_current_score"),
+			PointerGetDatum(buildoidvector(NULL, 0)),
+			ObjectIdGetDatum(schema_oid));
+
 	return true;
 }
 
@@ -226,6 +241,8 @@ get_bm25_oids(BM25OidCache *cache)
 				TYPEOID, bm25_cache_invalidation_callback, (Datum)0);
 		CacheRegisterSyscacheCallback(
 				OPEROID, bm25_cache_invalidation_callback, (Datum)0);
+		CacheRegisterSyscacheCallback(
+				PROCOID, bm25_cache_invalidation_callback, (Datum)0);
 		/*
 		 * Older PG17 releases have no extension syscache.  Their AM/type/
 		 * operator invalidations also cover extension create/drop; this
@@ -1078,21 +1095,21 @@ is_bm25_score_opexpr(Node *node, BM25OidCache *oids)
 
 /*
  * Create a FuncExpr calling bm25_get_current_score().
+ *
+ * The function OID comes from the extension-namespace lookup cached in
+ * BM25OidCache, never from a name lookup at plan time. Returns NULL if the
+ * stub is unavailable so callers leave the original expression in place.
  */
 static FuncExpr *
-make_stub_funcexpr(void)
+make_stub_funcexpr(BM25OidCache *oids)
 {
 	FuncExpr *funcexpr;
-	Oid		  funcoid;
 
-	/* Look up bm25_get_current_score function */
-	funcoid = LookupFuncName(
-			list_make1(makeString("bm25_get_current_score")), 0, NULL, false);
-	if (!OidIsValid(funcoid))
+	if (!OidIsValid(oids->score_stub_func_oid))
 		return NULL;
 
 	funcexpr				 = makeNode(FuncExpr);
-	funcexpr->funcid		 = funcoid;
+	funcexpr->funcid		 = oids->score_stub_func_oid;
 	funcexpr->funcresulttype = FLOAT8OID;
 	funcexpr->funcretset	 = false;
 	funcexpr->funcvariadic	 = false;
@@ -1137,7 +1154,7 @@ replace_scores_in_targetlist(List *targetlist, BM25OidCache *oids)
 		if (is_bm25_score_opexpr((Node *)tle->expr, oids) &&
 			equal(tle->expr, orderby_expr))
 		{
-			FuncExpr *stub = make_stub_funcexpr();
+			FuncExpr *stub = make_stub_funcexpr(oids);
 
 			if (stub != NULL)
 				tle->expr = (Expr *)stub;
