@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794898878460,
+  "lastUpdate": 1794899341476,
   "repoUrl": "https://github.com/timescale/pg_textsearch",
   "entries": {
     "cranfield Benchmarks": [
@@ -178139,6 +178139,48 @@ window.BENCHMARK_DATA = {
           {
             "name": "cranfield_insert (0 docs) - Throughput (avg ms/query)",
             "value": 0.39,
+            "unit": "ms"
+          },
+          {
+            "name": "cranfield_insert (0 docs) - Index Size",
+            "value": 2.39,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tjgreen@gmail.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "7da7da58acaee9996c7c84aca02488419a5d93fb",
+          "message": "Validate BM25 index relation types in query input (#607)\n\nReject tables and non-BM25 indexes when resolving explicit index names,\nand validate stored index OIDs under lock before standalone scoring.\nBinary COPY and replication preserve query values without catalog\nvalidation, including references to dropped indexes.\n\nPreserves partitioned BM25 indexes and queries without an explicit\nindex, with regression coverage for name validation, binary round-trips,\nand use-time rejection.\n\nPorts #514, originally contributed by @pavankrishna13, onto current\nmain.\n\n---------\n\nCo-authored-by: Todd J. Green <1738591+tjgreen42@users.noreply.github.com>",
+          "timestamp": "2026-11-17T04:52:08Z",
+          "url": "https://github.com/timescale/pg_textsearch/commit/7da7da58acaee9996c7c84aca02488419a5d93fb"
+        },
+        "date": 1794899218113,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "cranfield_insert (0 docs) - Index Build Time",
+            "value": 1.356,
+            "unit": "ms"
+          },
+          {
+            "name": "cranfield_insert (0 docs) - Insert Time",
+            "value": 341.37,
+            "unit": "ms"
+          },
+          {
+            "name": "cranfield_insert (0 docs) - Throughput (avg ms/query)",
+            "value": 0.43,
             "unit": "ms"
           },
           {
