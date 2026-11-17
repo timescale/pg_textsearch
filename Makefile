@@ -22,7 +22,8 @@ DATA = sql/pg_textsearch--1.6.0-dev.sql \
        sql/pg_textsearch--1.3.0--1.3.1.sql \
        sql/pg_textsearch--1.3.1--1.4.0.sql \
        sql/pg_textsearch--1.4.0--1.5.0.sql \
-       sql/pg_textsearch--1.5.0--1.6.0-dev.sql
+       sql/pg_textsearch--1.5.0--1.5.1.sql \
+       sql/pg_textsearch--1.5.1--1.6.0-dev.sql
 
 # Source files organized by directory
 OBJS = \
@@ -134,6 +135,7 @@ test-injection-shell: test-replication-transport
 	@cd test/scripts && ./nonblocking_compaction.sh
 	@cd test/scripts && ./nonblocking_spill.sh
 	@cd test/scripts && ./compaction_recovery.sh
+	@cd test/scripts && ./alive_bitset_recovery.sh
 	@cd test/scripts && ./parallel_vacuum.sh injection
 	@cd test/scripts && ./standby_reclaim.sh
 else
@@ -258,6 +260,7 @@ test-recovery:
 	@cd test/scripts && ./recovery.sh
 	@cd test/scripts && ./shutdown_spill.sh
 	@cd test/scripts && ./compaction_recovery.sh
+	@cd test/scripts && ./alive_bitset_recovery.sh
 
 test-segment:
 	@echo "Running multi-backend segment tests..."
