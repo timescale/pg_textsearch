@@ -22,7 +22,8 @@ DATA = sql/pg_textsearch--1.6.0-dev.sql \
        sql/pg_textsearch--1.3.0--1.3.1.sql \
        sql/pg_textsearch--1.3.1--1.4.0.sql \
        sql/pg_textsearch--1.4.0--1.5.0.sql \
-       sql/pg_textsearch--1.5.0--1.6.0-dev.sql
+       sql/pg_textsearch--1.5.0--1.5.1.sql \
+       sql/pg_textsearch--1.5.1--1.6.0-dev.sql
 
 # Source files organized by directory
 OBJS = \

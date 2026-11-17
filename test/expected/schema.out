@@ -305,6 +305,60 @@ shadow_text|shadow_query|shadow_array_text|shadow_array_query
 42|43|44|45
 42|43|44|45
 (2 rows)
+-- The planner-injected score stub must resolve in the extension namespace,
+-- not through the querying role's search_path. A shadow stub earlier in the
+-- path raises if it is ever planned in.
+CREATE FUNCTION bm25_shadow.bm25_get_current_score() RETURNS float8
+    LANGUAGE plpgsql AS $$
+    BEGIN RAISE EXCEPTION 'shadow bm25_get_current_score invoked'; END $$;
+CREATE TYPE bm25_shadow.cache_reset2 AS (dummy integer);
+SET enable_seqscan = off;
+EXPLAIN (VERBOSE, COSTS OFF)
+SELECT id FROM schema_docs
+ORDER BY content OPERATOR(bm25_real.<@>) 'target'::text LIMIT 1;
+QUERY PLAN
+Limit
+  Output: id, (bm25_real.bm25_get_current_score())
+  ->  Index Scan using schema_text_idx on bm25_real.schema_docs
+        Output: id, bm25_real.bm25_get_current_score()
+        Order By: (schema_docs.content OPERATOR(bm25_real.<@>) 'schema_text_idx:target'::bm25_real.bm25query)
+(5 rows)
+SELECT id FROM schema_docs
+ORDER BY content OPERATOR(bm25_real.<@>) 'target'::text LIMIT 1;
+id
+1
+(1 row)
+SELECT id, bm25_real.bm25_get_current_score() < 0 AS scored
+FROM schema_docs
+ORDER BY content OPERATOR(bm25_real.<@>) 'target'::text LIMIT 1;
+id|scored
+1|t
+(1 row)
+DROP FUNCTION bm25_shadow.bm25_get_current_score();
+-- The stub lookup must not require the querying role to hold USAGE on the
+-- extension schema. A reader granted SELECT on an owner's view over an
+-- indexed table can plan and run the index-ordered query without naming,
+-- using, or even seeing the extension schema.
+CREATE ROLE schema_view_reader;
+CREATE VIEW public.schema_docs_top AS
+    SELECT id FROM schema_docs
+    ORDER BY content OPERATOR(bm25_real.<@>) 'target'::text LIMIT 1;
+GRANT SELECT ON public.schema_docs_top TO schema_view_reader;
+SET ROLE schema_view_reader;
+SET search_path = public;
+SELECT has_schema_privilege('bm25_real', 'USAGE') AS reader_has_usage;
+reader_has_usage
+f
+(1 row)
+SELECT id AS reader_top FROM public.schema_docs_top;
+reader_top
+1
+(1 row)
+RESET search_path;
+RESET ROLE;
+SET search_path = bm25_shadow, bm25_real, public;
+DROP VIEW public.schema_docs_top;
+DROP ROLE schema_view_reader;
 -- Namespace renames must not leave stale schema names in the OID cache.
 ALTER SCHEMA bm25_real RENAME TO bm25_renamed;
 SET search_path = bm25_shadow, bm25_renamed, public;
