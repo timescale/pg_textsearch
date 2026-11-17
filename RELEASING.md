@@ -11,6 +11,29 @@ We use semantic versioning: `MAJOR.MINOR.PATCH`.
 
 ## Cutting a Release
 
+### Patch releases
+
+Maintain bugfix releases on `release/MAJOR.MINOR`, starting from the latest
+stable tag in that series, not from `main`. Cherry-pick reviewed fixes with
+`git cherry-pick -x`, including their regression tests. Do not backport new
+features or the next development-version bump.
+
+Open the release PR against that maintenance branch. Require the same CI
+and upgrade checks as a release from `main`, including upgrades from the
+previous patch release. Keep `main` on its existing development version;
+do not merge the maintenance branch's version bump back into it.
+
+For a patch with no development cycle, use the bump script to stage
+`PREV` to `CURRENT-dev`, then finalize the generated version references
+and SQL filenames to `CURRENT`. Check the script's reported stragglers,
+including `Makefile.win` and test scripts.
+
+Tag the merged maintenance-branch release commit, not `main`. Before
+publishing, prepare the forward upgrade chain on `main`:
+`PREV -> CURRENT -> NEXT-dev`. Once the release assets are published,
+add `CURRENT` to `main`'s upgrade-test matrices. Do not add an unpublished
+version to a matrix that downloads its release tarball.
+
 ### 1. Audit the upgrade SQL script
 
 This is the only piece of the release that cannot be automated, and the
@@ -75,8 +98,10 @@ GitHub release and summarizing its main user-facing changes.
 git checkout -b release-CURRENT
 git add -A
 git commit -m "Release vCURRENT"
-gh pr create --draft --title "Release vCURRENT"
+gh pr create --draft --base main --title "Release vCURRENT"
 ```
+
+For a patch release, use `--base release/MAJOR.MINOR` instead.
 
 CI runs the full test suite, including upgrade-tests against every
 matrix version.
