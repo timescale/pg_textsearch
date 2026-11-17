@@ -72,24 +72,39 @@ CREATE TABLE vector_import (id int, v bm25vector);
 SELECT COUNT(*) AS vector_imported_count FROM vector_import;
 
 -- =============================================================================
--- Test rejection of non-BM25 relation OIDs in binary bm25query input
+-- Binary input preserves OIDs; standalone scoring validates their types.
 -- =============================================================================
 
 CREATE TABLE query_bad_oid (q bm25query);
 
 -- Craft binary bm25query referencing a B-tree index OID (binary_io_docs_pkey)
 \copy (SELECT E'\\x0201'::bytea || int4send('binary_io_docs_pkey'::regclass::oid::integer) || int4send(5) || convert_to('hello', 'UTF8')) TO '/tmp/query_btree_oid.bin' WITH (FORMAT binary)
-\set VERBOSITY terse
 \copy query_bad_oid FROM '/tmp/query_btree_oid.bin' WITH (FORMAT binary)
+
+-- Deliberately exercise standalone scoring of an imported non-BM25 OID.
+\set VERBOSITY terse
+SELECT content <@> q FROM binary_io_docs, query_bad_oid LIMIT 1;
 \set VERBOSITY default
 
 -- Craft binary bm25query referencing a heap table OID (binary_io_docs)
 \copy (SELECT E'\\x0201'::bytea || int4send('binary_io_docs'::regclass::oid::integer) || int4send(5) || convert_to('hello', 'UTF8')) TO '/tmp/query_table_oid.bin' WITH (FORMAT binary)
-\set VERBOSITY terse
 \copy query_bad_oid FROM '/tmp/query_table_oid.bin' WITH (FORMAT binary)
+
+\set VERBOSITY terse
+SELECT content <@> q FROM binary_io_docs, query_bad_oid
+WHERE q::text = 'binary_io_docs:hello' LIMIT 1;
 \set VERBOSITY default
 
 SELECT COUNT(*) AS bad_oid_imported_count FROM query_bad_oid;
+
+-- Queries must still round-trip after their index has been dropped.
+DROP INDEX binary_io_idx;
+TRUNCATE query_import;
+\copy query_export TO '/tmp/query_export.bin' WITH (FORMAT binary)
+\copy query_import FROM '/tmp/query_export.bin' WITH (FORMAT binary)
+SELECT count(*) AS dropped_index_imported_count,
+       bool_and(e.q = i.q) AS queries_match
+FROM query_export e JOIN query_import i USING (id);
 
 -- Clean up
 \! rm -f /tmp/query_export.bin /tmp/vector_export.bin /tmp/query_btree_oid.bin /tmp/query_table_oid.bin

@@ -355,12 +355,6 @@ tpquery_recv(PG_FUNCTION_ARGS)
 	index_oid	   = pq_getmsgint(buf, sizeof(Oid));
 	query_text_len = pq_getmsgint(buf, sizeof(int32));
 
-	if (OidIsValid(index_oid) && !tp_is_bm25_index(index_oid))
-		ereport(ERROR,
-				(errcode(ERRCODE_WRONG_OBJECT_TYPE),
-				 errmsg("bm25query index OID does not refer to a bm25 "
-						"index")));
-
 	/* Validate length to prevent unbounded memory allocation */
 	if (query_text_len < 0 || query_text_len > 1000000) /* 1MB limit */
 		ereport(ERROR,
@@ -628,6 +622,14 @@ validate_and_open_index(TpQuery *query, Oid *index_oid_out)
 						 "scoring")));
 	}
 
+	/* Stored OIDs are untrusted; validate under lock before reading data. */
+	index_rel = relation_open(index_oid, AccessShareLock);
+	if (!tp_is_bm25_index(index_oid))
+		ereport(ERROR,
+				(errcode(ERRCODE_WRONG_OBJECT_TYPE),
+				 errmsg("\"%s\" is not a bm25 index",
+						RelationGetRelationName(index_rel))));
+
 	/*
 	 * Enforce the invoking role's SELECT privilege on the indexed relation
 	 * and column before reading any index-derived data. Standalone scoring
@@ -641,10 +643,11 @@ validate_and_open_index(TpQuery *query, Oid *index_oid_out)
 	 * storage - they're just templates. We need to use a child index for
 	 * text config, but aggregate stats from all children.
 	 */
-	relkind = get_rel_relkind(index_oid);
+	relkind = index_rel->rd_rel->relkind;
 	if (relkind == RELKIND_PARTITIONED_INDEX)
 	{
-		Oid child_index_oid = find_first_child_index(index_oid);
+		Relation parent_rel		 = index_rel;
+		Oid		 child_index_oid = find_first_child_index(index_oid);
 		if (!OidIsValid(child_index_oid))
 		{
 			ereport(ERROR,
@@ -657,11 +660,7 @@ validate_and_open_index(TpQuery *query, Oid *index_oid_out)
 		}
 		/* Use the child index for text config access */
 		index_rel = index_open(child_index_oid, AccessShareLock);
-	}
-	else
-	{
-		/* Open the index relation directly */
-		index_rel = index_open(index_oid, AccessShareLock);
+		relation_close(parent_rel, AccessShareLock);
 	}
 
 	if (index_oid_out)
