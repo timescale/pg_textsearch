@@ -426,7 +426,7 @@ jobs:
   test-pg19:
     needs: changes
     if: needs.changes.outputs.run_tests == 'true'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
       matrix:
@@ -448,7 +448,8 @@ jobs:
       uses: actions/cache@v4
       with:
         path: ${{ env.PGPREFIX }}
-        key: pg19-${{ env.PG19_REF }}-injection-v2-${{ matrix.cc }}-${{ runner.os }}
+        # Keep the image release in sync with runs-on for linked ICU libraries.
+        key: pg19-${{ env.PG19_REF }}-injection-v2-${{ matrix.cc }}-ubuntu-24.04-${{ runner.arch }}
 
     - name: Build PostgreSQL ${{ env.PG19_REF }} from source
       if: steps.pgcache.outputs.cache-hit != 'true'
