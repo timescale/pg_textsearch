@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794982795390,
+  "lastUpdate": 1794982800973,
   "repoUrl": "https://github.com/timescale/pg_textsearch",
   "entries": {
     "cranfield Benchmarks": [
@@ -52566,6 +52566,133 @@ window.BENCHMARK_DATA = {
           {
             "name": "msmarco (8.8M docs) - Query Latency After Update VACUUM",
             "value": 6.6,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "John Pruitt",
+            "username": "jgpruitt",
+            "email": "jgpruitt@gmail.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "d28c76594ca854995bb6e8b223d0505f0fb41714",
+          "message": "Fix document-length truncation in single-term segment scoring (#588)\n\n## Summary\n\nFixes #587.\n\nSingle-term segment scoring currently reads the decoded fieldnorm length\nthrough a `uint16` iterator field. A 70,000-token document quantizes to\n65,560, which is then truncated to **24**. This inflates its score and\ncan return the wrong top-N rows after a spill.\n\n- Widen `TpSegmentPosting.doc_length` to `uint32`, matching\n`decode_fieldnorm()`.\n- Remove the narrowing casts in both the next and seek iterator paths.\n- Update the packed-size assertion and comments from 14 to 16 bytes;\nmember offsets remain unchanged.\n- Add a focused `bmw_long_documents` SQL regression.\n\n## Regression coverage\n\nThe fixture includes a short document and documents with 65,559, 65,560,\nand 70,000 tokens. Distinct padding tokens avoid PostgreSQL's per-lexeme\nposition-count cap.\n\nIt checks:\n\n- A sequential-scan reference and the actual ordered-index plan.\n- Single- and multi-term top-1 selection before and after spilling.\n- Internal segment scores against independently evaluated `<@>` scores,\nwith a floating-point tolerance.\n- Both compressed and uncompressed segment blocks.\n\nAgainst unmodified main, the new regression fails at the single-term\ntop-1 and score-consistency checks in both segment configurations. The\nmulti-term checks continue to pass.\n\n## Compatibility and scope\n\n`TpSegmentPosting` is the current **in-memory iterator output**, not the\npersisted block-posting format. This changes neither stored fieldnorms\nnor the disk format, so no reindex or migration is required. The normal\nserver restart after replacing the extension library still applies.\n\nRelated: #573 and #575. This is the separate, pre-existing segment\ntruncation bug, not the memtable raw-versus-quantized-length mismatch.\nThe fix is based on main and does not depend on #575.\n\n## Validation\n\nLocally on PostgreSQL 18.6, ARM64, debug/assert-enabled, UTF-8:\n\n- [x] Build succeeded.\n- [x] `make installcheck`: **all 83 SQL regressions passed**, including\nBoolean/prefix, VACUUM, compression, and BMW tests.\n- [x] `make format-check` passed with clang-format 21.1.8.\n- [x] Confirmed the new regression fails at the expected assertions with\nthe unmodified main binary.\n- [x] Created and spilled the original two-document reproduction with\nthe old binary, then restarted with the fixed binary and verified\ncorrect top-1 selection and scores **without rebuilding the index**.",
+          "timestamp": "2026-11-18T04:04:26Z",
+          "url": "https://github.com/timescale/pg_textsearch/commit/d28c76594ca854995bb6e8b223d0505f0fb41714"
+        },
+        "date": 1794982800039,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "msmarco (8.8M docs) - Index Build Time",
+            "value": 213643.705,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - 1 Token Query (p50)",
+            "value": 0.58,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - 2 Token Query (p50)",
+            "value": 1.17,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - 3 Token Query (p50)",
+            "value": 2.22,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - 4 Token Query (p50)",
+            "value": 3.53,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - 5 Token Query (p50)",
+            "value": 5.78,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - 6 Token Query (p50)",
+            "value": 8.9,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - 7 Token Query (p50)",
+            "value": 13.66,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - 8+ Token Query (p50)",
+            "value": 20.87,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - Weighted Latency (p50, ms)",
+            "value": 3.77,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - Weighted Throughput (avg ms/query)",
+            "value": 4.82,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - Index Size",
+            "value": 2432.6,
+            "unit": "MB"
+          },
+          {
+            "name": "msmarco (8.8M docs) - Partial VACUUM (concentrated delete)",
+            "value": 1050.965,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - Full VACUUM (uniform delete)",
+            "value": 6041.015,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - Full VACUUM (uniform update)",
+            "value": 5015.866,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - Index Size After Partial VACUUM",
+            "value": 2432.6,
+            "unit": "MB"
+          },
+          {
+            "name": "msmarco (8.8M docs) - Index Size After Full VACUUM",
+            "value": 2432.6,
+            "unit": "MB"
+          },
+          {
+            "name": "msmarco (8.8M docs) - Query Latency After Partial VACUUM",
+            "value": 7.56,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - Query Latency After Full VACUUM",
+            "value": 7.31,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - Index Size After Update VACUUM",
+            "value": 2432.6,
+            "unit": "MB"
+          },
+          {
+            "name": "msmarco (8.8M docs) - Query Latency After Update VACUUM",
+            "value": 7.46,
             "unit": "ms"
           }
         ]
