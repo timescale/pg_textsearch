@@ -1,0 +1,152 @@
+-- Decoded fieldnorms must not be narrowed to uint16 in segment iterators.
+-- With the current table, 65559 tokens decode to a length below UINT16_MAX,
+-- while 65560 and 70000 both decode to 65560 (which uint16 would wrap to 24).
+CREATE EXTENSION pg_textsearch;
+SET pg_textsearch.memtable_pages_threshold = 0;
+SET pg_textsearch.bulk_load_threshold = 0;
+SET pg_textsearch.compress_segments = on;
+CREATE TABLE bmw_long_documents (id int, content text)
+    WITH (autovacuum_enabled = false);
+CREATE INDEX bmw_long_documents_idx ON bmw_long_documents USING bm25(content)
+    WITH (text_config = 'simple');
+NOTICE:  BM25 index build started for relation bmw_long_documents_idx
+NOTICE:  Using text search configuration: simple
+NOTICE:  Using index options: k1=1.20, b=0.75
+NOTICE:  BM25 index build completed: 0 documents, avg_length=0.00
+-- Each query term occurs once per document. Distinct padding tokens avoid
+-- PostgreSQL's per-lexeme position-count cap when computing document lengths.
+INSERT INTO bmw_long_documents
+SELECT id, 'needle thread ' || string_agg('padding' || i, ' ' ORDER BY i)
+FROM (VALUES (1, 100), (2, 65559), (3, 65560), (4, 70000)) AS docs(id, tokens)
+CROSS JOIN LATERAL generate_series(1, tokens - 2) AS padding(i)
+GROUP BY id;
+-- Independent sequential-scan reference: the short document must win.
+SET enable_indexscan = off;
+SET enable_bitmapscan = off;
+SELECT id FROM bmw_long_documents
+ORDER BY content <@> to_bm25query('needle', 'bmw_long_documents_idx')
+LIMIT 1;
+ id 
+----
+  1
+(1 row)
+
+RESET enable_indexscan;
+RESET enable_bitmapscan;
+SET enable_seqscan = off;
+PREPARE bmw_long_top1(text) AS
+SELECT id FROM bmw_long_documents
+ORDER BY content <@> to_bm25query($1, 'bmw_long_documents_idx')
+LIMIT 1;
+-- The + 0 prevents the projected operator from becoming a cached-score read.
+-- Compare every row, including the below/at/above-boundary documents, allowing
+-- for floating-point rounding differences between the scoring implementations.
+PREPARE bmw_long_scores(text) AS
+SELECT count(*) = 4 AND
+       bool_and(abs(internal_score - standalone_score) < 0.000001)
+           AS scores_match
+FROM (
+    SELECT bm25_get_current_score() AS internal_score,
+           (content <@> to_bm25query($1, 'bmw_long_documents_idx')) + 0
+               AS standalone_score
+    FROM bmw_long_documents
+    ORDER BY content <@> to_bm25query($1, 'bmw_long_documents_idx')
+    LIMIT 4
+) AS scored;
+-- Verify that the top-1 test actually uses the ordered index scan.
+EXPLAIN (COSTS OFF) EXECUTE bmw_long_top1('needle');
+                                 QUERY PLAN                                 
+----------------------------------------------------------------------------
+ Limit
+   ->  Index Scan using bmw_long_documents_idx on bmw_long_documents
+         Order By: (content <@> 'bmw_long_documents_idx:needle'::bm25query)
+(3 rows)
+
+-- Memtable-only top-1 selection, before the segment iterators are involved.
+EXECUTE bmw_long_top1('needle');
+ id 
+----
+  1
+(1 row)
+
+EXECUTE bmw_long_top1('needle thread');
+ id 
+----
+  1
+(1 row)
+
+-- Compressed segments: the single-term scorer must not treat long documents
+-- as 24 tokens long. Check both candidate selection and the internal scores.
+SELECT bm25_spill_index('bmw_long_documents_idx') > 0 AS spilled;
+ spilled 
+---------
+ t
+(1 row)
+
+EXECUTE bmw_long_top1('needle');
+ id 
+----
+  1
+(1 row)
+
+EXECUTE bmw_long_scores('needle');
+ scores_match 
+--------------
+ t
+(1 row)
+
+EXECUTE bmw_long_top1('needle thread');
+ id 
+----
+  1
+(1 row)
+
+EXECUTE bmw_long_scores('needle thread');
+ scores_match 
+--------------
+ t
+(1 row)
+
+-- Rebuild with uncompressed blocks and check the other block-reading path.
+SET pg_textsearch.compress_segments = off;
+REINDEX INDEX bmw_long_documents_idx;
+NOTICE:  BM25 index build started for relation bmw_long_documents_idx
+NOTICE:  Using text search configuration: simple
+NOTICE:  Using index options: k1=1.20, b=0.75
+NOTICE:  BM25 index build completed: 4 documents, avg_length=50304.75
+DO $$
+BEGIN
+    PERFORM bm25_spill_index('bmw_long_documents_idx');
+END $$;
+EXECUTE bmw_long_top1('needle');
+ id 
+----
+  1
+(1 row)
+
+EXECUTE bmw_long_scores('needle');
+ scores_match 
+--------------
+ t
+(1 row)
+
+EXECUTE bmw_long_top1('needle thread');
+ id 
+----
+  1
+(1 row)
+
+EXECUTE bmw_long_scores('needle thread');
+ scores_match 
+--------------
+ t
+(1 row)
+
+DEALLOCATE bmw_long_top1;
+DEALLOCATE bmw_long_scores;
+DROP TABLE bmw_long_documents;
+RESET enable_seqscan;
+RESET pg_textsearch.memtable_pages_threshold;
+RESET pg_textsearch.bulk_load_threshold;
+RESET pg_textsearch.compress_segments;
+DROP EXTENSION pg_textsearch CASCADE;

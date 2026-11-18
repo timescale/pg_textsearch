@@ -324,7 +324,7 @@ tp_parallel_build_worker_main(dsm_segment *seg, shm_toc *toc)
 	 */
 	BlockNumber		root_blkno = InvalidBlockNumber;
 	OffsetNumber	root_offsets[MaxHeapTuplesPerPage];
-	ItemPointerData	root_tid;
+	ItemPointerData root_tid;
 
 	/* Process tuples from this worker's block range */
 	while (scan != NULL &&
@@ -389,8 +389,8 @@ tp_parallel_build_worker_main(dsm_segment *seg, shm_toc *toc)
 			if (offnum >= FirstOffsetNumber &&
 				offnum <= MaxHeapTuplesPerPage &&
 				OffsetNumberIsValid(root_offsets[offnum - 1]))
-				ItemPointerSetOffsetNumber(&root_tid,
-										   root_offsets[offnum - 1]);
+				ItemPointerSetOffsetNumber(
+						&root_tid, root_offsets[offnum - 1]);
 			ctid = &root_tid;
 		}
 

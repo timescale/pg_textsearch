@@ -232,6 +232,15 @@ tp_costestimate(
 	{
 		*indexSelectivity = TP_DEFAULT_INDEX_SELECTIVITY;
 	}
+
+	/*
+	 * The selectivities above are fractions of the index's documents, but
+	 * cost_index() applies indexSelectivity to the heap.  A partial index
+	 * holds only part of the heap, so scale to the heap's tuple count.
+	 */
+	if (path->indexinfo->rel->tuples > num_tuples)
+		*indexSelectivity *= num_tuples / path->indexinfo->rel->tuples;
+
 	*indexCorrelation = 0.0; /* No correlation assumptions */
 	*indexPages		  = Max(1.0, num_tuples / 100.0); /* Rough page estimate */
 }
