@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794985363676,
+  "lastUpdate": 1794985550143,
   "repoUrl": "https://github.com/timescale/pg_textsearch",
   "entries": {
     "cranfield Benchmarks": [
@@ -178730,6 +178730,48 @@ window.BENCHMARK_DATA = {
           {
             "name": "cranfield_insert (0 docs) - Throughput (avg ms/query)",
             "value": 0.43,
+            "unit": "ms"
+          },
+          {
+            "name": "cranfield_insert (0 docs) - Index Size",
+            "value": 2.39,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "John Pruitt",
+            "username": "jgpruitt",
+            "email": "jgpruitt@gmail.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "d28c76594ca854995bb6e8b223d0505f0fb41714",
+          "message": "Fix document-length truncation in single-term segment scoring (#588)\n\n## Summary\n\nFixes #587.\n\nSingle-term segment scoring currently reads the decoded fieldnorm length\nthrough a `uint16` iterator field. A 70,000-token document quantizes to\n65,560, which is then truncated to **24**. This inflates its score and\ncan return the wrong top-N rows after a spill.\n\n- Widen `TpSegmentPosting.doc_length` to `uint32`, matching\n`decode_fieldnorm()`.\n- Remove the narrowing casts in both the next and seek iterator paths.\n- Update the packed-size assertion and comments from 14 to 16 bytes;\nmember offsets remain unchanged.\n- Add a focused `bmw_long_documents` SQL regression.\n\n## Regression coverage\n\nThe fixture includes a short document and documents with 65,559, 65,560,\nand 70,000 tokens. Distinct padding tokens avoid PostgreSQL's per-lexeme\nposition-count cap.\n\nIt checks:\n\n- A sequential-scan reference and the actual ordered-index plan.\n- Single- and multi-term top-1 selection before and after spilling.\n- Internal segment scores against independently evaluated `<@>` scores,\nwith a floating-point tolerance.\n- Both compressed and uncompressed segment blocks.\n\nAgainst unmodified main, the new regression fails at the single-term\ntop-1 and score-consistency checks in both segment configurations. The\nmulti-term checks continue to pass.\n\n## Compatibility and scope\n\n`TpSegmentPosting` is the current **in-memory iterator output**, not the\npersisted block-posting format. This changes neither stored fieldnorms\nnor the disk format, so no reindex or migration is required. The normal\nserver restart after replacing the extension library still applies.\n\nRelated: #573 and #575. This is the separate, pre-existing segment\ntruncation bug, not the memtable raw-versus-quantized-length mismatch.\nThe fix is based on main and does not depend on #575.\n\n## Validation\n\nLocally on PostgreSQL 18.6, ARM64, debug/assert-enabled, UTF-8:\n\n- [x] Build succeeded.\n- [x] `make installcheck`: **all 83 SQL regressions passed**, including\nBoolean/prefix, VACUUM, compression, and BMW tests.\n- [x] `make format-check` passed with clang-format 21.1.8.\n- [x] Confirmed the new regression fails at the expected assertions with\nthe unmodified main binary.\n- [x] Created and spilled the original two-document reproduction with\nthe old binary, then restarted with the fixed binary and verified\ncorrect top-1 selection and scores **without rebuilding the index**.",
+          "timestamp": "2026-11-18T04:04:26Z",
+          "url": "https://github.com/timescale/pg_textsearch/commit/d28c76594ca854995bb6e8b223d0505f0fb41714"
+        },
+        "date": 1794985424905,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "cranfield_insert (0 docs) - Index Build Time",
+            "value": 1.259,
+            "unit": "ms"
+          },
+          {
+            "name": "cranfield_insert (0 docs) - Insert Time",
+            "value": 359.96,
+            "unit": "ms"
+          },
+          {
+            "name": "cranfield_insert (0 docs) - Throughput (avg ms/query)",
+            "value": 0.4,
             "unit": "ms"
           },
           {
