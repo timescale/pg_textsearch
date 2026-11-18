@@ -210,6 +210,43 @@ SELECT content OPERATOR(bm25_shadow.<@>) 'target'::text AS shadow_text,
            'target'::bm25_real.bm25query AS shadow_array_query
 FROM schema_docs ORDER BY id;
 
+-- The planner-injected score stub must resolve in the extension namespace,
+-- not through the querying role's search_path. A shadow stub earlier in the
+-- path raises if it is ever planned in.
+CREATE FUNCTION bm25_shadow.bm25_get_current_score() RETURNS float8
+    LANGUAGE plpgsql AS $$
+    BEGIN RAISE EXCEPTION 'shadow bm25_get_current_score invoked'; END $$;
+CREATE TYPE bm25_shadow.cache_reset2 AS (dummy integer);
+SET enable_seqscan = off;
+EXPLAIN (VERBOSE, COSTS OFF)
+SELECT id FROM schema_docs
+ORDER BY content OPERATOR(bm25_real.<@>) 'target'::text LIMIT 1;
+SELECT id FROM schema_docs
+ORDER BY content OPERATOR(bm25_real.<@>) 'target'::text LIMIT 1;
+SELECT id, bm25_real.bm25_get_current_score() < 0 AS scored
+FROM schema_docs
+ORDER BY content OPERATOR(bm25_real.<@>) 'target'::text LIMIT 1;
+DROP FUNCTION bm25_shadow.bm25_get_current_score();
+
+-- The stub lookup must not require the querying role to hold USAGE on the
+-- extension schema. A reader granted SELECT on an owner's view over an
+-- indexed table can plan and run the index-ordered query without naming,
+-- using, or even seeing the extension schema.
+CREATE ROLE schema_view_reader;
+CREATE VIEW public.schema_docs_top AS
+    SELECT id FROM schema_docs
+    ORDER BY content OPERATOR(bm25_real.<@>) 'target'::text LIMIT 1;
+GRANT SELECT ON public.schema_docs_top TO schema_view_reader;
+SET ROLE schema_view_reader;
+SET search_path = public;
+SELECT has_schema_privilege('bm25_real', 'USAGE') AS reader_has_usage;
+SELECT id AS reader_top FROM public.schema_docs_top;
+RESET search_path;
+RESET ROLE;
+SET search_path = bm25_shadow, bm25_real, public;
+DROP VIEW public.schema_docs_top;
+DROP ROLE schema_view_reader;
+
 -- Namespace renames must not leave stale schema names in the OID cache.
 ALTER SCHEMA bm25_real RENAME TO bm25_renamed;
 SET search_path = bm25_shadow, bm25_renamed, public;

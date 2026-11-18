@@ -189,6 +189,12 @@ extern void tp_segment_read(
 		uint64			 logical_offset,
 		void			*dest,
 		uint64			 len);
+/* dest must have TP_MAX_COMPRESSED_BLOCK_SIZE accessible bytes. */
+extern void tp_segment_read_compressed_block(
+		TpSegmentReader *reader,
+		uint64			 logical_offset,
+		uint32			 count,
+		uint8			*dest);
 extern void tp_segment_close(TpSegmentReader *reader);
 
 /* Lazy CTID lookup for deferred resolution */

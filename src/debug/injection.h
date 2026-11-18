@@ -56,6 +56,8 @@
 	"pg-textsearch-index-lock-exclusive-waiter"
 #define TP_INJECTION_TOMBSTONE_AFTER_UNLINK \
 	"pg-textsearch-tombstone-after-unlink"
+#define TP_INJECTION_ALIVE_BITSET_AFTER_PAGE \
+	"pg-textsearch-alive-bitset-after-page"
 
 #if PG_VERSION_NUM >= 180000
 #define TP_INJECTION_POINT(name) INJECTION_POINT(name, NULL)
