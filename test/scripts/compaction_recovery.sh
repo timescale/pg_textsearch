@@ -97,6 +97,38 @@ wait_for_injection() {
     error "backend ${backend} did not reach injection point ${point}"
 }
 
+test_wal_boundary_panic() {
+    local point="pg-textsearch-wal-boundary"
+    local postmaster_pid
+    local output
+    local rc
+
+    if [ "${HAS_INJECTION_POINTS}" -ne 1 ]; then
+        return
+    fi
+
+    log "Testing crash injection at a WAL segment boundary..."
+    postmaster_pid=$(head -1 "${PRIMARY_DIR}/postmaster.pid")
+    set +e
+    output=$(timeout 30s psql -X -v ON_ERROR_STOP=1 \
+        -p "${PRIMARY_PORT}" -d "${TEST_DB}" \
+        -c "SELECT pg_textsearch_test_attach_panic('${point}');" \
+        -c "SELECT pg_switch_wal();" \
+        -c "SELECT injection_points_run('${point}');" 2>&1)
+    rc=$?
+    set -e
+
+    [ "${rc}" -ne 0 ] ||
+        error "WAL boundary injection survived the panic"
+    [ "${rc}" -ne 124 ] ||
+        error "timed out waiting for WAL boundary PANIC: ${output}"
+    log_contains "panic triggered for injection point ${point}" ||
+        error "WAL boundary injection failed before PANIC: ${output}"
+    wait_for_postmaster_exit "${postmaster_pid}" "wal_boundary"
+    restart_primary
+    log "PASS: crash injection flushed WAL at a segment boundary"
+}
+
 create_crash_fixture() {
     local prefix=$1
     local spilled
@@ -603,6 +635,7 @@ EOF
     pg_ctl restart -D "${PRIMARY_DIR}" \
         -l "${PRIMARY_DIR}/postgres.log" -m fast -w
 
+    test_wal_boundary_panic
     test_publication_crash_recovery
     test_parallel_worker_pid_matching
     test_legacy_vacuum_crash_recovery

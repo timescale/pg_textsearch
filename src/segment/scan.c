@@ -373,11 +373,11 @@ tp_segment_posting_iterator_load_block(TpSegmentPostingIterator *iter)
 			free_compressed = true;
 		}
 
-		tp_segment_read(
+		tp_segment_read_compressed_block(
 				iter->reader,
 				iter->skip_entry.posting_offset,
-				compressed_buf,
-				TP_MAX_COMPRESSED_BLOCK_SIZE);
+				block_size,
+				compressed_buf);
 
 		/* Ensure fallback buffer is large enough */
 		if (block_size > iter->fallback_block_size)
@@ -534,7 +534,7 @@ tp_segment_posting_iterator_next(
 
 	/* Build output posting (fieldnorm is inline in bp) */
 	iter->output_posting.frequency	= bp->frequency;
-	iter->output_posting.doc_length = (uint16)decode_fieldnorm(bp->fieldnorm);
+	iter->output_posting.doc_length = decode_fieldnorm(bp->fieldnorm);
 
 	*posting = &iter->output_posting;
 	iter->current_in_block++;
@@ -731,8 +731,7 @@ tp_segment_posting_iterator_seek(
 			}
 
 			iter->output_posting.frequency	= bp->frequency;
-			iter->output_posting.doc_length = (uint16)decode_fieldnorm(
-					bp->fieldnorm);
+			iter->output_posting.doc_length = decode_fieldnorm(bp->fieldnorm);
 
 			*posting = &iter->output_posting;
 			return true;

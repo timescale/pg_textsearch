@@ -41,11 +41,13 @@ tp_buffile_decompose_offset(uint64 composite, int *fileno, off_t *offset)
 
 /*
  * Segment posting - output format for iteration
- * 14 bytes, packed. Used when converting block postings for scoring.
+ * 16 bytes, packed. Used when converting block postings for scoring.
  *
  * doc_id is segment-local, used for deferred CTID resolution in lazy loading.
  * When CTIDs are pre-loaded, ctid is set immediately. When lazy loading,
  * ctid is invalid and doc_id is used to look up CTID at result extraction.
+ * doc_length must hold the full decoded fieldnorm, which can exceed
+ * UINT16_MAX.
  */
 #ifdef _MSC_VER
 #pragma pack(push, 1) /* MSVC equivalent of TP_PACKED below */
@@ -56,7 +58,7 @@ typedef struct TpSegmentPosting
 	ItemPointerData ctid;	   /* 6 bytes - heap tuple ID (may be invalid) */
 	uint32			doc_id;	   /* 4 bytes - segment-local doc ID */
 	uint16			frequency; /* 2 bytes - term frequency */
-	uint16 doc_length;		   /* 2 bytes - document length (from fieldnorm) */
+	uint32 doc_length;		   /* 4 bytes - document length (from fieldnorm) */
 } TP_PACKED TpSegmentPosting;
 
 #ifdef _MSC_VER

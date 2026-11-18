@@ -15,13 +15,11 @@ Modern ranked text search for Postgres.
 
 ## PostgreSQL Version Compatibility
 
-pg_textsearch supports PostgreSQL 17 and 18. PostgreSQL 19 (beta) is
-supported on a best-effort basis while it is in beta; its CI is allowed
-to fail and prebuilt binaries are not published for it yet.
+pg_textsearch supports PostgreSQL 17, 18, and 19 RC2. PostgreSQL 19 is
+tested in required CI checks but is not yet generally available.
+Build from source for PG19; prebuilt packages target PG17 and PG18.
 
 ## Installation
-
-pg_textsearch supports PostgreSQL 17 and 18.
 
 ### Pre-built Packages
 
