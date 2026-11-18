@@ -6,6 +6,7 @@
 #include <postgres.h>
 
 #include "access/xlog.h"
+#include "access/xlog_internal.h"
 #include "debug/injection.h"
 #include "miscadmin.h"
 #include "storage/proc.h"
@@ -110,6 +111,7 @@ void
 tp_injection_panic(TP_INJECTION_CALLBACK_ARGS)
 {
 	const TpInjectionCondition *condition = private_data;
+	XLogRecPtr					flushptr;
 
 #if PG_VERSION_NUM >= 180000
 	(void)arg;
@@ -118,7 +120,16 @@ tp_injection_panic(TP_INJECTION_CALLBACK_ARGS)
 		!tp_injection_pid_matches(condition->pid))
 		return;
 
-	XLogFlush(GetXLogInsertRecPtr());
+	/* The next insert pointer may include an unwritten WAL page header. */
+#if PG_VERSION_NUM >= 190000
+	flushptr = GetXLogInsertEndRecPtr();
+#else
+	flushptr = GetXLogInsertRecPtr();
+	if (flushptr % XLOG_BLCKSZ == SizeOfXLogShortPHD ||
+		flushptr % wal_segment_size == SizeOfXLogLongPHD)
+		flushptr -= flushptr % XLOG_BLCKSZ;
+#endif
+	XLogFlush(flushptr);
 	if (condition->worker_only)
 		elog(PANIC,
 			 "parallel worker panic triggered for injection point %s",

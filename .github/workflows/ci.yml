@@ -420,22 +420,19 @@ jobs:
         # Build with -Werror via PG_CFLAGS (CFLAGS is overridden by pgxs)
         make PG_CFLAGS="-Werror -Wno-error=unused-parameter"
 
-  # PG19 is in beta and has no PGDG apt package yet, so it is built from
-  # source here and exercised with both gcc and clang plus the full SQL
-  # regression suite. This job is experimental: beta breakage must not
-  # block merges (continue-on-error), and it can be dropped in favor of
-  # the apt matrices once PG19 reaches GA and PGDG ships packages.
-  test-pg19-beta:
+  # PG19 RC2 is built from source with injection points and exercised
+  # with both gcc and clang. Keep this required until it can join the
+  # package-based matrices after GA.
+  test-pg19:
     needs: changes
     if: needs.changes.outputs.run_tests == 'true'
-    runs-on: ubuntu-latest
-    continue-on-error: true
+    runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
       matrix:
         cc: [gcc, clang]
     env:
-      PG19_REF: REL_19_BETA3
+      PG19_REF: REL_19_RC2
       PGPREFIX: ${{ github.workspace }}/pg19-install
     steps:
     - uses: actions/checkout@v4
@@ -451,7 +448,8 @@ jobs:
       uses: actions/cache@v4
       with:
         path: ${{ env.PGPREFIX }}
-        key: pg19-${{ env.PG19_REF }}-injection-v2-${{ matrix.cc }}-${{ runner.os }}
+        # Keep the image release in sync with runs-on for linked ICU libraries.
+        key: pg19-${{ env.PG19_REF }}-injection-v2-${{ matrix.cc }}-ubuntu-24.04-${{ runner.arch }}
 
     - name: Build PostgreSQL ${{ env.PG19_REF }} from source
       if: steps.pgcache.outputs.cache-hit != 'true'
@@ -1460,12 +1458,12 @@ jobs:
   # Umbrella job for branch protection rules
   all-tests-passed:
     runs-on: ubuntu-latest
-    # PG19 beta remains experimental and does not block this gate.
     needs:
       - changes
       - test
       - injection-points
       - build-test-multiple-configs
+      - test-pg19
       - build-msvc
       - performance-test
       - format-check
