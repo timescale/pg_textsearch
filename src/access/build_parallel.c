@@ -198,6 +198,9 @@ tp_parallel_build_worker_main(dsm_segment *seg, shm_toc *toc)
 	BufFile				   *buffile;
 	char					file_name[64];
 	WorkerSegmentTracker	tracker;
+	BlockNumber				root_blkno = InvalidBlockNumber;
+	OffsetNumber			root_offsets[MaxHeapTuplesPerPage];
+	ItemPointerData			root_tid;
 
 	/* Attach to shared memory */
 	shared = (TpParallelBuildShared *)
@@ -316,15 +319,6 @@ tp_parallel_build_worker_main(dsm_segment *seg, shm_toc *toc)
 			CurrentMemoryContext,
 			"parallel build per-doc temp",
 			ALLOCSET_DEFAULT_SIZES);
-
-	/*
-	 * State for translating live-tuple TIDs to HOT-chain root TIDs,
-	 * cached per heap page exactly as heapam_index_build_range_scan()
-	 * does for the serial path.
-	 */
-	BlockNumber		root_blkno = InvalidBlockNumber;
-	OffsetNumber	root_offsets[MaxHeapTuplesPerPage];
-	ItemPointerData root_tid;
 
 	/* Process tuples from this worker's block range */
 	while (scan != NULL &&
