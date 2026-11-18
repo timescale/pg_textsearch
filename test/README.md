@@ -85,8 +85,9 @@ in both lock-acquisition orders. It pauses between suffix inspection and
 truncation, checks writer-gate exclusion, and verifies segment page references
 and exact ranked results before and after crash recovery.
 
-CI builds PostgreSQL 17, 18, and 19 with injection points enabled and caches
-the installed prefixes. The sanitizer builds use the same configure option.
+CI builds PostgreSQL 17, 18, and 19 RC2 with injection points enabled and
+caches the installed prefixes. PG19 runs with both GCC and Clang and is
+required by the CI gate. The sanitizer builds use the same configure option.
 
 `memtable_stale_tail_injection` pauses normal and oversized writers after
 reading the tail, advances it from another session, then requires both writers
