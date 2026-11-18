@@ -373,11 +373,11 @@ tp_segment_posting_iterator_load_block(TpSegmentPostingIterator *iter)
 			free_compressed = true;
 		}
 
-		tp_segment_read(
+		tp_segment_read_compressed_block(
 				iter->reader,
 				iter->skip_entry.posting_offset,
-				compressed_buf,
-				TP_MAX_COMPRESSED_BLOCK_SIZE);
+				block_size,
+				compressed_buf);
 
 		/* Ensure fallback buffer is large enough */
 		if (block_size > iter->fallback_block_size)
