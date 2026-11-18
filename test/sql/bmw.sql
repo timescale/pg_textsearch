@@ -7,6 +7,8 @@ CREATE EXTENSION pg_textsearch;
 -- Force index scan so ORDER BY uses the BM25 index (small tables
 -- would otherwise prefer seq scan, returning non-matching rows)
 SET enable_seqscan = off;
+-- Index scores are float4; do not assert compiler-dependent trailing bits.
+SET extra_float_digits = -9;
 
 \set ECHO none
 \i test/sql/validation.sql
@@ -1102,4 +1104,5 @@ DROP TABLE bmw_fieldnorm_mixed;
 -- ============================================================
 -- Cleanup
 -- ============================================================
+RESET extra_float_digits;
 DROP EXTENSION pg_textsearch CASCADE;

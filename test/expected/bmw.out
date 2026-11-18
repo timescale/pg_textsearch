@@ -5,6 +5,8 @@ CREATE EXTENSION pg_textsearch;
 -- Force index scan so ORDER BY uses the BM25 index (small tables
 -- would otherwise prefer seq scan, returning non-matching rows)
 SET enable_seqscan = off;
+-- Index scores are float4; do not assert compiler-dependent trailing bits.
+SET extra_float_digits = -9;
 \set ECHO none
 -- ============================================================
 -- SECTION 1: Basic BMW correctness
@@ -29,13 +31,13 @@ NOTICE:  BM25 index build completed: 7 documents, avg_length=2.43
 SELECT id, content <@> 'apple'::bm25query as score
 FROM bmw_basic
 ORDER BY score LIMIT 5;
- id |        score         
-----+----------------------
-  4 | -0.31600049138069153
-  1 |  -0.3106285333633423
-  2 | -0.30041438341140747
-  3 | -0.27344056963920593
-  7 | -0.24154625833034515
+ id |   score   
+----+-----------
+  4 |    -0.316
+  1 | -0.310629
+  2 | -0.300414
+  3 | -0.273441
+  7 | -0.241546
 (5 rows)
 
 DROP TABLE bmw_basic;
@@ -101,12 +103,12 @@ NOTICE:  BM25 index build completed: 5 documents, avg_length=2.00
 SELECT id, content <@> 'exact'::bm25query as score
 FROM bmw_ties
 ORDER BY content <@> 'exact'::bm25query LIMIT 10;
- id |        score         
-----+----------------------
-  2 | -0.28768208622932434
-  3 | -0.28768208622932434
-  4 | -0.28768208622932434
-  5 | -0.28768208622932434
+ id |   score   
+----+-----------
+  2 | -0.287682
+  3 | -0.287682
+  4 | -0.287682
+  5 | -0.287682
 (4 rows)
 
 DROP TABLE bmw_ties;
@@ -175,38 +177,38 @@ NOTICE:  BM25 index build completed: 7 documents, avg_length=2.57
 SELECT id, content <@> 'alpha beta'::bm25query as score
 FROM bmw_multi
 ORDER BY score LIMIT 5;
- id |        score        
-----+---------------------
-  6 |  -1.276773452758789
-  2 |  -1.265801191329956
-  1 |  -1.077277660369873
-  3 | -0.7671521902084351
-  4 |  -0.632900595664978
+ id |   score   
+----+-----------
+  6 |  -1.27677
+  2 |   -1.2658
+  1 |  -1.07728
+  3 | -0.767152
+  4 | -0.632901
 (5 rows)
 
 -- Test: 3-term query
 SELECT id, content <@> 'alpha beta gamma'::bm25query as score
 FROM bmw_multi
 ORDER BY score LIMIT 5;
- id |        score        
-----+---------------------
-  1 | -1.8511896133422852
-  4 | -1.5422470569610596
-  6 |  -1.276773452758789
-  7 |  -1.276275634765625
-  2 |  -1.265801191329956
+ id |  score   
+----+----------
+  1 | -1.85119
+  4 | -1.54225
+  6 | -1.27677
+  7 | -1.27628
+  2 |  -1.2658
 (5 rows)
 
 -- Test: Query with non-existent term (partial match)
 SELECT id, content <@> 'alpha nonexistent'::bm25query as score
 FROM bmw_multi
 ORDER BY score LIMIT 5;
- id |        score        
-----+---------------------
-  6 |   -0.80795818567276
-  3 | -0.7671521902084351
-  2 |  -0.632900595664978
-  1 | -0.5386388301849365
+ id |   score   
+----+-----------
+  6 | -0.807958
+  3 | -0.767152
+  2 | -0.632901
+  1 | -0.538639
 (4 rows)
 
 -- Test: Query where all terms are non-existent
@@ -237,26 +239,26 @@ NOTICE:  BM25 index build completed: 5 documents, avg_length=5.60
 SELECT id, content <@> 'one two three four five six seven eight'::bm25query as score
 FROM bmw_8term
 ORDER BY score LIMIT 5;
- id |        score        
-----+---------------------
-  1 | -3.2631144523620605
-  2 | -2.4413371086120605
-  3 | -2.4413371086120605
-  4 |  -2.254817247390747
-  5 |  -2.254817247390747
+ id |  score   
+----+----------
+  1 | -3.26311
+  2 | -2.44134
+  3 | -2.44134
+  4 | -2.25482
+  5 | -2.25482
 (5 rows)
 
 -- Test: 9+ terms (should fall back to exhaustive, but still work)
 SELECT id, content <@> 'one two three four five six seven eight nine'::bm25query as score
 FROM bmw_8term
 ORDER BY score LIMIT 5;
- id |        score        
-----+---------------------
-  1 |  -3.925631046295166
-  4 | -3.1704177856445312
-  2 | -2.4413371086120605
-  3 | -2.4413371086120605
-  5 |  -2.254817247390747
+ id |  score   
+----+----------
+  1 | -3.92563
+  4 | -3.17042
+  2 | -2.44134
+  3 | -2.44134
+  5 | -2.25482
 (5 rows)
 
 DROP TABLE bmw_8term;
@@ -282,12 +284,12 @@ SELECT id, length(content) as doc_chars,
        content <@> 'word'::bm25query as score
 FROM bmw_lengths
 ORDER BY content <@> 'word'::bm25query LIMIT 5;
- id | doc_chars |        score         
-----+-----------+----------------------
-  4 |      5000 |  -0.6276808381080627
-  3 |       500 |  -0.6266049146652222
-  2 |         4 | -0.48411285877227783
-  5 |      3505 |  -0.2028166949748993
+ id | doc_chars |   score   
+----+-----------+-----------
+  4 |      5000 | -0.627681
+  3 |       500 | -0.626605
+  2 |         4 | -0.484113
+  5 |      3505 | -0.202817
 (4 rows)
 
 DROP TABLE bmw_lengths;
@@ -311,13 +313,13 @@ NOTICE:  BM25 index build completed: 5 documents, avg_length=72.20
 SELECT id, content <@> 'keyword'::bm25query as score
 FROM bmw_highfreq
 ORDER BY content <@> 'keyword'::bm25query LIMIT 5;
- id |        score         
-----+----------------------
-  5 |  -0.1887885332107544
-  4 |  -0.1886022537946701
-  3 |  -0.1879543960094452
-  2 | -0.18362721800804138
-  1 |  -0.1458514928817749
+ id |   score   
+----+-----------
+  5 | -0.188789
+  4 | -0.188602
+  3 | -0.187954
+  2 | -0.183627
+  1 | -0.145851
 (5 rows)
 
 -- Verify: Order should be 5,4,3,2,1 (highest tf first)
@@ -356,18 +358,18 @@ INSERT INTO bmw_hybrid (content) VALUES
 SELECT id, content <@> 'searchterm'::bm25query as score
 FROM bmw_hybrid
 ORDER BY content <@> 'searchterm'::bm25query LIMIT 10;
-  id  |         score          
-------+------------------------
- 1001 | -0.0007437646854668856
- 1002 | -0.0006856626714579761
-    1 | -0.0004986796411685646
-    2 | -0.0004986796411685646
-    3 | -0.0004986796411685646
-    4 | -0.0004986796411685646
-  551 | -0.0004986796411685646
-  501 | -0.0004986796411685646
-  502 | -0.0004986796411685646
-  503 | -0.0004986796411685646
+  id  |    score     
+------+--------------
+ 1001 | -0.000743765
+ 1002 | -0.000685663
+    1 |  -0.00049868
+    2 |  -0.00049868
+    3 |  -0.00049868
+    4 |  -0.00049868
+  551 |  -0.00049868
+  501 |  -0.00049868
+  502 |  -0.00049868
+  503 |  -0.00049868
 (10 rows)
 
 DROP TABLE bmw_hybrid;
@@ -533,18 +535,18 @@ NOTICE:  BM25 index build completed: 643 documents, avg_length=4.00
 SELECT id, content <@> 'searchword'::bm25query as score
 FROM bmw_blocks
 ORDER BY content <@> 'searchword'::bm25query LIMIT 10;
- id  |         score          
------+------------------------
- 641 | -0.0013297571567818522
- 642 | -0.0013144138501957059
- 643 | -0.0012896136613562703
-   1 | -0.0007766990456730127
-   2 | -0.0007766990456730127
-   3 | -0.0007766990456730127
-   4 | -0.0007766990456730127
-   5 | -0.0007766990456730127
-   6 | -0.0007766990456730127
-   7 | -0.0007766990456730127
+ id  |    score     
+-----+--------------
+ 641 |  -0.00132976
+ 642 |  -0.00131441
+ 643 |  -0.00128961
+   1 | -0.000776699
+   2 | -0.000776699
+   3 | -0.000776699
+   4 | -0.000776699
+   5 | -0.000776699
+   6 | -0.000776699
+   7 | -0.000776699
 (10 rows)
 
 -- Validation: top 3 must be our high-tf docs
@@ -583,10 +585,10 @@ NOTICE:  BM25 index build completed: 3 documents, avg_length=2.67
 SELECT id, content <@> 'cat cat'::bm25query as score
 FROM bmw_repeat
 ORDER BY score LIMIT 5;
- id |        score        
-----+---------------------
-  1 |   -1.43861985206604
-  2 | -1.0470967292785645
+ id |  score   
+----+----------
+  1 | -1.43862
+  2 |  -1.0471
 (2 rows)
 
 -- The single-term fast path must retain the query term's frequency.
@@ -605,9 +607,9 @@ SELECT r.id,
         LIMIT 1) AS nested_id,
        r.content <@> to_bm25query('cat', 'bmw_repeat_idx') AS score
 FROM bmw_repeat r ORDER BY score LIMIT 1;
- id | nested_id |       score       
-----+-----------+-------------------
-  1 |         3 | -0.71930992603302
+ id | nested_id |  score   
+----+-----------+----------
+  1 |         3 | -0.71931
 (1 row)
 
 -- A scan in a qual runs before projection too.
@@ -618,9 +620,9 @@ WHERE (SELECT id FROM bmw_repeat WHERE id <> r.id
        ORDER BY content <@> to_bm25query('dog dog', 'bmw_repeat_idx')
        LIMIT 1) > 0
 ORDER BY score LIMIT 1;
- id |       score       
-----+-------------------
-  1 | -0.71930992603302
+ id |  score   
+----+----------
+  1 | -0.71931
 (1 row)
 
 -- A stable function can hide a nested index scan from the outer plan.
@@ -637,9 +639,9 @@ $$;
 SELECT r.id, pg_temp.bmw_nested_scan(r.id) AS nested_id,
        r.content <@> to_bm25query('cat', 'bmw_repeat_idx') AS score
 FROM bmw_repeat r ORDER BY score LIMIT 1;
- id | nested_id |       score       
-----+-----------+-------------------
-  1 |         3 | -0.71930992603302
+ id | nested_id |  score   
+----+-----------+----------
+  1 |         3 | -0.71931
 (1 row)
 
 -- User-defined IMMUTABLE functions can execute scans too.
@@ -647,9 +649,9 @@ ALTER FUNCTION pg_temp.bmw_nested_scan(integer) IMMUTABLE;
 SELECT r.id, pg_temp.bmw_nested_scan(r.id) AS nested_id,
        r.content <@> to_bm25query('cat', 'bmw_repeat_idx') AS score
 FROM bmw_repeat r ORDER BY score LIMIT 1;
- id | nested_id |       score       
-----+-----------+-------------------
-  1 |         3 | -0.71930992603302
+ id | nested_id |  score   
+----+-----------+----------
+  1 |         3 | -0.71931
 (1 row)
 
 DROP FUNCTION pg_temp.bmw_nested_scan(integer);
@@ -674,17 +676,17 @@ NOTICE:  BM25 index build completed: 5 documents, avg_length=2.60
 SELECT id, content <@> 'beijing'::bm25query as score
 FROM bmw_unicode
 ORDER BY score LIMIT 5;
- id |        score        
-----+---------------------
-  3 | -1.3042112588882446
+ id |  score   
+----+----------
+  3 | -1.30421
 (1 row)
 
 SELECT id, content <@> 'simple'::bm25query as score
 FROM bmw_unicode
 ORDER BY score LIMIT 5;
- id |        score        
-----+---------------------
-  5 | -1.3042112588882446
+ id |  score   
+----+----------
+  5 | -1.30421
 (1 row)
 
 DROP TABLE bmw_unicode;
@@ -720,18 +722,18 @@ NOTICE:  BM25 index build completed: 1000 documents, avg_length=3.93
 SELECT id, content <@> 'scattered'::bm25query as score
 FROM bmw_scattered
 ORDER BY content <@> 'scattered'::bm25query LIMIT 10;
-  id  |         score          
-------+------------------------
-  100 | -0.0008074695360846817
-  200 | -0.0008074695360846817
-  300 | -0.0008074695360846817
-  400 | -0.0008074695360846817
-  500 | -0.0008074695360846817
-  600 | -0.0008074695360846817
-  700 | -0.0008074695360846817
-  800 | -0.0008074695360846817
-  900 | -0.0008074695360846817
- 1000 | -0.0008074695360846817
+  id  |    score    
+------+-------------
+  100 | -0.00080747
+  200 | -0.00080747
+  300 | -0.00080747
+  400 | -0.00080747
+  500 | -0.00080747
+  600 | -0.00080747
+  700 | -0.00080747
+  800 | -0.00080747
+  900 | -0.00080747
+ 1000 | -0.00080747
 (10 rows)
 
 -- Validation: Verify top 10 includes the high-tf docs from different blocks
@@ -844,18 +846,18 @@ FROM generate_series(601, 700) i;
 SELECT id, content <@> 'targetword'::bm25query as score
 FROM bmw_multiseg
 ORDER BY content <@> 'targetword'::bm25query LIMIT 10;
- id  |         score          
------+------------------------
- 601 | -0.0011030653258785605
- 602 | -0.0011030653258785605
- 603 | -0.0011030653258785605
- 604 | -0.0011030653258785605
- 605 | -0.0011030653258785605
- 606 | -0.0011030653258785605
- 607 | -0.0011030653258785605
- 608 | -0.0011030653258785605
- 609 | -0.0011030653258785605
- 610 | -0.0011030653258785605
+ id  |    score    
+-----+-------------
+ 601 | -0.00110307
+ 602 | -0.00110307
+ 603 | -0.00110307
+ 604 | -0.00110307
+ 605 | -0.00110307
+ 606 | -0.00110307
+ 607 | -0.00110307
+ 608 | -0.00110307
+ 609 | -0.00110307
+ 610 | -0.00110307
 (10 rows)
 
 -- Verify: Results should include docs from batch 3 (id > 600) at top
@@ -944,11 +946,11 @@ INSERT INTO bmw_memonly (content) VALUES
 SELECT id, content <@> 'uniquememterm'::bm25query as score
 FROM bmw_memonly
 ORDER BY content <@> 'uniquememterm'::bm25query LIMIT 5;
- id  |       score        
------+--------------------
- 201 | -6.978553771972656
- 202 | -6.716518878936768
- 203 | -6.036530494689941
+ id  |  score   
+-----+----------
+ 201 | -6.97855
+ 202 | -6.71652
+ 203 | -6.03653
 (3 rows)
 
 -- Verify: Should return exactly 3 docs, in tf order (201, 202, 203)
@@ -967,13 +969,13 @@ SELECT 'memtable-only-term' as test,
 SELECT id, content <@> 'common uniquememterm'::bm25query as score
 FROM bmw_memonly
 ORDER BY content <@> 'common uniquememterm'::bm25query LIMIT 5;
- id  |         score         
------+-----------------------
- 201 |    -6.978553771972656
- 202 |    -6.716518878936768
- 203 |    -6.036530494689941
-   1 | -0.017242642119526863
-   2 | -0.017242642119526863
+ id  |   score    
+-----+------------
+ 201 |   -6.97855
+ 202 |   -6.71652
+ 203 |   -6.03653
+   1 | -0.0172426
+   2 | -0.0172426
 (5 rows)
 
 DROP TABLE bmw_memonly;
@@ -1422,4 +1424,5 @@ DROP TABLE bmw_fieldnorm_mixed;
 -- ============================================================
 -- Cleanup
 -- ============================================================
+RESET extra_float_digits;
 DROP EXTENSION pg_textsearch CASCADE;
