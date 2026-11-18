@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [ main ]
+    branches: [ main, 'release/*' ]
     paths:
       - 'src/**'
       - 'test/**'
@@ -18,7 +18,7 @@ on:
   # Always start PR CI so branch protection receives all-tests-passed.
   # The changes job applies the code-path filter inside the workflow.
   pull_request:
-    branches: [ main ]
+    branches: [ main, 'release/*' ]
   workflow_dispatch:
 
 jobs:
@@ -43,7 +43,7 @@ jobs:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
-          # Main pushes and manual dispatches retain the full CI suite.
+          # Branch pushes and manual dispatches retain the full CI suite.
           if [[ "$EVENT_NAME" != "pull_request" ]]; then
             echo "run_tests=true" >> "$GITHUB_OUTPUT"
             exit 0
@@ -59,6 +59,7 @@ jobs:
     if: needs.changes.outputs.run_tests == 'true'
     runs-on: ubuntu-latest
     strategy:
+      fail-fast: false
       matrix:
         pg_version: [17, 18]
 
@@ -69,16 +70,16 @@ jobs:
       run: |
         sudo apt-get update
         sudo apt-get install -y wget ca-certificates
-        wget --quiet -O - https://www.postgresql.org/media/keys/ACCC4CF8.asc | sudo apt-key add -
-        echo "deb http://apt.postgresql.org/pub/repos/apt/ $(lsb_release -cs)-pgdg main" | sudo tee /etc/apt/sources.list.d/pgdg.list
+        wget --quiet --tries=5 --waitretry=5 --retry-on-http-error=429,500,502,503,504 -O - https://www.postgresql.org/media/keys/ACCC4CF8.asc | sudo gpg --dearmor --yes -o /usr/share/keyrings/postgresql-archive-keyring.gpg
+        echo "deb [signed-by=/usr/share/keyrings/postgresql-archive-keyring.gpg] http://apt.postgresql.org/pub/repos/apt/ $(lsb_release -cs)-pgdg main" | sudo tee /etc/apt/sources.list.d/pgdg.list
         sudo apt-get update
         sudo apt-get install -y postgresql-${{ matrix.pg_version }} postgresql-server-dev-${{ matrix.pg_version }}
 
     - name: Install TimescaleDB
       run: |
         # Add TimescaleDB apt repository
-        echo "deb https://packagecloud.io/timescale/timescaledb/ubuntu/ $(lsb_release -cs) main" | sudo tee /etc/apt/sources.list.d/timescaledb.list
-        wget --quiet -O - https://packagecloud.io/timescale/timescaledb/gpgkey | sudo apt-key add -
+        echo "deb [signed-by=/usr/share/keyrings/timescaledb-archive-keyring.gpg] https://packagecloud.io/timescale/timescaledb/ubuntu/ $(lsb_release -cs) main" | sudo tee /etc/apt/sources.list.d/timescaledb.list
+        wget --quiet --tries=5 --waitretry=5 --retry-on-http-error=429,500,502,503,504 -O - https://packagecloud.io/timescale/timescaledb/gpgkey | sudo gpg --dearmor --yes -o /usr/share/keyrings/timescaledb-archive-keyring.gpg
         sudo apt-get update
         # Install TimescaleDB for the specific PostgreSQL version
         sudo apt-get install -y timescaledb-2-postgresql-${{ matrix.pg_version }} || echo "TimescaleDB installation failed, hypertable tests will be skipped"
@@ -406,8 +407,8 @@ jobs:
       run: |
         sudo apt-get update
         sudo apt-get install -y wget ca-certificates build-essential bc
-        wget --quiet -O - https://www.postgresql.org/media/keys/ACCC4CF8.asc | sudo apt-key add -
-        echo "deb http://apt.postgresql.org/pub/repos/apt/ $(lsb_release -cs)-pgdg main" | sudo tee /etc/apt/sources.list.d/pgdg.list
+        wget --quiet --tries=5 --waitretry=5 --retry-on-http-error=429,500,502,503,504 -O - https://www.postgresql.org/media/keys/ACCC4CF8.asc | sudo gpg --dearmor --yes -o /usr/share/keyrings/postgresql-archive-keyring.gpg
+        echo "deb [signed-by=/usr/share/keyrings/postgresql-archive-keyring.gpg] http://apt.postgresql.org/pub/repos/apt/ $(lsb_release -cs)-pgdg main" | sudo tee /etc/apt/sources.list.d/pgdg.list
         sudo apt-get update
         sudo apt-get install -y postgresql-${{ matrix.config.pg_version }} postgresql-server-dev-${{ matrix.config.pg_version }}
 
@@ -419,22 +420,19 @@ jobs:
         # Build with -Werror via PG_CFLAGS (CFLAGS is overridden by pgxs)
         make PG_CFLAGS="-Werror -Wno-error=unused-parameter"
 
-  # PG19 is in beta and has no PGDG apt package yet, so it is built from
-  # source here and exercised with both gcc and clang plus the full SQL
-  # regression suite. This job is experimental: beta breakage must not
-  # block merges (continue-on-error), and it can be dropped in favor of
-  # the apt matrices once PG19 reaches GA and PGDG ships packages.
-  test-pg19-beta:
+  # PG19 RC2 is built from source with injection points and exercised
+  # with both gcc and clang. Keep this required until it can join the
+  # package-based matrices after GA.
+  test-pg19:
     needs: changes
     if: needs.changes.outputs.run_tests == 'true'
-    runs-on: ubuntu-latest
-    continue-on-error: true
+    runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
       matrix:
         cc: [gcc, clang]
     env:
-      PG19_REF: REL_19_BETA3
+      PG19_REF: REL_19_RC2
       PGPREFIX: ${{ github.workspace }}/pg19-install
     steps:
     - uses: actions/checkout@v4
@@ -450,7 +448,8 @@ jobs:
       uses: actions/cache@v4
       with:
         path: ${{ env.PGPREFIX }}
-        key: pg19-${{ env.PG19_REF }}-injection-v2-${{ matrix.cc }}-${{ runner.os }}
+        # Keep the image release in sync with runs-on for linked ICU libraries.
+        key: pg19-${{ env.PG19_REF }}-injection-v2-${{ matrix.cc }}-ubuntu-24.04-${{ runner.arch }}
 
     - name: Build PostgreSQL ${{ env.PG19_REF }} from source
       if: steps.pgcache.outputs.cache-hit != 'true'
@@ -599,8 +598,8 @@ jobs:
       run: |
         sudo apt-get update
         sudo apt-get install -y wget ca-certificates build-essential bc
-        wget --quiet -O - https://www.postgresql.org/media/keys/ACCC4CF8.asc | sudo apt-key add -
-        echo "deb http://apt.postgresql.org/pub/repos/apt/ $(lsb_release -cs)-pgdg main" | sudo tee /etc/apt/sources.list.d/pgdg.list
+        wget --quiet --tries=5 --waitretry=5 --retry-on-http-error=429,500,502,503,504 -O - https://www.postgresql.org/media/keys/ACCC4CF8.asc | sudo gpg --dearmor --yes -o /usr/share/keyrings/postgresql-archive-keyring.gpg
+        echo "deb [signed-by=/usr/share/keyrings/postgresql-archive-keyring.gpg] http://apt.postgresql.org/pub/repos/apt/ $(lsb_release -cs)-pgdg main" | sudo tee /etc/apt/sources.list.d/pgdg.list
         sudo apt-get update
         sudo apt-get install -y postgresql-17 postgresql-server-dev-17
 
@@ -613,7 +612,7 @@ jobs:
     - name: Build and install extension
       run: |
         export PATH="/usr/lib/postgresql/17/bin:$PATH"
-        make clean && make && sudo make install
+        make clean && make && sudo env "PATH=$PATH" make install
 
     - name: Run performance benchmarks
       timeout-minutes: 20
@@ -841,6 +840,12 @@ jobs:
           cd test/scripts && ./recovery.sh
         "
 
+        echo "Running alive bitset crash recovery tests under sanitizer..."
+        timeout 600s bash -c "
+          export PATH=\"$HOME/$PG_INSTALL_DIR/bin:\$PATH\"
+          cd test/scripts && ./alive_bitset_recovery.sh
+        "
+
         # Deferred-reclaim crash recovery (issue #380): parks displaced
         # segment pages, crashes (immediate stop), asserts WAL replay
         # reconstructs the tombstone chain.  Spins up its own instance;
@@ -952,7 +957,7 @@ jobs:
       run: |
         sudo apt-get update
         sudo apt-get install -y wget ca-certificates gnupg
-        wget --quiet -O - https://www.postgresql.org/media/keys/ACCC4CF8.asc | sudo gpg --dearmor -o /usr/share/keyrings/postgresql-archive-keyring.gpg
+        wget --quiet --tries=5 --waitretry=5 --retry-on-http-error=429,500,502,503,504 -O - https://www.postgresql.org/media/keys/ACCC4CF8.asc | sudo gpg --dearmor -o /usr/share/keyrings/postgresql-archive-keyring.gpg
         echo "deb [signed-by=/usr/share/keyrings/postgresql-archive-keyring.gpg] http://apt.postgresql.org/pub/repos/apt/ $(lsb_release -cs)-pgdg main" | sudo tee /etc/apt/sources.list.d/pgdg.list
         sudo apt-get update
         sudo apt-get install -y postgresql-18 postgresql-server-dev-18 \
@@ -1002,15 +1007,15 @@ jobs:
       run: |
         sudo apt-get update
         sudo apt-get install -y wget ca-certificates gnupg
-        wget --quiet -O - https://www.postgresql.org/media/keys/ACCC4CF8.asc | sudo gpg --dearmor -o /usr/share/keyrings/postgresql-archive-keyring.gpg
+        wget --quiet --tries=5 --waitretry=5 --retry-on-http-error=429,500,502,503,504 -O - https://www.postgresql.org/media/keys/ACCC4CF8.asc | sudo gpg --dearmor -o /usr/share/keyrings/postgresql-archive-keyring.gpg
         echo "deb [signed-by=/usr/share/keyrings/postgresql-archive-keyring.gpg] http://apt.postgresql.org/pub/repos/apt/ $(lsb_release -cs)-pgdg main" | sudo tee /etc/apt/sources.list.d/pgdg.list
         sudo apt-get update
         sudo apt-get install -y postgresql-17 postgresql-server-dev-17
 
     - name: Install TimescaleDB
       run: |
-        echo "deb https://packagecloud.io/timescale/timescaledb/ubuntu/ $(lsb_release -cs) main" | sudo tee /etc/apt/sources.list.d/timescaledb.list
-        wget --quiet -O - https://packagecloud.io/timescale/timescaledb/gpgkey | sudo apt-key add -
+        echo "deb [signed-by=/usr/share/keyrings/timescaledb-archive-keyring.gpg] https://packagecloud.io/timescale/timescaledb/ubuntu/ $(lsb_release -cs) main" | sudo tee /etc/apt/sources.list.d/timescaledb.list
+        wget --quiet --tries=5 --waitretry=5 --retry-on-http-error=429,500,502,503,504 -O - https://packagecloud.io/timescale/timescaledb/gpgkey | sudo gpg --dearmor --yes -o /usr/share/keyrings/timescaledb-archive-keyring.gpg
         sudo apt-get update
         sudo apt-get install -y timescaledb-2-postgresql-17 || echo "TimescaleDB installation failed, hypertable tests will be skipped"
 
@@ -1146,7 +1151,7 @@ jobs:
         curl -fsSL -o /tmp/old.tar.gz \
           "https://github.com/timescale/pg_textsearch/releases/download/v1.0.0/pg_textsearch-1.0.0.tar.gz"
         tar -xzf /tmp/old.tar.gz -C /tmp
-        (cd /tmp/pg_textsearch-1.0.0 && make clean && make && sudo make install)
+        (cd /tmp/pg_textsearch-1.0.0 && make clean && make && sudo env "PATH=$PATH" make install)
 
         # Start PG with old binary and create a v6-metapage index with
         # V4 segments.
@@ -1294,26 +1299,28 @@ jobs:
              --output-file coverage.info \
              --base-directory $PWD \
              --no-external \
-             --ignore-errors mismatch
+             --ignore-errors mismatch,inconsistent
 
         # Remove test files from coverage report (we only care about src/)
         lcov --remove coverage.info \
              '*/test/*' \
              '*/tmp_check_shared/*' \
              --output-file coverage.info \
-             --ignore-errors unused
+             --ignore-errors unused,inconsistent
 
         # Show summary
-        lcov --list coverage.info
+        lcov --list coverage.info --ignore-errors inconsistent
 
     - name: Restore coverage baseline
       if: github.event_name == 'pull_request'
       uses: actions/cache/restore@v4
       with:
         path: coverage-baseline.txt
-        key: coverage-baseline-never-matches
+        # Never fall back to another branch's baseline. The v2 prefix
+        # also excludes the old main-only, unscoped cache entries.
+        key: coverage-baseline-v2-${{ github.base_ref }}-never-matches
         restore-keys: |
-          coverage-baseline-
+          coverage-baseline-v2-${{ github.base_ref }}-
 
     - name: Coverage gate
       id: coverage-gate
@@ -1325,7 +1332,7 @@ jobs:
         fi
 
         # Extract current line coverage percentage
-        CURRENT=$(lcov --summary coverage.info 2>&1 \
+        CURRENT=$(lcov --summary coverage.info --ignore-errors inconsistent 2>&1 \
           | grep "lines" | sed 's/.*: \([0-9.]*\)%.*/\1/')
         echo "Current line coverage: ${CURRENT}%"
         echo "line_coverage=$CURRENT" >> "$GITHUB_OUTPUT"
@@ -1364,11 +1371,14 @@ jobs:
         fi
 
     - name: Save coverage baseline
-      if: github.ref == 'refs/heads/main'
+      if: >-
+        github.event_name != 'pull_request' &&
+        (github.ref == 'refs/heads/main' ||
+         startsWith(github.ref, 'refs/heads/release/'))
       uses: actions/cache/save@v4
       with:
         path: coverage-baseline.txt
-        key: coverage-baseline-${{ github.sha }}
+        key: coverage-baseline-v2-${{ github.ref_name }}-${{ github.sha }}
 
     - name: Generate HTML report
       run: |
@@ -1416,7 +1426,7 @@ jobs:
         # Extract and display summary stats
         if [ -f coverage.info ]; then
           echo '```' >> $GITHUB_STEP_SUMMARY
-          lcov --summary coverage.info 2>&1 | tail -10 >> $GITHUB_STEP_SUMMARY
+          lcov --summary coverage.info --ignore-errors inconsistent 2>&1 | tail -10 >> $GITHUB_STEP_SUMMARY
           echo '```' >> $GITHUB_STEP_SUMMARY
         fi
 
@@ -1448,12 +1458,12 @@ jobs:
   # Umbrella job for branch protection rules
   all-tests-passed:
     runs-on: ubuntu-latest
-    # PG19 beta remains experimental and does not block this gate.
     needs:
       - changes
       - test
       - injection-points
       - build-test-multiple-configs
+      - test-pg19
       - build-msvc
       - performance-test
       - format-check

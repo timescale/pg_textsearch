@@ -15,13 +15,11 @@ Modern ranked text search for Postgres.
 
 ## PostgreSQL Version Compatibility
 
-pg_textsearch supports PostgreSQL 17 and 18. PostgreSQL 19 (beta) is
-supported on a best-effort basis while it is in beta; its CI is allowed
-to fail and prebuilt binaries are not published for it yet.
+pg_textsearch supports PostgreSQL 17, 18, and 19 RC2. PostgreSQL 19 is
+tested in required CI checks but is not yet generally available.
+Build from source for PG19; prebuilt packages target PG17 and PG18.
 
 ## Installation
-
-pg_textsearch supports PostgreSQL 17 and 18.
 
 ### Pre-built Packages
 
@@ -653,6 +651,7 @@ encounter a conflict,
 
 Version | Highlights
 --- | ---
+[`v1.5.1`](https://github.com/timescale/pg_textsearch/releases/tag/v1.5.1) | Fix concurrent spill/merge corruption, expression indexes, and maintenance without the extension
 [`v1.5.0`](https://github.com/timescale/pg_textsearch/releases/tag/v1.5.0) | Background compaction, Boolean and phrase queries, and faster builds and scans
 [`v1.4.0`](https://github.com/timescale/pg_textsearch/releases/tag/v1.4.0) | Faster filtered top-k queries, Chinese search, and large-corpus improvements
 [`v1.3.1`](https://github.com/timescale/pg_textsearch/releases/tag/v1.3.1) | Standby-safe page reclaim and concurrency, VACUUM, and parallel-build fixes

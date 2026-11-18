@@ -101,6 +101,94 @@ RESET log_statement;
 RESET enable_seqscan;
 DROP TABLE rls_visibility;
 DROP ROLE rls_visibility_reader;
+-- Projecting the ordering expression must not invoke standalone scoring.
+SET client_min_messages = warning;
+\set VERBOSITY terse
+CREATE ROLE rls_projected_reader;
+CREATE TABLE rls_projected (id integer, content text, tags text[]);
+INSERT INTO rls_projected VALUES
+    (1, 'needle needle needle needle', ARRAY['needle needle needle needle']),
+    (2, 'needle padding padding padding', ARRAY['needle padding padding padding']);
+CREATE INDEX rls_projected_idx ON rls_projected USING bm25(content)
+    WITH (text_config='simple');
+CREATE INDEX rls_projected_tags_idx ON rls_projected USING bm25(tags)
+    WITH (text_config='simple');
+ALTER TABLE rls_projected ENABLE ROW LEVEL SECURITY;
+CREATE POLICY rls_projected_policy ON rls_projected
+    TO rls_projected_reader USING (id = 2);
+GRANT SELECT ON rls_projected TO rls_projected_reader;
+CREATE TABLE rls_projected_labels (id integer PRIMARY KEY, label text);
+INSERT INTO rls_projected_labels VALUES (2, 'visible');
+GRANT SELECT ON rls_projected_labels TO rls_projected_reader;
+SET enable_seqscan = off;
+SET ROLE rls_projected_reader;
+SELECT id, content <@> to_bm25query('needle', 'rls_projected_idx') AS score
+FROM rls_projected ORDER BY score LIMIT 1;
+ id |        score         
+----+----------------------
+  2 | -0.18232156336307526
+(1 row)
+
+SELECT id, content <@> 'needle' AS score
+FROM rls_projected ORDER BY score LIMIT 1;
+ id |        score         
+----+----------------------
+  2 | -0.18232156336307526
+(1 row)
+
+SELECT id, tags <@> to_bm25query('needle', 'rls_projected_tags_idx') AS score
+FROM rls_projected ORDER BY score LIMIT 1;
+ id |        score         
+----+----------------------
+  2 | -0.18232156336307526
+(1 row)
+
+SELECT id, bm25_get_current_score() AS score
+FROM rls_projected
+ORDER BY content <@> to_bm25query('needle', 'rls_projected_idx') LIMIT 1;
+ id |        score         
+----+----------------------
+  2 | -0.18232156336307526
+(1 row)
+
+RESET ROLE;
+ALTER POLICY rls_projected_policy ON rls_projected
+    USING (id::text = current_setting('rls_test.visible_id'));
+SET rls_test.visible_id = '2';
+SET ROLE rls_projected_reader;
+SELECT id, content <@> to_bm25query('needle', 'rls_projected_idx') AS score
+FROM rls_projected ORDER BY score LIMIT 1;
+ id |        score         
+----+----------------------
+  2 | -0.18232156336307526
+(1 row)
+
+-- Preserve score reuse above an ordered nested-loop outer scan.
+SET enable_hashjoin = off;
+SET enable_mergejoin = off;
+SELECT d.id, l.label
+FROM rls_projected d JOIN rls_projected_labels l USING (id)
+ORDER BY d.content <@> to_bm25query('needle', 'rls_projected_idx') LIMIT 1;
+ id |  label  
+----+---------
+  2 | visible
+(1 row)
+
+RESET enable_hashjoin;
+RESET enable_mergejoin;
+-- A different projected query must still use the standalone authorization guard.
+SELECT id, content <@> to_bm25query('padding', 'rls_projected_idx') AS other,
+       content <@> to_bm25query('needle', 'rls_projected_idx') AS score
+FROM rls_projected ORDER BY score LIMIT 1;
+ERROR:  standalone BM25 scoring is not supported when row-level security applies
+RESET ROLE;
+RESET rls_test.visible_id;
+RESET enable_seqscan;
+DROP TABLE rls_projected_labels;
+DROP TABLE rls_projected;
+DROP ROLE rls_projected_reader;
+\set VERBOSITY default
+RESET client_min_messages;
 -- SELECT privileges do not authorize standalone reads of hidden-row statistics.
 SET client_min_messages = warning;
 \pset format unaligned

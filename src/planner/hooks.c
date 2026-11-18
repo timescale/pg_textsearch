@@ -13,6 +13,7 @@
 #include <access/genam.h>
 #include <access/htup_details.h>
 #include <access/table.h>
+#include <access/transam.h>
 #include <access/xact.h>
 #include <catalog/indexing.h>
 #include <catalog/namespace.h>
@@ -27,6 +28,7 @@
 #include <catalog/pg_type_d.h>
 #include <commands/defrem.h>
 #include <commands/extension.h>
+#include <limits.h>
 #include <nodes/makefuncs.h>
 #include <nodes/nodeFuncs.h>
 #include <nodes/plannodes.h>
@@ -64,12 +66,12 @@ static set_rel_pathlist_hook_type	prev_set_rel_pathlist_hook	 = NULL;
 typedef struct BM25OidCache
 {
 	Oid bm25_am_oid;
-	Oid extension_schema_oid;
 	Oid tpquery_type_oid;
 	Oid text_tpquery_operator_oid;
 	Oid text_text_operator_oid;
 	Oid textarray_tpquery_operator_oid;
 	Oid textarray_text_operator_oid;
+	Oid score_stub_func_oid; /* bm25_get_current_score() */
 } BM25OidCache;
 
 /*
@@ -167,7 +169,6 @@ lookup_bm25_oids_internal(BM25OidCache *cache)
 	schema_oid = get_extension_schema(extension_oid);
 	if (!OidIsValid(schema_oid))
 		return false;
-	cache->extension_schema_oid = schema_oid;
 
 	/* Look up bm25query type using qualified schema OID (not search_path) */
 	cache->tpquery_type_oid = GetSysCacheOid2(
@@ -209,6 +210,20 @@ lookup_bm25_oids_internal(BM25OidCache *cache)
 			ObjectIdGetDatum(TEXTOID),
 			ObjectIdGetDatum(schema_oid));
 
+	/*
+	 * Resolve the zero-argument score stub in the extension namespace by OID.
+	 * The planner injects this call into plans on the user's behalf, so it
+	 * must neither follow the user's search_path (a role with CREATE on an
+	 * earlier schema could supply its own function) nor require the user to
+	 * hold USAGE on the extension schema (a name-based lookup would).
+	 */
+	cache->score_stub_func_oid = GetSysCacheOid3(
+			PROCNAMEARGSNSP,
+			Anum_pg_proc_oid,
+			CStringGetDatum("bm25_get_current_score"),
+			PointerGetDatum(buildoidvector(NULL, 0)),
+			ObjectIdGetDatum(schema_oid));
+
 	return true;
 }
 
@@ -228,6 +243,8 @@ get_bm25_oids(BM25OidCache *cache)
 				TYPEOID, bm25_cache_invalidation_callback, (Datum)0);
 		CacheRegisterSyscacheCallback(
 				OPEROID, bm25_cache_invalidation_callback, (Datum)0);
+		CacheRegisterSyscacheCallback(
+				PROCOID, bm25_cache_invalidation_callback, (Datum)0);
 		/*
 		 * Older PG17 releases have no extension syscache.  Their AM/type/
 		 * operator invalidations also cover extension create/drop; this
@@ -1081,26 +1098,21 @@ is_bm25_score_opexpr(Node *node, BM25OidCache *oids)
 
 /*
  * Create a FuncExpr calling bm25_get_current_score().
+ *
+ * The function OID comes from the extension-namespace lookup cached in
+ * BM25OidCache, never from a name lookup at plan time. Returns NULL if the
+ * stub is unavailable so callers leave the original expression in place.
  */
 static FuncExpr *
-make_stub_funcexpr(Oid schema_oid)
+make_stub_funcexpr(BM25OidCache *oids)
 {
 	FuncExpr *funcexpr;
-	Oid		  funcoid;
 
-	/* Resolve the current schema name so namespace renames remain safe. */
-	funcoid = LookupFuncName(
-			list_make2(
-					makeString(get_namespace_name(schema_oid)),
-					makeString("bm25_get_current_score")),
-			0,
-			NULL,
-			false);
-	if (!OidIsValid(funcoid))
+	if (!OidIsValid(oids->score_stub_func_oid))
 		return NULL;
 
 	funcexpr				 = makeNode(FuncExpr);
-	funcexpr->funcid		 = funcoid;
+	funcexpr->funcid		 = oids->score_stub_func_oid;
 	funcexpr->funcresulttype = FLOAT8OID;
 	funcexpr->funcretset	 = false;
 	funcexpr->funcvariadic	 = false;
@@ -1145,7 +1157,7 @@ replace_scores_in_targetlist(List *targetlist, BM25OidCache *oids)
 		if (is_bm25_score_opexpr((Node *)tle->expr, oids) &&
 			equal(tle->expr, orderby_expr))
 		{
-			FuncExpr *stub = make_stub_funcexpr(oids->extension_schema_oid);
+			FuncExpr *stub = make_stub_funcexpr(oids);
 
 			if (stub != NULL)
 				tle->expr = (Expr *)stub;
@@ -1242,6 +1254,84 @@ plan_has_bm25_indexscan(Plan *plan, BM25OidCache *oids)
 }
 
 /*
+ * A nested scan can overwrite the backend-local score before projection.
+ * User-defined functions can run scans even when marked IMMUTABLE. Permit
+ * only built-in immutable functions and known scan-free stable/accessor calls.
+ */
+static bool
+score_function_is_unsafe(Oid funcid, void *context)
+{
+	BM25OidCache *oids = context;
+
+	if (funcid == oids->score_stub_func_oid ||
+		funcid == F_CURRENT_SETTING_TEXT ||
+		funcid == F_CURRENT_SETTING_TEXT_BOOL)
+		return false;
+
+	return funcid >= FirstNormalObjectId ||
+		   func_volatile(funcid) != PROVOLATILE_IMMUTABLE;
+}
+
+static bool
+score_projection_is_unsafe(Node *node, void *context)
+{
+	if (node == NULL)
+		return false;
+	if (IsA(node, SubPlan) || IsA(node, AlternativeSubPlan))
+		return true;
+
+	/* Scoring operators and the score accessor do not run nested scans. */
+	if (!is_bm25_score_opexpr(node, context) &&
+		check_functions_in_node(node, score_function_is_unsafe, context))
+		return true;
+
+	return expression_tree_walker(node, score_projection_is_unsafe, context);
+}
+
+static void
+replace_scores_in_indexscan(IndexScan *scan, BM25OidCache *oids)
+{
+	Expr	 *orderby_expr;
+	ListCell *lc;
+
+	if (list_length(scan->indexorderbyorig) != 1 ||
+		!plan_has_bm25_indexscan((Plan *)scan, oids))
+		return;
+
+	orderby_expr = linitial(scan->indexorderbyorig);
+	if (!is_bm25_score_opexpr((Node *)orderby_expr, oids) ||
+		score_projection_is_unsafe((Node *)scan->scan.plan.qual, oids))
+		return;
+
+	foreach (lc, scan->scan.plan.targetlist)
+	{
+		TargetEntry *tle = lfirst_node(TargetEntry, lc);
+
+		/* Matching expressions are removed, so cannot run nested scans. */
+		if (!equal(tle->expr, orderby_expr) &&
+			score_projection_is_unsafe((Node *)tle->expr, oids))
+			return;
+	}
+
+	/*
+	 * ORDER BY may refer to a projected alias, and Append children do not
+	 * retain resjunk labels. Match the expression this scan actually scored.
+	 */
+	foreach (lc, scan->scan.plan.targetlist)
+	{
+		TargetEntry *tle = lfirst_node(TargetEntry, lc);
+
+		if (equal(tle->expr, orderby_expr))
+		{
+			FuncExpr *stub = make_stub_funcexpr(oids);
+
+			if (stub != NULL)
+				tle->expr = (Expr *)stub;
+		}
+	}
+}
+
+/*
  * Recursively walk the plan tree and replace BM25 score expressions.
  */
 static void
@@ -1250,8 +1340,11 @@ replace_scores_in_plan(Plan *plan, BM25OidCache *oids)
 	if (plan == NULL)
 		return;
 
-	/* Process this node's targetlist */
-	replace_scores_in_targetlist(plan->targetlist, oids);
+	if (IsA(plan, IndexScan))
+		replace_scores_in_indexscan((IndexScan *)plan, oids);
+	else
+		/* Preserve score reuse in projections above ordered joins. */
+		replace_scores_in_targetlist(plan->targetlist, oids);
 
 	/* Recurse into child plans */
 	replace_scores_in_plan(plan->lefttree, oids);
