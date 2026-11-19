@@ -31,7 +31,10 @@ jobs:
           python -m unittest discover -s benchmarks/scale/tests -v
           python -m unittest discover -s benchmarks/scale -p 'test_*.py' -v
           for script in benchmarks/scale/{launch,bootstrap,run,install}.sh \
-            benchmarks/scale/tests/check_writer_capacity.sh
+            benchmarks/scale/cache_reset.sh \
+            benchmarks/scale/tests/check_{writer_capacity,phrase_semantics}.sh \
+            benchmarks/scale/tests/check_native_rewrites.sh \
+            benchmarks/scale/tests/check_tin_drain.sh
           do
             bash -n "$script"
           done

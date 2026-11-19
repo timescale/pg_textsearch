@@ -483,6 +483,65 @@ class RunPlanTest(unittest.TestCase):
             resumed_run.assert_not_called()
             self.assertEqual(resumed, summary)
 
+    def test_phrase_probe_quotes_parser_text_and_sql_independently(self):
+        scale_dir = Path(__file__).resolve().parents[1]
+        with tempfile.TemporaryDirectory(
+            prefix=".test-tmp-", dir=scale_dir
+        ) as directory:
+            temporary = Path(directory)
+            runner = Runner(
+                scale_dir.parents[1], temporary, False,
+                "phrase-quoting", "msmarco-v2", None,
+            )
+            with patch(
+                "benchmarks.scale.run.subprocess.run",
+                return_value=SimpleNamespace(
+                    returncode=0, stdout="1\n", stderr=""
+                ),
+            ) as run:
+                runner._capture_correctness(
+                    "database", "paradedb",
+                    [{"id": "q", "text": 'alpha "the" beta\'s \\ delta'}],
+                    temporary / "correctness-v2.jsonl",
+                    {"database": "fingerprint"},
+                )
+            sql = run.call_args_list[2].args[0][-1]
+            self.assertEqual(
+                sql,
+                r"""SELECT id FROM documents WHERE body @@@ """
+                r"""'"alpha \"the\" beta''s \\ delta"'"""
+                " ORDER BY paradedb.score(id) DESC LIMIT 100",
+            )
+
+    def test_parade_probe_rejects_pre_parser_checkpoint(self):
+        scale_dir = Path(__file__).resolve().parents[1]
+        with tempfile.TemporaryDirectory(
+            prefix=".test-tmp-", dir=scale_dir
+        ) as directory:
+            temporary = Path(directory)
+            runner = Runner(
+                scale_dir.parents[1], temporary, False,
+                "phrase-resume", "msmarco-v2", None,
+            )
+            output = temporary / "correctness-v2.jsonl"
+            arguments = (
+                "database", "paradedb", [{"id": "q", "text": "alpha"}],
+                output, {"database": "fingerprint"},
+            )
+            with patch(
+                "benchmarks.scale.run.subprocess.run",
+                return_value=SimpleNamespace(
+                    returncode=0, stdout="1\n", stderr=""
+                ),
+            ):
+                runner._capture_correctness(*arguments)
+            state = output.with_suffix(".fingerprint.json")
+            old = json.loads(state.read_text())
+            old.pop("phrase_protocol", None)
+            state.write_text(json.dumps(old))
+            with self.assertRaises(ConfigError):
+                runner._capture_correctness(*arguments)
+
     def test_correctness_uses_natural_and_longest_span_families(self):
         scale_dir = Path(__file__).resolve().parents[1]
         with tempfile.TemporaryDirectory(
@@ -570,6 +629,41 @@ class RunPlanTest(unittest.TestCase):
             )
             self.assertEqual(failure["exit_code"], 99)
             self.assertFalse((result_dir / "complete.json").exists())
+
+    def test_cell_retry_preserves_old_exports_outside_current_attempt(self):
+        scale_dir = Path(__file__).resolve().parents[1]
+        with tempfile.TemporaryDirectory(
+            prefix=".test-tmp-", dir=scale_dir
+        ) as directory:
+            temporary = Path(directory)
+            runner = Runner(
+                scale_dir.parents[1], temporary, True,
+                "retry-test", "msmarco-v2", None,
+            )
+            result_dir = temporary / "cell"
+            result_dir.mkdir()
+            (result_dir / "paradedb_old.json").write_text("old samples")
+            (result_dir / "failed.json").write_text('{"exit_code":99}')
+            (result_dir / "k6.log").write_text("old measured phase")
+
+            def fresh_output(*arguments):
+                (result_dir / "paradedb_new.json").write_text("new samples")
+
+            with patch.object(
+                runner, "_run_k6_cell", side_effect=fresh_output
+            ):
+                runner._execute_k6_cell(
+                    Path("/benchmarker"), Path("/dataset/search.js"),
+                    {}, result_dir, {"mode": "phrase"},
+                )
+            self.assertEqual(
+                [path.name for path in result_dir.glob("paradedb_*.json")],
+                ["paradedb_new.json"],
+            )
+            old, = result_dir.glob("attempts/*/paradedb_old.json")
+            self.assertEqual(old.read_text(), "old samples")
+            self.assertFalse((result_dir / "k6.log").exists())
+            self.assertTrue((result_dir / "complete.json").is_file())
 
     def test_engine_failures_do_not_skip_later_engines(self):
         calls = []

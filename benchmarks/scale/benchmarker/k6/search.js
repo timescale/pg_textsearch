@@ -79,7 +79,7 @@ const parade = {
     ORDER BY paradedb.score(id) DESC LIMIT ${limit}`,
   conjunction: `SELECT id FROM documents WHERE body &&& $1
     ORDER BY paradedb.score(id) DESC LIMIT ${limit}`,
-  phrase: `SELECT id FROM documents WHERE body ### $1
+  phrase: `SELECT id FROM documents WHERE body @@@ $1
     ORDER BY paradedb.score(id) DESC LIMIT ${limit}`,
   count: `SELECT count(*) FROM documents WHERE body ||| $1`,
   mixed: `SELECT id FROM documents WHERE body ||| $1
@@ -92,7 +92,11 @@ function runSearch(recordMetrics) {
   let text = query.text;
   let statement;
   if (engine === "pg_textsearch") statement = pgts[mode];
-  else if (engine === "paradedb") statement = parade[mode];
+  else if (engine === "paradedb") {
+    statement = parade[mode];
+    // The released ### operator collapses English stopword positions.
+    if (mode === "phrase") text = JSON.stringify(text);
+  }
   else statement = `SELECT id FROM documents WHERE body ==> $1
     ORDER BY tin.full_score(ctid) DESC LIMIT ${limit}`;
   const result = backends.get(engine).query(statement, text);

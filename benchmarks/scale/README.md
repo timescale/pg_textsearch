@@ -7,10 +7,12 @@ and [ParadeDB response](https://www.paradedb.com/blog/opening-a-closed-tin):
 ranked disjunctions, conjunctions and phrases, counts, and concurrent updates.
 
 **Lead is not TIN.** It deliberately stores no search index and rescans the
-heap. It runs only as a 10,000-document compatibility check, not as a
+heap. By default it runs as a 10,000-document compatibility check, not as a
 production-performance competitor. No TIN measurements are inferred from it.
 Its published image is intentionally a debug build. Compatibility queries
 use explicit quoted TinQL OR terms, not TinQL's default implicit AND.
+
+[Full MS MARCO v2 baseline](reports/msmarco-v2-20261119.md).
 
 ## Provision and run
 
@@ -128,11 +130,17 @@ warmup and five measured minutes per cell. `PGTS_INCLUDE_32VU=1` adds 32
 clients. Mixed runs target 1,000 indexed updates/second and record achieved
 throughput and dropped iterations in `k6-summary.json`, not just the
 requested rate. They preallocate 32 writer clients and allow up to 64.
+Updates toggle a suffix on indexed text in a deterministic 100,000-row
+hotset spaced across the corpus; they are not uniform random writes over
+all documents.
 
 Current pg_textsearch supports native Boolean/phrase filtering and counts.
 Filtered ranking currently uses standalone scoring and sorting after Boolean
 filtering; it is not misrepresented as an integrated ranked index scan.
-ParadeDB uses native, field-specific search operators.
+ParadeDB uses native, field-specific search operators. Phrase queries use
+quoted `@@@` parser input: the pinned release's `###` operator incorrectly
+collapses positions left by English stopwords. Bound phrase text is
+JSON-quoted, not interpolated into SQL.
 
 Errors/timeouts invalidate a cell. Raw driver outputs and result IDs are
 retained; successful throughput is not a substitute for result validation.
@@ -141,22 +149,106 @@ checkpoints. Failed or censored cells do not prevent the remaining workloads
 and engines from running; the aggregate run still reports failure.
 Query inputs, data, cloud state and raw results are ignored by Git.
 
+After collection, export search-only statistics:
+
+```bash
+python3 benchmarks/scale/summarize.py \
+  benchmarks/scale/artifacts/runs/<RUN_ID> \
+  --engine pg_textsearch --engine paradedb > summary.csv
+```
+
+The summary checks raw sample counts against k6 counters and leaves failed
+cells' latency/throughput blank. Search QPS excludes updates and the metrics
+collector. Elapsed time includes the last response timestamp: the pinned
+dashboard can freeze `endTime` after an idle gap
+([paradedb/benchmarker#115](https://github.com/paradedb/benchmarker/pull/115)).
+An `ok` status records error-free driver completion, not proof of semantic
+correctness or ranking quality; inspect the captured result probes too.
+
 ## Existing machine
+
+### Expanded TIN scenarios
+
+`tin.py` adds interleaved query families, AND/phrase counts, mixed-family
+searches with updates, and a separate Wikipedia count campaign. The primary
+analyzer retains English stemming without stopword removal; stopword-enabled
+controls remain separate. ParadeDB is pinned to v0.27.0.
+
+All new profiles use eight database vCPUs. Query RAM/buffers are
+192/32, 32/24, and 16/12 GiB; build resources are recorded separately.
+Both engines use `plan_cache_mode=force_custom_plan` and the same NVMe
+planner setting, `random_page_cost=1.1`. These explicitly tuned runs are
+separate from the original default-planner baseline.
+Each profile starts from an offline clone of the same analyzer index.
+The cache-reset hook evicts only that clone's files and verifies residency
+with Linux `mincore`, preventing inherited host cache from bypassing the
+smaller container limit. It does not drop the host's caches globally.
+
+On the dedicated benchmark machine, after normal setup:
+
+```bash
+export MSMARCO_ACCEPT_TERMS=1
+export PGTS_CACHE_RESET_HOOK="$PWD/benchmarks/scale/cache_reset.sh"
+PYTHON=/srv/searchbench/pg_textsearch-scale/venv/bin/python
+"$PYTHON" benchmarks/scale/tin.py plan --run-id tin-v1
+"$PYTHON" benchmarks/scale/tin.py all --run-id tin-v1 \
+  --sql-shape filter_first
+```
+
+Stages are `install`, `prepare`, `prepared`, `build`, and `run`, or `all`.
+Keep selectors and SQL shape consistent across stages of a run.
+`--profile`, `--analyzer`, `--engine`, `--pack`, `--operation`, and
+`--family` select subsets; `--smoke` uses the synthetic corpus.
+Use `--dataset wikipedia` with a separate run ID for the Wikipedia control.
+
+Native SQL shapes are explicitly labeled: `original`, `rank_first`, and
+`filter_first`. The latter two separate Boolean filtering from ranking
+without an arbitrary candidate limit. Both passed independent result
+oracles, including a match below the first 2,000 ranked candidates.
+Full-corpus probes selected `filter_first` for this campaign: `rank_first`
+can exhaust the ranked stream when fewer than ten documents match.
+Broad Boolean filters can still be expensive with either shape.
+No automatic planner-hook rewrite is installed.
+Native query packs also undergo an all-query plan audit before timing;
+an empty analyzed query is retained as a zero-result case, not discarded.
+Each concurrent-write cell starts from a separate pristine index clone.
+
+Export expanded results with:
+
+```bash
+python3 benchmarks/scale/summarize_tin.py <RUN_DIRECTORY>/tin > summary.csv
+```
+
+The export reconciles read/write counters and reports unequal achieved
+write pressure separately from SQL failures. Per-kind request counts are
+available, but the SDK's aggregated query CSV cannot recover exact
+per-kind latency percentiles.
+
+### Original baseline
 
 ```bash
 cd /opt/searchbench/pg_textsearch
 bash benchmarks/scale/tests/check_writer_capacity.sh
+bash benchmarks/scale/tests/check_phrase_semantics.sh
+bash benchmarks/scale/tests/check_native_rewrites.sh
+bash benchmarks/scale/tests/check_tin_drain.sh
 bash benchmarks/scale/run.sh --smoke --run-id smoke-1 all
 bash benchmarks/scale/run.sh --dataset wikipedia --run-id wiki-1 all
 ```
 
-The capacity check uses an isolated 10K-row database with a controlled
-10-ms update delay. Run it before benchmarks, with port 15432 free.
+The drain check ensures 35-second reads and writes finish accounting after
+the measurement window closes. The capacity check uses an isolated 10K-row
+database with a controlled 10-ms update delay. The phrase check exercises
+the actual k6 driver against
+an exact phrase containing a stopword. Run these checks before benchmarks,
+with port 15432 free.
 
 Artifacts default to `/srv/searchbench/pg_textsearch-scale`. The launcher runs
 the pipeline as `pgts-benchmark-<RUN_ID>.service`, with a
 `launch-<RUN_ID>.log` in that directory. Use a new run ID for changed inputs;
 compatible completed cells can be resumed.
+Retries retain previous logs/exports under the cell's `attempts/` directory,
+outside the current attempt used for aggregate statistics.
 
 Tests, after installing `requirements.txt` in a virtual environment:
 
