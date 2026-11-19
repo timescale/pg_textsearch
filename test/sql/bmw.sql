@@ -7,6 +7,8 @@ CREATE EXTENSION pg_textsearch;
 -- Force index scan so ORDER BY uses the BM25 index (small tables
 -- would otherwise prefer seq scan, returning non-matching rows)
 SET enable_seqscan = off;
+-- Index scores are float4; do not assert compiler-dependent trailing bits.
+SET extra_float_digits = -9;
 
 \set ECHO none
 \i test/sql/validation.sql
@@ -456,6 +458,49 @@ CREATE INDEX bmw_repeat_idx ON bmw_repeat USING bm25(content)
 SELECT id, content <@> 'cat cat'::bm25query as score
 FROM bmw_repeat
 ORDER BY score LIMIT 5;
+
+-- The single-term fast path must retain the query term's frequency.
+SELECT round(bm25_get_current_score()::numeric, 6) AS repeated_index_score
+FROM bmw_repeat
+ORDER BY content <@> 'cat cat'::bm25query LIMIT 1;
+
+-- A nested scan must not supply the outer scan's projected score.
+SELECT r.id,
+       (SELECT id FROM bmw_repeat WHERE id <> r.id
+        ORDER BY content <@> to_bm25query('dog dog', 'bmw_repeat_idx')
+        LIMIT 1) AS nested_id,
+       r.content <@> to_bm25query('cat', 'bmw_repeat_idx') AS score
+FROM bmw_repeat r ORDER BY score LIMIT 1;
+
+-- A scan in a qual runs before projection too.
+SELECT r.id,
+       r.content <@> to_bm25query('cat', 'bmw_repeat_idx') AS score
+FROM bmw_repeat r
+WHERE (SELECT id FROM bmw_repeat WHERE id <> r.id
+       ORDER BY content <@> to_bm25query('dog dog', 'bmw_repeat_idx')
+       LIMIT 1) > 0
+ORDER BY score LIMIT 1;
+
+-- A stable function can hide a nested index scan from the outer plan.
+CREATE FUNCTION pg_temp.bmw_nested_scan(exclude_id integer)
+RETURNS integer LANGUAGE plpgsql STABLE COST 1 AS $$
+DECLARE
+    result integer;
+BEGIN
+    SELECT id INTO result FROM bmw_repeat WHERE id <> exclude_id
+    ORDER BY content <@> to_bm25query('dog dog', 'bmw_repeat_idx') LIMIT 1;
+    RETURN result;
+END
+$$;
+SELECT r.id, pg_temp.bmw_nested_scan(r.id) AS nested_id,
+       r.content <@> to_bm25query('cat', 'bmw_repeat_idx') AS score
+FROM bmw_repeat r ORDER BY score LIMIT 1;
+-- User-defined IMMUTABLE functions can execute scans too.
+ALTER FUNCTION pg_temp.bmw_nested_scan(integer) IMMUTABLE;
+SELECT r.id, pg_temp.bmw_nested_scan(r.id) AS nested_id,
+       r.content <@> to_bm25query('cat', 'bmw_repeat_idx') AS score
+FROM bmw_repeat r ORDER BY score LIMIT 1;
+DROP FUNCTION pg_temp.bmw_nested_scan(integer);
 
 DROP TABLE bmw_repeat;
 
@@ -1059,4 +1104,5 @@ DROP TABLE bmw_fieldnorm_mixed;
 -- ============================================================
 -- Cleanup
 -- ============================================================
+RESET extra_float_digits;
 DROP EXTENSION pg_textsearch CASCADE;

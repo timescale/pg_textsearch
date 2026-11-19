@@ -13,6 +13,7 @@
 #include <access/genam.h>
 #include <access/htup_details.h>
 #include <access/table.h>
+#include <access/transam.h>
 #include <access/xact.h>
 #include <catalog/indexing.h>
 #include <catalog/namespace.h>
@@ -247,10 +248,11 @@ get_bm25_oids(BM25OidCache *cache)
 		/*
 		 * Older PG17 releases have no extension syscache.  Their AM/type/
 		 * operator invalidations also cover extension create/drop; this
-		 * extension is not relocatable.  The PG17 backpatch defines
-		 * EXTENSIONOID as a macro, whereas PG18+ uses an enum member.
+		 * extension is not relocatable.  Do not use the PG17 backpatch:
+		 * binaries built with newer headers may run on older minors
+		 * where its cache ID does not exist.
 		 */
-#if defined(EXTENSIONOID) || PG_VERSION_NUM >= 180000
+#if PG_VERSION_NUM >= 180000
 		CacheRegisterSyscacheCallback(
 				EXTENSIONOID, bm25_cache_invalidation_callback, (Datum)0);
 #endif
@@ -1253,6 +1255,84 @@ plan_has_bm25_indexscan(Plan *plan, BM25OidCache *oids)
 }
 
 /*
+ * A nested scan can overwrite the backend-local score before projection.
+ * User-defined functions can run scans even when marked IMMUTABLE. Permit
+ * only built-in immutable functions and known scan-free stable/accessor calls.
+ */
+static bool
+score_function_is_unsafe(Oid funcid, void *context)
+{
+	BM25OidCache *oids = context;
+
+	if (funcid == oids->score_stub_func_oid ||
+		funcid == F_CURRENT_SETTING_TEXT ||
+		funcid == F_CURRENT_SETTING_TEXT_BOOL)
+		return false;
+
+	return funcid >= FirstNormalObjectId ||
+		   func_volatile(funcid) != PROVOLATILE_IMMUTABLE;
+}
+
+static bool
+score_projection_is_unsafe(Node *node, void *context)
+{
+	if (node == NULL)
+		return false;
+	if (IsA(node, SubPlan) || IsA(node, AlternativeSubPlan))
+		return true;
+
+	/* Scoring operators and the score accessor do not run nested scans. */
+	if (!is_bm25_score_opexpr(node, context) &&
+		check_functions_in_node(node, score_function_is_unsafe, context))
+		return true;
+
+	return expression_tree_walker(node, score_projection_is_unsafe, context);
+}
+
+static void
+replace_scores_in_indexscan(IndexScan *scan, BM25OidCache *oids)
+{
+	Expr	 *orderby_expr;
+	ListCell *lc;
+
+	if (list_length(scan->indexorderbyorig) != 1 ||
+		!plan_has_bm25_indexscan((Plan *)scan, oids))
+		return;
+
+	orderby_expr = linitial(scan->indexorderbyorig);
+	if (!is_bm25_score_opexpr((Node *)orderby_expr, oids) ||
+		score_projection_is_unsafe((Node *)scan->scan.plan.qual, oids))
+		return;
+
+	foreach (lc, scan->scan.plan.targetlist)
+	{
+		TargetEntry *tle = lfirst_node(TargetEntry, lc);
+
+		/* Matching expressions are removed, so cannot run nested scans. */
+		if (!equal(tle->expr, orderby_expr) &&
+			score_projection_is_unsafe((Node *)tle->expr, oids))
+			return;
+	}
+
+	/*
+	 * ORDER BY may refer to a projected alias, and Append children do not
+	 * retain resjunk labels. Match the expression this scan actually scored.
+	 */
+	foreach (lc, scan->scan.plan.targetlist)
+	{
+		TargetEntry *tle = lfirst_node(TargetEntry, lc);
+
+		if (equal(tle->expr, orderby_expr))
+		{
+			FuncExpr *stub = make_stub_funcexpr(oids);
+
+			if (stub != NULL)
+				tle->expr = (Expr *)stub;
+		}
+	}
+}
+
+/*
  * Recursively walk the plan tree and replace BM25 score expressions.
  */
 static void
@@ -1261,8 +1341,11 @@ replace_scores_in_plan(Plan *plan, BM25OidCache *oids)
 	if (plan == NULL)
 		return;
 
-	/* Process this node's targetlist */
-	replace_scores_in_targetlist(plan->targetlist, oids);
+	if (IsA(plan, IndexScan))
+		replace_scores_in_indexscan((IndexScan *)plan, oids);
+	else
+		/* Preserve score reuse in projections above ordered joins. */
+		replace_scores_in_targetlist(plan->targetlist, oids);
 
 	/* Recurse into child plans */
 	replace_scores_in_plan(plan->lefttree, oids);
