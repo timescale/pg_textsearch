@@ -426,8 +426,8 @@ tp_parallel_build_worker_main(dsm_segment *seg, shm_toc *toc)
 			/* L0 segment starts at current end of BufFile */
 			seg_offset = tracker.buffile_end;
 			{
-				int	  fileno;
-				off_t file_offset;
+				int				fileno;
+				TpBufFileOffset file_offset;
 
 				tp_buffile_decompose_offset(seg_offset, &fileno, &file_offset);
 				BufFileSeek(buffile, fileno, file_offset, SEEK_SET);
@@ -465,8 +465,8 @@ tp_parallel_build_worker_main(dsm_segment *seg, shm_toc *toc)
 
 		seg_offset = tracker.buffile_end;
 		{
-			int	  fileno;
-			off_t file_offset;
+			int				fileno;
+			TpBufFileOffset file_offset;
 
 			tp_buffile_decompose_offset(seg_offset, &fileno, &file_offset);
 			BufFileSeek(buffile, fileno, file_offset, SEEK_SET);
@@ -480,8 +480,8 @@ tp_parallel_build_worker_main(dsm_segment *seg, shm_toc *toc)
 
 	/* Append the segment directory instead of bounding it by the DSM size. */
 	{
-		int	  fileno;
-		off_t file_offset;
+		int				fileno;
+		TpBufFileOffset file_offset;
 
 		tp_buffile_decompose_offset(
 				tracker.buffile_end, &fileno, &file_offset);
@@ -746,7 +746,7 @@ tp_build_parallel(
 				uint32				s;
 				char				fname[64];
 				int					fileno;
-				off_t				file_offset;
+				TpBufFileOffset		file_offset;
 				Size				directory_size;
 				WorkerSegmentEntry *segments;
 

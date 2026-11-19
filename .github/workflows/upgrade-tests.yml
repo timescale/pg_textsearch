@@ -24,6 +24,7 @@ on:
 
 jobs:
   test-upgrades:
+    # Released extension versions predate PostgreSQL 19 compatibility.
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -811,12 +812,12 @@ jobs:
   # references functions (e.g., bm25_get_current_score) that no longer exist
   # in the current binary. Upgrades from v0.2.0+ are tested in test-upgrades.
 
-  # Test clean install (no upgrade) on both PG versions
+  # Test clean install on every supported PostgreSQL version.
   test-clean-install:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        pg_version: [17, 18]
+        pg_version: [17, 18, 19]
 
     steps:
     - name: Checkout current code
@@ -887,6 +888,7 @@ jobs:
   # captured both before and after the binary swap.  See
   # test/scripts/upgrade_matrix.sh.
   upgrade-matrix:
+    # Keep historical binary upgrades on the majors those releases support.
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
