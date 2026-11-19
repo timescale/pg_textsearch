@@ -259,11 +259,17 @@ class RunPlanTest(unittest.TestCase):
 
             warmup, measured = command.call_args_list
             self.assertNotIn("--out", warmup.args[0])
+            self.assertNotIn("--summary-export", warmup.args[0])
             self.assertEqual(warmup.kwargs["env"]["PHASE"], "warmup")
             self.assertEqual(warmup.kwargs["env"]["DURATION"], "2s")
             self.assertEqual(warmup.kwargs["output"],
                              result_dir / "warmup.log")
             self.assertIn("--out", measured.args[0])
+            summary_index = measured.args[0].index("--summary-export")
+            self.assertEqual(
+                measured.args[0][summary_index + 1],
+                str(result_dir / "k6-summary.json"),
+            )
             self.assertEqual(measured.kwargs["env"]["PHASE"], "measured")
             self.assertEqual(measured.kwargs["env"]["DURATION"], "3s")
             self.assertEqual(measured.kwargs["output"],
