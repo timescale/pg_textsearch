@@ -7,6 +7,7 @@ import ipaddress
 import json
 import pathlib
 import subprocess
+import sys
 import tempfile
 
 
@@ -125,10 +126,15 @@ def template(location, size, public_key, ssh_cidr, expires):
 
 
 def az(subscription, *args):
-    result = subprocess.run(
-        ["az", *args, "--subscription", subscription, "-o", "json",
-         "--only-show-errors"], check=True, text=True, capture_output=True,
-    )
+    try:
+        result = subprocess.run(
+            ["az", *args, "--subscription", subscription, "-o", "json",
+             "--only-show-errors"], check=True, text=True, capture_output=True,
+        )
+    except subprocess.CalledProcessError as error:
+        if error.stderr:
+            print(error.stderr.rstrip(), file=sys.stderr)
+        raise
     return json.loads(result.stdout) if result.stdout.strip() else None
 
 
@@ -197,6 +203,11 @@ def main():
         if any(r["id"].lower() == vm_id.lower() for r in resources):
             az(args.subscription, "resource", "delete", "--ids", vm_id,
                "--api-version", "2018-09-15")
+        # The lab RP releases its own storage, vault, and network locks.
+        lab_id = vm_id.rsplit("/virtualMachines/", 1)[0]
+        if any(r["id"].lower() == lab_id.lower() for r in resources):
+            az(args.subscription, "resource", "delete", "--ids", lab_id,
+               "--api-version", "2018-09-15")
         az(args.subscription, "group", "delete", "-n", args.group, "--yes")
         return
     if not args.ssh_key or not args.ssh_cidr:
@@ -246,8 +257,7 @@ def main():
             az(args.subscription, "deployment", "group", "create",
                "-g", args.group, "-n", "benchmark",
                "--template-file", handle.name)
-        except subprocess.CalledProcessError as error:
-            print(error.stderr)
+        except subprocess.CalledProcessError:
             print(f"Deployment failed; inspect or destroy {args.group}.")
             raise
     state.update(status="provisioned",
