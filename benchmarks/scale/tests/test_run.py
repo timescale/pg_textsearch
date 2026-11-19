@@ -133,15 +133,21 @@ class RunPlanTest(unittest.TestCase):
             queries = runner.dataset / "k6"
             queries.mkdir()
             source = queries / "spans.json"
-            source.write_text('[{"id":"old"}]')
+            source.write_text('[{"id":"old","text":"old term"}]')
             runner._prepare_lead_subset()
-            source.write_text('[{"id":"new"}]')
+            source.write_text(json.dumps([
+                {"id": "new", "text": 'New "OR" wi-fi'},
+            ]))
             runner._prepare_lead_subset()
             self.assertEqual(
                 json.loads(
                     (runner.lead_dataset / "k6/spans.json").read_text()
                 ),
-                [{"id": "new"}],
+                [{
+                    "id": "new",
+                    "text": '"new" OR "or" OR "wi" OR "fi"',
+                    "source_text": 'New "OR" wi-fi',
+                }],
             )
             manifest = runner.dataset / "manifest.json"
             data = json.loads(manifest.read_text())

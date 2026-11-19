@@ -73,6 +73,14 @@ def _tokens(queries: Iterable[dict[str, str]]) -> list[str]:
     return tokens
 
 
+def lead_disjunction(text: str) -> str:
+    tokens = _tokens([{"text": text}])
+    if not tokens:
+        raise QueryError("Lead query has no searchable terms")
+    # TinQL defaults to AND; quoted terms also escape its query operators.
+    return " OR ".join(f'"{token}"' for token in tokens)
+
+
 def _interleave_spans(
     queries: list[dict[str, object]], per_span: int
 ) -> list[dict[str, object]]:

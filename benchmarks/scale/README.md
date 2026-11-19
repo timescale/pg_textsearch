@@ -9,6 +9,8 @@ ranked disjunctions, conjunctions and phrases, counts, and concurrent updates.
 **Lead is not TIN.** It deliberately stores no search index and rescans the
 heap. It runs only as a 10,000-document compatibility check, not as a
 production-performance competitor. No TIN measurements are inferred from it.
+Its published image is intentionally a debug build. Compatibility queries
+use explicit quoted TinQL OR terms, not TinQL's default implicit AND.
 
 ## Provision and run
 
