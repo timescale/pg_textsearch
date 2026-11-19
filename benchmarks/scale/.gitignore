@@ -1,0 +1,10 @@
+.test-tmp/
+.test-tmp-*/
+.venv/
+artifacts/
+downloads/
+**/__pycache__/
+*.pyc
+*.partial
+**/natural.json
+**/spans.json
