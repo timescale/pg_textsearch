@@ -929,8 +929,8 @@ tp_write_segment_to_buffile(TpBuildContext *ctx, BufFile *file)
 	 * the starting position and end position to handle seek-back
 	 * for header/dict entry updates.
 	 */
-	int	  base_fileno;
-	off_t base_file_offset;
+	int		base_fileno;
+	pgoff_t base_file_offset;
 
 	uint32 *string_offsets;
 	uint64	string_pos;
@@ -1199,7 +1199,7 @@ tp_write_segment_to_buffile(TpBuildContext *ctx, BufFile *file)
 	{
 		TpDictEntry *dict_entries;
 		int			 end_fileno;
-		off_t		 end_file_offset;
+		pgoff_t		 end_file_offset;
 
 		/* Save end position */
 		BufFileTell(file, &end_fileno, &end_file_offset);
@@ -1220,8 +1220,8 @@ tp_write_segment_to_buffile(TpBuildContext *ctx, BufFile *file)
 		{
 			uint64 base_abs =
 					tp_buffile_composite_offset(base_fileno, base_file_offset);
-			int	  dict_fileno;
-			off_t dict_offset;
+			int		dict_fileno;
+			pgoff_t dict_offset;
 
 			tp_buffile_decompose_offset(
 					base_abs + header.entries_offset,

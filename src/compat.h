@@ -31,6 +31,11 @@
 #define TupleDescFinalize(tupdesc) ((void)(tupdesc))
 #endif
 
+/* PG19's BufFile API uses pgoff_t, which is 64-bit even on Windows. */
+#if PG_VERSION_NUM < 190000
+typedef off_t pgoff_t;
+#endif
+
 /*
  * post_parse_analyze_hook's JumbleState parameter became const in PG19.
  * A hook implementation has to match the typedef exactly — C does not
