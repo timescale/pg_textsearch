@@ -1,4 +1,5 @@
 import json
+import subprocess
 import unittest
 from pathlib import Path
 import tempfile
@@ -6,11 +7,13 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from benchmarks.scale.run import (
+    BenchmarkCellsFailed,
     ConfigError,
     GO_VERSION,
     K6_VERSION,
     Runner,
     build_plan,
+    file_sha256,
     validate_storage,
 )
 
@@ -197,6 +200,17 @@ class RunPlanTest(unittest.TestCase):
         self.assertIn('phase === "measured"', script)
         self.assertNotIn('warmup: "true"', script)
 
+    def test_plans_are_captured_without_executing_queries(self):
+        source = (
+            Path(__file__).resolve().parents[1] / "run.py"
+        ).read_text()
+
+        self.assertNotIn("EXPLAIN (ANALYZE", source)
+        self.assertIn(
+            "EXPLAIN (COSTS, VERBOSE, SETTINGS, FORMAT JSON)",
+            source,
+        )
+
     def test_engine_refreshes_dataset_templates_without_prepare(self):
         scale_dir = Path(__file__).resolve().parents[1]
         with tempfile.TemporaryDirectory(
@@ -308,6 +322,181 @@ class RunPlanTest(unittest.TestCase):
             "9849f4e04ee35303714e34fbc3ac8ab44ea3e448a95aa182f91e3b9b79c710ec",
             script,
         )
+
+    def test_correctness_is_bounded_checkpointed_and_classified(self):
+        scale_dir = Path(__file__).resolve().parents[1]
+        with tempfile.TemporaryDirectory(
+            prefix=".test-tmp-", dir=scale_dir
+        ) as directory:
+            temporary = Path(directory)
+            runner = Runner(
+                scale_dir.parents[1],
+                temporary,
+                False,
+                "correctness-test",
+                "wikipedia",
+                None,
+            )
+            queries = [
+                {"id": f"q{number}", "text": f"query {number}"}
+                for number in range(10)
+            ]
+            success = SimpleNamespace(
+                returncode=0, stdout="1\n2\n", stderr=""
+            )
+            timeout = SimpleNamespace(
+                returncode=1,
+                stdout="",
+                stderr="ERROR: canceling statement due to statement timeout",
+            )
+            sql_error = SimpleNamespace(
+                returncode=1, stdout="", stderr="ERROR: operator missing"
+            )
+            results = [success, timeout] + [sql_error] * 6
+            output = temporary / "correctness-v2.jsonl"
+            with patch(
+                "benchmarks.scale.run.subprocess.run",
+                side_effect=results,
+            ) as run:
+                summary = runner._capture_correctness(
+                    "database",
+                    "pg_textsearch",
+                    queries,
+                    output,
+                    {"database": "fingerprint"},
+                )
+
+            records = [
+                json.loads(line) for line in output.read_text().splitlines()
+            ]
+            self.assertEqual(run.call_count, 8)
+            self.assertEqual({record["query_id"] for record in records},
+                             {"q0", "q5"})
+            self.assertEqual(summary["ok"], 1)
+            self.assertEqual(summary["timeout"], 1)
+            self.assertEqual(summary["sql_error"], 6)
+            self.assertTrue(records[1]["censored"])
+            self.assertTrue(
+                output.with_suffix(".complete.json").is_file()
+            )
+
+            with patch(
+                "benchmarks.scale.run.subprocess.run"
+            ) as resumed_run:
+                resumed = runner._capture_correctness(
+                    "database",
+                    "pg_textsearch",
+                    queries,
+                    output,
+                    {"database": "fingerprint"},
+                )
+            resumed_run.assert_not_called()
+            self.assertEqual(resumed, summary)
+
+    def test_correctness_uses_natural_and_longest_span_families(self):
+        scale_dir = Path(__file__).resolve().parents[1]
+        with tempfile.TemporaryDirectory(
+            prefix=".test-tmp-", dir=scale_dir
+        ) as directory:
+            temporary = Path(directory)
+            dataset = temporary / "dataset"
+            query_dir = dataset / "k6"
+            query_dir.mkdir(parents=True)
+            (query_dir / "natural.json").write_text(json.dumps([
+                {"id": "natural-1", "text": "natural query"},
+                {"id": "natural-2", "text": "other natural"},
+            ]))
+            (query_dir / "spans.json").write_text(json.dumps([
+                {"id": "span-2", "text": "two words", "span": 2},
+                {
+                    "id": "span-15",
+                    "text": "controlled fifteen word span",
+                    "span": 15,
+                },
+                {"id": "span-10", "text": "controlled span", "span": 10},
+            ]))
+            runner = Runner(
+                scale_dir.parents[1],
+                temporary / "artifacts",
+                False,
+                "families-test",
+                "wikipedia",
+                dataset,
+            )
+
+            queries, fingerprint = runner._correctness_inputs(
+                dataset, {"database": "fingerprint"}
+            )
+
+            self.assertEqual(
+                [(query["id"], query["query_family"])
+                 for query in queries],
+                [("natural-1", "natural"), ("span-15", "controlled_span")],
+            )
+            self.assertEqual(
+                fingerprint,
+                {
+                    "database": {"database": "fingerprint"},
+                    "natural_queries": file_sha256(
+                        query_dir / "natural.json"
+                    ),
+                    "span_queries": file_sha256(
+                        query_dir / "spans.json"
+                    ),
+                },
+            )
+
+    def test_failed_k6_cell_is_recorded_without_raising(self):
+        scale_dir = Path(__file__).resolve().parents[1]
+        with tempfile.TemporaryDirectory(
+            prefix=".test-tmp-", dir=scale_dir
+        ) as directory:
+            temporary = Path(directory)
+            runner = Runner(
+                scale_dir.parents[1],
+                temporary,
+                True,
+                "cell-test",
+                "msmarco-v2",
+                None,
+            )
+            result_dir = temporary / "cell"
+            result_dir.mkdir()
+            error = subprocess.CalledProcessError(99, ["k6", "run"])
+            with patch.object(
+                runner, "_run_k6_cell", side_effect=error
+            ):
+                result = runner._execute_k6_cell(
+                    Path("/benchmarker"),
+                    Path("/dataset/search.js"),
+                    {},
+                    result_dir,
+                    {"mode": "conjunction"},
+                )
+
+            self.assertEqual(result["status"], "failed")
+            failure = json.loads(
+                (result_dir / "failed.json").read_text()
+            )
+            self.assertEqual(failure["exit_code"], 99)
+            self.assertFalse((result_dir / "complete.json").exists())
+
+    def test_engine_failures_do_not_skip_later_engines(self):
+        calls = []
+
+        class FakeRunner:
+            def engine(self, engine):
+                calls.append(engine)
+                if engine == "pg_textsearch":
+                    raise BenchmarkCellsFailed(engine, ["failed cell"])
+
+        with self.assertRaises(BenchmarkCellsFailed):
+            Runner.run_engines(
+                FakeRunner(),
+                ["pg_textsearch", "paradedb", "lead"],
+            )
+
+        self.assertEqual(calls, ["pg_textsearch", "paradedb", "lead"])
 
 
 if __name__ == "__main__":
