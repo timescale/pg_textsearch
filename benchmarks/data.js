@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795070966505,
+  "lastUpdate": 1795070971879,
   "repoUrl": "https://github.com/timescale/pg_textsearch",
   "entries": {
     "cranfield Benchmarks": [
@@ -271729,6 +271729,93 @@ window.BENCHMARK_DATA = {
           {
             "name": "wikipedia_concurrent (0 docs) - Weighted Throughput (avg ms/query)",
             "value": 0.76,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "me1t0ut",
+            "username": "me1t0ut",
+            "email": "45817393+me1t0ut@users.noreply.github.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "8923a5ba16df2731627dfbde6f6e3b62e5b8273b",
+          "message": "Fix session-lock cleanup after RLS DDL acquisition errors (#606)\n\nFixes #605\n\n## Problem\n\nIf protected DDL acquires the stable RLS guard and then times out\nacquiring the extension-object lock, a caught PL/pgSQL exception can\nleave the first session lock held after successful outer commit. Other\nsessions' protected BM25 DDL remains blocked.\nThe guard uses PostgreSQL’s standard session-level heavyweight object\nlocks because it must survive internal commits during CREATE INDEX\nCONCURRENTLY and REINDEX CONCURRENTLY. This PR makes acquisition\nexception-safe by unwinding partial acquisitions while preserving outer\nownership, preventing a caught error from leaving a lock that survives\nsuccessful commit and, on the tested PostgreSQL 17.4 non-assert build,\nbackend exit.\n\n## Fix\n\nMake both session-lock acquisitions exception-safe: finish core\nlock-wait cleanup, release any newly granted session acquisition, and\nunwind the stable acquisition if the second stage fails. Preserve\ninherited lock ownership and the existing stable-to-extension lock\norder, nested nonblocking policy, and concurrent-index internal-commit\nbehavior.\n\nExtend the existing RLS shell regression with caught timeouts at each\nstage, subsequent DDL and backend exit, plus a caught nested-error case\nthat verifies outer protection through commit and complete release\nafterward.\n\n## Verification\n\n- Stock PostgreSQL 17.4: full `make installcheck` (82/82) and complete\nRLS DDL locking shell suite.\n- Stock PostgreSQL 18.3 with assertions and injection points: full `make\ninstallcheck` (92/92) and complete RLS DDL locking shell suite.\n- The new shell regression fails on unmodified upstream at the\nretained-lock assertion after the second acquisition times out.\n- In each major, eight additional cases cover repeated lock timeouts and\nexplicit cancellation at both stages, same-backend reuse, peer DDL and\nclean backend exit.\n- `make format-check`, `bash -n`, and `git diff --check`.",
+          "timestamp": "2026-11-19T01:33:54Z",
+          "url": "https://github.com/timescale/pg_textsearch/commit/8923a5ba16df2731627dfbde6f6e3b62e5b8273b"
+        },
+        "date": 1795070971150,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "wikipedia_concurrent (0 docs) - Index Build Time",
+            "value": 0.616,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia_concurrent (0 docs) - Insert Time",
+            "value": 0.274,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia_concurrent (0 docs) - Concurrent Insert Time",
+            "value": 16170.377412,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia_concurrent (0 docs) - 1 Token Query (p50)",
+            "value": 0.19,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia_concurrent (0 docs) - 2 Token Query (p50)",
+            "value": 0.32,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia_concurrent (0 docs) - 3 Token Query (p50)",
+            "value": 0.43,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia_concurrent (0 docs) - 4 Token Query (p50)",
+            "value": 0.55,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia_concurrent (0 docs) - 5 Token Query (p50)",
+            "value": 0.66,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia_concurrent (0 docs) - 6 Token Query (p50)",
+            "value": 0.78,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia_concurrent (0 docs) - 7 Token Query (p50)",
+            "value": 0.89,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia_concurrent (0 docs) - 8+ Token Query (p50)",
+            "value": 1.24,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia_concurrent (0 docs) - Weighted Latency (p50, ms)",
+            "value": 0.51,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia_concurrent (0 docs) - Weighted Throughput (avg ms/query)",
+            "value": 0.53,
             "unit": "ms"
           }
         ]
