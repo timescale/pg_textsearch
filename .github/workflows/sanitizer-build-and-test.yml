@@ -37,7 +37,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        pg: ["17.2", "18.1"]
+        pg: ["17.2", "18.1", "19.0"]
 
     steps:
     - name: Install dependencies

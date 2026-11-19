@@ -496,15 +496,17 @@ test_memtable_snapshot_lock_order() {
                   FROM pg_stat_activity reader
                  WHERE reader.pid = ${reader_backend}
                    AND reader.state = 'active'
-                   AND reader.wait_event_type = 'LWLock'
-                   AND reader.wait_event = 'BufferContent'
+                   AND ((reader.wait_event_type = 'LWLock'
+                         AND reader.wait_event = 'BufferContent')
+                        OR (reader.wait_event_type = 'Buffer'
+                            AND reader.wait_event = 'BufferShared'))
                    AND reader.query LIKE '%snapshot_lock_docs%'
             );" 2>/dev/null || true)
         [ "${state_proof}" = "t" ] && break
         sleep 0.05
     done
     [ "${state_proof}" = "t" ] ||
-        error "reader did not wait on BufferContent while writer held old tail"
+        error "reader did not wait for buffer content while writer held old tail"
     assert_still_paused "${writer_backend}" "${POINT_MEMTABLE_EXTEND}" \
         "${writer_pid}" "tail-extension writer"
     kill -0 "${reader_pid}" 2>/dev/null ||

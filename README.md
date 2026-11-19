@@ -15,9 +15,7 @@ Modern ranked text search for Postgres.
 
 ## PostgreSQL Version Compatibility
 
-pg_textsearch supports PostgreSQL 17, 18, and 19 RC2. PostgreSQL 19 is
-tested in required CI checks but is not yet generally available.
-Build from source for PG19; prebuilt packages target PG17 and PG18.
+pg_textsearch supports PostgreSQL 17, 18, and 19.
 
 ## Installation
 
@@ -596,14 +594,14 @@ SELECT indexname FROM pg_indexes WHERE indexdef LIKE '%USING bm25%';
 For multiple PostgreSQL installations, set `PG_CONFIG` before building:
 
 ```sh
-export PG_CONFIG=/Library/PostgreSQL/18/bin/pg_config  # or 17
+export PG_CONFIG=/Library/PostgreSQL/19/bin/pg_config  # or 17/18
 make clean && make && make install
 ```
 
 Compilation requires PostgreSQL development files:
 
 ```sh
-sudo apt install postgresql-server-dev-18  # use 17 for PostgreSQL 17
+sudo apt install postgresql-server-dev-19  # match your PostgreSQL version
 ```
 
 ## Reference

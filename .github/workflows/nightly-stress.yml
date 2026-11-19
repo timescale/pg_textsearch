@@ -26,6 +26,7 @@ on:
         options:
           - '17'
           - '18'
+          - '19'
 
 env:
   PG_SRC_DIR: "pgbuild"
@@ -54,7 +55,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        pg: ${{ github.event_name == 'workflow_dispatch' && fromJSON(format('["{0}"]', github.event.inputs.pg_version || '17')) || fromJSON('["17", "18"]') }}
+        pg: ${{ github.event_name == 'workflow_dispatch' && fromJSON(format('["{0}"]', github.event.inputs.pg_version || '17')) || fromJSON('["17", "18", "19"]') }}
 
     steps:
     - name: Install dependencies
