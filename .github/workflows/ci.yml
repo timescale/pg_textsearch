@@ -61,7 +61,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        pg_version: [17, 18]
+        pg_version: [17, 18, 19]
 
     steps:
     - uses: actions/checkout@v4
@@ -76,6 +76,7 @@ jobs:
         sudo apt-get install -y postgresql-${{ matrix.pg_version }} postgresql-server-dev-${{ matrix.pg_version }}
 
     - name: Install TimescaleDB
+      if: matrix.pg_version != 19
       run: |
         # Add TimescaleDB apt repository
         echo "deb [signed-by=/usr/share/keyrings/timescaledb-archive-keyring.gpg] https://packagecloud.io/timescale/timescaledb/ubuntu/ $(lsb_release -cs) main" | sudo tee /etc/apt/sources.list.d/timescaledb.list
@@ -137,7 +138,11 @@ jobs:
         echo "log_statement = 'all'" >> tmp_check_shared/data/postgresql.conf
         echo "shared_buffers = 256MB" >> tmp_check_shared/data/postgresql.conf
         echo "max_connections = 20" >> tmp_check_shared/data/postgresql.conf
-        echo "shared_preload_libraries = 'timescaledb,${LIB_NAME}'" >> tmp_check_shared/data/postgresql.conf || true
+        if [ "${{ matrix.pg_version }}" = "19" ]; then
+          echo "shared_preload_libraries = '${LIB_NAME}'" >> tmp_check_shared/data/postgresql.conf
+        else
+          echo "shared_preload_libraries = 'timescaledb,${LIB_NAME}'" >> tmp_check_shared/data/postgresql.conf
+        fi
         echo "unix_socket_directories = '$PWD/tmp_check_shared'" >> tmp_check_shared/data/postgresql.conf
 
         # Try to start PostgreSQL and show logs if it fails
@@ -247,7 +252,11 @@ jobs:
           exit 1
         fi
 
-        # hypertable.sh needs a PostgreSQL instance with TimescaleDB preloaded
+    - name: Run hypertable tests
+      if: matrix.pg_version != 19
+      run: |
+        export PATH="/usr/lib/postgresql/${{ matrix.pg_version }}/bin:$PATH"
+        # TimescaleDB integration remains covered on its supported PG versions.
         echo "Running hypertable tests..."
         LIB_NAME="pg_textsearch"
         rm -rf tmp_hypertable_test
@@ -292,10 +301,10 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        pg: ["17.10", "18.4"]
+        pg: ["17.10", "18.4", "19.0"]
     env:
       PGPREFIX: /tmp/postgresql
-      # Instrument one leg only; both run the same tests.
+      # Instrument one leg only; all versions run the same tests.
       COVERAGE_PG: "17.10"
 
     steps:
@@ -399,6 +408,8 @@ jobs:
           - { cc: clang, pg_version: 17 }
           - { cc: gcc, pg_version: 18 }
           - { cc: clang, pg_version: 18 }
+          - { cc: gcc, pg_version: 19 }
+          - { cc: clang, pg_version: 19 }
 
     steps:
     - uses: actions/checkout@v4
@@ -415,102 +426,15 @@ jobs:
     - name: Build with ${{ matrix.config.cc }}
       run: |
         export PATH="/usr/lib/postgresql/${{ matrix.config.pg_version }}/bin:$PATH"
-        export CC=${{ matrix.config.cc }}
         make clean
         # Build with -Werror via PG_CFLAGS (CFLAGS is overridden by pgxs)
-        make PG_CFLAGS="-Werror -Wno-error=unused-parameter"
-
-  # PG19 RC2 is built from source with injection points and exercised
-  # with both gcc and clang. Keep this required until it can join the
-  # package-based matrices after GA.
-  test-pg19:
-    needs: changes
-    if: needs.changes.outputs.run_tests == 'true'
-    runs-on: ubuntu-24.04
-    strategy:
-      fail-fast: false
-      matrix:
-        cc: [gcc, clang]
-    env:
-      PG19_REF: REL_19_RC2
-      PGPREFIX: ${{ github.workspace }}/pg19-install
-    steps:
-    - uses: actions/checkout@v4
-
-    - name: Install build dependencies
-      run: |
-        sudo apt-get update
-        sudo apt-get install -y build-essential clang bison flex \
-          libreadline-dev zlib1g-dev libicu-dev pkg-config bc
-
-    - name: Cache PostgreSQL ${{ env.PG19_REF }} build
-      id: pgcache
-      uses: actions/cache@v4
-      with:
-        path: ${{ env.PGPREFIX }}
-        # Keep the image release in sync with runs-on for linked ICU libraries.
-        key: pg19-${{ env.PG19_REF }}-injection-v2-${{ matrix.cc }}-ubuntu-24.04-${{ runner.arch }}
-
-    - name: Build PostgreSQL ${{ env.PG19_REF }} from source
-      if: steps.pgcache.outputs.cache-hit != 'true'
-      run: |
-        git clone --depth 1 --branch "$PG19_REF" \
-          https://git.postgresql.org/git/postgresql.git /tmp/pgsrc
-        cd /tmp/pgsrc
-        CC=${{ matrix.cc }} ./configure --prefix="$PGPREFIX" \
-          --with-icu --enable-debug --enable-cassert \
-          --enable-injection-points
-        make -j"$(nproc)"
-        make install
-        make -C src/test/modules/injection_points install
-        make -C contrib/dblink install
-
-    - name: Verify injection-point build
-      run: |
-        "$PGPREFIX/bin/pg_config" --configure |
-          grep -q -- '--enable-injection-points'
-        test -f \
-          "$("$PGPREFIX/bin/pg_config" --sharedir)/extension/injection_points.control"
-        test -f \
-          "$("$PGPREFIX/bin/pg_config" --sharedir)/extension/dblink.control"
-
-    - name: Build extension with ${{ matrix.cc }}
-      run: |
-        export PATH="$PGPREFIX/bin:$PATH"
-        export CC=${{ matrix.cc }}
-        make clean
-        make PG_CFLAGS="-Werror -Wno-error=unused-parameter"
-        make install
-
-    - name: Run regression tests
-      timeout-minutes: 25
-      run: |
-        export PATH="$PGPREFIX/bin:$PATH"
-        rm -rf tmp_check_shared
-        mkdir -p tmp_check_shared
-        initdb -D tmp_check_shared/data --auth-local=trust --auth-host=trust
-        echo "port = 55433" >> tmp_check_shared/data/postgresql.conf
-        echo "shared_buffers = 256MB" >> tmp_check_shared/data/postgresql.conf
-        echo "max_connections = 20" >> tmp_check_shared/data/postgresql.conf
-        echo "shared_preload_libraries = 'pg_textsearch'" >> tmp_check_shared/data/postgresql.conf
-        echo "unix_socket_directories = '$PWD/tmp_check_shared'" >> tmp_check_shared/data/postgresql.conf
-        if ! pg_ctl start -D tmp_check_shared/data -l tmp_check_shared/data/logfile -w; then
-          echo "PostgreSQL failed to start. Log contents:"
-          cat tmp_check_shared/data/logfile
-          exit 1
+        pg_cflags="-Werror -Wno-error=unused-parameter"
+        if [ "${{ matrix.config.cc }}" = "clang" ]; then
+          # GCC-built PostgreSQL headers use GNU printf format attributes.
+          pg_cflags="$pg_cflags -Wno-ignored-attributes"
         fi
-        createdb -h $PWD/tmp_check_shared -p 55433 contrib_regression
-        if ! make installcheck PGHOST=$PWD/tmp_check_shared PGPORT=55433; then
-          echo "Tests failed. Showing regression diffs:"
-          [ -f test/regression.diffs ] && cat test/regression.diffs
-          echo "PostgreSQL server log (last 200 lines):"
-          tail -200 tmp_check_shared/data/logfile || true
-          pg_ctl stop -D tmp_check_shared/data || true
-          exit 1
-        fi
-        pg_ctl stop -D tmp_check_shared/data
-        make test-memtable-stale-tail
-        make test-injection-shell
+        # PGXS overrides an environment-only CC setting.
+        make CC="${{ matrix.config.cc }}" PG_CFLAGS="$pg_cflags"
 
   build-msvc:
     needs: changes
@@ -530,6 +454,9 @@ jobs:
           - pg_version: 18
             url: 'https://get.enterprisedb.com/postgresql/postgresql-18.6-1-windows-x64-binaries.zip'
             sha256: 'fbe23da234ee31547bf8a36d29dfd81e82b849df2d2b78d2eecb43d360252f8c'
+          - pg_version: 19
+            url: 'https://get.enterprisedb.com/postgresql/postgresql-19.0-1-windows-x64-binaries.zip'
+            sha256: 'bc397f1e58f018e364262074c2e9d960f6169e7436892dbe6e73313d1bb201ff'
 
     steps:
     - uses: actions/checkout@v4
@@ -678,7 +605,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        pg: ["17.2", "18.1"]
+        pg: ["17.2", "18.1", "19.0"]
 
     env:
       PG_SRC_DIR: "pgbuild"
@@ -710,7 +637,7 @@ jobs:
       uses: actions/cache@v4
       with:
         path: ~/${{ env.PG_SRC_DIR }}
-        key: sanitizer-postgresql-${{ matrix.pg }}-${{ env.CC }}-standard-memory-injection-v1-${{ hashFiles('.github/scripts/build-postgres-sanitizer.sh', 'test/postgres-asan-instrumentation.patch', 'test/postgres-asan-instrumentation-PG18GE.patch') }}
+        key: sanitizer-postgresql-${{ matrix.pg }}-${{ env.CC }}-standard-memory-injection-v1-${{ hashFiles('.github/scripts/build-postgres-sanitizer.sh', 'test/postgres-asan-instrumentation*.patch') }}
 
     - name: Build PostgreSQL ${{ matrix.pg }} with sanitizers
       if: steps.cache-postgresql.outputs.cache-hit != 'true'
@@ -1463,7 +1390,6 @@ jobs:
       - test
       - injection-points
       - build-test-multiple-configs
-      - test-pg19
       - build-msvc
       - performance-test
       - format-check
