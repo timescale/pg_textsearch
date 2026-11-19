@@ -475,7 +475,7 @@ class Runner:
             for spec in query_specs:
                 args.extend(["--query", spec])
             args.extend([
-                "--output", str(self.dataset),
+                "--output", str(query_dir),
                 "--corpus-parquet", str(self.dataset / "data"),
                 "--accept-msmarco-terms",
             ])
