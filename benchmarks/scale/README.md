@@ -116,7 +116,7 @@ reported as MS MARCO or as a relevance-quality evaluation.
 
 Engine sources, images, benchmarker, k6 and Python dependencies are pinned or
 resolved to recorded digests. Each engine runs alone on the same host, with
-24 CPU cores and 192 GiB RAM; the driver uses the remaining eight cores.
+24 logical CPUs and 192 GiB RAM; the driver uses the remaining eight CPUs.
 PostgreSQL settings, versions, plans and hardware provenance accompany runs.
 Only `body` is searched. English stemming/stopwords and BM25 parameters are
 explicit; tokenizer differences can still affect cross-engine results.
@@ -124,7 +124,8 @@ explicit; tokenizer differences can still affect cross-engine results.
 The standard matrix uses top-10/top-100, 1/8 clients, 60 seconds of excluded
 warmup and five measured minutes per cell. `PGTS_INCLUDE_32VU=1` adds 32
 clients. Mixed runs target 1,000 indexed updates/second and record achieved
-throughput and dropped iterations, not just the requested rate.
+throughput and dropped iterations in `k6-summary.json`, not just the
+requested rate. They preallocate 32 writer clients and allow up to 64.
 
 Current pg_textsearch supports native Boolean/phrase filtering and counts.
 Filtered ranking currently uses standalone scoring and sorting after Boolean
@@ -142,9 +143,13 @@ Query inputs, data, cloud state and raw results are ignored by Git.
 
 ```bash
 cd /opt/searchbench/pg_textsearch
+bash benchmarks/scale/tests/check_writer_capacity.sh
 bash benchmarks/scale/run.sh --smoke --run-id smoke-1 all
 bash benchmarks/scale/run.sh --dataset wikipedia --run-id wiki-1 all
 ```
+
+The capacity check uses an isolated 10K-row database with a controlled
+10-ms update delay. Run it before benchmarks, with port 15432 free.
 
 Artifacts default to `/srv/searchbench/pg_textsearch-scale`. The launcher runs
 the pipeline as `pgts-benchmark-<RUN_ID>.service`, with a
