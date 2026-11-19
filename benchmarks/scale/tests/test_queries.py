@@ -57,11 +57,11 @@ class QueriesTest(unittest.TestCase):
 
         self.assertEqual([row["id"] for row in spans], [
             "span02-0000",
-            "span02-0001",
             "span05-0000",
+            "span02-0001",
             "span05-0001",
         ])
-        self.assertEqual([len(row["text"].split()) for row in spans], [2, 2, 5, 5])
+        self.assertEqual([len(row["text"].split()) for row in spans], [2, 5, 2, 5])
 
     def test_corpus_spans_never_cross_document_boundaries(self):
         documents = [
@@ -80,6 +80,31 @@ class QueriesTest(unittest.TestCase):
             source = bodies[query["source_doc_id"]]
             offset = query["offset"]
             self.assertEqual(terms, source[offset:offset + 3])
+
+    def test_slow_query_prefix_covers_every_span_length(self):
+        body = (
+            "one two three four five six seven eight nine ten "
+            "eleven twelve thirteen fourteen fifteen sixteen"
+        )
+        packs = [
+            build_span_queries(
+                [{"text": body}], per_span=100, seed=3,
+            ),
+            build_corpus_span_queries(
+                [{"source_id": "a", "body": body}],
+                per_span=100, seed=3,
+            ),
+        ]
+        for queries in packs:
+            with self.subTest(source=queries[0]["source"]):
+                for start in (0, 14, 28):
+                    self.assertEqual(
+                        [
+                            query["span"]
+                            for query in queries[start:start + 14]
+                        ],
+                        list(range(2, 16)),
+                    )
 
     def test_matrix_marks_pg_textsearch_boolean_modes_supported(self):
         matrix = build_workload_matrix()

@@ -73,6 +73,16 @@ def _tokens(queries: Iterable[dict[str, str]]) -> list[str]:
     return tokens
 
 
+def _interleave_spans(
+    queries: list[dict[str, object]], per_span: int
+) -> list[dict[str, object]]:
+    return [
+        query
+        for sample in range(per_span)
+        for query in queries[sample::per_span]
+    ]
+
+
 def build_span_queries(
     natural: Sequence[dict[str, str]],
     *,
@@ -107,7 +117,7 @@ def build_span_queries(
                     "span": span,
                 }
             )
-    return result
+    return _interleave_spans(result, per_span)
 
 
 def build_corpus_span_queries(
@@ -150,7 +160,7 @@ def build_corpus_span_queries(
                 "offset": offset,
                 "seed": seed,
             })
-    return result
+    return _interleave_spans(result, per_span)
 
 
 def sample_parquet_spans(
