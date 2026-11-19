@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    Builds pg_textsearch.dll with MSVC against a PostgreSQL 17 or 18 x64 tree.
+    Builds pg_textsearch.dll with MSVC against a PostgreSQL 17, 18, or 19 tree.
 
 .DESCRIPTION
     PGXS cannot drive MSVC, so this script is the Windows build recipe. It
@@ -18,7 +18,7 @@
     The script writes only into WorkDir: never into PgRoot, nothing installed.
 
 .PARAMETER PgRoot
-    Root of a PostgreSQL 17 or 18 x64 tree, either an installation or an
+    Root of a PostgreSQL 17, 18, or 19 x64 tree, either an installation or an
     extracted EDB binaries zip. Must contain include\server and
     lib\postgres.lib.
 
@@ -27,7 +27,7 @@
 
 .PARAMETER ExpectedMajor
     Refuse to build unless the PgRoot headers report this major version.
-    Omitted, any of 17 or 18 is accepted.
+    Omitted, any of 17, 18, or 19 is accepted.
 
 .EXAMPLE
     .\scripts\msvc-build.ps1 -PgRoot 'C:\Program Files\PostgreSQL\18'
@@ -46,7 +46,7 @@ Set-StrictMode -Version 2.0
 $ErrorActionPreference = 'Stop'
 $global:LASTEXITCODE = 0
 
-$SupportedMajors = @('17', '18')
+$SupportedMajors = @('17', '18', '19')
 
 # MSVC version of the flag block in the Makefile. Use /MD: postgres.exe uses
 # the dynamic CRT, and /MT would give the extension its own second CRT heap.
@@ -277,7 +277,7 @@ Write-Detail "repository root: $RepoRoot"
 Write-Detail "pg_textsearch version: $version"
 
 if (-not $PgRoot) {
-    throw 'Specify -PgRoot: the root of a PostgreSQL 17 or 18 x64 tree (containing include\server and lib\postgres.lib).'
+    throw 'Specify -PgRoot: the root of a PostgreSQL 17, 18, or 19 x64 tree (containing include\server and lib\postgres.lib).'
 }
 # Relative -PgRoot/-WorkDir follow the caller's location; the repository root
 # never does, it comes from $PSScriptRoot alone.

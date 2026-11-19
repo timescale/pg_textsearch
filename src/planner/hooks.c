@@ -127,9 +127,9 @@ typedef struct ResolveIndexContext
  */
 static void
 bm25_cache_invalidation_callback(
-		Datum arg		 pg_attribute_unused(),
-		int cacheid		 pg_attribute_unused(),
-		uint32 hashvalue pg_attribute_unused())
+		Datum arg			   pg_attribute_unused(),
+		TP_SYSCACHE_ID cacheid pg_attribute_unused(),
+		uint32 hashvalue	   pg_attribute_unused())
 {
 	oid_cache_state = CACHE_UNKNOWN;
 }
@@ -933,9 +933,10 @@ static void resolve_indexes_in_query(Query *query);
  * Mutator function to resolve unresolved tpquery constants.
  */
 static Node *
-resolve_index_mutator(Node *node, ResolveIndexContext *context)
+resolve_index_mutator(Node *node, void *context_arg)
 {
-	Node *result;
+	ResolveIndexContext *context = context_arg;
+	Node				*result;
 
 	if (node == NULL)
 		return NULL;
@@ -1519,8 +1520,10 @@ typedef struct CollectExplicitIndexContext
 
 /* Detect BM25 operators, including those in nested queries. */
 static bool
-has_bm25_operator_walker(Node *node, BM25OidCache *oids)
+has_bm25_operator_walker(Node *node, void *context)
 {
+	BM25OidCache *oids = context;
+
 	if (node == NULL)
 		return false;
 
@@ -1546,9 +1549,10 @@ has_bm25_operator_walker(Node *node, BM25OidCache *oids)
  * Walker to find explicit index requirements in query expressions.
  */
 static bool
-collect_explicit_indexes_walker(
-		Node *node, CollectExplicitIndexContext *context)
+collect_explicit_indexes_walker(Node *node, void *context_arg)
 {
+	CollectExplicitIndexContext *context = context_arg;
+
 	if (node == NULL)
 		return false;
 
