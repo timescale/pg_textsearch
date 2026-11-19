@@ -44,6 +44,7 @@
 #include <storage/ipc.h>
 #include <storage/lmgr.h>
 #include <storage/lock.h>
+#include <storage/proc.h>
 #include <storage/shmem.h>
 #include <tcop/utility.h>
 #include <utils/acl.h>
@@ -210,6 +211,42 @@ tp_rls_note_bm25_build(void)
 }
 
 /*
+ * A lock can be granted just before a waiting LockAcquire raises ERROR.
+ * Finish core's wait cleanup before releasing that new session acquisition.
+ * An already-held lock takes the local count-only path, which cannot fail
+ * after incrementing; never release an outer command's acquisition here.
+ */
+static LockAcquireResult
+acquire_rls_session_lock(const LOCKTAG *tag, LOCKMODE mode, bool dont_wait)
+{
+	bool			  held = LockHeldByMe(tag, mode, false);
+	LockAcquireResult result;
+
+	PG_TRY();
+	{
+		result = LockAcquire(tag, mode, true, dont_wait);
+	}
+	PG_CATCH();
+	{
+		LWLock *partition = LockHashPartitionLock(LockTagHashCode(tag));
+
+		if (LWLockHeldByMe(partition))
+		{
+			/* ERROR resets the holdoff count while LWLocks may remain held. */
+			if (InterruptHoldoffCount == 0)
+				HOLD_INTERRUPTS();
+			LWLockRelease(partition);
+		}
+		LockErrorCleanup();
+		if (!held && LockHeldByMe(tag, mode, false))
+			(void)LockRelease(tag, mode, true);
+		PG_RE_THROW();
+	}
+	PG_END_TRY();
+	return result;
+}
+
+/*
  * Commands allowed to create an RLS/BM25 combination take a shared lock;
  * commands enforcing the restriction and extension lifecycle commands take
  * an exclusive lock.  The stable lock serializes across extension OID
@@ -245,7 +282,7 @@ acquire_rls_ddl_lock(
 				 LockHeldByMe(&stable_tag, ShareLock, false) &&
 				 !LockHeldByMe(&stable_tag, ExclusiveLock, true)) ||
 				(nested && !LockHeldByMe(&stable_tag, lockmode, true));
-	result = LockAcquire(&stable_tag, lockmode, true, dont_wait);
+	result = acquire_rls_session_lock(&stable_tag, lockmode, dont_wait);
 	if (result == LOCKACQUIRE_NOT_AVAIL)
 		ereport(ERROR,
 				(errcode(ERRCODE_LOCK_NOT_AVAILABLE),
@@ -256,32 +293,44 @@ acquire_rls_ddl_lock(
 						 "pg_textsearch DDL lock."),
 				 errhint("Retry the outer command.")));
 
-	extension_oid = get_extension_oid("pg_textsearch", true);
-	if (OidIsValid(extension_oid))
+	PG_TRY();
 	{
-		SET_LOCKTAG_OBJECT(
-				extension_tag,
-				MyDatabaseId,
-				ExtensionRelationId,
-				extension_oid,
-				0);
-		result = LockAcquire(&extension_tag, lockmode, true, dont_wait);
-		if (result == LOCKACQUIRE_NOT_AVAIL)
+		extension_oid = get_extension_oid("pg_textsearch", true);
+		if (OidIsValid(extension_oid))
 		{
-			(void)LockRelease(&stable_tag, lockmode, true);
-			ereport(ERROR,
-					(errcode(ERRCODE_LOCK_NOT_AVAILABLE),
-					 errmsg("could not acquire the pg_textsearch RLS DDL "
-							"lock"),
-					 errdetail(
-							 "Protected DDL was invoked from a nested utility "
-							 "command whose outer command does not hold the "
-							 "pg_textsearch DDL lock."),
-					 errhint("Retry the outer command.")));
+			SET_LOCKTAG_OBJECT(
+					extension_tag,
+					MyDatabaseId,
+					ExtensionRelationId,
+					extension_oid,
+					0);
+			result = acquire_rls_session_lock(
+					&extension_tag, lockmode, dont_wait);
+			if (result == LOCKACQUIRE_NOT_AVAIL)
+			{
+				ereport(ERROR,
+						(errcode(ERRCODE_LOCK_NOT_AVAILABLE),
+						 errmsg("could not acquire the pg_textsearch RLS DDL "
+								"lock"),
+						 errdetail(
+								 "Protected DDL was invoked from a "
+								 "nested utility command whose outer "
+								 "command does not hold the "
+								 "pg_textsearch DDL lock."),
+						 errhint("Retry the outer command.")));
+			}
 		}
-	}
 
-	*extension_oid_out = extension_oid;
+		*extension_oid_out = extension_oid;
+	}
+	PG_CATCH();
+	{
+		/* The caller cannot own the pair until this function returns. */
+		(void)LockRelease(&stable_tag, lockmode, true);
+		PG_RE_THROW();
+	}
+	PG_END_TRY();
+
 	return true;
 }
 
