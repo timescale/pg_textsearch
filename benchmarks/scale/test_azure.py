@@ -1,4 +1,6 @@
+import contextlib
 import importlib.util
+import io
 import json
 import os
 import pathlib
@@ -6,6 +8,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
 
 MODULE = pathlib.Path(__file__).with_name("azure.py")
@@ -58,6 +61,64 @@ class AzureTemplateTests(unittest.TestCase):
                 self.module().template("westus2", "Standard_L32as_v3",
                                        "ssh-ed25519 AAAAtest", cidr,
                                        "2026-12-03T02:00:00Z")
+
+    def test_destroy_releases_lab_owned_locks_before_deleting_group(self):
+        lab = ("/subscriptions/test/resourceGroups/searchbench-test/providers/"
+               "Microsoft.DevTestLab/labs/searchbench")
+        for existing in ((True, True), (True, False), (False, False)):
+            with self.subTest(lab_and_vm=existing):
+                module = self.module()
+                state = {"lab": existing[0], "vm": existing[1], "group": True}
+
+                def azure(subscription, *args):
+                    if args[:2] == ("group", "show"):
+                        return {"tags": {"managed-by": "pg_textsearch-scale"}}
+                    if args[:2] == ("resource", "list"):
+                        return [
+                            {"id": identifier}
+                            for present, identifier in (
+                                (state["lab"], lab),
+                                (state["vm"], lab + "/virtualMachines/searchbench"),
+                            ) if present
+                        ]
+                    if args[:2] == ("resource", "delete"):
+                        target = args[args.index("--ids") + 1]
+                        if target == lab:
+                            self.assertFalse(state["vm"])
+                            state["lab"] = False
+                        else:
+                            self.assertEqual(target,
+                                             lab + "/virtualMachines/searchbench")
+                            state["vm"] = False
+                        return None
+                    if args[:2] == ("group", "delete"):
+                        if state["lab"]:
+                            raise subprocess.CalledProcessError(
+                                1, args, stderr="ScopeLocked: DevTestLabs Lock",
+                            )
+                        state["group"] = False
+                        return None
+                    self.fail(f"Unexpected Azure operation: {args}")
+
+                arguments = ["azure.py", "destroy", "--subscription", "test",
+                             "--group", "searchbench-test"]
+                with patch.object(module, "az", side_effect=azure):
+                    with patch.object(sys, "argv", arguments):
+                        module.main()
+                self.assertEqual(state,
+                                 {"lab": False, "vm": False, "group": False})
+
+    def test_azure_failure_exposes_service_error_without_hiding_failure(self):
+        module = self.module()
+        failure = subprocess.CalledProcessError(
+            1, ["az"], stderr="ScopeLocked: DevTestLabs Lock",
+        )
+        error_output = io.StringIO()
+        with patch.object(module.subprocess, "run", side_effect=failure):
+            with contextlib.redirect_stderr(error_output):
+                with self.assertRaises(subprocess.CalledProcessError):
+                    module.az("test", "group", "delete", "-n", "searchbench-test")
+        self.assertIn("ScopeLocked: DevTestLabs Lock", error_output.getvalue())
 
     def test_launcher_refuses_unaccepted_corpus_before_cloud_allocation(self):
         environment = os.environ | {
