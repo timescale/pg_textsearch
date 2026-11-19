@@ -162,7 +162,8 @@ class Runner:
             )
         )
         self.lead_dataset = (
-            self.dataset if smoke else artifacts / "lead-10k"
+            self.dataset if smoke
+            else artifacts / f"{self.dataset_kind}-lead-10k"
         )
         self.run_dir.mkdir(parents=True, exist_ok=True)
         self.log = self.run_dir / "commands.jsonl"
@@ -590,33 +591,36 @@ class Runner:
         import pyarrow.parquet as pq
 
         output = self.lead_dataset / "data" / "part-00000.parquet"
+        source_manifest = self.lead_dataset / "source-manifest.json"
+        manifest = json.loads((self.dataset / "manifest.json").read_text())
         if output.is_file():
-            return
-        self.lead_dataset.mkdir(parents=True, exist_ok=True)
-        output.parent.mkdir(parents=True, exist_ok=True)
-        source = pads.dataset(
-            str(self.dataset / "data"), format="parquet"
-        )
-        table = source.head(10_000)
-        if table.num_rows != 10_000:
-            raise ConfigError("full corpus has fewer than 10000 Lead rows")
-        pq.write_table(table, output, compression="zstd")
-        shutil.copyfile(
-            self.dataset / "manifest.json",
-            self.lead_dataset / "source-manifest.json",
-        )
-        (self.lead_dataset / "manifest.json").write_text(
-            json.dumps(
-                {
-                    "dataset": "msmarco-v2-lead-compatibility-sample",
-                    "rows": 10_000,
-                    "selection": "first 10000 rows by Parquet shard order",
-                    "performance_comparable": False,
-                },
-                indent=2,
+            if not source_manifest.is_file():
+                raise ConfigError("Lead subset source manifest is missing")
+            self._write_or_validate_json(source_manifest, manifest)
+        else:
+            output.parent.mkdir(parents=True, exist_ok=True)
+            source = pads.dataset(
+                str(self.dataset / "data"), format="parquet"
             )
-            + "\n"
-        )
+            table = source.head(10_000)
+            if table.num_rows != 10_000:
+                raise ConfigError("full corpus has fewer than 10000 Lead rows")
+            pq.write_table(table, output, compression="zstd")
+            self._write_or_validate_json(source_manifest, manifest)
+            (self.lead_dataset / "manifest.json").write_text(
+                json.dumps(
+                    {
+                        "dataset": (
+                            f"{self.dataset_kind}-lead-compatibility-sample"
+                        ),
+                        "rows": 10_000,
+                        "selection": "first 10000 rows by Parquet shard order",
+                        "performance_comparable": False,
+                    },
+                    indent=2,
+                )
+                + "\n"
+            )
         for name in ("natural.json", "spans.json", "matrix.json"):
             source_query = self.dataset / "k6" / name
             if source_query.is_file():
