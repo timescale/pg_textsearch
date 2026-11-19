@@ -1046,6 +1046,7 @@ class Runner:
         measured_env = run_env | {"PHASE": "measured"}
         self.command(
             base_command + [
+                "--summary-export", str(result_dir / "k6-summary.json"),
                 "--out", "dashboard=html,json,query_csv", str(script),
             ],
             env=measured_env,

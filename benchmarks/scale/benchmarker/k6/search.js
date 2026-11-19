@@ -39,7 +39,8 @@ if (phase === "measured" && mode === "mixed") {
     rate: Number(__ENV.UPDATE_RATE || "10"),
     timeUnit: "1s",
     duration,
-    preAllocatedVUs: 2,
+    preAllocatedVUs: 32,
+    maxVUs: 64,
     exec: "updateDoc",
     tags: { backend: engine, chart: "mixed_updates" },
   };
