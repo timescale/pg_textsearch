@@ -2,6 +2,11 @@
 
 Performance benchmarks for the pg_textsearch BM25 full-text search extension.
 
+For pinned, same-host comparisons with ParadeDB and Lead, see
+[large-scale benchmarks](scale/README.md). That suite includes two-week Azure
+VM provisioning, full Wikipedia preparation, and an MS MARCO passage v2 path
+gated on explicit dataset-terms acceptance.
+
 ## Quick Start
 
 ```bash

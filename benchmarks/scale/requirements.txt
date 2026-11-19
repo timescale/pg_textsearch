@@ -1,0 +1,2 @@
+# Python 3.12 wheel used to create benchmarker-compatible Parquet shards.
+pyarrow==18.1.0

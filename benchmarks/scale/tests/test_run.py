@@ -1,0 +1,314 @@
+import json
+import unittest
+from pathlib import Path
+import tempfile
+from types import SimpleNamespace
+from unittest.mock import patch
+
+from benchmarks.scale.run import (
+    ConfigError,
+    GO_VERSION,
+    K6_VERSION,
+    Runner,
+    build_plan,
+    validate_storage,
+)
+
+
+class RunPlanTest(unittest.TestCase):
+    def test_smoke_plan_is_sequential_and_uses_actual_benchmarker(self):
+        plan = build_plan(smoke=True, accept_terms=False)
+
+        self.assertEqual(
+            [cell["engine"] for cell in plan["cells"]],
+            ["pg_textsearch", "paradedb", "lead"],
+        )
+        self.assertEqual(plan["benchmarker_sha"], (
+            "4b262c05af138991d3bf28c683a0fc6b7f113df3"
+        ))
+        self.assertEqual(plan["dataset"]["kind"], "synthetic-smoke")
+        self.assertEqual(plan["cells"][2]["row_limit"], 10_000)
+
+    def test_full_plan_requires_explicit_terms_acceptance(self):
+        with self.assertRaisesRegex(ConfigError, "MS MARCO terms"):
+            build_plan(smoke=False, accept_terms=False)
+
+    def test_wikipedia_plan_does_not_bypass_or_require_msmarco_terms(self):
+        plan = build_plan(
+            smoke=False,
+            accept_terms=False,
+            dataset_kind="wikipedia",
+        )
+
+        self.assertEqual(plan["dataset"]["kind"], "wikipedia")
+        self.assertEqual(plan["dataset"]["rows"], 6_407_814)
+
+    def test_pg_textsearch_records_boolean_and_count_cells(self):
+        plan = build_plan(smoke=True, accept_terms=False)
+        pgts = plan["cells"][0]
+
+        self.assertEqual(pgts["modes"]["disjunction"], [10, 100])
+        self.assertEqual(pgts["modes"]["conjunction"], [10, 100])
+        self.assertEqual(pgts["modes"]["phrase"], [10, 100])
+        self.assertEqual(pgts["modes"]["count"], [None])
+        self.assertEqual(pgts["unsupported"], {})
+
+    def test_remote_storage_must_be_a_ready_mount(self):
+        with self.assertRaisesRegex(ConfigError, "not mounted"):
+            validate_storage(
+                Path("/srv/searchbench/run"),
+                smoke=True,
+                is_mount=lambda _: False,
+                free_bytes=lambda _: 10**12,
+            )
+
+        validate_storage(
+            Path("/srv/searchbench/run"),
+            smoke=True,
+            is_mount=lambda _: True,
+            free_bytes=lambda _: 10**12,
+        )
+
+    def test_install_writes_only_tool_and_image_pins(self):
+        scale_dir = Path(__file__).resolve().parents[1]
+        with tempfile.TemporaryDirectory(
+            prefix=".test-tmp-", dir=scale_dir
+        ) as directory:
+            artifacts = Path(directory)
+            (artifacts / "tools" / "benchmarker").mkdir(parents=True)
+            runner = Runner(
+                scale_dir.parents[1],
+                artifacts,
+                True,
+                "install-test",
+                "msmarco-v2",
+                None,
+            )
+
+            def fake_run(args, **_kwargs):
+                if args[:3] == ["docker", "info", "--format"]:
+                    return SimpleNamespace(
+                        returncode=0,
+                        stdout="/srv/searchbench/docker\n",
+                    )
+                if args[:3] == ["go", "env", "GOPATH"]:
+                    return SimpleNamespace(returncode=0, stdout="/go\n")
+                if args[:2] == ["go", "version"]:
+                    return SimpleNamespace(
+                        returncode=0,
+                        stdout=f"go version {GO_VERSION} linux/amd64\n",
+                    )
+                if args[:4] == [
+                    "docker", "image", "inspect", "postgres:18-bookworm"
+                ]:
+                    return SimpleNamespace(
+                        returncode=0,
+                        stdout=json.dumps([{
+                            "RepoDigests": ["postgres@sha256:base"]
+                        }]),
+                    )
+                if args[:4] == [
+                    "docker", "image", "inspect",
+                    "paradedb/paradedb:v0.26.8-pg18",
+                ]:
+                    return SimpleNamespace(
+                        returncode=0,
+                        stdout=json.dumps([{
+                            "RepoDigests": ["paradedb/paradedb@sha256:parade"]
+                        }]),
+                    )
+                if args[:3] == ["docker", "image", "inspect"]:
+                    return SimpleNamespace(
+                        returncode=0, stdout="sha256:pgts\n"
+                    )
+                raise AssertionError(args)
+
+            with (
+                patch("benchmarks.scale.run.shutil.which",
+                      return_value="/usr/bin/tool"),
+                patch("benchmarks.scale.run.subprocess.run",
+                      side_effect=fake_run),
+                patch.object(Runner, "command") as command,
+            ):
+                runner.install()
+
+            lock = json.loads(
+                (artifacts / "images.lock.json").read_text()
+            )
+            self.assertEqual(lock["k6"], K6_VERSION)
+            self.assertEqual(lock["go"], GO_VERSION)
+            self.assertNotIn("database", lock)
+            build_call = next(
+                call for call in command.call_args_list
+                if call.args[0][0] == "/go/bin/xk6"
+            )
+            self.assertEqual(build_call.kwargs["env"]["GOTOOLCHAIN"],
+                             "local")
+            self.assertEqual(
+                build_call.kwargs["env"]["TMPDIR"],
+                str(artifacts / "tools/tmp"),
+            )
+
+    def test_k6_runs_warmup_separately_from_measured_output(self):
+        scale_dir = Path(__file__).resolve().parents[1]
+        with tempfile.TemporaryDirectory(
+            prefix=".test-tmp-", dir=scale_dir
+        ) as directory:
+            runner = Runner(
+                scale_dir.parents[1],
+                Path(directory),
+                True,
+                "warmup-test",
+                "msmarco-v2",
+                None,
+            )
+            result_dir = Path(directory) / "results"
+            result_dir.mkdir()
+            with patch.object(Runner, "command") as command:
+                runner._run_k6_cell(
+                    Path("/benchmarker"),
+                    Path("/dataset/k6/search.js"),
+                    {
+                        "DURATION": "3s",
+                        "WARMUP": "2s",
+                        "TOTAL_DURATION": "8s",
+                    },
+                    result_dir,
+                )
+
+            warmup, measured = command.call_args_list
+            self.assertNotIn("--out", warmup.args[0])
+            self.assertEqual(warmup.kwargs["env"]["PHASE"], "warmup")
+            self.assertEqual(warmup.kwargs["env"]["DURATION"], "2s")
+            self.assertEqual(warmup.kwargs["output"],
+                             result_dir / "warmup.log")
+            self.assertIn("--out", measured.args[0])
+            self.assertEqual(measured.kwargs["env"]["PHASE"], "measured")
+            self.assertEqual(measured.kwargs["env"]["DURATION"], "3s")
+            self.assertEqual(measured.kwargs["output"],
+                             result_dir / "k6.log")
+
+    def test_k6_script_does_not_tag_a_constant_vus_warmup(self):
+        script = (
+            Path(__file__).resolve().parents[1]
+            / "benchmarker/k6/search.js"
+        ).read_text()
+
+        self.assertIn('phase === "measured"', script)
+        self.assertNotIn('warmup: "true"', script)
+
+    def test_engine_refreshes_dataset_templates_without_prepare(self):
+        scale_dir = Path(__file__).resolve().parents[1]
+        with tempfile.TemporaryDirectory(
+            prefix=".test-tmp-", dir=scale_dir
+        ) as directory:
+            temporary = Path(directory)
+            root = temporary / "repo"
+            template = (
+                root / "benchmarks/scale/benchmarker/k6/search.js"
+            )
+            template.parent.mkdir(parents=True)
+            template.write_text("current")
+            dataset = temporary / "dataset"
+            stale = dataset / "k6/search.js"
+            stale.parent.mkdir(parents=True)
+            stale.write_text("stale")
+            runner = Runner(
+                root,
+                temporary / "artifacts",
+                True,
+                "refresh-test",
+                "msmarco-v2",
+                None,
+            )
+
+            runner._refresh_templates(dataset)
+
+            self.assertEqual(stale.read_text(), "current")
+
+    def test_wait_requires_external_postgres_connection(self):
+        scale_dir = Path(__file__).resolve().parents[1]
+        with tempfile.TemporaryDirectory(
+            prefix=".test-tmp-", dir=scale_dir
+        ) as directory:
+            runner = Runner(
+                scale_dir.parents[1],
+                Path(directory),
+                True,
+                "wait-test",
+                "msmarco-v2",
+                None,
+            )
+            results = [
+                SimpleNamespace(returncode=0),
+                SimpleNamespace(returncode=1),
+                SimpleNamespace(returncode=0),
+                SimpleNamespace(returncode=0),
+            ]
+            with (
+                patch("benchmarks.scale.run.subprocess.run",
+                      side_effect=results) as run,
+                patch("benchmarks.scale.run.time.sleep"),
+            ):
+                runner._wait("database")
+
+            self.assertEqual(run.call_count, 4)
+            self.assertEqual(run.call_args_list[1].args[0][0], "psql")
+
+    def test_msmarco_prepare_downloads_and_merges_pinned_assets(self):
+        scale_dir = Path(__file__).resolve().parents[1]
+        with tempfile.TemporaryDirectory(
+            prefix=".test-tmp-", dir=scale_dir
+        ) as directory:
+            temporary = Path(directory)
+            runner = Runner(
+                scale_dir.parents[1],
+                temporary / "artifacts",
+                False,
+                "msmarco-test",
+                "msmarco-v2",
+                None,
+            )
+            assets = {
+                "archive": temporary / "archive.tar",
+                "dev1": temporary / "dev1.tsv",
+                "dev2": temporary / "dev2.tsv",
+            }
+            with (
+                patch("benchmarks.scale.run.download_assets",
+                      return_value=assets) as download,
+                patch("benchmarks.scale.run.prepare_main",
+                      return_value=0) as prepare,
+                patch.dict(
+                    "os.environ",
+                    {"MSMARCO_ACCEPT_TERMS": "1"},
+                    clear=True,
+                ),
+            ):
+                runner._prepare_msmarco()
+
+            download.assert_called_once_with(
+                runner.artifacts / "downloads/msmarco-v2",
+                accepted=True,
+            )
+            corpus_args = prepare.call_args_list[0].args[0]
+            query_args = prepare.call_args_list[1].args[0]
+            self.assertIn(str(assets["archive"]), corpus_args)
+            self.assertIn(f"dev1={assets['dev1']}", query_args)
+            self.assertIn(f"dev2={assets['dev2']}", query_args)
+            self.assertIn(str(runner.dataset / "data"), query_args)
+
+    def test_install_script_pins_go_toolchain(self):
+        script = (
+            Path(__file__).resolve().parents[1] / "install.sh"
+        ).read_text()
+
+        self.assertIn("go1.26.11.linux-amd64.tar.gz", script)
+        self.assertIn(
+            "9849f4e04ee35303714e34fbc3ac8ab44ea3e448a95aa182f91e3b9b79c710ec",
+            script,
+        )
+
+
+if __name__ == "__main__":
+    unittest.main()

@@ -1,0 +1,8 @@
+driver: postgres
+container: ""
+envVar: PARADEDB_URL
+description: ParadeDB pinned PG18 image
+color: "#7C3AED"
+extras:
+  gucPrefixes: [paradedb]
+  indexAccessMethods: [paradedb, bm25]
