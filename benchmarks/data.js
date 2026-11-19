@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795069250766,
+  "lastUpdate": 1795069256318,
   "repoUrl": "https://github.com/timescale/pg_textsearch",
   "entries": {
     "cranfield Benchmarks": [
@@ -52730,6 +52730,133 @@ window.BENCHMARK_DATA = {
           {
             "name": "msmarco (8.8M docs) - Query Latency After Update VACUUM",
             "value": 7.46,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "me1t0ut",
+            "username": "me1t0ut",
+            "email": "45817393+me1t0ut@users.noreply.github.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "8923a5ba16df2731627dfbde6f6e3b62e5b8273b",
+          "message": "Fix session-lock cleanup after RLS DDL acquisition errors (#606)\n\nFixes #605\n\n## Problem\n\nIf protected DDL acquires the stable RLS guard and then times out\nacquiring the extension-object lock, a caught PL/pgSQL exception can\nleave the first session lock held after successful outer commit. Other\nsessions' protected BM25 DDL remains blocked.\nThe guard uses PostgreSQL’s standard session-level heavyweight object\nlocks because it must survive internal commits during CREATE INDEX\nCONCURRENTLY and REINDEX CONCURRENTLY. This PR makes acquisition\nexception-safe by unwinding partial acquisitions while preserving outer\nownership, preventing a caught error from leaving a lock that survives\nsuccessful commit and, on the tested PostgreSQL 17.4 non-assert build,\nbackend exit.\n\n## Fix\n\nMake both session-lock acquisitions exception-safe: finish core\nlock-wait cleanup, release any newly granted session acquisition, and\nunwind the stable acquisition if the second stage fails. Preserve\ninherited lock ownership and the existing stable-to-extension lock\norder, nested nonblocking policy, and concurrent-index internal-commit\nbehavior.\n\nExtend the existing RLS shell regression with caught timeouts at each\nstage, subsequent DDL and backend exit, plus a caught nested-error case\nthat verifies outer protection through commit and complete release\nafterward.\n\n## Verification\n\n- Stock PostgreSQL 17.4: full `make installcheck` (82/82) and complete\nRLS DDL locking shell suite.\n- Stock PostgreSQL 18.3 with assertions and injection points: full `make\ninstallcheck` (92/92) and complete RLS DDL locking shell suite.\n- The new shell regression fails on unmodified upstream at the\nretained-lock assertion after the second acquisition times out.\n- In each major, eight additional cases cover repeated lock timeouts and\nexplicit cancellation at both stages, same-backend reuse, peer DDL and\nclean backend exit.\n- `make format-check`, `bash -n`, and `git diff --check`.",
+          "timestamp": "2026-11-19T01:33:54Z",
+          "url": "https://github.com/timescale/pg_textsearch/commit/8923a5ba16df2731627dfbde6f6e3b62e5b8273b"
+        },
+        "date": 1795069255631,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "msmarco (8.8M docs) - Index Build Time",
+            "value": 225864.22,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - 1 Token Query (p50)",
+            "value": 0.7,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - 2 Token Query (p50)",
+            "value": 1.26,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - 3 Token Query (p50)",
+            "value": 2.44,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - 4 Token Query (p50)",
+            "value": 3.72,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - 5 Token Query (p50)",
+            "value": 6.03,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - 6 Token Query (p50)",
+            "value": 8.76,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - 7 Token Query (p50)",
+            "value": 13.56,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - 8+ Token Query (p50)",
+            "value": 20.39,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - Weighted Latency (p50, ms)",
+            "value": 3.92,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - Weighted Throughput (avg ms/query)",
+            "value": 5,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - Index Size",
+            "value": 2432.6,
+            "unit": "MB"
+          },
+          {
+            "name": "msmarco (8.8M docs) - Partial VACUUM (concentrated delete)",
+            "value": 1154.798,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - Full VACUUM (uniform delete)",
+            "value": 6392.069,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - Full VACUUM (uniform update)",
+            "value": 4606.929,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - Index Size After Partial VACUUM",
+            "value": 2435,
+            "unit": "MB"
+          },
+          {
+            "name": "msmarco (8.8M docs) - Index Size After Full VACUUM",
+            "value": 2435,
+            "unit": "MB"
+          },
+          {
+            "name": "msmarco (8.8M docs) - Query Latency After Partial VACUUM",
+            "value": 7.55,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - Query Latency After Full VACUUM",
+            "value": 7.47,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - Index Size After Update VACUUM",
+            "value": 2435,
+            "unit": "MB"
+          },
+          {
+            "name": "msmarco (8.8M docs) - Query Latency After Update VACUUM",
+            "value": 7.51,
             "unit": "ms"
           }
         ]
