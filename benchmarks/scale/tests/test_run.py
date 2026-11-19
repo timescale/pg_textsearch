@@ -6,6 +6,7 @@ import tempfile
 from types import SimpleNamespace
 from unittest.mock import patch
 
+from benchmarks.scale.dataset import prepare_synthetic
 from benchmarks.scale.run import (
     BenchmarkCellsFailed,
     ConfigError,
@@ -71,6 +72,30 @@ class RunPlanTest(unittest.TestCase):
             is_mount=lambda _: True,
             free_bytes=lambda _: 10**12,
         )
+
+    def test_msmarco_queries_are_published_where_runner_consumes_them(self):
+        scale_dir = Path(__file__).resolve().parents[1]
+        with tempfile.TemporaryDirectory(
+            prefix=".test-tmp-", dir=scale_dir
+        ) as directory:
+            artifacts = Path(directory)
+            runner = Runner(
+                scale_dir.parents[1], artifacts, False,
+                "query-preparation", "msmarco-v2", None,
+            )
+            prepare_synthetic(runner.dataset, rows=10)
+            source = artifacts / "queries.tsv"
+            source.write_text("1\tsearch ranking\n")
+            with patch.dict("os.environ", {
+                "MSMARCO_ACCEPT_TERMS": "1",
+                "MSMARCO_QUERY_FILES": f"dev1={source}",
+            }):
+                runner._prepare_msmarco()
+            runner._validate_query_packs(runner.dataset)
+            natural = json.loads(
+                (runner.dataset / "k6/natural.json").read_text()
+            )
+            self.assertEqual(natural[0]["text"], "search ranking")
 
     def test_install_writes_only_tool_and_image_pins(self):
         scale_dir = Path(__file__).resolve().parents[1]
