@@ -981,6 +981,10 @@ class Runner:
                                 "warmup": run_env["WARMUP"],
                                 "update_rate": run_env["UPDATE_RATE"],
                             }
+                            if engine == "paradedb" and mode == "phrase":
+                                fingerprint["phrase_protocol"] = (
+                                    "quoted-parser-v1"
+                                )
                             complete = result_dir / "complete.json"
                             if complete.is_file():
                                 if json.loads(complete.read_text()) != fingerprint:
@@ -1073,6 +1077,16 @@ class Runner:
     def _execute_k6_cell(
         self, benchmarker, script, run_env, result_dir, fingerprint
     ):
+        if (result_dir / "complete.json").exists():
+            raise ConfigError(
+                f"refusing to overwrite completed cell: {result_dir}"
+            )
+        previous = [path for path in result_dir.iterdir() if path.is_file()]
+        if previous:
+            archive = result_dir / "attempts" / str(time.time_ns())
+            archive.mkdir(parents=True)
+            for path in previous:
+                path.rename(archive / path.name)
         try:
             self._run_k6_cell(
                 benchmarker, script, run_env, result_dir
@@ -1166,6 +1180,8 @@ class Runner:
             "modes": list(modes),
             "timeout_seconds": timeout_seconds,
         }
+        if engine == "paradedb":
+            checkpoint["phrase_protocol"] = "quoted-parser-v1"
         state = output.with_suffix(".fingerprint.json")
         complete = output.with_suffix(".complete.json")
         self._write_or_validate_json(state, checkpoint)
@@ -1196,7 +1212,10 @@ class Runner:
                 key = (mode, query["id"])
                 if key in completed:
                     continue
-                literal = "'" + query["text"].replace("'", "''") + "'"
+                text = query["text"]
+                if engine == "paradedb" and mode == "phrase":
+                    text = json.dumps(text, ensure_ascii=False)
+                literal = "'" + text.replace("'", "''") + "'"
                 pgts = {
                     "disjunction": (
                         "SELECT id FROM documents ORDER BY body <@> "
@@ -1224,7 +1243,7 @@ class Runner:
                 parade_op = {
                     "disjunction": "|||",
                     "conjunction": "&&&",
-                    "phrase": "###",
+                    "phrase": "@@@",
                     "count": "|||",
                 }[mode]
                 if engine == "pg_textsearch":
