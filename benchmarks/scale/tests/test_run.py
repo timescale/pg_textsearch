@@ -97,6 +97,59 @@ class RunPlanTest(unittest.TestCase):
             )
             self.assertEqual(natural[0]["text"], "search ranking")
 
+    def test_lead_subset_cannot_reuse_another_corpus(self):
+        scale_dir = Path(__file__).resolve().parents[1]
+        with tempfile.TemporaryDirectory(
+            prefix=".test-tmp-", dir=scale_dir
+        ) as directory:
+            artifacts = Path(directory)
+            for kind, seed in (("wikipedia", 3), ("msmarco-v2", 7)):
+                runner = Runner(
+                    scale_dir.parents[1], artifacts, False,
+                    "lead-corpus", kind, None,
+                )
+                prepare_synthetic(runner.dataset, rows=10_000, seed=seed)
+                runner._prepare_lead_subset()
+                self.assertEqual(
+                    json.loads(
+                        (runner.lead_dataset / "source-manifest.json")
+                        .read_text()
+                    ),
+                    json.loads(
+                        (runner.dataset / "manifest.json").read_text()
+                    ),
+                )
+
+    def test_lead_subset_refreshes_queries_but_rejects_changed_source(self):
+        scale_dir = Path(__file__).resolve().parents[1]
+        with tempfile.TemporaryDirectory(
+            prefix=".test-tmp-", dir=scale_dir
+        ) as directory:
+            runner = Runner(
+                scale_dir.parents[1], Path(directory), False,
+                "lead-refresh", "msmarco-v2", None,
+            )
+            prepare_synthetic(runner.dataset, rows=10_000)
+            queries = runner.dataset / "k6"
+            queries.mkdir()
+            source = queries / "spans.json"
+            source.write_text('[{"id":"old"}]')
+            runner._prepare_lead_subset()
+            source.write_text('[{"id":"new"}]')
+            runner._prepare_lead_subset()
+            self.assertEqual(
+                json.loads(
+                    (runner.lead_dataset / "k6/spans.json").read_text()
+                ),
+                [{"id": "new"}],
+            )
+            manifest = runner.dataset / "manifest.json"
+            data = json.loads(manifest.read_text())
+            data["rows"] += 1
+            manifest.write_text(json.dumps(data))
+            with self.assertRaisesRegex(ConfigError, "incompatible resume"):
+                runner._prepare_lead_subset()
+
     def test_install_writes_only_tool_and_image_pins(self):
         scale_dir = Path(__file__).resolve().parents[1]
         with tempfile.TemporaryDirectory(
