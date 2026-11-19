@@ -32,8 +32,17 @@
 #endif
 
 /* PG19's BufFile API uses pgoff_t, which is 64-bit even on Windows. */
-#if PG_VERSION_NUM < 190000
-typedef off_t pgoff_t;
+#if PG_VERSION_NUM >= 190000
+typedef pgoff_t TpBufFileOffset;
+#else
+typedef off_t TpBufFileOffset;
+#endif
+
+/* PG19 changed syscache callback IDs from int to an enum. */
+#if PG_VERSION_NUM >= 190000
+#define TP_SYSCACHE_ID SysCacheIdentifier
+#else
+#define TP_SYSCACHE_ID int
 #endif
 
 /*

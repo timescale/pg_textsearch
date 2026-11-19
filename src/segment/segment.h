@@ -27,16 +27,17 @@
 #define TP_BUFFILE_SEG_SIZE ((uint64)(1024 * 1024 * 1024))
 
 static inline uint64
-tp_buffile_composite_offset(int fileno, pgoff_t file_offset)
+tp_buffile_composite_offset(int fileno, TpBufFileOffset file_offset)
 {
 	return (uint64)fileno * TP_BUFFILE_SEG_SIZE + (uint64)file_offset;
 }
 
 static inline void
-tp_buffile_decompose_offset(uint64 composite, int *fileno, pgoff_t *offset)
+tp_buffile_decompose_offset(
+		uint64 composite, int *fileno, TpBufFileOffset *offset)
 {
 	*fileno = (int)(composite / TP_BUFFILE_SEG_SIZE);
-	*offset = (pgoff_t)(composite % TP_BUFFILE_SEG_SIZE);
+	*offset = (TpBufFileOffset)(composite % TP_BUFFILE_SEG_SIZE);
 }
 
 /*

@@ -505,8 +505,8 @@ tp_segment_open_from_buffile(BufFile *file, uint64 base_offset)
 	/* Read header from BufFile */
 	header = palloc(sizeof(TpSegmentHeader));
 	{
-		int		fileno;
-		pgoff_t offset;
+		int				fileno;
+		TpBufFileOffset offset;
 
 		tp_buffile_decompose_offset(base_offset, &fileno, &offset);
 		BufFileSeek(file, fileno, offset, SEEK_SET);
@@ -752,8 +752,8 @@ tp_segment_read(
 	 */
 	if (reader->buffile != NULL)
 	{
-		int		fileno;
-		pgoff_t offset;
+		int				fileno;
+		TpBufFileOffset offset;
 
 		tp_buffile_decompose_offset(
 				reader->buffile_base + logical_offset, &fileno, &offset);

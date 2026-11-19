@@ -127,9 +127,9 @@ typedef struct ResolveIndexContext
  */
 static void
 bm25_cache_invalidation_callback(
-		Datum arg		 pg_attribute_unused(),
-		int cacheid		 pg_attribute_unused(),
-		uint32 hashvalue pg_attribute_unused())
+		Datum arg			   pg_attribute_unused(),
+		TP_SYSCACHE_ID cacheid pg_attribute_unused(),
+		uint32 hashvalue	   pg_attribute_unused())
 {
 	oid_cache_state = CACHE_UNKNOWN;
 }
