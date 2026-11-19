@@ -20,14 +20,12 @@
 #include <miscadmin.h>
 #include <nodes/bitmapset.h>
 #include <optimizer/optimizer.h>
-#include <storage/lmgr.h>
 #include <utils/acl.h>
 #include <utils/builtins.h>
 #include <utils/fmgroids.h>
 #include <utils/lsyscache.h>
 #include <utils/regproc.h>
 #include <utils/rel.h>
-#include <utils/rls.h>
 #include <utils/syscache.h>
 
 #include "index/resolve.h"
@@ -168,10 +166,6 @@ tp_resolve_index_name_shared(const char *index_name)
  * either SELECT on the table itself or SELECT on every heap column the
  * index reads (plain key columns plus any columns referenced by an
  * expression index or a partial-index predicate).
- * Unlike an executor index scan, standalone scoring cannot apply row
- * policies to corpus statistics, so callers subject to RLS are rejected.
- * Retain the heap lock until transaction end to stabilize the RLS check
- * through subsequent statistics reads, including cached scoring calls.
  */
 void
 tp_check_index_read_privilege(Oid index_oid)
@@ -195,7 +189,6 @@ tp_check_index_read_privilege(Oid index_oid)
 
 	indform	 = (Form_pg_index)GETSTRUCT(indtup);
 	heap_oid = indform->indrelid;
-	LockRelationOid(heap_oid, AccessShareLock);
 
 	/*
 	 * Reading through the index requires USAGE on the schema containing the
@@ -212,16 +205,7 @@ tp_check_index_read_privilege(Oid index_oid)
 		aclcheck_error(aclresult, OBJECT_SCHEMA, get_namespace_name(heap_nsp));
 	}
 
-	if (check_enable_rls(heap_oid, InvalidOid, false) == RLS_ENABLED)
-	{
-		ReleaseSysCache(indtup);
-		ereport(ERROR,
-				(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
-				 errmsg("standalone BM25 scoring is not supported when "
-						"row-level security applies")));
-	}
-
-	/* Table-level SELECT is sufficient when RLS does not apply. */
+	/* Table-level SELECT is sufficient. */
 	aclresult = pg_class_aclcheck(heap_oid, userid, ACL_SELECT);
 	if (aclresult == ACLCHECK_OK)
 	{
