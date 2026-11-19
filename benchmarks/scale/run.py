@@ -19,6 +19,7 @@ if str(REPO_ROOT) not in sys.path:
 from benchmarks.scale.dataset import require_terms_acceptance
 from benchmarks.scale.msmarco_download import download_assets
 from benchmarks.scale.prepare_data import main as prepare_main
+from benchmarks.scale.queries import QueryError, lead_disjunction
 
 
 BENCHMARKER_SHA = "4b262c05af138991d3bf28c683a0fc6b7f113df3"
@@ -626,7 +627,23 @@ class Runner:
             if source_query.is_file():
                 destination = self.lead_dataset / "k6" / name
                 destination.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copyfile(source_query, destination)
+                if name == "matrix.json":
+                    shutil.copyfile(source_query, destination)
+                    continue
+                queries = json.loads(source_query.read_text())
+                try:
+                    queries = [
+                        query | {
+                            "source_text": query["text"],
+                            "text": lead_disjunction(query["text"]),
+                        }
+                        for query in queries
+                    ]
+                except QueryError as error:
+                    raise ConfigError(str(error)) from error
+                destination.write_text(
+                    json.dumps(queries, indent=2, ensure_ascii=False) + "\n"
+                )
 
     def _wait(self, name):
         for _ in range(120):
