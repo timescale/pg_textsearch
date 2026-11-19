@@ -1,0 +1,7 @@
+CREATE EXTENSION IF NOT EXISTS pg_search;
+DROP TABLE IF EXISTS documents CASCADE;
+CREATE TABLE documents (
+    id BIGINT PRIMARY KEY,
+    source_id TEXT NOT NULL,
+    body TEXT NOT NULL
+);
