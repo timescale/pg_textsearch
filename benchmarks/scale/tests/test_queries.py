@@ -9,6 +9,7 @@ from benchmarks.scale.queries import (
     build_span_queries,
     build_workload_matrix,
     load_queries,
+    lead_disjunction,
     write_query_pack,
 )
 
@@ -46,6 +47,10 @@ class QueriesTest(unittest.TestCase):
         message = str(raised.exception)
         self.assertIn("queries.tsv:1", message)
         self.assertNotIn("private-text", message)
+
+    def test_lead_disjunction_rejects_queries_without_terms(self):
+        with self.assertRaisesRegex(QueryError, "no searchable terms"):
+            lead_disjunction("?!")
 
     def test_span_queries_have_exact_requested_term_count_and_stable_ids(self):
         natural = [
