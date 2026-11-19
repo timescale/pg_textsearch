@@ -99,8 +99,9 @@ MSMARCO_ACCEPT_TERMS=1 "$VENV/bin/python" \
 Conversion verifies MD5 `05946bac48a8ffee62e160213eab3fda`, preserves passage
 IDs, and checkpoints Parquet shards. Supply the official query TSV files to
 `python -m benchmarks.scale.prepare_data queries --help`; real queries and
-corpus-sampled spans are separate inputs. An incomplete or incorrectly sized
-corpus is not a full run.
+corpus-sampled spans are separate inputs. Span lengths are interleaved to
+reduce prefix bias in slow, time-limited cells.
+An incomplete or incorrectly sized corpus is not a full run.
 
 The alternate **6,407,814-article English Wikipedia** snapshot is pinned to
 Wikimedia's `20231101.en` dataset revision, with 19.6 GB of raw body text.
