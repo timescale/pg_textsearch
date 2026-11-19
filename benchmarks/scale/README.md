@@ -132,6 +132,9 @@ ParadeDB uses native, field-specific search operators.
 
 Errors/timeouts invalidate a cell. Raw driver outputs and result IDs are
 retained; successful throughput is not a substitute for result validation.
+Correctness probes have a 30-second per-query budget and incremental
+checkpoints. Failed or censored cells do not prevent the remaining workloads
+and engines from running; the aggregate run still reports failure.
 Query inputs, data, cloud state and raw results are ignored by Git.
 
 ## Existing machine

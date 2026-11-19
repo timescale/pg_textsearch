@@ -37,6 +37,15 @@ class ConfigError(RuntimeError):
     pass
 
 
+class BenchmarkCellsFailed(ConfigError):
+    def __init__(self, engine, failures):
+        self.engine = engine
+        self.failures = failures
+        super().__init__(
+            f"{engine} has {len(failures)} unsuccessful benchmark results"
+        )
+
+
 def file_sha256(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as source:
@@ -814,32 +823,32 @@ class Runner:
             query_literal = "'" + query.replace("'", "''") + "'"
             sql = {
                 "pg_textsearch": (
-                    "EXPLAIN (ANALYZE, BUFFERS, WAL, FORMAT JSON) "
+                    "EXPLAIN (COSTS, VERBOSE, SETTINGS, FORMAT JSON) "
                     "SELECT id FROM documents ORDER BY body <@> "
                     f"to_bm25query({query_literal},'documents_bm25') LIMIT 10;"
-                    "EXPLAIN (ANALYZE, BUFFERS, WAL, FORMAT JSON) "
+                    "EXPLAIN (COSTS, VERBOSE, SETTINGS, FORMAT JSON) "
                     "SELECT id FROM documents WHERE body @@ "
                     f"plainto_tsquery('english',{query_literal}) "
                     "ORDER BY body <@> "
                     f"to_bm25query({query_literal},'documents_bm25') LIMIT 10;"
-                    "EXPLAIN (ANALYZE, BUFFERS, WAL, FORMAT JSON) "
+                    "EXPLAIN (COSTS, VERBOSE, SETTINGS, FORMAT JSON) "
                     "SELECT id FROM documents WHERE body @@ "
                     f"phraseto_tsquery('english',{query_literal}) "
                     "ORDER BY body <@> "
                     f"to_bm25query({query_literal},'documents_bm25') LIMIT 10;"
-                    "EXPLAIN (ANALYZE, BUFFERS, WAL, FORMAT JSON) "
+                    "EXPLAIN (COSTS, VERBOSE, SETTINGS, FORMAT JSON) "
                     "SELECT count(*) FROM documents WHERE body @@ "
                     "(SELECT string_agg(quote_literal(lexeme),' | ')::tsquery "
                     "FROM unnest(tsvector_to_array(to_tsvector("
                     f"'english',{query_literal}))) AS lexeme)"
                 ),
                 "paradedb": (
-                    "EXPLAIN (ANALYZE, BUFFERS, WAL, FORMAT JSON) "
+                    "EXPLAIN (COSTS, VERBOSE, SETTINGS, FORMAT JSON) "
                     f"SELECT id FROM documents WHERE body ||| {query_literal} "
                     "ORDER BY paradedb.score(id) DESC LIMIT 10"
                 ),
                 "lead": (
-                    "EXPLAIN (ANALYZE, BUFFERS, WAL, FORMAT JSON) "
+                    "EXPLAIN (COSTS, VERBOSE, SETTINGS, FORMAT JSON) "
                     f"SELECT id FROM documents WHERE body ==> {query_literal} "
                     "ORDER BY tin.full_score(ctid) DESC LIMIT 10"
                 ),
@@ -853,16 +862,29 @@ class Runner:
             if dirty_updates.exists():
                 self._cleanup_updates(name, cell)
                 dirty_updates.unlink()
-            self._capture_correctness(
+            failures = []
+            correctness_queries, correctness_fingerprint = (
+                self._correctness_inputs(
+                    engine_dataset, database_fingerprint
+                )
+            )
+            correctness_summary = self._capture_correctness(
                 name,
                 engine,
-                json.loads(
-                    (engine_dataset / "k6/natural.json").read_text()
-                ),
-                cell / "correctness.jsonl",
+                correctness_queries,
+                cell / "correctness-v2.jsonl",
+                correctness_fingerprint,
             )
+            if (
+                correctness_summary["timeout"]
+                or correctness_summary["sql_error"]
+            ):
+                failures.append({
+                    "kind": "correctness",
+                    "summary": correctness_summary,
+                })
             modes = (
-                ("disjunction", "conjunction", "phrase", "count", "mixed")
+                ("disjunction", "count", "conjunction", "phrase", "mixed")
                 if engine != "lead"
                 else ("disjunction",)
             )
@@ -945,25 +967,53 @@ class Runner:
                                         f"incompatible cell resume: {result_dir}"
                                     )
                                 continue
+                            failed = result_dir / "failed.json"
+                            if failed.is_file() and (
+                                json.loads(failed.read_text()).get(
+                                    "fingerprint"
+                                )
+                                != fingerprint
+                            ):
+                                raise ConfigError(
+                                    f"incompatible failed cell: {result_dir}"
+                                )
                             if mode == "mixed":
                                 dirty_updates.write_text(
                                     json.dumps(fingerprint, indent=2) + "\n"
                                 )
-                            self._run_k6_cell(
+                            result = self._execute_k6_cell(
                                 benchmarker,
                                 engine_dataset / "k6/search.js",
                                 run_env,
                                 result_dir,
+                                fingerprint,
                             )
                             if mode == "mixed":
                                 self._cleanup_updates(name, cell)
                                 dirty_updates.unlink(missing_ok=True)
-                            self._write_or_validate_json(
-                                complete, fingerprint
-                            )
-            (cell / "complete.json").write_text(
-                json.dumps({"complete": True, "engine": engine}, indent=2)
-                + "\n"
+                            if result["status"] != "ok":
+                                failures.append({
+                                    "kind": "workload",
+                                    "path": str(
+                                        result_dir.relative_to(cell)
+                                    ),
+                                    "exit_code": result["exit_code"],
+                                })
+            summary = {
+                "engine": engine,
+                "status": "failed" if failures else "ok",
+                "correctness": correctness_summary,
+                "failures": failures,
+            }
+            summary_path = cell / "summary.json"
+            temporary = summary_path.with_suffix(".json.partial")
+            temporary.write_text(json.dumps(summary, indent=2) + "\n")
+            temporary.replace(summary_path)
+            if failures:
+                raise BenchmarkCellsFailed(engine, failures)
+            self._write_or_validate_json(
+                cell / "complete.json",
+                {"complete": True, "engine": engine},
             )
         finally:
             with (cell / "postgres.log").open("w") as stream:
@@ -998,6 +1048,41 @@ class Runner:
             output=result_dir / "k6.log",
         )
 
+    def _execute_k6_cell(
+        self, benchmarker, script, run_env, result_dir, fingerprint
+    ):
+        try:
+            self._run_k6_cell(
+                benchmarker, script, run_env, result_dir
+            )
+        except subprocess.CalledProcessError as error:
+            failure = {
+                "status": "failed",
+                "exit_code": error.returncode,
+                "fingerprint": fingerprint,
+            }
+            failed = result_dir / "failed.json"
+            temporary = failed.with_suffix(".json.partial")
+            temporary.write_text(json.dumps(failure, indent=2) + "\n")
+            temporary.replace(failed)
+            return failure
+        self._write_or_validate_json(
+            result_dir / "complete.json", fingerprint
+        )
+        (result_dir / "failed.json").unlink(missing_ok=True)
+        return {"status": "ok", "fingerprint": fingerprint}
+
+    @staticmethod
+    def run_engines(runner, engines):
+        failures = []
+        for engine in engines:
+            try:
+                runner.engine(engine)
+            except BenchmarkCellsFailed as error:
+                failures.extend(error.failures)
+        if failures:
+            raise BenchmarkCellsFailed("aggregate", failures)
+
     def _cleanup_updates(self, container, cell):
         self.command(
             [
@@ -1017,15 +1102,78 @@ class Runner:
             output=cell / "mixed-vacuum.log",
         )
 
-    def _capture_correctness(self, container, engine, queries, output):
-        selected = queries[: min(len(queries), 20 if self.smoke else 100)]
+    @staticmethod
+    def _correctness_inputs(dataset, database_fingerprint):
+        natural_path = dataset / "k6/natural.json"
+        spans_path = dataset / "k6/spans.json"
+        natural = json.loads(natural_path.read_text())
+        spans = json.loads(spans_path.read_text())
+        longest = max(query.get("span", 0) for query in spans)
+        controlled = next(
+            query for query in spans if query.get("span", 0) == longest
+        )
+        queries = [
+            natural[0] | {"query_family": "natural"},
+            controlled | {"query_family": "controlled_span"},
+        ]
+        fingerprint = {
+            "database": database_fingerprint,
+            "natural_queries": file_sha256(natural_path),
+            "span_queries": file_sha256(spans_path),
+        }
+        return queries, fingerprint
+
+    def _capture_correctness(
+        self, container, engine, queries, output, fingerprint
+    ):
+        selected = (
+            queries[:1]
+            if len(queries) < 2
+            else [queries[0], queries[len(queries) // 2]]
+        )
         modes = (
             ("disjunction", "conjunction", "phrase", "count")
             if engine != "lead" else ("disjunction",)
         )
-        with output.open("w", encoding="utf-8") as stream:
+        timeout_seconds = 30
+        checkpoint = {
+            "version": 2,
+            "fingerprint": fingerprint,
+            "engine": engine,
+            "query_ids": [query["id"] for query in selected],
+            "modes": list(modes),
+            "timeout_seconds": timeout_seconds,
+        }
+        state = output.with_suffix(".fingerprint.json")
+        complete = output.with_suffix(".complete.json")
+        self._write_or_validate_json(state, checkpoint)
+        if complete.is_file():
+            saved = json.loads(complete.read_text())
+            if saved.get("fingerprint") != checkpoint:
+                raise ConfigError(
+                    f"incompatible correctness resume: {output}"
+                )
+            return saved["summary"]
+        records = []
+        if output.is_file():
+            records = [
+                json.loads(line)
+                for line in output.read_text().splitlines()
+                if line.strip()
+            ]
+        completed = {
+            (record["mode"], record["query_id"]) for record in records
+        }
+        error_log = output.with_suffix(".stderr.jsonl")
+        with (
+            output.open("a", encoding="utf-8") as stream,
+            error_log.open("a", encoding="utf-8") as errors,
+        ):
             for mode in modes:
               for query in selected:
+                key = (mode, query["id"])
+                if key in completed:
+                    continue
                 literal = "'" + query["text"].replace("'", "''") + "'"
                 pgts = {
                     "disjunction": (
@@ -1075,23 +1223,61 @@ class Runner:
                     )
                 result = subprocess.run(
                     [
-                        "docker", "exec", container, "psql", "-U", "postgres",
-                        "-XAt", "-c", sql,
+                        "docker", "exec", "-e",
+                        (
+                            "PGOPTIONS=-c statement_timeout="
+                            f"{timeout_seconds * 1000}"
+                        ),
+                        container, "psql", "-U", "postgres",
+                        "-XqAt", "-c", sql,
                     ],
-                    check=True,
                     capture_output=True,
                     text=True,
                 )
-                stream.write(
-                    json.dumps(
-                        {
-                            "query_id": query["id"],
-                            "mode": mode,
-                            "rows": result.stdout.splitlines(),
-                        }
-                    )
-                    + "\n"
-                )
+                if result.returncode == 0:
+                    record = {
+                        "query_id": query["id"],
+                        "query_family": query.get("query_family"),
+                        "mode": mode,
+                        "status": "ok",
+                        "censored": False,
+                        "rows": result.stdout.splitlines(),
+                    }
+                else:
+                    timed_out = "statement timeout" in result.stderr.lower()
+                    record = {
+                        "query_id": query["id"],
+                        "query_family": query.get("query_family"),
+                        "mode": mode,
+                        "status": "timeout" if timed_out else "sql_error",
+                        "censored": timed_out,
+                        "returncode": result.returncode,
+                    }
+                    errors.write(json.dumps({
+                        "query_id": query["id"],
+                        "query_family": query.get("query_family"),
+                        "mode": mode,
+                        "status": record["status"],
+                        "stderr": result.stderr,
+                    }) + "\n")
+                    errors.flush()
+                    os.fsync(errors.fileno())
+                stream.write(json.dumps(record) + "\n")
+                stream.flush()
+                os.fsync(stream.fileno())
+                records.append(record)
+        summary = {
+            status: sum(
+                record["status"] == status for record in records
+            )
+            for status in ("ok", "timeout", "sql_error")
+        }
+        summary["total"] = len(records)
+        self._write_or_validate_json(
+            complete,
+            {"fingerprint": checkpoint, "summary": summary},
+        )
+        return summary
 
 
 def main(argv=None):
@@ -1149,9 +1335,13 @@ def main(argv=None):
             if args.stage == "all"
             else [args.stage]
         )
-        for engine in engines:
-            if engine in {"pg_textsearch", "paradedb", "lead"}:
-                runner.engine(engine)
+        Runner.run_engines(
+            runner,
+            [
+                engine for engine in engines
+                if engine in {"pg_textsearch", "paradedb", "lead"}
+            ],
+        )
         return 0
     except (ConfigError, OSError, subprocess.CalledProcessError) as error:
         print(f"ERROR: {error}", file=sys.stderr)
