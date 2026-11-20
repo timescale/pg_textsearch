@@ -505,8 +505,8 @@ tp_segment_open_from_buffile(BufFile *file, uint64 base_offset)
 	/* Read header from BufFile */
 	header = palloc(sizeof(TpSegmentHeader));
 	{
-		int	  fileno;
-		off_t offset;
+		int				fileno;
+		TpBufFileOffset offset;
 
 		tp_buffile_decompose_offset(base_offset, &fileno, &offset);
 		BufFileSeek(file, fileno, offset, SEEK_SET);
@@ -752,8 +752,8 @@ tp_segment_read(
 	 */
 	if (reader->buffile != NULL)
 	{
-		int	  fileno;
-		off_t offset;
+		int				fileno;
+		TpBufFileOffset offset;
 
 		tp_buffile_decompose_offset(
 				reader->buffile_base + logical_offset, &fileno, &offset);
@@ -840,6 +840,54 @@ tp_segment_read(
 		bytes_read += to_read;
 		logical_offset += to_read;
 	}
+}
+
+/*
+ * Read the encoded block, not the maximum-size decoder buffer: small blocks
+ * near the segment end need not have that many bytes remaining on disk.
+ * The zero-filled tail permits the decoder's wider unaligned loads.
+ */
+void
+tp_segment_read_compressed_block(
+		TpSegmentReader *reader,
+		uint64			 logical_offset,
+		uint32			 count,
+		uint8			*dest)
+{
+	const TpCompressedBlockHeader *header;
+	uint32						   encoded_size;
+	uint64						   data_size = reader->header->data_size;
+
+	if (count == 0 || count > TP_BLOCK_SIZE || logical_offset > data_size ||
+		data_size - logical_offset < sizeof(TpCompressedBlockHeader))
+		ereport(ERROR,
+				(errcode(ERRCODE_INDEX_CORRUPTED),
+				 errmsg("invalid compressed posting block bounds")));
+
+	tp_segment_read(
+			reader, logical_offset, dest, sizeof(TpCompressedBlockHeader));
+	header = (const TpCompressedBlockHeader *)dest;
+	if (header->doc_id_bits < 1 || header->doc_id_bits > 32 ||
+		header->freq_bits < 1 || header->freq_bits > 16)
+		ereport(ERROR,
+				(errcode(ERRCODE_INDEX_CORRUPTED),
+				 errmsg("invalid compressed posting block bit widths")));
+
+	encoded_size = tp_compressed_block_size(dest, count);
+	if (encoded_size > data_size - logical_offset)
+		ereport(ERROR,
+				(errcode(ERRCODE_INDEX_CORRUPTED),
+				 errmsg("compressed posting block extends beyond segment "
+						"data")));
+
+	tp_segment_read(
+			reader,
+			logical_offset + sizeof(TpCompressedBlockHeader),
+			dest + sizeof(TpCompressedBlockHeader),
+			encoded_size - sizeof(TpCompressedBlockHeader));
+	memset(dest + encoded_size,
+		   0,
+		   TP_MAX_COMPRESSED_BLOCK_SIZE - encoded_size);
 }
 
 /*

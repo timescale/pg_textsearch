@@ -34,11 +34,11 @@ permissions:
 
 env:
   # Pinned third-party commit SHAs for reproducible CI. Pinning zhparser to
-  # its exact v2.3 commit pins the bundled dict.utf8.xdb — and thus the
+  # a commit also pins the bundled dict.utf8.xdb — and thus the
   # segmentation dictionary and the expected test output. A commit SHA (not
   # a tag, which can be re-pointed upstream) is what makes this immutable.
   SCWS_REF: a04ef5e655213eb6b07fb57761d0eac72c281ad4      # SCWS 1.2.3
-  ZHPARSER_REF: dd292fd591edbcb7ebee79d3c3cdc969e9cddced  # zhparser v2.3
+  ZHPARSER_REF: 2e995c4df672563992b4d7a147b8fa2d0d4cda6c  # PG19 compatibility
 
 jobs:
   chinese:
@@ -46,7 +46,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        pg_version: [17, 18]
+        pg_version: [17, 18, 19]
 
     steps:
     - uses: actions/checkout@v4

@@ -63,10 +63,11 @@
  *
  *   DROPPED         the cursor's captured spill_generation or
  *                   RelFileLocator disagreed with the current
- *                   index state; the cache has been cleared and
- *                   locks released.  Caller (read path) decides
- *                   whether to cold_build or fall back to
- *                   chain_source.
+ *                   index state, or a failed build or catchup
+ *                   left partial state; the cache has been
+ *                   cleared and locks released.  Caller (read
+ *                   path) decides whether to cold_build or fall
+ *                   back to chain_source.
  *
  *   BUDGET_EXCEEDED applying the next chain record would push
  *                   the cache footprint over the per-index soft
@@ -189,10 +190,10 @@ extern void tp_cache_account_bytes_drain(TpMemtable *memtable);
 /*
  * Drop the in-memory cache state.  Frees the dshash inverted index
  * and doc-length table (returning their DSA memory to the arena),
- * resets the apply cursor, source locator, and estimated_bytes to
- * their post-init values, and trims the DSA.  Safe to call when the
- * cache is already empty (handles == DSHASH_HANDLE_INVALID): a no-op
- * then.
+ * along with allocations stranded by a failed term insert, resets the
+ * apply cursor, source locator, and estimated_bytes to their post-init
+ * values, and trims the DSA.  Safe to call when the cache is already
+ * empty (handles == DSHASH_HANDLE_INVALID): a no-op then.
  *
  * Does NOT touch:
  *   - apply_lock / lock: these LWLocks live inside the TpMemtable

@@ -1,0 +1,78 @@
+\pset format unaligned
+SET client_min_messages = warning;
+CREATE EXTENSION pg_textsearch;
+CREATE EXTENSION injection_points;
+SET enable_seqscan = off;
+SET pg_textsearch.memtable_pages_threshold = 0;
+SET pg_textsearch.bulk_load_threshold = 0;
+
+CREATE TABLE cache_unwind (id int, body text);
+CREATE INDEX cache_unwind_idx ON cache_unwind
+    USING bm25(body) WITH (text_config = 'simple');
+
+-- An allocation error can leave dshash or DSA locks held until abort.
+-- The failed build or catch-up must neither touch the cache while
+-- unwinding nor leave a partially applied document for later readers.
+-- The next apply drops the partial cache, releasing its charged bytes.
+CREATE FUNCTION cache_unwind(phase text, point text)
+RETURNS TABLE (next_apply text, cached_bytes bigint,
+               before_write integer, after_write integer)
+LANGUAGE plpgsql AS $$
+DECLARE
+    raised boolean := false;
+BEGIN
+    TRUNCATE cache_unwind;
+    IF phase = 'catchup' THEN
+        INSERT INTO cache_unwind VALUES (1, 'anchor');
+        PERFORM bm25_cache_cold_build('cache_unwind_idx');
+    END IF;
+    INSERT INTO cache_unwind VALUES (2, 'needle novel'), (3, 'needle');
+
+    PERFORM injection_points_attach(point, 'error');
+    BEGIN
+        IF phase = 'cold' THEN
+            PERFORM bm25_cache_cold_build('cache_unwind_idx');
+        ELSE
+            PERFORM bm25_cache_apply_to_tail('cache_unwind_idx');
+        END IF;
+    EXCEPTION WHEN internal_error THEN
+        IF SQLERRM <> format(
+            'error triggered for injection point %s', point) THEN
+            RAISE;
+        END IF;
+        raised := true;
+    END;
+    PERFORM injection_points_detach(point);
+    IF NOT raised THEN
+        RAISE EXCEPTION 'injected error at % did not fire', point;
+    END IF;
+
+    SELECT result, estimated_bytes INTO next_apply, cached_bytes
+      FROM bm25_cache_apply_to_tail('cache_unwind_idx');
+    SELECT count(*) INTO before_write FROM (
+        SELECT 1 FROM cache_unwind
+        ORDER BY body <@> to_bm25query('needle', 'cache_unwind_idx')
+    ) ranked;
+    INSERT INTO cache_unwind VALUES (4, 'needle');
+    SELECT count(*) INTO after_write FROM (
+        SELECT 1 FROM cache_unwind
+        ORDER BY body <@> to_bm25query('needle', 'cache_unwind_idx')
+    ) ranked;
+    RETURN NEXT;
+END
+$$;
+
+SELECT * FROM cache_unwind('cold', 'pg-textsearch-cache-alloc-term');
+SELECT * FROM cache_unwind('cold', 'pg-textsearch-cache-insert-term');
+SELECT * FROM cache_unwind('cold', 'pg-textsearch-cache-alloc-entries');
+SELECT * FROM cache_unwind('catchup', 'pg-textsearch-cache-alloc-term');
+SELECT * FROM cache_unwind('catchup', 'pg-textsearch-cache-insert-term');
+SELECT * FROM cache_unwind('catchup', 'pg-textsearch-cache-alloc-entries');
+
+DROP FUNCTION cache_unwind(text, text);
+DROP TABLE cache_unwind;
+RESET enable_seqscan;
+RESET pg_textsearch.memtable_pages_threshold;
+RESET pg_textsearch.bulk_load_threshold;
+DROP EXTENSION injection_points;
+DROP EXTENSION pg_textsearch CASCADE;

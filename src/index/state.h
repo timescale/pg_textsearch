@@ -107,7 +107,9 @@ typedef struct TpMemtable
 	 * (cursor_next_blkno, cursor_next_off) is the logical position of
 	 * the next chain record to apply; InvalidBlockNumber means "no
 	 * cache yet, cold_build is required before any catchup can
-	 * advance the cursor".
+	 * advance the cursor".  Appliers keep it invalid while walking,
+	 * so an error leaves partial state for the next cold build to
+	 * discard.
 	 *
 	 * cursor_seq is a monotonic apply counter for cheap "did anything
 	 * change" checks; read lock-free.
@@ -118,6 +120,14 @@ typedef struct TpMemtable
 	RelFileLocator	 cursor_locator;
 	bool			 cursor_locator_valid;
 	pg_atomic_uint64 cursor_seq;
+
+	/*
+	 * Allocations for a string-table entry not yet inserted.  An error
+	 * before insertion leaves them for the next tp_cache_clear to free.
+	 * Mutated only under apply_lock EXCL.
+	 */
+	dsa_pointer pending_term_dp;
+	dsa_pointer pending_posting_dp;
 
 	/*
 	 * Cache footprint, updated by apply paths under apply_lock;
