@@ -6,8 +6,8 @@ Builds a Debian package for pg_textsearch.
 
 ## `msvc-build.ps1`
 
-Builds `pg_textsearch.dll` with MSVC against a PostgreSQL 17 or 18 x64 tree,
-on Windows. PGXS cannot drive MSVC, so this script is the Windows build
+Builds `pg_textsearch.dll` with MSVC against a PostgreSQL 17, 18, or 19
+x64 tree, on Windows. PGXS cannot drive MSVC, so this script is the Windows build
 recipe; it reads `OBJS` and `DATA` from the `Makefile` instead of keeping a
 second source list. Requires Visual Studio 2022 Build Tools with the
 "Desktop development with C++" workload.
@@ -19,7 +19,7 @@ second source list. Requires Visual Studio 2022 Build Tools with the
 `-PgRoot` is any installation or extracted EDB binaries tree containing
 `include\server` and `lib\postgres.lib`. Output goes to `-WorkDir`, by default
 `target\msvc`; nothing is written into `-PgRoot` and nothing is installed.
-`-ExpectedMajor 17|18` refuses a tree of another major version.
+`-ExpectedMajor 17|18|19` refuses a tree of another major version.
 
 The build compiles with `/W3 /WX` and suppresses three conversion warnings
 (C4244, C4267, C4305) that already appear on `main`; every other warning

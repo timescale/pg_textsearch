@@ -6,7 +6,7 @@ source names.
 
 ## Development Setup
 
-Install PostgreSQL 17, 18, or 19 RC2 and its development headers, then build
+Install PostgreSQL 17, 18, or 19 and its development headers, then build
 and install the extension:
 
 ```bash

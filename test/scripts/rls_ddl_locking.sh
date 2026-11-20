@@ -24,6 +24,7 @@ cleanup() {
 
     trap - EXIT INT TERM
     exec 3>&- 2>/dev/null || true
+    exec 4>&- 2>/dev/null || true
 
     if [ -n "${SESSION_A_PID}" ] && kill -0 "${SESSION_A_PID}" 2>/dev/null; then
         kill "${SESSION_A_PID}" 2>/dev/null || true
@@ -136,6 +137,202 @@ CREATE INDEX noop_reindex_idx ON noop_reindex(id);
 CREATE TABLE extension_replace_parent (id integer, content text);
 CREATE TABLE extension_replace_child () INHERITS (extension_replace_parent);
 SQL
+
+# Catch an acquisition error in a subtransaction, then commit successfully.
+# The builder must release its session locks without relying on disconnect.
+psql -X -h "${DATA_DIR}" -p "${TEST_PORT}" -d "${TEST_DB}" \
+    -v ON_ERROR_STOP=1 >/dev/null << 'SQL'
+CREATE TABLE cleanup_docs (content text);
+CREATE TABLE cleanup_lock_gate (id integer);
+CREATE FUNCTION test_caught_build() RETURNS text LANGUAGE plpgsql AS $$
+BEGIN
+    CREATE INDEX cleanup_failed_idx ON cleanup_docs USING bm25(content)
+        WITH (text_config='english');
+    RETURN 'built';
+EXCEPTION WHEN lock_not_available THEN
+    RETURN SQLSTATE || ': ' || SQLERRM;
+END $$;
+SQL
+
+SESSION_B_INPUT="${DATA_DIR}/session_b.in"
+mkfifo "${SESSION_B_INPUT}"
+PGAPPNAME=rls-cleanup-builder \
+    psql -X -At -h "${DATA_DIR}" -p "${TEST_PORT}" -d "${TEST_DB}" \
+    -v ON_ERROR_STOP=1 < "${SESSION_B_INPUT}" \
+    > "${SESSION_B_OUTPUT}" 2>&1 &
+SESSION_B_PID=$!
+exec 4> "${SESSION_B_INPUT}"
+printf '%s\n' \
+    "SET pg_textsearch.allow_rls = off;" \
+    "SET lock_timeout = '300ms';" >&4
+
+for lock_stage in stable extension; do
+    if [ "${lock_stage}" = stable ]; then
+        start_rls_holder cleanup_lock_gate
+    else
+        # COMMENT takes only the extension-object lock, so the builder first
+        # acquires the stable lock and then times out on the second lock.
+        rm -f "${SESSION_A_INPUT}" "${SESSION_A_OUTPUT}"
+        mkfifo "${SESSION_A_INPUT}"
+        PGAPPNAME=rls-cleanup-blocker \
+            psql -X -h "${DATA_DIR}" -p "${TEST_PORT}" -d "${TEST_DB}" \
+            -v ON_ERROR_STOP=1 < "${SESSION_A_INPUT}" \
+            > "${SESSION_A_OUTPUT}" 2>&1 &
+        SESSION_A_PID=$!
+        exec 3> "${SESSION_A_INPUT}"
+        printf '%s\n' "BEGIN;" \
+            "COMMENT ON EXTENSION pg_textsearch IS 'hold object lock';" >&3
+        wait_for_true "
+            SELECT EXISTS (
+                SELECT 1 FROM pg_stat_activity AS a
+                JOIN pg_locks AS l ON l.pid = a.pid
+                WHERE a.application_name = 'rls-cleanup-blocker'
+                  AND a.state = 'idle in transaction'
+                  AND l.locktype = 'object'
+                  AND l.classid = 'pg_extension'::regclass
+                  AND l.objid = (SELECT oid FROM pg_extension
+                                 WHERE extname = 'pg_textsearch')
+                  AND l.mode = 'ShareUpdateExclusiveLock'
+                  AND l.granted
+            );
+        " "COMMENT to hold the extension-object lock"
+    fi
+
+    # SELECT avoids an outer DO utility frame's nonblocking nested path.
+    printf 'SELECT test_caught_build() AS %s;\n' "${lock_stage}" >&4
+    wait_for_true "
+        SELECT EXISTS (
+            SELECT 1 FROM pg_stat_activity
+            WHERE application_name = 'rls-cleanup-builder'
+              AND state = 'idle'
+              AND query = 'SELECT test_caught_build() AS ${lock_stage};'
+        );
+    " "builder to catch the ${lock_stage} lock timeout and commit"
+
+    cleanup_locks=$(run_value "
+        SELECT count(*) FROM pg_locks AS l
+        JOIN pg_stat_activity AS a ON a.pid = l.pid
+        WHERE a.application_name = 'rls-cleanup-builder'
+          AND l.locktype = 'object'
+          AND l.classid = 'pg_extension'::regclass
+          AND l.objid IN (0, (SELECT oid FROM pg_extension
+                             WHERE extname = 'pg_textsearch'));
+    ")
+    if [ "${cleanup_locks}" != 0 ]; then
+        echo "Caught ${lock_stage} lock timeout leaked RLS DDL locks" >&2
+        cat "${SESSION_B_OUTPUT}" >&2
+        exit 1
+    fi
+    release_session_a
+done
+
+if [ "$(grep -c '^55P03: canceling statement due to lock timeout$' \
+        "${SESSION_B_OUTPUT}")" != 2 ] || \
+   [ "$(run_value "SELECT to_regclass('cleanup_failed_idx') IS NULL;")" != t ]; then
+    echo "Expected two caught acquisition timeouts and no failed index" >&2
+    cat "${SESSION_B_OUTPUT}" >&2
+    exit 1
+fi
+
+psql -X -h "${DATA_DIR}" -p "${TEST_PORT}" -d "${TEST_DB}" \
+    -v ON_ERROR_STOP=1 >/dev/null << 'SQL'
+SET lock_timeout = '2s';
+CREATE INDEX cleanup_other_idx ON cleanup_docs USING bm25(content)
+    WITH (text_config='english');
+SQL
+
+cleanup_builder_pid=$(run_value "
+    SELECT pid FROM pg_stat_activity
+    WHERE application_name = 'rls-cleanup-builder';
+")
+printf '%s\n' '\q' >&4
+exec 4>&-
+wait "${SESSION_B_PID}"
+SESSION_B_PID=
+wait_for_true "
+    SELECT NOT EXISTS (SELECT 1 FROM pg_stat_activity
+                       WHERE pid = ${cleanup_builder_pid});
+" "builder backend to exit"
+if [ "$(run_value "
+    SELECT count(*) FROM pg_locks
+    WHERE locktype = 'object' AND classid = 'pg_extension'::regclass
+      AND objid = 0;
+")" != 0 ] || grep -Eq \
+    'TRAP:|terminated by signal|terminating any other active server processes' \
+    "${LOGFILE}"; then
+    echo "Builder exit left an RLS DDL lock or crashed a backend" >&2
+    exit 1
+fi
+echo "Caught RLS lock timeouts release both locks before and after backend exit"
+
+# A nested command reacquires the outer command's locks, then fails. Catching
+# it must preserve the outer acquisitions without leaving extra session counts.
+psql -X -h "${DATA_DIR}" -p "${TEST_PORT}" -d "${TEST_DB}" \
+    -v ON_ERROR_STOP=1 >/dev/null << 'SQL'
+CREATE TABLE cleanup_nested_outer (id integer);
+CREATE FUNCTION test_caught_nested_build() RETURNS event_trigger
+LANGUAGE plpgsql AS $$
+BEGIN
+    IF current_setting('rls_cleanup_test.active', true)
+            IS DISTINCT FROM 'on' THEN
+        RETURN;
+    END IF;
+    BEGIN
+        CREATE INDEX cleanup_nested_idx ON cleanup_docs
+            USING bm25(missing_column) WITH (text_config='english');
+        RAISE EXCEPTION 'nested build unexpectedly succeeded';
+    EXCEPTION WHEN undefined_column THEN
+        NULL;
+    END;
+    IF (SELECT count(*) FROM pg_locks
+        WHERE pid = pg_backend_pid() AND locktype = 'object'
+          AND classid = 'pg_extension'::regclass AND granted
+          AND mode = 'ExclusiveLock'
+          AND objid IN (0, (SELECT oid FROM pg_extension
+                           WHERE extname = 'pg_textsearch'))) <> 2 THEN
+        RAISE EXCEPTION 'nested error released the outer DDL locks';
+    END IF;
+END $$;
+CREATE EVENT TRIGGER test_caught_nested_build_trigger
+    ON ddl_command_start WHEN TAG IN ('ALTER TABLE')
+    EXECUTE FUNCTION test_caught_nested_build();
+SQL
+
+PGOPTIONS='-c rls_cleanup_test.active=on' \
+    start_rls_holder cleanup_nested_outer
+if psql -X -h "${DATA_DIR}" -p "${TEST_PORT}" -d "${TEST_DB}" \
+    -v ON_ERROR_STOP=1 -c "SET lock_timeout = '300ms';
+        CREATE INDEX cleanup_nested_other_idx ON cleanup_docs
+        USING bm25(content) WITH (text_config='english');" \
+    > "${SESSION_C_OUTPUT}" 2>&1; then
+    echo "Caught nested error released the outer transaction's DDL locks" >&2
+    exit 1
+fi
+if ! grep -q 'canceling statement due to lock timeout' "${SESSION_C_OUTPUT}"; then
+    cat "${SESSION_C_OUTPUT}" >&2
+    exit 1
+fi
+
+printf '%s\n' 'COMMIT;' >&3
+wait_for_true "
+    SELECT EXISTS (
+        SELECT 1 FROM pg_stat_activity
+        WHERE application_name = 'rls-lock-session-a'
+          AND state = 'idle' AND query = 'COMMIT;'
+    );
+" "outer command to commit after catching the nested error"
+psql -X -h "${DATA_DIR}" -p "${TEST_PORT}" -d "${TEST_DB}" \
+    -v ON_ERROR_STOP=1 >/dev/null << 'SQL'
+SET lock_timeout = '2s';
+CREATE INDEX cleanup_nested_other_idx ON cleanup_docs
+    USING bm25(content) WITH (text_config='english');
+SQL
+release_session_a
+run_value "DROP EVENT TRIGGER test_caught_nested_build_trigger;
+           DROP FUNCTION test_caught_nested_build(), test_caught_build();
+           DROP TABLE cleanup_docs, cleanup_lock_gate, cleanup_nested_outer;" \
+    >/dev/null
+echo "Caught nested error preserves outer locks and releases them on commit"
 
 rm -f "${SESSION_A_INPUT}" "${SESSION_A_OUTPUT}"
 mkfifo "${SESSION_A_INPUT}"

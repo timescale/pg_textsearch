@@ -4,6 +4,9 @@ pg_textsearch is a PostgreSQL index access method for BM25-ranked full-text
 search. It uses an LSM-like layout: an on-disk memtable receives writes and
 spills into immutable segments that are compacted across levels.
 
+CI exercises only little-endian architectures. Big-endian architectures are
+supported for downstream packaging, such as Debian, but are not tested in CI.
+
 ## Source Layout
 
 - `src/access/` — access-method build, scan, vacuum, and SQL maintenance entry
@@ -142,6 +145,12 @@ The shared-memory memtable cache accelerates reads but is derived and
 disposable. Writes update only the on-disk chain. Readers lazily build or catch
 up the cache; generation mismatches, spills, eviction, or memory pressure can
 drop it without affecting correctness. Standbys read the on-disk chain.
+
+Build and catch-up keep the cache cursor invalid while they walk the chain. An
+error, such as a failed shared-memory allocation, can leave DSA or dshash locks
+held until transaction abort, so these paths do no cleanup while unwinding. The
+next cold build discards the partial cache. New terms are allocated before they
+are inserted into the string table, so readers never see a partial entry.
 
 Registry entries are keyed by database and index OID. Rebuilds preserve the
 shared allocation and its locks so existing backends retain valid wrappers.

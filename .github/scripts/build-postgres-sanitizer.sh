@@ -19,10 +19,13 @@ wget -qO- \
 major=${version%%.*}
 if ((major < 18)); then
 	patch_file="${repo_root}/test/postgres-asan-instrumentation.patch"
-else
+elif ((major < 19)); then
 	patch_file="${repo_root}/test/postgres-asan-instrumentation-PG18GE.patch"
+else
+	# PG19 already handles ASan stack frames correctly.
+	patch_file="${repo_root}/test/postgres-asan-instrumentation-PG19GE.patch"
 fi
-patch -F5 -p1 -d "${source_dir}" <"${patch_file}"
+patch -l -F0 -p1 -d "${source_dir}" <"${patch_file}"
 
 cd "${source_dir}"
 configure_args=(

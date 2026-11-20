@@ -26,6 +26,7 @@ on:
         options:
           - '17'
           - '18'
+          - '19'
 
 env:
   PG_SRC_DIR: "pgbuild"
@@ -54,7 +55,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        pg: ${{ github.event_name == 'workflow_dispatch' && fromJSON(format('["{0}"]', github.event.inputs.pg_version || '17')) || fromJSON('["17", "18"]') }}
+        pg: ${{ github.event_name == 'workflow_dispatch' && fromJSON(format('["{0}"]', github.event.inputs.pg_version || '17')) || fromJSON('["17", "18", "19"]') }}
 
     steps:
     - name: Install dependencies
@@ -114,7 +115,7 @@ jobs:
         path: |
           ~/${{ env.PG_SRC_DIR }}
           ~/${{ env.PG_INSTALL_DIR }}
-        key: "nightly-postgresql-${{ matrix.pg }}-${{ env.CC }}-${{ steps.get-date.outputs.date }}"
+        key: "nightly-postgresql-${{ matrix.pg }}-${{ env.CC }}-${{ steps.get-date.outputs.date }}-${{ hashFiles('test/postgres-asan-instrumentation*.patch') }}"
 
     - name: Determine PG version
       id: pg-version
@@ -137,9 +138,11 @@ jobs:
         # Apply ASAN instrumentation patch
         PG_MAJOR=${{ matrix.pg }}
         if [ ${PG_MAJOR} -lt 18 ]; then
-          patch -F5 -p1 -d ~/$PG_SRC_DIR < test/postgres-asan-instrumentation.patch
+          patch -l -F0 -p1 -d ~/$PG_SRC_DIR < test/postgres-asan-instrumentation.patch
+        elif [ ${PG_MAJOR} -lt 19 ]; then
+          patch -l -F0 -p1 -d ~/$PG_SRC_DIR < test/postgres-asan-instrumentation-PG18GE.patch
         else
-          patch -F5 -p1 -d ~/$PG_SRC_DIR < test/postgres-asan-instrumentation-PG18GE.patch
+          patch -l -F0 -p1 -d ~/$PG_SRC_DIR < test/postgres-asan-instrumentation-PG19GE.patch
         fi
 
         cd ~/$PG_SRC_DIR

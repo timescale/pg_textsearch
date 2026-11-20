@@ -85,9 +85,9 @@ in both lock-acquisition orders. It pauses between suffix inspection and
 truncation, checks writer-gate exclusion, and verifies segment page references
 and exact ranked results before and after crash recovery.
 
-CI builds PostgreSQL 17, 18, and 19 RC2 with injection points enabled and
-caches the installed prefixes. PG19 runs with both GCC and Clang and is
-required by the CI gate. The sanitizer builds use the same configure option.
+CI builds PostgreSQL 17, 18, and 19 with injection points enabled and
+caches the installed prefixes. All three versions have required package,
+GCC/Clang, MSVC, injection-point, and sanitizer checks.
 
 `memtable_stale_tail_injection` pauses normal and oversized writers after
 reading the tail, advances it from another session, then requires both writers
@@ -100,8 +100,8 @@ pinned horizon keeps the valid chain prefix parked.
 
 ## Sanitizers
 
-Pull-request CI builds PostgreSQL 17.2 and 18.1 and pg_textsearch with Clang
-AddressSanitizer and UndefinedBehaviorSanitizer. It runs SQL regression;
+Pull-request CI builds PostgreSQL 17.2, 18.1, and 19.0 and pg_textsearch with
+Clang AddressSanitizer and UndefinedBehaviorSanitizer. It runs SQL regression;
 concurrency, duplicate-read, and VACUUM/merge race tests; crash, deferred
 reclaim, and shutdown-spill recovery tests; multi-backend segment tests;
 `CREATE INDEX CONCURRENTLY`; multi-index, user, and schema tests; and standby
