@@ -12,11 +12,13 @@
 #include <access/relscan.h>
 #include <utils/memutils.h>
 
+#include "access/boolean.h"
 #include "index/limit.h"
 #include "index/metapage.h"
 #include "index/state.h"
 #include "memtable/scan.h"
 #include "scoring/bm25.h"
+#include "scoring/bmw.h"
 #include "types/vector.h"
 
 /*
@@ -35,6 +37,7 @@ tp_memtable_search(
 	int			  max_results;
 	int			  result_count = 0;
 	MemoryContext oldcontext;
+	TpBMWFilter	 *filter = NULL;
 
 	/* Extract terms and frequencies from query vector */
 	char		 **query_terms;
@@ -45,6 +48,18 @@ tp_memtable_search(
 
 	if (!so)
 		return false;
+
+	if (scan->numberOfKeys > 0)
+	{
+		if (so->boolean_query == NULL || so->boolean_query->size == 0)
+			return false;
+
+		MemoryContextReset(so->boolean_context);
+		oldcontext = MemoryContextSwitchTo(so->boolean_context);
+		filter	   = tp_boolean_filter_create(
+				so->boolean_query, &so->boolean_recheck);
+		MemoryContextSwitchTo(oldcontext);
+	}
 
 	/* Use limit from scan state, fallback to GUC parameter */
 	if (so->limit > 0)
@@ -101,7 +116,10 @@ tp_memtable_search(
 			entry_count,
 			max_results,
 			so->result_ctids,
-			&so->result_scores);
+			&so->result_scores,
+			filter);
+
+	MemoryContextReset(so->boolean_context);
 
 	so->result_count	 = result_count;
 	so->current_pos		 = 0;

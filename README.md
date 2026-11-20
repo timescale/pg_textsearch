@@ -145,10 +145,19 @@ generic plan, `DEALLOCATE` and prepare the statement again. A newly planned
 query can choose the correct sequential fallback, while the cached plan is
 rejected to avoid incorrect index results.
 
-Combining Boolean filtering with BM25 ranking is supported, but is not yet
-optimized as a single index scan. PostgreSQL currently evaluates the filter,
-calculates standalone scores for the matching rows, and then sorts them. This
-is most effective when the Boolean filter matches relatively few rows.
+Combine Boolean filtering and BM25 ranking in a single ordered index scan:
+
+```sql
+SELECT * FROM documents
+WHERE content @@ to_tsquery('english', 'postgres & search')
+ORDER BY content <@> 'postgres search'
+LIMIT 10;
+```
+
+The Boolean condition is evaluated before top-k selection. Phrase, prefix,
+and weight restrictions retain heap rechecks where the index lacks exact
+information. As with other ranked scans, results contain at least one ranking
+term.
 
 ### Verifying Index Usage
 

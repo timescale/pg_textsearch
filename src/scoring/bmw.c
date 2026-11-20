@@ -418,7 +418,8 @@ score_memtable_single_term(
 		float4		  k1,
 		float4		  b,
 		float4		  avg_doc_len,
-		TpBMWStats	 *stats)
+		TpBMWStats	 *stats,
+		TpBMWFilter	 *filter)
 {
 	TpPostingData *postings;
 	int			   i;
@@ -456,7 +457,9 @@ score_memtable_single_term(
 
 		score = compute_bm25_score(idf, tf, doc_len, k1, b, avg_doc_len);
 
-		if (!tp_topk_dominated(heap, score))
+		if (!tp_topk_dominated(heap, score) &&
+			(filter == NULL ||
+			 filter->memtable_matches(filter->state, source, ctid)))
 			tp_topk_add_memtable(heap, *ctid, score);
 
 		if (stats)
@@ -478,7 +481,8 @@ score_segment_single_term_bmw(
 		float4			 k1,
 		float4			 b,
 		float4			 avg_doc_len,
-		TpBMWStats		*stats)
+		TpBMWStats		*stats,
+		TpBMWFilter		*filter)
 {
 	TpSegmentPostingIterator iter;
 	TpSegmentPosting		*posting;
@@ -558,7 +562,10 @@ score_segment_single_term_bmw(
 					b,
 					avg_doc_len);
 
-			if (!tp_topk_dominated(heap, score))
+			if (!tp_topk_dominated(heap, score) &&
+				(filter == NULL ||
+				 filter->segment_matches(
+						 filter->state, reader, posting->doc_id)))
 			{
 				tp_topk_add_segment(
 						heap, reader->root_block, posting->doc_id, score);
@@ -587,7 +594,8 @@ tp_score_single_term_bmw(
 		int							  max_results,
 		ItemPointerData				 *result_ctids,
 		float4						 *result_scores,
-		TpBMWStats					 *stats)
+		TpBMWStats					 *stats,
+		TpBMWFilter					 *filter)
 {
 	TpTopKHeap heap;
 	int		   result_count;
@@ -603,7 +611,9 @@ tp_score_single_term_bmw(
 
 	/* Score memtable (exhaustive - no skip index) */
 	score_memtable_single_term(
-			&heap, memtable_src, term, idf, k1, b, avg_doc_len, stats);
+			&heap, memtable_src, term, idf, k1, b, avg_doc_len, stats, filter);
+	if (filter != NULL)
+		filter->reset(filter->state);
 
 	/* Score each segment level with BMW */
 	for (uint32 level = 0; level < TP_MAX_LEVELS; level++)
@@ -619,7 +629,17 @@ tp_score_single_term_bmw(
 			CHECK_FOR_INTERRUPTS();
 
 			score_segment_single_term_bmw(
-					&heap, reader, term, idf, k1, b, avg_doc_len, stats);
+					&heap,
+					reader,
+					term,
+					idf,
+					k1,
+					b,
+					avg_doc_len,
+					stats,
+					filter);
+			if (filter != NULL)
+				filter->reset(filter->state);
 
 			tp_segment_close(reader);
 		}
@@ -698,7 +718,8 @@ score_memtable_multi_term(
 		float4		  k1,
 		float4		  b,
 		float4		  avg_doc_len,
-		TpBMWStats	 *stats)
+		TpBMWStats	 *stats,
+		TpBMWFilter	 *filter)
 {
 	HTAB   *doc_accum;
 	HASHCTL hash_ctl;
@@ -787,7 +808,10 @@ score_memtable_multi_term(
 		hash_seq_init(&seq, doc_accum);
 		while ((entry = hash_seq_search(&seq)) != NULL)
 		{
-			if (!tp_topk_dominated(heap, entry->score))
+			if (!tp_topk_dominated(heap, entry->score) &&
+				(filter == NULL ||
+				 filter->memtable_matches(
+						 filter->state, source, &entry->ctid)))
 				tp_topk_add_memtable(heap, entry->ctid, entry->score);
 
 			if (stats)
@@ -1482,7 +1506,8 @@ score_segment_multi_term_bmw(
 		float4			 k1,
 		float4			 b,
 		float4			 avg_doc_len,
-		TpBMWStats		*stats)
+		TpBMWStats		*stats,
+		TpBMWFilter		*filter)
 {
 	int active_count;
 
@@ -1589,7 +1614,9 @@ score_segment_multi_term_bmw(
 			doc_score =
 					score_pivot_document(terms, pivot_len, k1, b, avg_doc_len);
 
-			if (doc_score > 0.0f && !tp_topk_dominated(heap, doc_score))
+			if (doc_score > 0.0f && !tp_topk_dominated(heap, doc_score) &&
+				(filter == NULL ||
+				 filter->segment_matches(filter->state, reader, pivot_doc_id)))
 				tp_topk_add_segment(
 						heap, reader->root_block, pivot_doc_id, doc_score);
 
@@ -1635,7 +1662,8 @@ tp_score_multi_term_bmw(
 		int							  max_results,
 		ItemPointerData				 *result_ctids,
 		float4						 *result_scores,
-		TpBMWStats					 *stats)
+		TpBMWStats					 *stats,
+		TpBMWFilter					 *filter)
 {
 	TpTopKHeap	  heap;
 	TpTermState **terms;
@@ -1663,7 +1691,17 @@ tp_score_multi_term_bmw(
 
 	/* Score memtable (exhaustive - no skip index) */
 	score_memtable_multi_term(
-			&heap, memtable_src, terms, term_count, k1, b, avg_doc_len, stats);
+			&heap,
+			memtable_src,
+			terms,
+			term_count,
+			k1,
+			b,
+			avg_doc_len,
+			stats,
+			filter);
+	if (filter != NULL)
+		filter->reset(filter->state);
 
 	/* Score each segment with block-based BMW */
 	for (uint32 level = 0; level < TP_MAX_LEVELS; level++)
@@ -1686,7 +1724,10 @@ tp_score_multi_term_bmw(
 					k1,
 					b,
 					avg_doc_len,
-					stats);
+					stats,
+					filter);
+			if (filter != NULL)
+				filter->reset(filter->state);
 
 			tp_segment_close(reader);
 		}

@@ -116,7 +116,8 @@ tp_score_documents(
 		int				   query_term_count,
 		int				   max_results,
 		ItemPointer		   result_ctids,
-		float4			 **result_scores)
+		float4			 **result_scores,
+		TpBMWFilter		  *filter)
 {
 	float4					avg_doc_len;
 	int32					total_docs;
@@ -127,6 +128,8 @@ tp_score_documents(
 	int						i;
 	int						result_count = 0;
 	TpScoringSnapshot	   *scoring;
+	const char *const	   *source_terms = (const char *const *)query_terms;
+	int						source_term_count = query_term_count;
 
 	/* Basic sanity checks */
 	Assert(local_state != NULL);
@@ -143,11 +146,25 @@ tp_score_documents(
 		return 0;
 	}
 
+	/*
+	 * Project filter terms too: a bounded chain source otherwise knows only
+	 * ranking terms.  Corpus statistics and IDF still use the original query.
+	 */
+	if (filter != NULL && filter->term_count > 0)
+	{
+		const char **terms = palloc(
+				(query_term_count + filter->term_count) * sizeof(char *));
+
+		memcpy(terms, query_terms, query_term_count * sizeof(char *));
+		memcpy(terms + query_term_count,
+			   filter->terms,
+			   filter->term_count * sizeof(char *));
+		source_terms = terms;
+		source_term_count += filter->term_count;
+	}
+
 	scoring = tp_scoring_snapshot_get(
-			index_relation,
-			(const char *const *)query_terms,
-			query_term_count,
-			&memtable_src);
+			index_relation, source_terms, source_term_count, &memtable_src);
 	snapshot = scoring->graph;
 	if (memtable_src == NULL)
 		memtable_src = tp_memtable_source_create_for_snapshot(
@@ -155,8 +172,10 @@ tp_score_documents(
 				index_relation,
 				&snapshot->memtable,
 				scoring->recovery,
-				(const char *const *)query_terms,
-				query_term_count);
+				source_terms,
+				source_term_count);
+	if (source_terms != (const char *const *)query_terms)
+		pfree((void *)source_terms);
 	TP_INJECTION_POINT(TP_INJECTION_SCORING_SOURCE);
 	k1			= snapshot->metapage.k1;
 	b			= snapshot->metapage.b;
@@ -214,7 +233,8 @@ tp_score_documents(
 				max_results,
 				result_ctids,
 				scores,
-				&stats);
+				&stats,
+				filter);
 
 		/* Log BMW stats if enabled */
 		if (tp_log_bmw_stats)
@@ -291,7 +311,8 @@ tp_score_documents(
 				max_results,
 				result_ctids,
 				scores,
-				&stats);
+				&stats,
+				filter);
 
 		pfree(idfs);
 
