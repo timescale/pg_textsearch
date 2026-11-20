@@ -7,6 +7,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import sys
@@ -557,6 +558,54 @@ def classify_explain(text, *, engine, operation, shape):
     )
 
 
+def _plan_audit_json(chunk, query_id):
+    lines = chunk.splitlines()
+    start = next(
+        (
+            index for index, line in enumerate(lines)
+            if line.lstrip().startswith(("[", "{"))
+        ),
+        None,
+    )
+    if start is None:
+        raise ConfigError(
+            f"plan audit did not return valid JSON plan for query {query_id}"
+        )
+    preamble = lines[:start]
+    saw_notice = False
+    for line in preamble:
+        if not line.strip():
+            continue
+        if (
+            line.startswith("NOTICE:")
+            or re.match(
+                r"^psql:[^:\r\n]+:[0-9]+: NOTICE:", line
+            )
+        ):
+            saw_notice = True
+            continue
+        if saw_notice and (
+            re.match(r"^LINE [0-9]+:", line)
+            or re.match(
+                r"^(DETAIL|HINT|CONTEXT|WHERE|LOCATION):", line
+            )
+            or re.fullmatch(r"\s*\^+\s*", line)
+        ):
+            continue
+        raise ConfigError(
+            f"plan audit has unrecognized diagnostic preamble "
+            f"for query {query_id}"
+        )
+    payload = "\n".join(lines[start:]).strip()
+    try:
+        json.loads(payload)
+    except json.JSONDecodeError as error:
+        raise ConfigError(
+            f"plan audit did not return valid JSON plan for query {query_id}"
+        ) from error
+    return payload
+
+
 def parse_plan_audit(
     text, *, queries, engine, operation, kind, shape
 ):
@@ -587,35 +636,37 @@ def parse_plan_audit(
                 )
             classification = "timeout"
             censored = True
-        elif (
-            engine == "pg_textsearch"
-            and query.get("pg_tsquery", {}).get(kind) == ""
-        ):
-            empty_plan = json.loads(chunk)
-            node_types = _plan_node_types(empty_plan)
-            if (
-                "Result" in node_types
-                and not any(
-                    "Scan" in value
-                    and value not in {"CTE Scan", "Subquery Scan"}
-                    for value in node_types
-                )
-            ):
-                classification = "empty_query"
-            else:
-                classification = "non_indexed_empty"
-            censored = False
         else:
-            try:
-                classification = classify_explain(
-                    chunk,
-                    engine=engine,
-                    operation=operation,
-                    shape=shape,
-                )
-            except ConfigError:
-                classification = "non_indexed_search"
-            censored = False
+            plan_json = _plan_audit_json(chunk, query["id"])
+            if (
+                engine == "pg_textsearch"
+                and query.get("pg_tsquery", {}).get(kind) == ""
+            ):
+                empty_plan = json.loads(plan_json)
+                node_types = _plan_node_types(empty_plan)
+                if (
+                    "Result" in node_types
+                    and not any(
+                        "Scan" in value
+                        and value not in {"CTE Scan", "Subquery Scan"}
+                        for value in node_types
+                    )
+                ):
+                    classification = "empty_query"
+                else:
+                    classification = "non_indexed_empty"
+                censored = False
+            else:
+                try:
+                    classification = classify_explain(
+                        plan_json,
+                        engine=engine,
+                        operation=operation,
+                        shape=shape,
+                    )
+                except ConfigError:
+                    classification = "non_indexed_search"
+                censored = False
         records.append({
             "index": index,
             "query_id": query["id"],
