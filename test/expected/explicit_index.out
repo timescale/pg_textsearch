@@ -106,6 +106,116 @@ LIMIT 10;
          Filter: (category_id = 1)
 (4 rows)
 
+-- Issue #553: custom plans resolve parameterized index names after the
+-- initial explicit-index collection. Each execution must use its index.
+SET plan_cache_mode = force_custom_plan;
+PREPARE explicit_prepared(text, text) AS
+SELECT content <@> to_bm25query($1, $2) AS score
+FROM multi_index_test
+ORDER BY score
+LIMIT 3;
+EXPLAIN (COSTS OFF)
+EXECUTE explicit_prepared('ressource', 'content_idx_french');
+                                QUERY PLAN                                 
+---------------------------------------------------------------------------
+ Limit
+   ->  Index Scan using content_idx_french on multi_index_test
+         Order By: (content <@> 'content_idx_french:ressource'::bm25query)
+(3 rows)
+
+EXECUTE explicit_prepared('ressource', 'content_idx_french');
+         score          
+------------------------
+ -0.0004996252828277647
+ -0.0004996252828277647
+ -0.0004996252828277647
+(3 rows)
+
+EXPLAIN (COSTS OFF)
+EXECUTE explicit_prepared('ressource', 'content_idx_simple');
+                                QUERY PLAN                                 
+---------------------------------------------------------------------------
+ Limit
+   ->  Index Scan using content_idx_simple on multi_index_test
+         Order By: (content <@> 'content_idx_simple:ressource'::bm25query)
+(3 rows)
+
+EXECUTE explicit_prepared('ressource', 'content_idx_simple');
+ score 
+-------
+(0 rows)
+
+DEALLOCATE explicit_prepared;
+-- A partial index whose predicate is not implied is not a valid alternative.
+CREATE INDEX content_partial_french ON multi_index_test USING bm25 (content)
+    WITH (text_config = 'french') WHERE category_id = 1;
+NOTICE:  BM25 index build started for relation content_partial_french
+NOTICE:  Using text search configuration: french
+NOTICE:  Using index options: k1=1.20, b=0.75
+NOTICE:  BM25 index build completed: 100 documents, avg_length=9.00
+PREPARE explicit_partial(text, text) AS
+SELECT id FROM multi_index_test
+ORDER BY content <@> to_bm25query($1, $2)
+LIMIT 3;
+\set VERBOSITY sqlstate
+EXPLAIN (COSTS OFF)
+EXECUTE explicit_partial('ressource', 'content_partial_french');
+ERROR:  42809
+\set VERBOSITY default
+DEALLOCATE explicit_partial;
+DROP INDEX content_partial_french;
+-- The same requirement applies to expression indexes.
+CREATE INDEX content_lower_french ON multi_index_test
+    USING bm25 (lower(content)) WITH (text_config = 'french');
+NOTICE:  BM25 index build started for relation content_lower_french
+NOTICE:  Using text search configuration: french
+NOTICE:  Using index options: k1=1.20, b=0.75
+NOTICE:  BM25 index build completed: 1000 documents, avg_length=9.00
+CREATE INDEX content_lower_simple ON multi_index_test
+    USING bm25 (lower(content)) WITH (text_config = 'simple');
+NOTICE:  BM25 index build started for relation content_lower_simple
+NOTICE:  Using text search configuration: simple
+NOTICE:  Using index options: k1=1.20, b=0.75
+NOTICE:  BM25 index build completed: 1000 documents, avg_length=11.00
+PREPARE explicit_expression(text, text) AS
+SELECT lower(content) <@> to_bm25query($1, $2) AS score
+FROM multi_index_test
+ORDER BY score
+LIMIT 3;
+EXPLAIN (COSTS OFF)
+EXECUTE explicit_expression('ressource', 'content_lower_french');
+                                     QUERY PLAN                                     
+------------------------------------------------------------------------------------
+ Limit
+   ->  Index Scan using content_lower_french on multi_index_test
+         Order By: (lower(content) <@> 'content_lower_french:ressource'::bm25query)
+(3 rows)
+
+EXECUTE explicit_expression('ressource', 'content_lower_french');
+         score          
+------------------------
+ -0.0004996252828277647
+ -0.0004996252828277647
+ -0.0004996252828277647
+(3 rows)
+
+EXPLAIN (COSTS OFF)
+EXECUTE explicit_expression('ressource', 'content_lower_simple');
+                                     QUERY PLAN                                     
+------------------------------------------------------------------------------------
+ Limit
+   ->  Index Scan using content_lower_simple on multi_index_test
+         Order By: (lower(content) <@> 'content_lower_simple:ressource'::bm25query)
+(3 rows)
+
+EXECUTE explicit_expression('ressource', 'content_lower_simple');
+ score 
+-------
+(0 rows)
+
+DEALLOCATE explicit_expression;
+DROP INDEX content_lower_french, content_lower_simple;
+RESET plan_cache_mode;
 -- Positive test: without an explicit index, implicit resolution still
 -- works. All matching rows share the same text, so the BM25 scores are
 -- deterministic even though the tied tuple ids (and which tied index is
@@ -143,4 +253,83 @@ LIMIT 10;
 
 -- Clean up
 DROP TABLE multi_index_test;
+-- A named partitioned index must select its own child indexes.
+CREATE TABLE multi_index_part (id INT, content TEXT)
+    PARTITION BY RANGE (id);
+CREATE TABLE multi_index_part_a PARTITION OF multi_index_part
+    FOR VALUES FROM (0) TO (100);
+CREATE TABLE multi_index_part_b PARTITION OF multi_index_part
+    FOR VALUES FROM (100) TO (200);
+INSERT INTO multi_index_part
+SELECT i, 'search requests number ' || i
+FROM generate_series(1, 199) i;
+CREATE INDEX multi_part_english ON multi_index_part USING bm25 (content)
+    WITH (text_config = 'english');
+NOTICE:  BM25 index build started for relation multi_index_part_a_content_idx
+NOTICE:  Using text search configuration: english
+NOTICE:  Using index options: k1=1.20, b=0.75
+NOTICE:  BM25 index build completed: 199 documents across 2 partitions, avg_length=4.00
+CREATE INDEX multi_part_simple ON multi_index_part USING bm25 (content)
+    WITH (text_config = 'simple');
+NOTICE:  BM25 index build started for relation multi_index_part_a_content_idx1
+NOTICE:  Using text search configuration: simple
+NOTICE:  Using index options: k1=1.20, b=0.75
+NOTICE:  BM25 index build completed: 199 documents across 2 partitions, avg_length=4.00
+ANALYZE multi_index_part;
+SET plan_cache_mode = force_custom_plan;
+PREPARE explicit_partition(text, text) AS
+SELECT count(*) FROM (
+    SELECT id FROM multi_index_part
+    ORDER BY content <@> to_bm25query($1, $2)
+    LIMIT 3
+) matches;
+EXPLAIN (COSTS OFF)
+EXECUTE explicit_partition('request', 'multi_part_english');
+                                                 QUERY PLAN                                                 
+------------------------------------------------------------------------------------------------------------
+ Aggregate
+   ->  Limit
+         ->  Merge Append
+               Sort Key: (bm25_get_current_score())
+               ->  Index Scan using multi_index_part_a_content_idx on multi_index_part_a multi_index_part_1
+                     Order By: (content <@> 'multi_part_english:request'::bm25query)
+               ->  Index Scan using multi_index_part_b_content_idx on multi_index_part_b multi_index_part_2
+                     Order By: (content <@> 'multi_part_english:request'::bm25query)
+(8 rows)
+
+EXECUTE explicit_partition('request', 'multi_part_english');
+ count 
+-------
+     3
+(1 row)
+
+EXPLAIN (COSTS OFF)
+EXECUTE explicit_partition('request', 'multi_part_simple');
+                                                 QUERY PLAN                                                  
+-------------------------------------------------------------------------------------------------------------
+ Aggregate
+   ->  Limit
+         ->  Merge Append
+               Sort Key: (bm25_get_current_score())
+               ->  Index Scan using multi_index_part_a_content_idx1 on multi_index_part_a multi_index_part_1
+                     Order By: (content <@> 'multi_part_simple:request'::bm25query)
+               ->  Index Scan using multi_index_part_b_content_idx1 on multi_index_part_b multi_index_part_2
+                     Order By: (content <@> 'multi_part_simple:request'::bm25query)
+(8 rows)
+
+EXECUTE explicit_partition('request', 'multi_part_simple');
+ count 
+-------
+     0
+(1 row)
+
+-- A leaf index cannot satisfy scans of its sibling partition.
+\set VERBOSITY sqlstate
+EXPLAIN (COSTS OFF)
+EXECUTE explicit_partition('request', 'multi_index_part_a_content_idx');
+ERROR:  42809
+\set VERBOSITY default
+DEALLOCATE explicit_partition;
+RESET plan_cache_mode;
+DROP TABLE multi_index_part;
 DROP EXTENSION pg_textsearch CASCADE;
