@@ -122,11 +122,8 @@ tp_costestimate(
 	bool			boolean_full_scan = false;
 	TSQuery			boolean_query	  = NULL;
 
-	/*
-	 * Boolean filtering and ranked scans are separate execution modes.
-	 * Multiple Boolean keys and combined filtering/ranking are follow-ups.
-	 */
-	if ((!has_orderby && !has_boolean) || (has_orderby && has_boolean) ||
+	/* Multiple Boolean scan keys are not supported. */
+	if ((!has_orderby && !has_boolean) ||
 		(has_boolean && list_length(path->indexclauses) != 1))
 	{
 		tp_disable_index_path(
@@ -160,6 +157,9 @@ tp_costestimate(
 			boolean_full_scan = tp_boolean_query_requires_full_scan(
 					boolean_query);
 	}
+
+	/* Ranked scans evaluate the predicate on BMW candidates, not every doc. */
+	boolean_full_scan = boolean_full_scan && !has_orderby;
 
 	/* Try to get actual statistics from the index */
 	if (path->indexinfo && path->indexinfo->indexoid != InvalidOid)
@@ -205,8 +205,8 @@ tp_costestimate(
 							  ? costs.indexTotalCost +
 										cpu_operator_cost * num_tuples
 							  : costs.indexTotalCost * TP_INDEX_SCAN_COST_FACTOR;
-	*indexStartupCost = has_boolean ? *indexTotalCost
-									: costs.indexStartupCost + 0.01;
+	*indexStartupCost = has_orderby ? costs.indexStartupCost + 0.01
+									: *indexTotalCost;
 
 	/*
 	 * Calculate selectivity based on LIMIT if available, otherwise default
