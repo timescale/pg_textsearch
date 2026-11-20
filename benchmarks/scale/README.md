@@ -144,6 +144,10 @@ JSON-quoted, not interpolated into SQL.
 
 Errors/timeouts invalidate a cell. Raw driver outputs and result IDs are
 retained; successful throughput is not a substitute for result validation.
+Do not interpret zero `benchmark_timeouts` as no cancellations: the pinned
+SDK's `deadlineReached` flag denotes a warmup boundary, not every request
+deadline. SQL cancellations still count as `benchmark_errors` and invalidate
+the cell.
 Correctness probes have a 30-second per-query budget and incremental
 checkpoints. Failed or censored cells do not prevent the remaining workloads
 and engines from running; the aggregate run still reports failure.
@@ -252,6 +256,9 @@ include `plan`, `provision`, `prepare`, `export`, `stage`, `distribute`,
 The controller stages exports off the source host before its queries
 resume, and keeps the staging host idle until all fanout transfers end.
 It retains original indexes rather than deleting them after measurement.
+The expanded November 19 measurement sources are preserved at
+`benchmarks/tin-expanded-20261119-final-v1`; shard manifests also record
+the deployed worker overlay's hash.
 
 For an already provisioned worker:
 
