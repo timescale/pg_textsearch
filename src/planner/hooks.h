@@ -8,8 +8,12 @@
 
 #include <postgres.h>
 
+#include <nodes/pathnodes.h>
+
 /*
  * Initialize planner hooks (called from _PG_init).
  * Registers post_parse_analyze_hook and planner_hook.
  */
 void tp_planner_hook_init(void);
+
+bool tp_indexpath_requires_other_index(IndexPath *path);

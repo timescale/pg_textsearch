@@ -1593,6 +1593,50 @@ is_bm25_index(Oid index_oid, Oid bm25_am_oid)
 }
 
 /*
+ * Custom-plan parameters are folded after explicit requirements are collected.
+ * Reject a mismatched path only if the named index is usable on this relation;
+ * otherwise leave the path for the existing explicit-index validation.
+ */
+bool
+tp_indexpath_requires_other_index(IndexPath *path)
+{
+	BM25OidCache oids;
+	TpQuery		*query;
+	Oid			 required_index;
+	ListCell	*lc;
+
+	if (!get_bm25_oids(&oids))
+		return false;
+
+	query = find_tpquery_in_list(path->indexorderbys, &oids);
+	if (query == NULL || !tpquery_is_explicit_index(query))
+		return false;
+
+	required_index = get_tpquery_index_oid(query);
+	if (!OidIsValid(required_index) ||
+		required_index == path->indexinfo->indexoid ||
+		is_child_partition_index(required_index, path->indexinfo->indexoid))
+		return false;
+
+	foreach (lc, path->indexinfo->rel->indexlist)
+	{
+		IndexOptInfo *candidate = lfirst_node(IndexOptInfo, lc);
+
+		if ((candidate->indpred != NIL && !candidate->predOK) ||
+			candidate->nkeycolumns != path->indexinfo->nkeycolumns ||
+			candidate->indexkeys[0] != path->indexinfo->indexkeys[0] ||
+			!equal(candidate->indexprs, path->indexinfo->indexprs))
+			continue;
+
+		if (candidate->indexoid == required_index ||
+			is_child_partition_index(required_index, candidate->indexoid))
+			return true;
+	}
+
+	return false;
+}
+
+/*
  * Walker context for collecting explicit index requirements from a query.
  */
 typedef struct CollectExplicitIndexContext
