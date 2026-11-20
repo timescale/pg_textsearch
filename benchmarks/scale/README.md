@@ -335,6 +335,54 @@ regenerates real EXPLAIN audits, records decoder/checkpoint hashes, and
 verifies frozen source hashes. It does not relax plan gates. Restart the
 same worker afterward; completed measurements are not repeated.
 
+### Replaying queries on an existing native index
+
+After installing the desired binary and restarting the database (no data
+reload or index rebuild), replay a prepared query pack through the direct
+Boolean-plus-ranked SQL. Use a build supporting combined Boolean filtering
+and BM25 ordering; unsupported plans are rejected.
+
+```bash
+PGHOST=127.0.0.1 PGPORT=16432 PGUSER=postgres \
+python -m benchmarks.scale.replay_queries \
+  --queries /path/to/query-packs/english-no-stopwords/spans.json \
+  --kind conjunction --kind phrase --ordinal 0 --ordinal -1 \
+  --effective-cache-size 160GB --build-sha SOURCE_COMMIT \
+  --output /path/to/new-replay.jsonl
+```
+
+Use standard libpq environment variables or a passfile for authentication.
+This read-only, persistent single-client diagnostic defaults to the first
+and last queries, a 60-second statement timeout, and three warm executions
+after `EXPLAIN ANALYZE`. Search plans must contain Boolean conditions and
+ordering in the same BM25 Index Scan, without a Sort or materialized CTE.
+Returned IDs are checked independently with `to_tsvector`. Use `--all` for
+the complete pack or `--operation count` to diagnose unchanged Boolean-only
+counts. JSONL files are created exclusively; original results are not
+overwritten. This is not a replacement for the concurrent benchmark matrix.
+
+For automated in-place installation, run this on the benchmark host with
+the existing worker inactive:
+
+```bash
+python -m benchmarks.scale.replace_binary \
+  --container CONTAINER --port PORT \
+  --expected-image IMAGE_ID --expected-volume VOLUME_NAME \
+  --expected-original-sha256 ORIGINAL_HASH \
+  --binary /path/to/pg_textsearch.so --binary-sha256 NEW_HASH \
+  --source-sha SOURCE_COMMIT --backup-directory /path/to/new-backup \
+  --worker-unit WORKER_UNIT
+```
+
+This requires the expected running single-volume container, a fixed host
+port, and the original library hash. It saves the original library and index
+identity, atomically replaces the library, and restarts only that container.
+It checks readiness and identity. Failed restarts restore the original
+library. Successful reruns require matching provenance and unchanged index
+identity; incomplete journals require explicit reconciliation. Keep
+the backup and journal: the Docker image ID no longer identifies the
+installed runtime binary. For other PostgreSQL versions, pass `--library`.
+
 ### Original baseline
 
 ```bash
