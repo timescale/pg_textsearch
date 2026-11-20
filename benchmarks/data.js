@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795155662735,
+  "lastUpdate": 1795156830913,
   "repoUrl": "https://github.com/timescale/pg_textsearch",
   "entries": {
     "cranfield Benchmarks": [
@@ -281315,6 +281315,43 @@ window.BENCHMARK_DATA = {
           {
             "name": "paradedb_cranfield (1.4K docs) - Throughput (avg ms/query)",
             "value": 0.7,
+            "unit": "ms"
+          },
+          {
+            "name": "paradedb_cranfield (1.4K docs) - Index Size",
+            "value": 3.25,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tjgreen@gmail.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "653014d4f6e2e63a60323701aea5e8ad7c9d87f9",
+          "message": "Fix hang after a failed memtable cache allocation (#615)\n\nFixes #591.\n\nA failed shared-memory allocation while building the memtable cache\ncould hang the backend forever and block writers on the index.\n`dsm_create()` raises `ERROR` with DSA and dshash LWLocks still held;\nthe cold build's `PG_CATCH` then cleared the cache and self-deadlocked\non them. Both apply paths also released LWLocks after `errfinish()`\nreset the interrupt holdoff count, which is an assertion failure in\ndebug builds.\n\n- Build and catch-up no longer clean up while unwinding. They keep the\ncache cursor invalid until the walk completes, abort releases the locks,\nand the next apply drops the partial cache before admission checks.\n- A new term's string and posting list are allocated before its\nstring-table entry is inserted, so other backends never see a partially\ninitialized key. Allocations not yet inserted are freed by the next\ncache clear.\n- `cache_error_injection` fails allocations during cold builds and\ncatch-ups, then checks that the partial cache is dropped, results are\ncorrect, and writes proceed.\n\nValidation: PG18 debug/injection SQL suite (94/94) and the multi-backend\ncache shell tests; PG17 release SQL suite (83/83). With the postmaster's\nfile-size limit forcing a real `dsm_create()` failure, `main` hangs both\nthe query and a concurrent `INSERT` on `tapir_global_dsa`; with this\nchange the query errors, the insert succeeds, and the cache rebuilds\nonce space is available.",
+          "timestamp": "2026-11-20T04:20:03Z",
+          "url": "https://github.com/timescale/pg_textsearch/commit/653014d4f6e2e63a60323701aea5e8ad7c9d87f9"
+        },
+        "date": 1795156742056,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "paradedb_cranfield (1.4K docs) - Index Build Time",
+            "value": 83.481,
+            "unit": "ms"
+          },
+          {
+            "name": "paradedb_cranfield (1.4K docs) - Throughput (avg ms/query)",
+            "value": 0.71,
             "unit": "ms"
           },
           {
