@@ -164,3 +164,4 @@ SELECT array_agg(id ORDER BY id) AS merged_matches FROM (
 ) s;
 
 DROP TABLE ranked_boolean_docs;
+DROP EXTENSION pg_textsearch;
