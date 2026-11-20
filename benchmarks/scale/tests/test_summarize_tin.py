@@ -162,6 +162,18 @@ class TinSummaryTests(unittest.TestCase):
             "unavailable_aggregated_query_csv",
         )
 
+    def test_write_cleanup_checkpoint_is_not_a_dashboard(self):
+        self.completed()
+        self.write_json("write-cleanup.json", {
+            "removed": True,
+            "volume": "completed-disposable-write-volume",
+            "reason": "completed-write-artifacts-captured",
+        })
+        row, = self.rows(self.run_summary())
+        self.assertEqual(row["status"], "ok")
+        self.assertEqual(int(row["actual_writes"]), 2)
+        self.assertEqual(float(row["search_qps"]), 75)
+
     def test_failed_and_plan_gated_cells_never_publish_timings(self):
         failed = self.fingerprint()
         self.write_json("failed.json", {

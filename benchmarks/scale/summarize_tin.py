@@ -35,7 +35,7 @@ TERMINALS = {
 }
 
 NON_DASHBOARD_JSON = set(TERMINALS) | {
-    "k6-summary.json", "load-quality.json",
+    "k6-summary.json", "load-quality.json", "write-cleanup.json",
 }
 
 
