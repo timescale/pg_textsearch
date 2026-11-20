@@ -143,6 +143,12 @@ disposable. Writes update only the on-disk chain. Readers lazily build or catch
 up the cache; generation mismatches, spills, eviction, or memory pressure can
 drop it without affecting correctness. Standbys read the on-disk chain.
 
+Build and catch-up keep the cache cursor invalid while they walk the chain. An
+error, such as a failed shared-memory allocation, can leave DSA or dshash locks
+held until transaction abort, so these paths do no cleanup while unwinding. The
+next cold build discards the partial cache. New terms are allocated before they
+are inserted into the string table, so readers never see a partial entry.
+
 Registry entries are keyed by database and index OID. Rebuilds preserve the
 shared allocation and its locks so existing backends retain valid wrappers.
 A successful build clears the cache in place and advances its generation.

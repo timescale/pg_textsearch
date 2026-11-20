@@ -18,6 +18,7 @@
 
 #include "common/hashfn.h"
 #include "common/hashfn_unstable.h"
+#include "debug/injection.h"
 #include "index/state.h"
 #include "memtable/posting.h"
 #include "memtable/stringtable.h"
@@ -299,9 +300,11 @@ tp_ensure_string_table_initialized(TpLocalIndexState *local_state)
 /*
  * Get or create a posting list for a term.
  *
- * Uses a single dshash_find_or_insert call to atomically find or
- * create the entry, eliminating the lookup-then-insert race that
- * exists when two backends see "not found" for the same term.
+ * A new term's string and posting list are allocated before its entry
+ * is inserted, so an allocation error cannot publish an entry whose key
+ * other backends would misread.  Allocations not yet inserted are
+ * recorded in the memtable for tp_cache_clear to reclaim after such an
+ * error.  Callers hold cache.apply_lock EXCL, which serializes inserts.
  *
  * Caller must have ensured the string hash table is initialized
  * (via tp_ensure_string_table_initialized under LW_EXCLUSIVE).
@@ -352,16 +355,29 @@ tp_get_or_create_posting_list(TpLocalIndexState *local_state, const char *term)
 	lookup_key.posting_list = InvalidDsaPointer;
 	lookup_key.len			= term_len;
 
-	/* Atomic find-or-insert: holds exclusive partition lock */
-	entry = (TpStringHashEntry *)
-			dshash_find_or_insert(string_table, &lookup_key, &found);
-
-	if (!found)
+	entry = (TpStringHashEntry *)dshash_find(string_table, &lookup_key, false);
+	if (entry == NULL)
 	{
-		/* New term -- initialize under partition lock */
-		entry->key.term.dp =
+		TpStringKey stored_key;
+
+		TP_INJECTION_POINT(TP_INJECTION_CACHE_ALLOC_TERM);
+		memtable->pending_term_dp =
 				tp_alloc_string_dsa(local_state->dsa, term, term_len);
-		entry->key.posting_list = tp_alloc_posting_list(local_state->dsa);
+		memtable->pending_posting_dp = tp_alloc_posting_list(local_state->dsa);
+
+		stored_key.term.dp		= memtable->pending_term_dp;
+		stored_key.posting_list = memtable->pending_posting_dp;
+		stored_key.len			= term_len;
+		TP_INJECTION_POINT(TP_INJECTION_CACHE_INSERT_TERM);
+		entry = (TpStringHashEntry *)
+				dshash_find_or_insert(string_table, &stored_key, &found);
+		memtable->pending_term_dp	 = InvalidDsaPointer;
+		memtable->pending_posting_dp = InvalidDsaPointer;
+		if (found)
+		{
+			dsa_free(local_state->dsa, stored_key.term.dp);
+			tp_free_posting_list(local_state->dsa, stored_key.posting_list);
+		}
 	}
 
 	posting_list = dsa_get_address(local_state->dsa, entry->key.posting_list);
