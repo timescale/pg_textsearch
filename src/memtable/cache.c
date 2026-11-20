@@ -1247,7 +1247,7 @@ bm25_cache_bump_spill_generation(PG_FUNCTION_ARGS)
 PG_FUNCTION_INFO_V1(bm25_cache_global_estimated_bytes);
 
 Datum
-bm25_cache_global_estimated_bytes(PG_FUNCTION_ARGS)
+bm25_cache_global_estimated_bytes(PG_FUNCTION_ARGS pg_attribute_unused())
 {
 	pg_atomic_uint64 *p = tp_registry_estimated_total_bytes();
 
