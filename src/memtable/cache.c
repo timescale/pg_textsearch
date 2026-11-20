@@ -107,12 +107,28 @@ cache_locator_set(TpMemtable *memtable, Relation rel)
 }
 
 /*
- * Drop cache contents built from a different relation file before
- * admission checks can reject work and leave those stale bytes charged.
- * The caller already holds the per-index lock.
+ * Cache contents that cannot be served: built from a different relation
+ * file, or tables left without a cursor by a build or catchup that failed
+ * partway, whose CTID gate would skip a partially applied record.
  */
 static bool
-cache_drop_locator_mismatch(
+cache_unusable(const TpMemtable *memtable, Relation rel)
+{
+	if (memtable->cursor_locator_valid &&
+		!cache_locator_matches(memtable, rel))
+		return true;
+	return memtable->cursor_next_blkno == InvalidBlockNumber &&
+		   (memtable->string_hash_handle != DSHASH_HANDLE_INVALID ||
+			memtable->doc_lengths_handle != DSHASH_HANDLE_INVALID);
+}
+
+/*
+ * Drop unusable cache contents before admission checks can reject work
+ * and leave those bytes charged.  The caller already holds the per-index
+ * lock.
+ */
+static bool
+cache_drop_unusable(
 		TpLocalIndexState *local_state, Relation rel, TpMemtable *memtable)
 {
 	bool dropped = false;
@@ -120,13 +136,11 @@ cache_drop_locator_mismatch(
 	LWLockAcquire(&memtable->apply_lock, LW_EXCLUSIVE);
 	LWLockAcquire(&memtable->lock, LW_SHARED);
 
-	if (memtable->cursor_locator_valid &&
-		!cache_locator_matches(memtable, rel))
+	if (cache_unusable(memtable, rel))
 	{
 		LWLockRelease(&memtable->lock);
 		LWLockAcquire(&memtable->lock, LW_EXCLUSIVE);
-		if (memtable->cursor_locator_valid &&
-			!cache_locator_matches(memtable, rel))
+		if (cache_unusable(memtable, rel))
 		{
 			tp_cache_clear(local_state->dsa, memtable);
 			dropped = true;
@@ -254,6 +268,13 @@ tp_cache_clear(dsa_area *dsa, TpMemtable *memtable)
 		dshash_destroy(doclength_table);
 		memtable->doc_lengths_handle = DSHASH_HANDLE_INVALID;
 	}
+
+	if (DsaPointerIsValid(memtable->pending_term_dp))
+		dsa_free(dsa, memtable->pending_term_dp);
+	if (DsaPointerIsValid(memtable->pending_posting_dp))
+		tp_free_posting_list(dsa, memtable->pending_posting_dp);
+	memtable->pending_term_dp	 = InvalidDsaPointer;
+	memtable->pending_posting_dp = InvalidDsaPointer;
 
 	memtable->cursor_gen_spill_count = 0;
 	memtable->cursor_next_blkno		 = InvalidBlockNumber;
@@ -642,9 +663,9 @@ tp_cache_apply_to_tail(TpLocalIndexState *local_state, Relation rel)
 	TpMemtable		   *memtable;
 	uint64				cur_gen;
 	uint64				soft_cap;
-	BlockNumber			seed_blkno;
-	uint16				seed_off;
-	TpChainWalker	   *walker = NULL;
+	BlockNumber			next_blkno;
+	uint16				next_off;
+	TpChainWalker	   *walker;
 	TpChainWalkerRecord rec;
 	MemoryContext		decode_cxt;
 	MemoryContext		walker_cxt;
@@ -662,7 +683,7 @@ tp_cache_apply_to_tail(TpLocalIndexState *local_state, Relation rel)
 			 "index oid=%u",
 			 local_state->shared->index_oid);
 
-	if (cache_drop_locator_mismatch(local_state, rel, memtable))
+	if (cache_drop_unusable(local_state, rel, memtable))
 		return TP_CACHE_APPLY_DROPPED;
 
 	/*
@@ -728,7 +749,15 @@ tp_cache_apply_to_tail(TpLocalIndexState *local_state, Relation rel)
 
 	soft_cap = tp_cache_per_index_soft_cap_bytes();
 
-	cursor_to_walker_seed(memtable, &seed_blkno, &seed_off);
+	cursor_to_walker_seed(memtable, &next_blkno, &next_off);
+
+	/*
+	 * An error can leave DSA or dshash locks held until abort, so it
+	 * must not clean up the cache while unwinding.  Invalidate the
+	 * cursor until the walk completes instead; the next cold build
+	 * discards a partially applied record.
+	 */
+	memtable->cursor_next_blkno = InvalidBlockNumber;
 
 	walker_cxt = AllocSetContextCreate(
 			CurrentMemoryContext,
@@ -739,53 +768,42 @@ tp_cache_apply_to_tail(TpLocalIndexState *local_state, Relation rel)
 			"pg_textsearch cache apply decode",
 			ALLOCSET_SMALL_SIZES);
 
-	walker = tp_chain_walker_open(rel, seed_blkno, seed_off, walker_cxt);
+	walker = tp_chain_walker_open(rel, next_blkno, next_off, walker_cxt);
 
-	PG_TRY();
+	while (tp_chain_walker_next(walker, &rec))
 	{
-		while (tp_chain_walker_next(walker, &rec))
+		DecodedDoc doc;
+
+		MemoryContextReset(decode_cxt);
+		oldcxt = MemoryContextSwitchTo(decode_cxt);
+		decode_record(rec.vector_bytes, rec.vector_len, &doc);
+		MemoryContextSwitchTo(oldcxt);
+
+		if (!apply_one_record(
+					local_state,
+					memtable,
+					&rec.ctid,
+					rec.doc_length,
+					&doc,
+					soft_cap))
 		{
-			DecodedDoc doc;
-
-			MemoryContextReset(decode_cxt);
-			oldcxt = MemoryContextSwitchTo(decode_cxt);
-			decode_record(rec.vector_bytes, rec.vector_len, &doc);
-			MemoryContextSwitchTo(oldcxt);
-
-			if (!apply_one_record(
-						local_state,
-						memtable,
-						&rec.ctid,
-						rec.doc_length,
-						&doc,
-						soft_cap))
-			{
-				budget_ok = false;
-				break;
-			}
-
-			memtable->cursor_next_blkno = rec.next_blkno;
-			memtable->cursor_next_off	= rec.next_off;
-			pg_atomic_fetch_add_u64(&memtable->cursor_seq, 1);
-
-			CHECK_FOR_INTERRUPTS();
+			budget_ok = false;
+			break;
 		}
+
+		next_blkno = rec.next_blkno;
+		next_off   = rec.next_off;
+		pg_atomic_fetch_add_u64(&memtable->cursor_seq, 1);
+
+		CHECK_FOR_INTERRUPTS();
 	}
-	PG_CATCH();
-	{
-		if (walker)
-			tp_chain_walker_close(walker);
-		MemoryContextDelete(decode_cxt);
-		MemoryContextDelete(walker_cxt);
-		LWLockRelease(&memtable->lock);
-		LWLockRelease(&memtable->apply_lock);
-		PG_RE_THROW();
-	}
-	PG_END_TRY();
 
 	tp_chain_walker_close(walker);
 	MemoryContextDelete(decode_cxt);
 	MemoryContextDelete(walker_cxt);
+
+	memtable->cursor_next_blkno = next_blkno;
+	memtable->cursor_next_off	= next_off;
 
 	LWLockRelease(&memtable->lock);
 	LWLockRelease(&memtable->apply_lock);
@@ -801,9 +819,11 @@ tp_cache_cold_build(TpLocalIndexState *local_state, Relation rel)
 	TpMemtable			  *memtable;
 	TpIndexMetaPage		   metap;
 	BlockNumber			   head;
+	BlockNumber			   next_blkno;
+	uint16				   next_off;
 	uint64				   gen;
 	uint64				   soft_cap;
-	TpChainWalker		  *walker = NULL;
+	TpChainWalker		  *walker;
 	TpChainWalkerRecord	   rec;
 	MemoryContext		   decode_cxt;
 	MemoryContext		   walker_cxt;
@@ -821,7 +841,7 @@ tp_cache_cold_build(TpLocalIndexState *local_state, Relation rel)
 			 "index oid=%u",
 			 local_state->shared->index_oid);
 
-	(void)cache_drop_locator_mismatch(local_state, rel, memtable);
+	(void)cache_drop_unusable(local_state, rel, memtable);
 
 	/*
 	 * Apply-protocol-entry hook: enforce the global cap before
@@ -836,8 +856,7 @@ tp_cache_cold_build(TpLocalIndexState *local_state, Relation rel)
 	LWLockAcquire(&memtable->apply_lock, LW_EXCLUSIVE);
 	LWLockAcquire(&memtable->lock, LW_EXCLUSIVE);
 
-	if (memtable->cursor_locator_valid &&
-		!cache_locator_matches(memtable, rel))
+	if (cache_unusable(memtable, rel))
 		tp_cache_clear(local_state->dsa, memtable);
 
 	/*
@@ -912,60 +931,43 @@ tp_cache_cold_build(TpLocalIndexState *local_state, Relation rel)
 			ALLOCSET_SMALL_SIZES);
 
 	/*
-	 * Seed the cursor.  We commit the generation token now so the
-	 * apply loop's cursor advance produces a coherent (gen, blkno,
-	 * off) tuple if we hit BUDGET_EXCEEDED partway through
-	 * (cleared by tp_cache_clear in the abort branch below).
+	 * Keep the cursor invalid until the walk completes.  An error can
+	 * leave DSA or dshash locks held until abort, so it must not clean
+	 * up the cache while unwinding; the next cold build discards the
+	 * partial tables instead.
 	 */
-	memtable->cursor_gen_spill_count = gen;
-	memtable->cursor_next_blkno		 = head;
-	memtable->cursor_next_off		 = 0;
 	pg_atomic_write_u64(&memtable->cursor_seq, 0);
+	next_blkno = head;
+	next_off   = 0;
+	walker	   = tp_chain_walker_open(rel, head, 0, walker_cxt);
 
-	walker = tp_chain_walker_open(rel, head, 0, walker_cxt);
-
-	PG_TRY();
+	while (tp_chain_walker_next(walker, &rec))
 	{
-		while (tp_chain_walker_next(walker, &rec))
+		DecodedDoc doc;
+
+		MemoryContextReset(decode_cxt);
+		oldcxt = MemoryContextSwitchTo(decode_cxt);
+		decode_record(rec.vector_bytes, rec.vector_len, &doc);
+		MemoryContextSwitchTo(oldcxt);
+
+		if (!apply_one_record(
+					local_state,
+					memtable,
+					&rec.ctid,
+					rec.doc_length,
+					&doc,
+					soft_cap))
 		{
-			DecodedDoc doc;
-
-			MemoryContextReset(decode_cxt);
-			oldcxt = MemoryContextSwitchTo(decode_cxt);
-			decode_record(rec.vector_bytes, rec.vector_len, &doc);
-			MemoryContextSwitchTo(oldcxt);
-
-			if (!apply_one_record(
-						local_state,
-						memtable,
-						&rec.ctid,
-						rec.doc_length,
-						&doc,
-						soft_cap))
-			{
-				result = TP_CACHE_COLD_ABORT;
-				break;
-			}
-
-			memtable->cursor_next_blkno = rec.next_blkno;
-			memtable->cursor_next_off	= rec.next_off;
-			pg_atomic_fetch_add_u64(&memtable->cursor_seq, 1);
-
-			CHECK_FOR_INTERRUPTS();
+			result = TP_CACHE_COLD_ABORT;
+			break;
 		}
+
+		next_blkno = rec.next_blkno;
+		next_off   = rec.next_off;
+		pg_atomic_fetch_add_u64(&memtable->cursor_seq, 1);
+
+		CHECK_FOR_INTERRUPTS();
 	}
-	PG_CATCH();
-	{
-		if (walker)
-			tp_chain_walker_close(walker);
-		MemoryContextDelete(decode_cxt);
-		MemoryContextDelete(walker_cxt);
-		tp_cache_clear(local_state->dsa, memtable);
-		LWLockRelease(&memtable->lock);
-		LWLockRelease(&memtable->apply_lock);
-		PG_RE_THROW();
-	}
-	PG_END_TRY();
 
 	tp_chain_walker_close(walker);
 	MemoryContextDelete(decode_cxt);
@@ -985,7 +987,12 @@ tp_cache_cold_build(TpLocalIndexState *local_state, Relation rel)
 		tp_cache_clear(local_state->dsa, memtable);
 	}
 	else
+	{
+		memtable->cursor_gen_spill_count = gen;
+		memtable->cursor_next_blkno		 = next_blkno;
+		memtable->cursor_next_off		 = next_off;
 		cache_locator_set(memtable, rel);
+	}
 
 	LWLockRelease(&memtable->lock);
 	LWLockRelease(&memtable->apply_lock);
