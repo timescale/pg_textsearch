@@ -224,6 +224,59 @@ write pressure separately from SQL failures. Per-kind request counts are
 available, but the SDK's aggregated query CSV cannot recover exact
 per-kind latency percentiles.
 
+#### Dedicated fleet workers
+
+Split a prepared campaign across six identical machines: one per engine
+and memory profile. Each worker runs cells sequentially; do not share a
+host between timed workers. Lead is not included.
+
+For controller-managed provisioning and execution:
+
+```bash
+mkdir -p benchmarks/scale/artifacts
+python3 -m benchmarks.scale.fleet_control schema \
+  > benchmarks/scale/artifacts/fleet.json
+# Fill in private Azure/SSH settings and an immutable source_ref.
+export MSMARCO_ACCEPT_TERMS=1
+python3 -m benchmarks.scale.fleet_control all \
+  --config benchmarks/scale/artifacts/fleet.json
+```
+
+Keep the config and controller state private. Remove `existing_group`
+for a fresh six-machine fleet, or set it to adopt a managed source host.
+The common expiry is saved once and verified through Azure's native VM
+expiration, not just tags; resume does not extend it. Individual stages
+include `plan`, `provision`, `prepare`, `export`, `stage`, `distribute`,
+`preflight`, `run`, `wait`, `status`, `collect`, and `retain`.
+
+The controller stages exports off the source host before its queries
+resume, and keeps the staging host idle until all fanout transfers end.
+It retains original indexes rather than deleting them after measurement.
+
+For an already provisioned worker:
+
+Copy the frozen source, pinned images, benchmarker binaries, dataset
+manifests, query packs, analyzer build proofs, and cleanly stopped analyzer
+volumes to each worker. Preserve absolute paths, volume names and labels,
+and the run ID. Import enriched query packs from the native build for
+both engines. No corpus reload or index rebuild is needed.
+
+```bash
+"$PYTHON" -m benchmarks.scale.fleet \
+  --engine pg_textsearch --profile constrained16 \
+  --dataset msmarco-v2 --run-id tin-v1 \
+  --artifacts /srv/searchbench/pg_textsearch-scale
+```
+
+Use each combination of `pg_textsearch`/`paradedb` and
+`high`/`constrained32`/`constrained16` exactly once. Run Wikipedia separately
+with its own imported builds and run ID. The worker preserves terminal
+results, including failures, and archives interrupted cells before retry.
+Per-shard manifests and summaries live under `tin/fleet/shards/`; exit
+code 2 denotes measured failures and 3 an infrastructure error.
+Record each host's hardware and verify the combined cell coverage before
+comparing results. Keep transfer and calibration I/O outside timed phases.
+
 ### Original baseline
 
 ```bash
