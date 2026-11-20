@@ -11,8 +11,10 @@
 #include <access/relation.h>
 #include <access/table.h>
 #include <access/xact.h>
+#include <catalog/index.h>
 #include <catalog/indexing.h>
 #include <catalog/namespace.h>
+#include <catalog/partition.h>
 #include <catalog/pg_am.h>
 #include <catalog/pg_class.h>
 #include <catalog/pg_index.h>
@@ -429,41 +431,55 @@ to_tpquery_text_index(PG_FUNCTION_ARGS)
 }
 
 /*
- * Find the first child index of a partitioned index via pg_inherits.
- * Returns InvalidOid if no children found.
+ * Resolve a parent index through the scored row's table ancestry. Never
+ * substitute an arbitrary sibling's statistics.
  */
 static Oid
-find_first_child_index(Oid parent_index_oid)
+find_partition_index(Oid parent_index_oid, Oid table_oid)
 {
-	Relation	inhrel;
-	SysScanDesc scan;
-	HeapTuple	tuple;
-	ScanKeyData skey;
-	Oid			child_oid = InvalidOid;
+	Oid	  parent_table = IndexGetRelation(parent_index_oid, false);
+	Oid	  index_oid	   = parent_index_oid;
+	List *ancestors;
+	bool  found_parent = false;
 
-	inhrel = table_open(InheritsRelationId, AccessShareLock);
+	if (!OidIsValid(table_oid))
+		ereport(ERROR,
+				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+				 errmsg("partitioned BM25 scoring requires a row's partition"),
+				 errhint("Score a column of the partitioned table, or name "
+						 "a leaf partition's index.")));
 
-	ScanKeyInit(
-			&skey,
-			Anum_pg_inherits_inhparent,
-			BTEqualStrategyNumber,
-			F_OIDEQ,
-			ObjectIdGetDatum(parent_index_oid));
-
-	scan = systable_beginscan(
-			inhrel, InheritsParentIndexId, true, NULL, 1, &skey);
-
-	tuple = systable_getnext(scan);
-	if (tuple != NULL)
+	ancestors = lcons_oid(table_oid, get_partition_ancestors(table_oid));
+	for (int i = list_length(ancestors) - 1; i >= 0; i--)
 	{
-		Form_pg_inherits inhform = (Form_pg_inherits)GETSTRUCT(tuple);
-		child_oid				 = inhform->inhrelid;
+		Oid		 child_table_oid = list_nth_oid(ancestors, i);
+		Relation child_table;
+
+		if (!found_parent)
+		{
+			found_parent = (child_table_oid == parent_table);
+			continue;
+		}
+
+		child_table = table_open(child_table_oid, AccessShareLock);
+		index_oid	= index_get_partition(child_table, index_oid);
+		table_close(child_table, AccessShareLock);
+		if (!OidIsValid(index_oid))
+			break;
 	}
+	list_free(ancestors);
 
-	systable_endscan(scan);
-	table_close(inhrel, AccessShareLock);
+	if (!found_parent || !OidIsValid(index_oid) ||
+		get_rel_relkind(index_oid) != RELKIND_INDEX)
+		ereport(ERROR,
+				(errcode(ERRCODE_WRONG_OBJECT_TYPE),
+				 errmsg("table is not a leaf partition of the BM25 index"),
+				 errdetail(
+						 "Index \"%s\" cannot score rows from table \"%s\".",
+						 get_rel_name(parent_index_oid),
+						 get_rel_name(table_oid))));
 
-	return child_oid;
+	return index_oid;
 }
 
 /*
@@ -601,12 +617,11 @@ find_first_child_bm25_index(Oid parent_index_oid, const char *indexed_colname)
  * Helper: Validate query and get index
  * Returns opened index relation, sets index_oid_out if provided
  *
- * For partitioned indexes (created on partitioned tables), this function
- * finds the first child index to use for text config. The actual corpus
- * stats are aggregated from all children later.
+ * For partitioned indexes, use the row's leaf index for both configuration
+ * and statistics, but authorize access through the caller-named parent.
  */
 static Relation
-validate_and_open_index(TpQuery *query, Oid *index_oid_out)
+validate_and_open_index(TpQuery *query, Oid table_oid, Oid *index_oid_out)
 {
 	Oid		 index_oid = get_tpquery_index_oid(query);
 	Relation index_rel;
@@ -640,26 +655,15 @@ validate_and_open_index(TpQuery *query, Oid *index_oid_out)
 
 	/*
 	 * Check if this is a partitioned index. Partitioned indexes don't have
-	 * storage - they're just templates. We need to use a child index for
-	 * text config, but aggregate stats from all children.
+	 * storage - they're just templates.
 	 */
 	relkind = index_rel->rd_rel->relkind;
 	if (relkind == RELKIND_PARTITIONED_INDEX)
 	{
-		Relation parent_rel		 = index_rel;
-		Oid		 child_index_oid = find_first_child_index(index_oid);
-		if (!OidIsValid(child_index_oid))
-		{
-			ereport(ERROR,
-					(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
-					 errmsg("partitioned index has no child partitions"),
-					 errdetail(
-							 "The index \"%s\" is a partitioned index with "
-							 "no partition indexes.",
-							 get_rel_name(index_oid))));
-		}
-		/* Use the child index for text config access */
-		index_rel = index_open(child_index_oid, AccessShareLock);
+		Relation parent_rel = index_rel;
+
+		index_oid = find_partition_index(index_oid, table_oid);
+		index_rel = index_open(index_oid, AccessShareLock);
 		relation_close(parent_rel, AccessShareLock);
 	}
 
@@ -823,17 +827,13 @@ bm25_text_bm25query_score(PG_FUNCTION_ARGS)
 	bool			 is_partitioned;
 	char			*indexed_colname = NULL;
 
-	/* Get index OID from query */
-	index_oid = get_tpquery_index_oid(query);
-
-	/*
-	 * Validate query and open index. For partitioned indexes, this opens
-	 * the first child index for text config access.
-	 */
-	index_rel = validate_and_open_index(query, &index_oid);
-
-	/* Check if this is a partitioned index */
-	is_partitioned = (get_rel_relkind(index_oid) == RELKIND_PARTITIONED_INDEX);
+	is_partitioned =
+			(get_rel_relkind(get_tpquery_index_oid(query)) ==
+			 RELKIND_PARTITIONED_INDEX);
+	index_rel = validate_and_open_index(
+			query,
+			PG_NARGS() == 3 ? PG_GETARG_OID(2) : InvalidOid,
+			&index_oid);
 
 	/*
 	 * Get the indexed column name for child index matching.
@@ -872,11 +872,7 @@ bm25_text_bm25query_score(PG_FUNCTION_ARGS)
 		 */
 		tp_warn_if_pending_docid(index_rel);
 
-		if (is_partitioned)
-			index_state = tp_get_local_index_state(
-					RelationGetRelid(index_rel));
-		else
-			index_state = tp_get_local_index_state(index_oid);
+		index_state = tp_get_local_index_state(index_oid);
 		if (!index_state)
 			ereport(ERROR,
 					(errcode(ERRCODE_INTERNAL_ERROR),

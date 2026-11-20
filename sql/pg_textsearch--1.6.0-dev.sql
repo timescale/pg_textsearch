@@ -144,6 +144,13 @@ RETURNS float8
 AS 'MODULE_PATHNAME', 'bm25_text_bm25query_score'
 LANGUAGE C STABLE STRICT PARALLEL UNSAFE COST 1000;
 
+-- Planner-only overload carrying the scored row's physical partition.
+CREATE FUNCTION @extschema@.bm25_text_bm25query_score(
+    text, @extschema@.bm25query, oid)
+RETURNS float8
+AS 'MODULE_PATHNAME', 'bm25_text_bm25query_score'
+LANGUAGE C STABLE STRICT PARALLEL UNSAFE COST 1000;
+
 -- bm25query equality function
 CREATE FUNCTION @extschema@.bm25query_eq(@extschema@.bm25query, @extschema@.bm25query)
 RETURNS boolean
@@ -215,6 +222,12 @@ CREATE FUNCTION @extschema@.bm25_textarray_text_score(text[], text)
 RETURNS float8
 AS 'MODULE_PATHNAME', 'bm25_textarray_text_score'
 LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE COST 1000;
+
+CREATE FUNCTION @extschema@.bm25_textarray_bm25query_score(
+    text[], @extschema@.bm25query, oid)
+RETURNS float8
+AS 'MODULE_PATHNAME', 'bm25_textarray_bm25query_score'
+LANGUAGE C STABLE STRICT PARALLEL UNSAFE COST 1000;
 
 -- <@> operator for text[] <@> bm25query operations
 CREATE OPERATOR @extschema@.<@> (
