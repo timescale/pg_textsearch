@@ -161,3 +161,4 @@ including internal-object owners, native relations with BM25 indexes, and
 object-type/ownership rejection. It creates no persistent database objects
 and does not connect to an existing server. This target is separate from
 `test-shell` because TimescaleDB is an optional third-party dependency.
+CI runs it in the PostgreSQL 17/18 jobs alongside the hypertable tests.

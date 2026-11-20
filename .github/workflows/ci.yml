@@ -272,6 +272,12 @@ jobs:
         pg_ctl stop -D tmp_hypertable_test/data
         rm -rf tmp_hypertable_test
 
+    - name: Run TimescaleDB ownership regression
+      timeout-minutes: 5
+      run: |
+        export PATH="/usr/lib/postgresql/${{ matrix.pg_version }}/bin:$PATH"
+        make test-timescaledb-owner
+
     - name: Upload test results on failure
       if: failure()
       uses: actions/upload-artifact@v4

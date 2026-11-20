@@ -7,7 +7,13 @@ PG_CONFIG=${PG_CONFIG:-pg_config}
 bindir=$("$PG_CONFIG" --bindir)
 work=$(mktemp -d)
 cleanup() {
-    "$bindir/pg_ctl" -D "$work/data" -m immediate stop >/dev/null 2>&1 || true
+    if [ -f "$work/data/postmaster.pid" ]; then
+        if ! "$bindir/pg_ctl" -D "$work/data" -m immediate -w stop \
+            >/dev/null; then
+            echo "Could not stop test server; preserving $work" >&2
+            exit 1
+        fi
+    fi
     rm -rf "$work"
 }
 trap cleanup EXIT
