@@ -1,0 +1,8 @@
+driver: postgres
+container: ""
+envVar: PG_TEXTSEARCH_URL
+description: pg_textsearch pinned source build
+color: "#2563EB"
+extras:
+  gucPrefixes: [pg_textsearch]
+  indexAccessMethods: [bm25]
