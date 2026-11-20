@@ -228,7 +228,7 @@ lookup_bm25_oids_internal(BM25OidCache *cache)
 			ObjectIdGetDatum(schema_oid));
 
 	{
-		Oid		   args[]	= {TEXTOID, cache->tpquery_type_oid, OIDOID};
+		Oid		   args[]	= {TEXTOID, cache->tpquery_type_oid, INTERNALOID};
 		oidvector *argtypes = buildoidvector(args, 3);
 
 		cache->partition_score_func_oid = GetSysCacheOid3(
@@ -1768,6 +1768,13 @@ bind_partition_score_mutator(Node *node, void *arg)
 
 	if (table_expr == NULL)
 		return node;
+
+	/*
+	 * The overload takes internal so that SQL callers, which cannot construct
+	 * one, cannot name a partition; the relabeled OID needs no conversion.
+	 */
+	table_expr = (Expr *)makeRelabelType(
+			table_expr, INTERNALOID, -1, InvalidOid, COERCE_IMPLICIT_CAST);
 
 	return (Node *)makeFuncExpr(
 			funcid,

@@ -830,6 +830,7 @@ bm25_text_bm25query_score(PG_FUNCTION_ARGS)
 	is_partitioned =
 			(get_rel_relkind(get_tpquery_index_oid(query)) ==
 			 RELKIND_PARTITIONED_INDEX);
+	/* The planner passes the row's tableoid as an opaque internal Datum. */
 	index_rel = validate_and_open_index(
 			query,
 			PG_NARGS() == 3 ? PG_GETARG_OID(2) : InvalidOid,

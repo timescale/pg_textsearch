@@ -48,6 +48,28 @@ FROM tenant_docs d WHERE tenant = 2 AND id = 1;
 -- Ordered scans must continue to use leaf-local scores for projection too.
 SET enable_seqscan = off;
 SET enable_sort = off;
+DO $$
+DECLARE
+    plan jsonb;
+BEGIN
+    EXECUTE $query$
+        EXPLAIN (FORMAT JSON, COSTS OFF)
+        SELECT bool_and(abs(score + ln(1 + 0.5 / 10.5)) < 0.000001)
+        FROM (
+            SELECT body <@> to_bm25query('apple', 'tenant_bm25') AS score
+            FROM tenant_docs WHERE tenant = 2 ORDER BY score LIMIT 3
+        ) s
+    $query$ INTO plan;
+    IF NOT jsonb_path_exists(plan,
+        '$.** ? (@."Node Type" == "Index Scan" &&
+                 @."Index Name" == "tenant_two_leaf_body_idx" &&
+                 exists (@."Order By"))') OR
+       jsonb_path_exists(plan, '$.** ? (@."Node Type" like_regex "Sort")')
+    THEN
+        RAISE EXCEPTION 'expected an ordered leaf index scan: %', plan;
+    END IF;
+END
+$$;
 SELECT bool_and(abs(score + ln(1 + 0.5 / 10.5)) < 0.000001)
     AS ordered_local_stats
 FROM (
@@ -130,23 +152,37 @@ SELECT count(*) = 10 AND bool_and(abs(
     (body <@> to_bm25query('apple', 'tenant_bm25')) + ln(1 + 0.5 / 10.5))
     < 0.000001) AS rls_local_stats
 FROM tenant_docs;
+-- Only the planner can supply a partition, so a hidden one cannot be named.
+\set VERBOSITY terse
+SELECT bm25_text_bm25query_score(
+    'apple orchard', to_bm25query('apple', 'tenant_bm25'),
+    'tenant_one'::regclass::oid);
+SELECT bm25_textarray_bm25query_score(
+    ARRAY['apple orchard'], to_bm25query('apple', 'tenant_bm25'),
+    'tenant_one'::regclass::oid);
+\set VERBOSITY default
 RESET ROLE;
 ALTER TABLE tenant_docs DISABLE ROW LEVEL SECURITY;
 REVOKE SELECT (tenant, id, body) ON tenant_docs FROM tenant_reader;
+-- A leaf grant does not authorize scoring with the parent's index.  The
+-- subquery defers index resolution from the planner to the scorer.
+GRANT SELECT ON tenant_two_leaf TO tenant_reader;
 SET ROLE tenant_reader;
-SELECT bm25_text_bm25query_score(
-    'apple orchard', to_bm25query('apple', 'tenant_bm25'),
-    'tenant_two_leaf'::regclass::oid);
+SELECT body <@> (SELECT to_bm25query('apple', 'tenant_bm25'))
+FROM tenant_two_leaf WHERE id = 1;
 RESET ROLE;
+REVOKE SELECT ON tenant_two_leaf FROM tenant_reader;
 DROP ROLE tenant_reader;
 
 -- Context-free calls cannot silently pick one tenant's index.
 SELECT bm25_text_bm25query_score(
     'apple orchard', to_bm25query('apple', 'tenant_bm25'));
--- Nor can a caller attach the parent index to an unrelated table.
-SELECT bm25_text_bm25query_score(
-    'apple orchard', to_bm25query('apple', 'tenant_bm25'),
-    'pg_class'::regclass::oid);
+-- Nor can a query attach the parent index to an unrelated table.
+CREATE TABLE unrelated_docs (body text);
+INSERT INTO unrelated_docs VALUES ('apple orchard');
+SELECT body <@> (SELECT to_bm25query('apple', 'tenant_bm25'))
+FROM unrelated_docs;
+DROP TABLE unrelated_docs;
 
 -- A group of identical text values has no single source partition.
 SELECT body, body <@> to_bm25query('apple', 'tenant_bm25')
