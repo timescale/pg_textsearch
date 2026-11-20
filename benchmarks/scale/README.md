@@ -284,6 +284,37 @@ code 2 denotes measured failures and 3 an infrastructure error.
 Record each host's hardware and verify the combined cell coverage before
 comparing results. Keep transfer and calibration I/O outside timed phases.
 
+### Retaining historical indexes
+
+The fleet's `retain` stage serves the current campaign's analyzer volumes.
+An adopted host may also hold older originals. Inventory those separately
+with `docker volume inspect`, using each analyzer's `complete.json`,
+`clone.json`, or saved `container-inspect.json` to resolve its exact image.
+Do not infer TIN image pins from the baseline `provenance.json`.
+
+On an idle host, pass an explicit private plan to:
+
+```bash
+"$PYTHON" -m benchmarks.scale.retain_originals \
+  --plan /private/retained-originals.json \
+  --report /private/retained-originals-report.json
+```
+
+The plan contains `idle_units` (benchmark systemd unit names) and
+`databases`. Each database specifies `volume`, `engine`, immutable `image`
+digest, unique localhost `port`, the volume's complete `labels`, and
+Boolean `expect_search_index`. Exclude disposable write volumes and retired
+engines. Only set `expect_search_index` false for a documented incomplete
+build without a search index.
+
+The helper verifies ownership, initialized PostgreSQL 18 data, image
+layout, ports, and existing-container identity before starting databases.
+It never removes containers or volumes. It checks valid BM25 indexes and
+runs a small indexed query; these are queryability checks, not benchmarks.
+Other containers referencing an original cause a refusal, even if stopped;
+preserve and verify those containers separately rather than taking them over.
+Use a separate current tools checkout when the measurement tree is frozen.
+
 ### Recovering a frozen audit decoder
 
 Current sources handle PostgreSQL notices in EXPLAIN output. For a frozen
