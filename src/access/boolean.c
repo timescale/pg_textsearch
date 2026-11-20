@@ -849,6 +849,7 @@ tp_boolean_execute(IndexScanDesc scan, TpLocalIndexState *index_state)
 	TpScanOpaque			so = (TpScanOpaque)scan->opaque;
 	MemoryContext			old_context;
 	TpBooleanEvalState		state;
+	int						exact_count;
 	TpIndexMetaPage			metap;
 	TpSegmentGraphSnapshot *snapshot;
 	TpBooleanResultWriter	writer;
@@ -862,17 +863,19 @@ tp_boolean_execute(IndexScanDesc scan, TpLocalIndexState *index_state)
 				 errmsg("BM25 Boolean execution must acquire its own index "
 						"lock")));
 
-	old_context = MemoryContextSwitchTo(so->boolean_context);
-	state		= tp_boolean_extract_terms(so->boolean_query);
-	if (state.exact_operand_count > TP_BOOLEAN_MAX_EXACT_OPERANDS)
+	/* Reject oversized operand lists before the O(N^2) dedup scan. */
+	exact_count = tp_boolean_query_exact_operand_count(so->boolean_query);
+	if (exact_count > TP_BOOLEAN_MAX_EXACT_OPERANDS)
 		ereport(ERROR,
 				(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
 				 errmsg("BM25 Boolean queries support at most %d exact term "
 						"operands",
 						TP_BOOLEAN_MAX_EXACT_OPERANDS),
-				 errdetail(
-						 "Query contains %d exact term operands.",
-						 state.exact_operand_count)));
+				 errdetail("Query contains %d exact term operands.",
+						   exact_count)));
+
+	old_context = MemoryContextSwitchTo(so->boolean_context);
+	state		= tp_boolean_extract_terms(so->boolean_query);
 	so->boolean_recheck = state.requires_recheck;
 
 	tp_acquire_index_lock(index_state, LW_SHARED);
