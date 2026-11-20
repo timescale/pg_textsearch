@@ -17,6 +17,7 @@
 #include <access/xact.h>
 #include <catalog/indexing.h>
 #include <catalog/namespace.h>
+#include <catalog/partition.h>
 #include <catalog/pg_am.h>
 #include <catalog/pg_extension.h>
 #include <catalog/pg_index.h>
@@ -285,13 +286,14 @@ get_bm25_oids(BM25OidCache *cache)
 
 /*
  * Check if an index is on a specific column of a table.
- * Returns true if the index is on the given table and column.
+ * The index may belong to a descendant partition of the queried table.
  */
 static bool
 index_is_on_column(Oid index_oid, Oid relid, AttrNumber attnum)
 {
 	HeapTuple	  idx_tuple;
 	Form_pg_index idx_form;
+	bool		  matches_relation;
 	bool		  result = false;
 
 	idx_tuple = SearchSysCache1(INDEXRELID, ObjectIdGetDatum(index_oid));
@@ -300,8 +302,26 @@ index_is_on_column(Oid index_oid, Oid relid, AttrNumber attnum)
 
 	idx_form = (Form_pg_index)GETSTRUCT(idx_tuple);
 
+	matches_relation = idx_form->indrelid == relid;
+	if (!matches_relation && get_rel_relispartition(idx_form->indrelid))
+	{
+		List *ancestors = get_partition_ancestors(idx_form->indrelid);
+
+		matches_relation = list_member_oid(ancestors, relid);
+		list_free(ancestors);
+
+		if (matches_relation)
+		{
+			char *column_name = get_attname(relid, attnum, false);
+
+			/* Attached partitions can have different attribute numbers. */
+			attnum = get_attnum(idx_form->indrelid, column_name);
+			pfree(column_name);
+		}
+	}
+
 	/* Check if index is on the correct table */
-	if (idx_form->indrelid == relid)
+	if (matches_relation && attnum != InvalidAttrNumber)
 	{
 		/* Check if index is on the correct column */
 		int nkeys = idx_form->indnatts;
