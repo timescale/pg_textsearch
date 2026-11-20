@@ -1146,6 +1146,144 @@ class TinRunnerTest(unittest.TestCase):
             result["records"][0]["classification"], "non_indexed_empty"
         )
 
+    def test_plan_audit_accepts_psql_prefixed_notice_before_empty_json(self):
+        plan = json.dumps([{
+            "Plan": {
+                "Node Type": "Result",
+                "One-Time Filter": "false",
+            },
+        }])
+        output = "\n".join([
+            "TIN_AUDIT_BEGIN:0",
+            (
+                "psql:/tin-plan-audit-6b598c268fe4881f.sql:5: NOTICE:  "
+                "text-search query doesn't contain lexemes: \"\""
+            ),
+            (
+                "LINE 1: ... SETTINGS, FORMAT JSON) EXECUTE "
+                "tin_probe('in a', ''::tsquer..."
+            ),
+            "                                                             ^",
+            plan,
+            "TIN_AUDIT_END:0",
+        ])
+
+        result = parse_plan_audit(
+            output,
+            queries=[{
+                "id": "stopwords",
+                "pg_tsquery": {"phrase": ""},
+            }],
+            engine="pg_textsearch",
+            operation="search",
+            kind="phrase",
+            shape="filter_first",
+        )
+
+        self.assertTrue(result["timing_allowed"])
+        self.assertEqual(
+            result["records"][0]["classification"], "empty_query"
+        )
+
+    def test_plan_audit_rejects_sql_error_after_notice(self):
+        output = "\n".join([
+            "TIN_AUDIT_BEGIN:0",
+            "NOTICE:  text-search query doesn't contain lexemes",
+            "LINE 1: EXPLAIN EXECUTE audit_0('');",
+            "                                  ^",
+            "ERROR:  relation \"documents\" does not exist",
+            "TIN_AUDIT_END:0",
+        ])
+
+        with self.assertRaisesRegex(ConfigError, "SQL failed"):
+            parse_plan_audit(
+                output,
+                queries=[{
+                    "id": "broken",
+                    "pg_tsquery": {"phrase": ""},
+                }],
+                engine="pg_textsearch",
+                operation="search",
+                kind="phrase",
+                shape="filter_first",
+            )
+
+    def test_plan_audit_preserves_timeout_after_notice(self):
+        output = "\n".join([
+            "TIN_AUDIT_BEGIN:0",
+            "NOTICE:  text-search query doesn't contain lexemes",
+            "LINE 1: EXPLAIN EXECUTE audit_0('');",
+            "                                  ^",
+            "ERROR:  canceling statement due to statement timeout",
+            "TIN_AUDIT_END:0",
+        ])
+
+        result = parse_plan_audit(
+            output,
+            queries=[{
+                "id": "timeout",
+                "pg_tsquery": {"phrase": ""},
+            }],
+            engine="pg_textsearch",
+            operation="search",
+            kind="phrase",
+            shape="filter_first",
+        )
+
+        self.assertFalse(result["timing_allowed"])
+        self.assertEqual(
+            result["records"][0]["classification"], "timeout"
+        )
+        self.assertTrue(result["records"][0]["censored"])
+
+    def test_plan_audit_rejects_notice_without_valid_json(self):
+        for suffix in ("", "[not-json"):
+            output = "\n".join([
+                "TIN_AUDIT_BEGIN:0",
+                "NOTICE:  text-search query doesn't contain lexemes",
+                "LINE 1: EXPLAIN EXECUTE audit_0('');",
+                "                                  ^",
+                suffix,
+                "TIN_AUDIT_END:0",
+            ])
+            with self.subTest(suffix=suffix):
+                with self.assertRaisesRegex(
+                    ConfigError, "valid JSON plan"
+                ):
+                    parse_plan_audit(
+                        output,
+                        queries=[{
+                            "id": "invalid",
+                            "pg_tsquery": {"phrase": ""},
+                        }],
+                        engine="pg_textsearch",
+                        operation="search",
+                        kind="phrase",
+                        shape="filter_first",
+                    )
+
+    def test_plan_audit_rejects_unrecognized_preamble(self):
+        plan = json.dumps([{"Plan": {"Node Type": "Result"}}])
+        output = "\n".join([
+            "TIN_AUDIT_BEGIN:0",
+            "unexpected output",
+            plan,
+            "TIN_AUDIT_END:0",
+        ])
+
+        with self.assertRaisesRegex(ConfigError, "diagnostic preamble"):
+            parse_plan_audit(
+                output,
+                queries=[{
+                    "id": "invalid",
+                    "pg_tsquery": {"phrase": ""},
+                }],
+                engine="pg_textsearch",
+                operation="search",
+                kind="phrase",
+                shape="filter_first",
+            )
+
     def test_native_plan_audit_batches_one_session_and_resumes(self):
         with tempfile.TemporaryDirectory(
             prefix=".test-tmp-",

@@ -284,6 +284,26 @@ code 2 denotes measured failures and 3 an infrastructure error.
 Record each host's hardware and verify the combined cell coverage before
 comparing results. Keep transfer and calibration I/O outside timed phases.
 
+### Recovering a frozen audit decoder
+
+Current sources handle PostgreSQL notices in EXPLAIN output. For a frozen
+campaign stopped by the older decoder, keep its sources unchanged and run
+the recovery script from a separate current checkout on the idle worker:
+
+```bash
+PYTHONPATH="$FROZEN_REPO" "$PYTHON" \
+  "$CURRENT_REPO/benchmarks/scale/recover_audits.py" \
+  --root "$FROZEN_REPO" --artifacts /srv/searchbench/pg_textsearch-scale \
+  --run-id tin-v1 --profile high \
+  --parser-source "$CURRENT_REPO/benchmarks/scale/tin.py"
+```
+
+Recovery requires the original recorded parse failure and exactly three
+pending stopword-span controls. It preserves failed audit artifacts,
+regenerates real EXPLAIN audits, records decoder/checkpoint hashes, and
+verifies frozen source hashes. It does not relax plan gates. Restart the
+same worker afterward; completed measurements are not repeated.
+
 ### Original baseline
 
 ```bash
