@@ -17,6 +17,7 @@
 #include "index/source.h"
 #include "index/state.h"
 #include "segment/graph_snapshot.h"
+#include "segment/io.h"
 #include "segment/segment.h"
 
 /*
@@ -119,6 +120,23 @@ typedef struct TpBMWStats
 } TpBMWStats;
 
 /*
+ * Candidate predicate evaluated before top-k admission.  Rejected documents
+ * must never raise the pruning threshold.  reset releases source-local state
+ * before a segment reader or memtable source is closed.
+ */
+typedef struct TpBMWFilter
+{
+	const char *const *terms;
+	int				   term_count;
+	void			  *state;
+	bool (*memtable_matches)(
+			void *state, TpDataSource *source, ItemPointer ctid);
+	bool (*segment_matches)(
+			void *state, TpSegmentReader *reader, uint32 doc_id);
+	void (*reset)(void *state);
+} TpBMWFilter;
+
+/*
  * Score documents using single-term Block-Max WAND.
  *
  * For single-term queries, uses block-level upper bounds to skip
@@ -145,7 +163,8 @@ extern int tp_score_single_term_bmw(
 		int							  max_results,
 		ItemPointerData				 *result_ctids,
 		float4						 *result_scores,
-		TpBMWStats					 *stats);
+		TpBMWStats					 *stats,
+		TpBMWFilter					 *filter);
 
 /*
  * Score documents using multi-term Block-Max WAND.
@@ -174,7 +193,8 @@ extern int tp_score_multi_term_bmw(
 		int							  max_results,
 		ItemPointerData				 *result_ctids,
 		float4						 *result_scores,
-		TpBMWStats					 *stats);
+		TpBMWStats					 *stats,
+		TpBMWFilter					 *filter);
 
 /*
  * Compute block maximum BM25 score from skip entry metadata.
