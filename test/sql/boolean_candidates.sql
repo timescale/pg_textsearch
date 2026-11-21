@@ -25,6 +25,7 @@ SELECT id FROM boolean_candidates
 WHERE body @@ 'rareone'::tsquery
 ORDER BY body <@> to_bm25query('padding', 'boolean_candidates_idx')
 LIMIT 10;
+SET log_statement = none;
 SET client_min_messages = log;
 SET pg_textsearch.log_bmw_stats = on;
 SELECT id FROM boolean_candidates
@@ -41,6 +42,7 @@ ORDER BY body <@> to_bm25query('common padding', 'boolean_candidates_idx')
 LIMIT 10;
 RESET pg_textsearch.log_bmw_stats;
 SET client_min_messages = warning;
+RESET log_statement;
 
 INSERT INTO boolean_candidates VALUES
     (4099, 'common rareone raretwo'),
