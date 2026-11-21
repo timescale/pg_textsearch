@@ -552,8 +552,8 @@ partition but may use different IDF scales across partitions. Query individual
 partitions when cross-row score comparability matters.
 
 Parent index names use the scored row's leaf partition, including for
-standalone scoring. If the row's partition cannot be identified, name a leaf
-index explicitly.
+standalone scoring. Score rows where the partitioned table is scanned, before
+grouping or set operations; otherwise, name a leaf index explicitly.
 
 ### Token and Document Limits
 
