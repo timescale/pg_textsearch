@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795158678369,
+  "lastUpdate": 1795242141308,
   "repoUrl": "https://github.com/timescale/pg_textsearch",
   "entries": {
     "cranfield Benchmarks": [
@@ -13165,6 +13165,43 @@ window.BENCHMARK_DATA = {
           {
             "name": "cranfield (1.4K docs) - Throughput (avg ms/query)",
             "value": 0.34,
+            "unit": "ms"
+          },
+          {
+            "name": "cranfield (1.4K docs) - Index Size",
+            "value": 0.68,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tjgreen@gmail.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "5419bfb287762ea5a9a3a867d954a601ddcf56bc",
+          "message": "Fix big-endian bitpack decoding in segment compression (#619)\n\nNormalize compressed posting-list loads on big-endian platforms so\ndocument IDs and frequencies decode correctly.\n\nReplaces #550.",
+          "timestamp": "2026-11-20T18:16:22Z",
+          "url": "https://github.com/timescale/pg_textsearch/commit/5419bfb287762ea5a9a3a867d954a601ddcf56bc"
+        },
+        "date": 1795242005547,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "cranfield (1.4K docs) - Index Build Time",
+            "value": 232.003,
+            "unit": "ms"
+          },
+          {
+            "name": "cranfield (1.4K docs) - Throughput (avg ms/query)",
+            "value": 0.45,
             "unit": "ms"
           },
           {
