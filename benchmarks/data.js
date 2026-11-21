@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795243192765,
+  "lastUpdate": 1795243197412,
   "repoUrl": "https://github.com/timescale/pg_textsearch",
   "entries": {
     "cranfield Benchmarks": [
@@ -355952,6 +355952,38 @@ window.BENCHMARK_DATA = {
           {
             "name": "paradedb_cranfield_concurrent - Concurrent Insert Time",
             "value": 135.686995,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tjgreen@gmail.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "5419bfb287762ea5a9a3a867d954a601ddcf56bc",
+          "message": "Fix big-endian bitpack decoding in segment compression (#619)\n\nNormalize compressed posting-list loads on big-endian platforms so\ndocument IDs and frequencies decode correctly.\n\nReplaces #550.",
+          "timestamp": "2026-11-20T18:16:22Z",
+          "url": "https://github.com/timescale/pg_textsearch/commit/5419bfb287762ea5a9a3a867d954a601ddcf56bc"
+        },
+        "date": 1795243196681,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "paradedb_cranfield_concurrent - Index Build Time",
+            "value": 2.239,
+            "unit": "ms"
+          },
+          {
+            "name": "paradedb_cranfield_concurrent - Concurrent Insert Time",
+            "value": 130.705135,
             "unit": "ms"
           }
         ]
