@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795243171118,
+  "lastUpdate": 1795243175485,
   "repoUrl": "https://github.com/timescale/pg_textsearch",
   "entries": {
     "cranfield Benchmarks": [
@@ -301087,6 +301087,83 @@ window.BENCHMARK_DATA = {
           {
             "name": "paradedb_msmarco (8.8M docs) - Index Size",
             "value": 1422.27,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tjgreen@gmail.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "5419bfb287762ea5a9a3a867d954a601ddcf56bc",
+          "message": "Fix big-endian bitpack decoding in segment compression (#619)\n\nNormalize compressed posting-list loads on big-endian platforms so\ndocument IDs and frequencies decode correctly.\n\nReplaces #550.",
+          "timestamp": "2026-11-20T18:16:22Z",
+          "url": "https://github.com/timescale/pg_textsearch/commit/5419bfb287762ea5a9a3a867d954a601ddcf56bc"
+        },
+        "date": 1795243174757,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "paradedb_msmarco (8.8M docs) - Index Build Time",
+            "value": 127319.874,
+            "unit": "ms"
+          },
+          {
+            "name": "paradedb_msmarco (8.8M docs) - 1 Token Query (p50)",
+            "value": 6.19,
+            "unit": "ms"
+          },
+          {
+            "name": "paradedb_msmarco (8.8M docs) - 2 Token Query (p50)",
+            "value": 2.32,
+            "unit": "ms"
+          },
+          {
+            "name": "paradedb_msmarco (8.8M docs) - 3 Token Query (p50)",
+            "value": 6.55,
+            "unit": "ms"
+          },
+          {
+            "name": "paradedb_msmarco (8.8M docs) - 4 Token Query (p50)",
+            "value": 6.84,
+            "unit": "ms"
+          },
+          {
+            "name": "paradedb_msmarco (8.8M docs) - 5 Token Query (p50)",
+            "value": 8.11,
+            "unit": "ms"
+          },
+          {
+            "name": "paradedb_msmarco (8.8M docs) - 6 Token Query (p50)",
+            "value": 10.23,
+            "unit": "ms"
+          },
+          {
+            "name": "paradedb_msmarco (8.8M docs) - 7 Token Query (p50)",
+            "value": 11.16,
+            "unit": "ms"
+          },
+          {
+            "name": "paradedb_msmarco (8.8M docs) - 8+ Token Query (p50)",
+            "value": 13.67,
+            "unit": "ms"
+          },
+          {
+            "name": "paradedb_msmarco (8.8M docs) - Throughput (avg ms/query)",
+            "value": 8.89,
+            "unit": "ms"
+          },
+          {
+            "name": "paradedb_msmarco (8.8M docs) - Index Size",
+            "value": 1506.93,
             "unit": "MB"
           }
         ]
