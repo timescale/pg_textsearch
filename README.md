@@ -551,6 +551,10 @@ BM25 statistics are local to each partition. Scores are comparable within a
 partition but may use different IDF scales across partitions. Query individual
 partitions when cross-row score comparability matters.
 
+Parent index names use the scored row's leaf partition, including for
+standalone scoring. Score rows where the partitioned table is scanned, before
+grouping or set operations; otherwise, name a leaf index explicitly.
+
 ### Token and Document Limits
 
 PostgreSQL ignores lexemes longer than 2047 bytes. This mainly affects base64
