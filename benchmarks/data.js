@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795242146592,
+  "lastUpdate": 1795242151890,
   "repoUrl": "https://github.com/timescale/pg_textsearch",
   "entries": {
     "cranfield Benchmarks": [
@@ -400413,6 +400413,78 @@ window.BENCHMARK_DATA = {
           {
             "name": "msmarco_vacuum - Query Latency After Update VACUUM",
             "value": 7.76,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tjgreen@gmail.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "5419bfb287762ea5a9a3a867d954a601ddcf56bc",
+          "message": "Fix big-endian bitpack decoding in segment compression (#619)\n\nNormalize compressed posting-list loads on big-endian platforms so\ndocument IDs and frequencies decode correctly.\n\nReplaces #550.",
+          "timestamp": "2026-11-20T18:16:22Z",
+          "url": "https://github.com/timescale/pg_textsearch/commit/5419bfb287762ea5a9a3a867d954a601ddcf56bc"
+        },
+        "date": 1795242151042,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "msmarco_vacuum - Index Size",
+            "value": 2432.6,
+            "unit": "MB"
+          },
+          {
+            "name": "msmarco_vacuum - Partial VACUUM (concentrated delete)",
+            "value": 2228.092,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco_vacuum - Full VACUUM (uniform delete)",
+            "value": 10767.002,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco_vacuum - Full VACUUM (uniform update)",
+            "value": 7186.995,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco_vacuum - Index Size After Partial VACUUM",
+            "value": 2432.6,
+            "unit": "MB"
+          },
+          {
+            "name": "msmarco_vacuum - Index Size After Full VACUUM",
+            "value": 2432.6,
+            "unit": "MB"
+          },
+          {
+            "name": "msmarco_vacuum - Query Latency After Partial VACUUM",
+            "value": 8.38,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco_vacuum - Query Latency After Full VACUUM",
+            "value": 8.09,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco_vacuum - Index Size After Update VACUUM",
+            "value": 2432.6,
+            "unit": "MB"
+          },
+          {
+            "name": "msmarco_vacuum - Query Latency After Update VACUUM",
+            "value": 8.33,
             "unit": "ms"
           }
         ]
