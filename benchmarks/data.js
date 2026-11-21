@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795243197412,
+  "lastUpdate": 1795243201863,
   "repoUrl": "https://github.com/timescale/pg_textsearch",
   "entries": {
     "cranfield Benchmarks": [
@@ -376649,6 +376649,88 @@ window.BENCHMARK_DATA = {
           {
             "name": "paradedb_msmarco_concurrent - Throughput (avg ms/query)",
             "value": 52.79,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tjgreen@gmail.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "5419bfb287762ea5a9a3a867d954a601ddcf56bc",
+          "message": "Fix big-endian bitpack decoding in segment compression (#619)\n\nNormalize compressed posting-list loads on big-endian platforms so\ndocument IDs and frequencies decode correctly.\n\nReplaces #550.",
+          "timestamp": "2026-11-20T18:16:22Z",
+          "url": "https://github.com/timescale/pg_textsearch/commit/5419bfb287762ea5a9a3a867d954a601ddcf56bc"
+        },
+        "date": 1795243201051,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "paradedb_msmarco_concurrent - Index Build Time",
+            "value": 2.97,
+            "unit": "ms"
+          },
+          {
+            "name": "paradedb_msmarco_concurrent - Insert Time",
+            "value": 0.273,
+            "unit": "ms"
+          },
+          {
+            "name": "paradedb_msmarco_concurrent - Concurrent Insert Time",
+            "value": 694660.62626,
+            "unit": "ms"
+          },
+          {
+            "name": "paradedb_msmarco_concurrent - 1 Token Query (p50)",
+            "value": 52.92,
+            "unit": "ms"
+          },
+          {
+            "name": "paradedb_msmarco_concurrent - 2 Token Query (p50)",
+            "value": 22.72,
+            "unit": "ms"
+          },
+          {
+            "name": "paradedb_msmarco_concurrent - 3 Token Query (p50)",
+            "value": 55.18,
+            "unit": "ms"
+          },
+          {
+            "name": "paradedb_msmarco_concurrent - 4 Token Query (p50)",
+            "value": 56.09,
+            "unit": "ms"
+          },
+          {
+            "name": "paradedb_msmarco_concurrent - 5 Token Query (p50)",
+            "value": 58.46,
+            "unit": "ms"
+          },
+          {
+            "name": "paradedb_msmarco_concurrent - 6 Token Query (p50)",
+            "value": 63.15,
+            "unit": "ms"
+          },
+          {
+            "name": "paradedb_msmarco_concurrent - 7 Token Query (p50)",
+            "value": 63.87,
+            "unit": "ms"
+          },
+          {
+            "name": "paradedb_msmarco_concurrent - 8+ Token Query (p50)",
+            "value": 69.55,
+            "unit": "ms"
+          },
+          {
+            "name": "paradedb_msmarco_concurrent - Throughput (avg ms/query)",
+            "value": 55.68,
             "unit": "ms"
           }
         ]
