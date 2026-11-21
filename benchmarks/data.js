@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795244327227,
+  "lastUpdate": 1795244331258,
   "repoUrl": "https://github.com/timescale/pg_textsearch",
   "entries": {
     "cranfield Benchmarks": [
@@ -101738,6 +101738,38 @@ window.BENCHMARK_DATA = {
           {
             "name": "wikipedia_gin - Index Build Time",
             "value": 3899.602,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia_gin - Index Size",
+            "value": 43.24,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tjgreen@gmail.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "5419bfb287762ea5a9a3a867d954a601ddcf56bc",
+          "message": "Fix big-endian bitpack decoding in segment compression (#619)\n\nNormalize compressed posting-list loads on big-endian platforms so\ndocument IDs and frequencies decode correctly.\n\nReplaces #550.",
+          "timestamp": "2026-11-20T18:16:22Z",
+          "url": "https://github.com/timescale/pg_textsearch/commit/5419bfb287762ea5a9a3a867d954a601ddcf56bc"
+        },
+        "date": 1795244330656,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "wikipedia_gin - Index Build Time",
+            "value": 5076.459,
             "unit": "ms"
           },
           {
