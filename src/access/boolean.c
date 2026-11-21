@@ -58,6 +58,7 @@ typedef struct TpBooleanCandidateStream
 {
 	TpBooleanCandidateKind kind;
 	uint64				   estimate;
+	bool exact; /* Satisfies the complete predicate, not a seed. */
 
 	union
 	{
@@ -386,7 +387,8 @@ tp_boolean_create_union_stream(
 {
 	TpBooleanCandidateStream *stream = palloc0(sizeof(*stream));
 
-	stream->kind = TP_BOOLEAN_CANDIDATE_UNION;
+	stream->kind  = TP_BOOLEAN_CANDIDATE_UNION;
+	stream->exact = left->exact && right->exact;
 	stream->estimate =
 			Min((uint64)reader->header->num_docs,
 				left->estimate + right->estimate);
@@ -528,6 +530,7 @@ tp_boolean_create_candidate_stream(
 
 		stream						   = palloc0(sizeof(*stream));
 		stream->kind				   = TP_BOOLEAN_CANDIDATE_TERM;
+		stream->exact				   = true;
 		stream->state.term.initialized = tp_segment_posting_iterator_init(
 				&stream->state.term.iterator, reader, lexeme);
 		stream->state.term.iterator.force_copy = true;
@@ -558,10 +561,12 @@ tp_boolean_create_candidate_stream(
 			if (left->estimate <= right->estimate)
 			{
 				tp_boolean_free_candidate_stream(right);
+				left->exact = false;
 				return left;
 			}
 
 			tp_boolean_free_candidate_stream(left);
+			right->exact = false;
 			return right;
 		}
 
@@ -776,12 +781,15 @@ tp_boolean_segment_candidate_matches(
 
 typedef struct TpBooleanRankedFilter
 {
-	TpBooleanEvalState	 query;
-	MemoryContext		 context;
-	TpBooleanTermCursor *cursors;
-	TpDataSource		*source;
-	TpPostingData	   **postings;
-	bool				*term_present;
+	TpBooleanEvalState		  query;
+	MemoryContext			  context;
+	TpBooleanTermCursor		 *cursors;
+	TpDataSource			 *source;
+	TpPostingData			**postings;
+	bool					 *term_present;
+	TpBooleanCandidateStream *candidates;
+	uint32					  candidate_doc_id;
+	bool					  candidate_loaded;
 } TpBooleanRankedFilter;
 
 static int
@@ -871,11 +879,65 @@ tp_boolean_ranked_segment_matches(
 			query, filter->cursors, doc_id);
 }
 
+static bool
+tp_boolean_ranked_segment_next(
+		void *arg, TpSegmentReader *reader, uint32 minimum, uint32 *doc_id)
+{
+	TpBooleanRankedFilter *filter = arg;
+
+	if (filter->candidates == NULL)
+	{
+		MemoryContext old		= MemoryContextSwitchTo(filter->context);
+		uint32		  threshold = reader->header->num_docs / 100 +
+						   (reader->header->num_docs % 100 != 0);
+
+		filter->candidates = tp_boolean_create_candidate_stream(
+				&filter->query, reader, GETQUERY(filter->query.query));
+		MemoryContextSwitchTo(old);
+
+		/* Dense filters retain BMW's score-based pruning. */
+		if (filter->candidates->estimate > threshold)
+		{
+			tp_boolean_free_candidate_stream(filter->candidates);
+			filter->candidates = NULL;
+			return false;
+		}
+	}
+
+	for (;;)
+	{
+		CHECK_FOR_INTERRUPTS();
+		if (!filter->candidate_loaded || filter->candidate_doc_id < minimum)
+		{
+			filter->candidate_loaded = tp_boolean_candidate_stream_next(
+					filter->candidates, &filter->candidate_doc_id);
+			if (!filter->candidate_loaded)
+			{
+				*doc_id = UINT32_MAX;
+				return true;
+			}
+			if (filter->candidate_doc_id < minimum)
+				continue;
+		}
+		if (filter->candidates->exact ||
+			tp_boolean_ranked_segment_matches(
+					filter, reader, filter->candidate_doc_id))
+		{
+			*doc_id = filter->candidate_doc_id;
+			return true;
+		}
+		filter->candidate_loaded = false;
+	}
+}
+
 static void
 tp_boolean_ranked_filter_reset(void *arg)
 {
 	TpBooleanRankedFilter *filter = arg;
 
+	tp_boolean_free_candidate_stream(filter->candidates);
+	filter->candidates		 = NULL;
+	filter->candidate_loaded = false;
 	if (filter->cursors != NULL)
 	{
 		for (int i = 0; i < filter->query.term_count; i++)
@@ -929,6 +991,7 @@ tp_boolean_filter_create(TSQuery query, bool *recheck)
 	predicate->state			= filter;
 	predicate->memtable_matches = tp_boolean_ranked_memtable_matches;
 	predicate->segment_matches	= tp_boolean_ranked_segment_matches;
+	predicate->segment_next		= tp_boolean_ranked_segment_next;
 	predicate->reset			= tp_boolean_ranked_filter_reset;
 	return predicate;
 }
@@ -948,7 +1011,7 @@ tp_boolean_write_segment(
 	if (stream->estimate >= cache_threshold)
 		tp_segment_enable_ctid_lookup_cache(reader);
 
-	for (int i = 0; i < writer->query->term_count; i++)
+	for (int i = 0; !stream->exact && i < writer->query->term_count; i++)
 	{
 		cursors[i].initialized = tp_segment_posting_iterator_init(
 				&cursors[i].iterator, reader, writer->query->terms[i].lexeme);
@@ -963,8 +1026,8 @@ tp_boolean_write_segment(
 
 		if (!tp_segment_is_alive(reader, doc_id))
 			continue;
-		if (!tp_boolean_segment_candidate_matches(
-					writer->query, cursors, doc_id))
+		if (!stream->exact && !tp_boolean_segment_candidate_matches(
+									  writer->query, cursors, doc_id))
 			continue;
 
 		tp_segment_lookup_ctid(reader, doc_id, &ctid);

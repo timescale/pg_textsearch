@@ -133,6 +133,12 @@ typedef struct TpBMWFilter
 			void *state, TpDataSource *source, ItemPointer ctid);
 	bool (*segment_matches)(
 			void *state, TpSegmentReader *reader, uint32 doc_id);
+	/* false uses ordinary BMW; UINT32_MAX means no candidates remain. */
+	bool (*segment_next)(
+			void			*state,
+			TpSegmentReader *reader,
+			uint32			 minimum,
+			uint32			*doc_id);
 	void (*reset)(void *state);
 } TpBMWFilter;
 

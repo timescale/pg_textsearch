@@ -105,6 +105,7 @@ INJECTION_REGRESS = scoring_injection merge_injection compaction_injection \
 REGRESS += compaction_policy
 REGRESS += partitioned_scoring
 REGRESS += ranked_boolean
+REGRESS += boolean_candidates
 REGRESS_OPTS = --inputdir=test --outputdir=test
 
 PG_CONFIG ?= pg_config
