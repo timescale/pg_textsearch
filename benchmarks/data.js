@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795243852323,
+  "lastUpdate": 1795243855830,
   "repoUrl": "https://github.com/timescale/pg_textsearch",
   "entries": {
     "cranfield Benchmarks": [
@@ -273691,6 +273691,93 @@ window.BENCHMARK_DATA = {
           {
             "name": "wikipedia_concurrent (0 docs) - Weighted Throughput (avg ms/query)",
             "value": 0.79,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tjgreen@gmail.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "5419bfb287762ea5a9a3a867d954a601ddcf56bc",
+          "message": "Fix big-endian bitpack decoding in segment compression (#619)\n\nNormalize compressed posting-list loads on big-endian platforms so\ndocument IDs and frequencies decode correctly.\n\nReplaces #550.",
+          "timestamp": "2026-11-20T18:16:22Z",
+          "url": "https://github.com/timescale/pg_textsearch/commit/5419bfb287762ea5a9a3a867d954a601ddcf56bc"
+        },
+        "date": 1795243855347,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "wikipedia_concurrent (0 docs) - Index Build Time",
+            "value": 0.624,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia_concurrent (0 docs) - Insert Time",
+            "value": 0.356,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia_concurrent (0 docs) - Concurrent Insert Time",
+            "value": 19720.364746,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia_concurrent (0 docs) - 1 Token Query (p50)",
+            "value": 0.19,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia_concurrent (0 docs) - 2 Token Query (p50)",
+            "value": 0.32,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia_concurrent (0 docs) - 3 Token Query (p50)",
+            "value": 0.45,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia_concurrent (0 docs) - 4 Token Query (p50)",
+            "value": 0.57,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia_concurrent (0 docs) - 5 Token Query (p50)",
+            "value": 0.68,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia_concurrent (0 docs) - 6 Token Query (p50)",
+            "value": 0.8,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia_concurrent (0 docs) - 7 Token Query (p50)",
+            "value": 0.98,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia_concurrent (0 docs) - 8+ Token Query (p50)",
+            "value": 2.18,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia_concurrent (0 docs) - Weighted Latency (p50, ms)",
+            "value": 0.54,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia_concurrent (0 docs) - Weighted Throughput (avg ms/query)",
+            "value": 0.55,
             "unit": "ms"
           }
         ]
