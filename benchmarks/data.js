@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795331546361,
+  "lastUpdate": 1795331551489,
   "repoUrl": "https://github.com/timescale/pg_textsearch",
   "entries": {
     "cranfield Benchmarks": [
@@ -235644,6 +235644,48 @@ window.BENCHMARK_DATA = {
           {
             "name": "cranfield_concurrent (0 docs) - Throughput (avg ms/query)",
             "value": 0.28,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tjgreen@gmail.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "5f715d72d1eab7d57b204458175f0325b94ade60",
+          "message": "Fix partition-local scoring with parent BM25 indexes (#618)\n\nUse each row's leaf-partition statistics when scoring through a parent\nBM25 index, including implicit queries and nested partitions. Preserve\nparent-only permissions and ordered index scans; error when partition\ncontext is unavailable.\n\nFixes #552.",
+          "timestamp": "2026-11-22T04:28:34Z",
+          "url": "https://github.com/timescale/pg_textsearch/commit/5f715d72d1eab7d57b204458175f0325b94ade60"
+        },
+        "date": 1795331550657,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "cranfield_concurrent (0 docs) - Index Build Time",
+            "value": 0.844,
+            "unit": "ms"
+          },
+          {
+            "name": "cranfield_concurrent (0 docs) - Insert Time",
+            "value": 0.346,
+            "unit": "ms"
+          },
+          {
+            "name": "cranfield_concurrent (0 docs) - Concurrent Insert Time",
+            "value": 352.978104,
+            "unit": "ms"
+          },
+          {
+            "name": "cranfield_concurrent (0 docs) - Throughput (avg ms/query)",
+            "value": 0.42,
             "unit": "ms"
           }
         ]
