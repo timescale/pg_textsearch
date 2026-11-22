@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795331535914,
+  "lastUpdate": 1795331542040,
   "repoUrl": "https://github.com/timescale/pg_textsearch",
   "entries": {
     "cranfield Benchmarks": [
@@ -204159,6 +204159,93 @@ window.BENCHMARK_DATA = {
           {
             "name": "msmarco_insert (0 docs) - Weighted Throughput (avg ms/query)",
             "value": 7.2,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco_insert (0 docs) - Index Size",
+            "value": 19618.34,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tjgreen@gmail.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "5f715d72d1eab7d57b204458175f0325b94ade60",
+          "message": "Fix partition-local scoring with parent BM25 indexes (#618)\n\nUse each row's leaf-partition statistics when scoring through a parent\nBM25 index, including implicit queries and nested partitions. Preserve\nparent-only permissions and ordered index scans; error when partition\ncontext is unavailable.\n\nFixes #552.",
+          "timestamp": "2026-11-22T04:28:34Z",
+          "url": "https://github.com/timescale/pg_textsearch/commit/5f715d72d1eab7d57b204458175f0325b94ade60"
+        },
+        "date": 1795331541197,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "msmarco_insert (0 docs) - Index Build Time",
+            "value": 1.074,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco_insert (0 docs) - Insert Time",
+            "value": 1475662.007,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco_insert (0 docs) - 1 Token Query (p50)",
+            "value": 2.01,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco_insert (0 docs) - 2 Token Query (p50)",
+            "value": 2.85,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco_insert (0 docs) - 3 Token Query (p50)",
+            "value": 4.86,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco_insert (0 docs) - 4 Token Query (p50)",
+            "value": 6.73,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco_insert (0 docs) - 5 Token Query (p50)",
+            "value": 9,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco_insert (0 docs) - 6 Token Query (p50)",
+            "value": 12.74,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco_insert (0 docs) - 7 Token Query (p50)",
+            "value": 16.6,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco_insert (0 docs) - 8+ Token Query (p50)",
+            "value": 25.44,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco_insert (0 docs) - Weighted Latency (p50, ms)",
+            "value": 6.55,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco_insert (0 docs) - Weighted Throughput (avg ms/query)",
+            "value": 7.56,
             "unit": "ms"
           },
           {
