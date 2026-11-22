@@ -115,6 +115,20 @@ EXECUTE explicit_partial('ressource', 'content_partial_french');
 DEALLOCATE explicit_partial;
 DROP INDEX content_partial_french;
 
+-- A collation-incompatible index is not a usable ordering alternative.
+CREATE INDEX content_posix_french ON multi_index_test
+    USING bm25 (content COLLATE "POSIX") WITH (text_config = 'french');
+PREPARE explicit_collation(text, text) AS
+SELECT id FROM multi_index_test
+ORDER BY content <@> to_bm25query($1, $2)
+LIMIT 3;
+\set VERBOSITY sqlstate
+EXPLAIN (COSTS OFF)
+EXECUTE explicit_collation('ressource', 'content_posix_french');
+\set VERBOSITY default
+DEALLOCATE explicit_collation;
+DROP INDEX content_posix_french;
+
 -- The same requirement applies to expression indexes.
 CREATE INDEX content_lower_french ON multi_index_test
     USING bm25 (lower(content)) WITH (text_config = 'french');
@@ -194,6 +208,37 @@ EXECUTE explicit_partition('request', 'multi_part_english');
 EXPLAIN (COSTS OFF)
 EXECUTE explicit_partition('request', 'multi_part_simple');
 EXECUTE explicit_partition('request', 'multi_part_simple');
+
+-- Partition descendants must also support the ordering's collation.
+CREATE INDEX multi_part_posix ON multi_index_part
+    USING bm25 (content COLLATE "POSIX") WITH (text_config = 'english');
+\set VERBOSITY sqlstate
+EXPLAIN (COSTS OFF)
+EXECUTE explicit_partition('request', 'multi_part_posix');
+\set VERBOSITY default
+DROP INDEX multi_part_posix;
+
+-- Resolve the named child once per plan, not once per candidate path.
+SET client_min_messages = warning;
+DO $$
+BEGIN
+    FOR i IN 1..8 LOOP
+        EXECUTE format(
+            'CREATE INDEX multi_part_extra_%s ON multi_index_part'
+            ' USING bm25 (content) WITH (text_config = ''simple'')', i);
+    END LOOP;
+END
+$$;
+RESET client_min_messages;
+BEGIN;
+SELECT pg_stat_get_xact_numscans('pg_inherits_relid_seqno_index'::regclass)
+    AS explicit_index_scans_before \gset
+EXPLAIN (COSTS OFF)
+EXECUTE explicit_partition('request', 'multi_part_english');
+SELECT pg_stat_get_xact_numscans('pg_inherits_relid_seqno_index'::regclass)
+    - :explicit_index_scans_before < 80 AS bounded_index_resolution;
+COMMIT;
+
 -- A leaf index cannot satisfy scans of its sibling partition.
 \set VERBOSITY sqlstate
 EXPLAIN (COSTS OFF)
