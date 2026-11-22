@@ -4,6 +4,9 @@ pg_textsearch is a PostgreSQL index access method for BM25-ranked full-text
 search. It uses an LSM-like layout: an on-disk memtable receives writes and
 spills into immutable segments that are compacted across levels.
 
+CI exercises only little-endian architectures. Big-endian architectures are
+supported for downstream packaging, such as Debian, but are not tested in CI.
+
 ## Source Layout
 
 - `src/access/` — access-method build, scan, vacuum, and SQL maintenance entry

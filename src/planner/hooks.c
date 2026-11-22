@@ -12,6 +12,7 @@
 
 #include <access/genam.h>
 #include <access/htup_details.h>
+#include <access/sysattr.h>
 #include <access/table.h>
 #include <access/transam.h>
 #include <access/xact.h>
@@ -36,6 +37,7 @@
 #include <optimizer/optimizer.h>
 #include <optimizer/pathnode.h>
 #include <optimizer/paths.h>
+#include <optimizer/plancat.h>
 #include <optimizer/planner.h>
 #include <parser/analyze.h>
 #include <parser/parse_func.h>
@@ -60,6 +62,11 @@
 static post_parse_analyze_hook_type prev_post_parse_analyze_hook = NULL;
 static planner_hook_type			prev_planner_hook			 = NULL;
 static set_rel_pathlist_hook_type	prev_set_rel_pathlist_hook	 = NULL;
+#if PG_VERSION_NUM >= 190000
+static build_simple_rel_hook_type prev_build_simple_rel_hook = NULL;
+#else
+static get_relation_info_hook_type prev_get_relation_info_hook = NULL;
+#endif
 
 /*
  * Structure to hold looked-up OIDs for a query
@@ -73,7 +80,12 @@ typedef struct BM25OidCache
 	Oid textarray_tpquery_operator_oid;
 	Oid textarray_text_operator_oid;
 	Oid score_stub_func_oid; /* bm25_get_current_score() */
+	Oid partition_score_func_oid;
+	Oid partition_array_score_func_oid;
 } BM25OidCache;
+
+/* Set while planning a query whose scores may need a row's partition. */
+static BM25OidCache *partition_carry_oids = NULL;
 
 /*
  * Backend-local cache to avoid repeated syscache lookups.
@@ -225,6 +237,28 @@ lookup_bm25_oids_internal(BM25OidCache *cache)
 			PointerGetDatum(buildoidvector(NULL, 0)),
 			ObjectIdGetDatum(schema_oid));
 
+	{
+		Oid		   args[]	= {TEXTOID, cache->tpquery_type_oid, INTERNALOID};
+		oidvector *argtypes = buildoidvector(args, 3);
+
+		cache->partition_score_func_oid = GetSysCacheOid3(
+				PROCNAMEARGSNSP,
+				Anum_pg_proc_oid,
+				CStringGetDatum("bm25_text_bm25query_score"),
+				PointerGetDatum(argtypes),
+				ObjectIdGetDatum(schema_oid));
+		args[0] = TEXTARRAYOID;
+		pfree(argtypes);
+		argtypes							  = buildoidvector(args, 3);
+		cache->partition_array_score_func_oid = GetSysCacheOid3(
+				PROCNAMEARGSNSP,
+				Anum_pg_proc_oid,
+				CStringGetDatum("bm25_textarray_bm25query_score"),
+				PointerGetDatum(argtypes),
+				ObjectIdGetDatum(schema_oid));
+		pfree(argtypes);
+	}
+
 	return true;
 }
 
@@ -282,6 +316,19 @@ get_bm25_oids(BM25OidCache *cache)
 	cached_oids		= *cache;
 	oid_cache_state = CACHE_VALID;
 	return true;
+}
+
+/*
+ * Whether the extension's SQL defines the overloads that carry a row's
+ * partition.  A new binary lacks them until ALTER EXTENSION ... UPDATE.
+ */
+bool
+tp_partition_scoring_available(void)
+{
+	BM25OidCache oids;
+
+	return get_bm25_oids(&oids) && OidIsValid(oids.partition_score_func_oid) &&
+		   OidIsValid(oids.partition_array_score_func_oid);
 }
 
 /*
@@ -1285,6 +1332,8 @@ score_function_is_unsafe(Oid funcid, void *context)
 	BM25OidCache *oids = context;
 
 	if (funcid == oids->score_stub_func_oid ||
+		funcid == oids->partition_score_func_oid ||
+		funcid == oids->partition_array_score_func_oid ||
 		funcid == F_CURRENT_SETTING_TEXT ||
 		funcid == F_CURRENT_SETTING_TEXT_BOOL)
 		return false;
@@ -1415,6 +1464,622 @@ replace_scores_in_plan(Plan *plan, BM25OidCache *oids)
 	default:
 		break;
 	}
+}
+
+typedef struct PartitionScoreContext
+{
+	BM25OidCache *oids;
+	List		 *rtable;
+	Plan		 *plan;
+	Query		 *query;
+	List		 *query_stack;
+	List		 *ordering_scores;
+	bool		  row_level;
+} PartitionScoreContext;
+
+/*
+ * A fixed leaf can be bound after planning without changing index pathkeys.
+ * Expressions receiving rows from several leaves use a tableoid Var that
+ * core carries through the plan instead.
+ */
+static Oid
+score_expression_table(Plan *plan, Node *expr, List *rtable)
+{
+	List *vars = pull_var_clause(
+			expr,
+			PVC_INCLUDE_AGGREGATES | PVC_INCLUDE_WINDOWFUNCS |
+					PVC_INCLUDE_PLACEHOLDERS);
+	ListCell *lc;
+	Oid		  result = InvalidOid;
+
+	foreach (lc, vars)
+	{
+		Var *var	   = lfirst(lc);
+		Oid	 table_oid = InvalidOid;
+
+		if (!IsA(var, Var))
+		{
+			result = InvalidOid;
+			break;
+		}
+		if (var->varno == OUTER_VAR || var->varno == INNER_VAR)
+		{
+			Plan *child = var->varno == OUTER_VAR ? plan->lefttree
+												  : plan->righttree;
+
+			if (child != NULL)
+			{
+				TargetEntry *tle =
+						get_tle_by_resno(child->targetlist, var->varattno);
+
+				if (tle != NULL)
+					table_oid = score_expression_table(
+							child, (Node *)tle->expr, rtable);
+			}
+		}
+		else if (
+				var->varno > 0 &&
+				(unsigned int)var->varno <= (unsigned int)list_length(rtable))
+		{
+			RangeTblEntry *rte = rt_fetch(var->varno, rtable);
+
+			if (rte->rtekind == RTE_RELATION &&
+				rte->relkind != RELKIND_PARTITIONED_TABLE)
+				table_oid = rte->relid;
+			else if (IsA(plan, SubqueryScan))
+			{
+				Plan		*child = ((SubqueryScan *)plan)->subplan;
+				TargetEntry *tle =
+						get_tle_by_resno(child->targetlist, var->varattno);
+
+				if (tle != NULL)
+					table_oid = score_expression_table(
+							child, (Node *)tle->expr, rtable);
+			}
+		}
+
+		if (!OidIsValid(table_oid) ||
+			(OidIsValid(result) && result != table_oid))
+		{
+			result = InvalidOid;
+			break;
+		}
+		result = table_oid;
+	}
+	list_free(vars);
+	return result;
+}
+
+static bool
+score_needs_partition_context(OpExpr *op, BM25OidCache *oids)
+{
+	Node *right;
+
+	if (!is_bm25_score_opexpr((Node *)op, oids))
+		return false;
+
+	right = lsecond(op->args);
+	/* The parser leaves to_bm25query('...', 'index') calls unfolded. */
+	if (!IsA(right, Const))
+		right = eval_const_expressions(NULL, right);
+	if (IsA(right, Const))
+	{
+		Const *value = (Const *)right;
+
+		if (value->constisnull)
+			return false;
+		return get_rel_relkind(get_tpquery_index_oid(
+					   (TpQuery *)DatumGetPointer(value->constvalue))) ==
+			   RELKIND_PARTITIONED_INDEX;
+	}
+	/* A parameter or subquery may name a parent index at run time. */
+	return true;
+}
+
+static bool
+has_partition_score_walker(Node *node, void *arg)
+{
+	if (node == NULL)
+		return false;
+	if (IsA(node, OpExpr) &&
+		score_needs_partition_context((OpExpr *)node, arg))
+		return true;
+	if (IsA(node, Query))
+		return query_tree_walker(
+				(Query *)node, has_partition_score_walker, arg, 0);
+	return expression_tree_walker(node, has_partition_score_walker, arg);
+}
+
+typedef struct ScoreSourceContext
+{
+	Var *source;
+} ScoreSourceContext;
+
+static bool
+score_source_walker(Node *node, void *arg)
+{
+	ScoreSourceContext *context = arg;
+
+	if (node == NULL)
+		return false;
+	if (IsA(node, Aggref) || IsA(node, WindowFunc) || IsA(node, SubLink) ||
+		IsA(node, PlaceHolderVar))
+		return true;
+	if (IsA(node, Var))
+	{
+		Var *var = (Var *)node;
+
+		if (context->source != NULL &&
+			(context->source->varno != var->varno ||
+			 context->source->varlevelsup != var->varlevelsup))
+			return true;
+		context->source = var;
+		return false;
+	}
+	return expression_tree_walker(node, score_source_walker, arg);
+}
+
+static Var *
+score_tableoid_var(Node *expr, List *query_stack)
+{
+	ScoreSourceContext context = {0};
+	Var				  *source;
+	Query			  *query;
+	int				   varno;
+	RangeTblEntry	  *rte;
+	Var				  *result;
+
+	if (score_source_walker(expr, &context))
+		return NULL;
+	source = context.source;
+	if (source == NULL ||
+		source->varlevelsup >= (unsigned int)list_length(query_stack))
+		return NULL;
+
+	query = list_nth(query_stack, source->varlevelsup);
+	varno = source->varno;
+
+	/*
+	 * EXCLUDED has no tableoid.  ON CONFLICT evaluates it beside the
+	 * conflicting row, which is in the partition the proposed row targets.
+	 */
+	if (query->onConflict != NULL && varno == query->onConflict->exclRelIndex)
+		varno = query->resultRelation;
+	if (varno <= 0 || varno > list_length(query->rtable))
+		return NULL;
+
+	/* Only scanned tables have a tableoid; a trigger's view row does not. */
+	rte = rt_fetch(varno, query->rtable);
+	if (rte->rtekind != RTE_RELATION ||
+		(rte->relkind != RELKIND_RELATION &&
+		 rte->relkind != RELKIND_PARTITIONED_TABLE &&
+		 rte->relkind != RELKIND_FOREIGN_TABLE &&
+		 rte->relkind != RELKIND_MATVIEW))
+		return NULL;
+
+	result =
+			makeVar(varno,
+					TableOidAttributeNumber,
+					OIDOID,
+					-1,
+					InvalidOid,
+					source->varlevelsup);
+	result->varnullingrels = bms_copy(source->varnullingrels);
+#if PG_VERSION_NUM >= 180000
+	/* RETURNING old of a moved row needs the partition it left. */
+	result->varreturningtype = source->varreturningtype;
+#endif
+	return result;
+}
+
+static Expr *
+score_plan_tableoid(Node *expr, Plan *plan)
+{
+	List *vars = pull_var_clause(
+			expr,
+			PVC_INCLUDE_AGGREGATES | PVC_INCLUDE_WINDOWFUNCS |
+					PVC_INCLUDE_PLACEHOLDERS);
+	Index	  source = 0;
+	ListCell *lc;
+
+	foreach (lc, vars)
+	{
+		Var *var = lfirst(lc);
+
+		if (!IsA(var, Var) || var->varnosyn == 0 ||
+			(source != 0 && source != var->varnosyn))
+		{
+			list_free(vars);
+			return NULL;
+		}
+		source = var->varnosyn;
+	}
+	list_free(vars);
+	if (source == 0)
+		return NULL;
+
+	foreach (lc, plan->targetlist)
+	{
+		TargetEntry *tle = lfirst_node(TargetEntry, lc);
+
+		if (IsA(tle->expr, Var))
+		{
+			Var *var = (Var *)tle->expr;
+
+			if (var->varnosyn == source &&
+				var->varattnosyn == TableOidAttributeNumber)
+				return copyObject(tle->expr);
+		}
+	}
+	return NULL;
+}
+
+/*
+ * Whether each output row of a query comes from one scanned row, so that a
+ * score in its target list still has that row's partition.
+ */
+static bool
+query_preserves_score_rows(Query *query)
+{
+	return query->commandType == CMD_SELECT && query->groupClause == NIL &&
+		   query->groupingSets == NIL && !query->hasAggs &&
+		   query->havingQual == NULL && query->distinctClause == NIL &&
+		   query->setOperations == NULL;
+}
+
+/*
+ * Follow a sort key through subquery and CTE columns to the score defining
+ * it, which a pulled-up subquery or inlined CTE can expose to index paths.
+ */
+static void
+collect_ordering_score(
+		Node *expr, List *query_stack, PartitionScoreContext *context)
+{
+	Query		  *query = linitial(query_stack);
+	Var			  *var;
+	RangeTblEntry *rte;
+	Query		  *subquery = NULL;
+	List		  *substack = NIL;
+	TargetEntry	  *tle;
+
+	if (IsA(expr, OpExpr))
+	{
+		Var *tableoid;
+
+		if (!score_needs_partition_context((OpExpr *)expr, context->oids))
+			return;
+		tableoid = score_tableoid_var(
+				linitial(((OpExpr *)expr)->args), query_stack);
+		if (tableoid != NULL && tableoid->varlevelsup == 0)
+			context->ordering_scores =
+					list_append_unique_ptr(context->ordering_scores, expr);
+		return;
+	}
+	if (!IsA(expr, Var))
+		return;
+	var = (Var *)expr;
+	if (var->varlevelsup != 0 || var->varattno <= 0 || var->varno <= 0 ||
+		var->varno > list_length(query->rtable))
+		return;
+
+	rte = rt_fetch(var->varno, query->rtable);
+	if (rte->rtekind == RTE_SUBQUERY)
+	{
+		subquery = rte->subquery;
+		substack = lcons(subquery, list_copy(query_stack));
+	}
+	else if (
+			rte->rtekind == RTE_CTE && !rte->self_reference &&
+			rte->ctelevelsup < (Index)list_length(query_stack))
+	{
+		Query	 *owner = list_nth(query_stack, rte->ctelevelsup);
+		ListCell *lc;
+
+		foreach (lc, owner->cteList)
+		{
+			CommonTableExpr *cte = lfirst_node(CommonTableExpr, lc);
+
+			if (strcmp(cte->ctename, rte->ctename) != 0)
+				continue;
+			if (!cte->cterecursive)
+			{
+				subquery = castNode(Query, cte->ctequery);
+				substack =
+						lcons(subquery,
+							  list_copy_tail(query_stack, rte->ctelevelsup));
+			}
+			break;
+		}
+	}
+	if (subquery == NULL || !query_preserves_score_rows(subquery))
+		return;
+
+	tle = get_tle_by_resno(subquery->targetList, var->varattno);
+	if (tle != NULL && !tle->resjunk)
+		collect_ordering_score((Node *)tle->expr, substack, context);
+}
+
+static bool
+collect_ordering_scores_walker(Node *node, void *arg)
+{
+	PartitionScoreContext *context = arg;
+
+	if (node == NULL)
+		return false;
+	if (IsA(node, Query))
+	{
+		Query	 *query = (Query *)node;
+		List	 *saved = context->query_stack;
+		ListCell *lc;
+		bool	  result;
+
+		context->query_stack = lcons(query, list_copy(saved));
+		if (query_preserves_score_rows(query))
+		{
+			foreach (lc, query->sortClause)
+				collect_ordering_score(
+						(Node *)get_sortgroupclause_expr(
+								lfirst(lc), query->targetList),
+						context->query_stack,
+						context);
+		}
+		result = query_tree_walker(
+				query, collect_ordering_scores_walker, arg, 0);
+		context->query_stack = saved;
+		return result;
+	}
+	return expression_tree_walker(node, collect_ordering_scores_walker, arg);
+}
+
+typedef struct RelScoreContext
+{
+	BM25OidCache *oids;
+	int			  relid;
+} RelScoreContext;
+
+static bool
+rel_score_walker(Node *node, void *arg)
+{
+	RelScoreContext *context = arg;
+
+	if (node == NULL)
+		return false;
+	if (IsA(node, OpExpr) &&
+		score_needs_partition_context((OpExpr *)node, context->oids))
+	{
+		ScoreSourceContext source = {0};
+
+		if (!score_source_walker(linitial(((OpExpr *)node)->args), &source) &&
+			source.source != NULL && source.source->varno == context->relid &&
+			source.source->varlevelsup == 0)
+			return true;
+	}
+	return expression_tree_walker(node, rel_score_walker, arg);
+}
+
+/*
+ * A score left unbound for index ordering, or written over a pulled-up
+ * subquery's column, is bound after planning.  Where a Sort, join or upper
+ * projection evaluates it, the input must carry each row's tableoid.  Core
+ * adds row-mark tableoid columns to processed_tlist the same way; this runs
+ * before build_base_rel_tlists(), so the column reaches the rel's target.
+ */
+static void
+tp_carry_partition_tableoid(PlannerInfo *root, RelOptInfo *rel)
+{
+	RangeTblEntry  *rte;
+	RelScoreContext context;
+	ListCell	   *lc;
+	Var			   *tableoid;
+
+	if (partition_carry_oids == NULL || rel->reloptkind != RELOPT_BASEREL ||
+		!query_preserves_score_rows(root->parse))
+		return;
+	rte = planner_rt_fetch(rel->relid, root);
+	if (rte->rtekind != RTE_RELATION ||
+		rte->relkind != RELKIND_PARTITIONED_TABLE || !rte->inh)
+		return;
+
+	context.oids  = partition_carry_oids;
+	context.relid = (int)rel->relid;
+	if (!rel_score_walker((Node *)root->processed_tlist, &context))
+		return;
+
+	foreach (lc, root->processed_tlist)
+	{
+		Var *var = (Var *)lfirst_node(TargetEntry, lc)->expr;
+
+		if (IsA(var, Var) && var->varno == context.relid &&
+			var->varattno == TableOidAttributeNumber && var->varlevelsup == 0)
+			return;
+	}
+
+	tableoid = makeVar(
+			rel->relid, TableOidAttributeNumber, OIDOID, -1, InvalidOid, 0);
+	root->processed_tlist =
+			lappend(root->processed_tlist,
+					makeTargetEntry(
+							(Expr *)tableoid,
+							list_length(root->processed_tlist) + 1,
+							pstrdup("bm25_partition_tableoid"),
+							true));
+}
+
+#if PG_VERSION_NUM >= 190000
+static void
+tp_build_simple_rel_hook(
+		PlannerInfo *root, RelOptInfo *rel, RangeTblEntry *rte)
+{
+	if (prev_build_simple_rel_hook)
+		prev_build_simple_rel_hook(root, rel, rte);
+	tp_carry_partition_tableoid(root, rel);
+}
+#else
+static void
+tp_get_relation_info_hook(
+		PlannerInfo *root,
+		Oid			 relationObjectId,
+		bool		 inhparent,
+		RelOptInfo	*rel)
+{
+	if (prev_get_relation_info_hook)
+		prev_get_relation_info_hook(root, relationObjectId, inhparent, rel);
+	if (inhparent)
+		tp_carry_partition_tableoid(root, rel);
+}
+#endif
+
+static Node *
+bind_partition_score_mutator(Node *node, void *arg)
+{
+	PartitionScoreContext *context = arg;
+	OpExpr				  *op;
+	Expr				  *table_expr = NULL;
+	Oid					   funcid;
+	bool				   ordering;
+
+	if (node == NULL)
+		return NULL;
+	if (IsA(node, Query))
+	{
+		PartitionScoreContext subcontext = *context;
+		Query				 *query		 = (Query *)node;
+
+		subcontext.query = query;
+		/* lcons() extends a list in place, which later siblings would see. */
+		subcontext.query_stack = lcons(query, list_copy(context->query_stack));
+		subcontext.row_level   = false;
+		return (Node *)query_tree_mutator(
+				query, bind_partition_score_mutator, &subcontext, 0);
+	}
+
+	/*
+	 * Keep ordering operators visible to index path selection.  The tableoid
+	 * carried by tp_carry_partition_tableoid() binds any that a Sort or
+	 * projection ultimately evaluates.
+	 */
+	ordering = list_member_ptr(context->ordering_scores, node);
+
+	if (context->query != NULL && !context->row_level &&
+		(IsA(node, Aggref) || node == (Node *)context->query->jointree))
+	{
+		PartitionScoreContext rowcontext = *context;
+
+		rowcontext.row_level = true;
+		return bind_partition_score_mutator(node, &rowcontext);
+	}
+
+	node = expression_tree_mutator(node, bind_partition_score_mutator, arg);
+	if (ordering || !IsA(node, OpExpr))
+		return node;
+	op = (OpExpr *)node;
+	if (!score_needs_partition_context(op, context->oids))
+		return node;
+	if (context->query != NULL && !context->row_level &&
+		(context->query->hasAggs || context->query->groupClause != NIL))
+		return node;
+
+	funcid = op->opno == context->oids->textarray_tpquery_operator_oid
+				   ? context->oids->partition_array_score_func_oid
+				   : context->oids->partition_score_func_oid;
+	/* An older extension SQL version has no partition-aware overload yet. */
+	if (!OidIsValid(funcid))
+		return node;
+
+	if (context->query != NULL)
+		table_expr = (Expr *)
+				score_tableoid_var(linitial(op->args), context->query_stack);
+	else
+	{
+		Oid table_oid = score_expression_table(
+				context->plan, linitial(op->args), context->rtable);
+
+		if (OidIsValid(table_oid))
+			table_expr = (Expr *)makeConst(
+					OIDOID,
+					-1,
+					InvalidOid,
+					sizeof(Oid),
+					ObjectIdGetDatum(table_oid),
+					false,
+					true);
+		else
+			table_expr =
+					score_plan_tableoid(linitial(op->args), context->plan);
+	}
+
+	if (table_expr == NULL)
+		return node;
+
+	/*
+	 * The overload takes internal so that SQL callers, which cannot construct
+	 * one, cannot name a partition; the relabeled OID needs no conversion.
+	 */
+	table_expr = (Expr *)makeRelabelType(
+			table_expr, INTERNALOID, -1, InvalidOid, COERCE_IMPLICIT_CAST);
+
+	return (Node *)makeFuncExpr(
+			funcid,
+			FLOAT8OID,
+			lappend(op->args, table_expr),
+			op->opcollid,
+			op->inputcollid,
+			COERCE_EXPLICIT_CALL);
+}
+
+static void
+bind_partition_scores_in_plan(Plan *plan, List *rtable, BM25OidCache *oids)
+{
+	PartitionScoreContext context =
+			{.oids = oids, .rtable = rtable, .plan = plan};
+	List	 *children = NIL;
+	ListCell *lc;
+
+	if (plan == NULL)
+		return;
+
+	plan->targetlist = (List *)
+			bind_partition_score_mutator((Node *)plan->targetlist, &context);
+	plan->qual = (List *)
+			bind_partition_score_mutator((Node *)plan->qual, &context);
+	if (IsA(plan, NestLoop) || IsA(plan, MergeJoin) || IsA(plan, HashJoin))
+		((Join *)plan)->joinqual = (List *)bind_partition_score_mutator(
+				(Node *)((Join *)plan)->joinqual, &context);
+	if (IsA(plan, Result))
+		((Result *)plan)->resconstantqual = bind_partition_score_mutator(
+				((Result *)plan)->resconstantqual, &context);
+	if (IsA(plan, HashJoin))
+	{
+		HashJoin *join = (HashJoin *)plan;
+
+		join->hashclauses = (List *)bind_partition_score_mutator(
+				(Node *)join->hashclauses, &context);
+		join->hashkeys = (List *)
+				bind_partition_score_mutator((Node *)join->hashkeys, &context);
+	}
+	if (IsA(plan, Hash))
+		((Hash *)plan)->hashkeys = (List *)bind_partition_score_mutator(
+				(Node *)((Hash *)plan)->hashkeys, &context);
+	if (IsA(plan, MergeJoin))
+		((MergeJoin *)plan)->mergeclauses = (List *)
+				bind_partition_score_mutator(
+						(Node *)((MergeJoin *)plan)->mergeclauses, &context);
+
+	bind_partition_scores_in_plan(plan->lefttree, rtable, oids);
+	bind_partition_scores_in_plan(plan->righttree, rtable, oids);
+
+	if (IsA(plan, Append))
+		children = ((Append *)plan)->appendplans;
+	else if (IsA(plan, MergeAppend))
+		children = ((MergeAppend *)plan)->mergeplans;
+	else if (IsA(plan, CustomScan))
+		children = ((CustomScan *)plan)->custom_plans;
+	else if (IsA(plan, SubqueryScan))
+		bind_partition_scores_in_plan(
+				((SubqueryScan *)plan)->subplan, rtable, oids);
+
+	foreach (lc, children)
+		bind_partition_scores_in_plan(lfirst(lc), rtable, oids);
 }
 
 /*
@@ -2232,8 +2897,10 @@ tp_planner_hook(
 	BM25OidCache	 oid_cache;
 	PlanningContext	 planning_context;
 	PlanningContext *saved_context;
+	BM25OidCache	*saved_carry_oids;
 	List			*explicit_indexes;
 	bool			 query_has_bm25_operators;
+	bool			 query_has_partition_scores;
 
 	/* Get BM25 OIDs - if extension not installed, just pass through */
 	if (!get_bm25_oids(&oid_cache))
@@ -2263,10 +2930,20 @@ tp_planner_hook(
 	 */
 	query_has_bm25_operators =
 			has_bm25_operator_walker((Node *)parse, &oid_cache);
+	query_has_partition_scores =
+			query_has_bm25_operators &&
+			has_partition_score_walker((Node *)parse, &oid_cache);
 	explicit_indexes =
 			query_has_bm25_operators
 					? collect_explicit_index_requirements(parse, &oid_cache)
 					: NIL;
+	if (query_has_partition_scores)
+	{
+		PartitionScoreContext context = {.oids = &oid_cache};
+
+		collect_ordering_scores_walker((Node *)parse, &context);
+		parse = (Query *)bind_partition_score_mutator((Node *)parse, &context);
+	}
 
 	if (explicit_indexes != NIL)
 	{
@@ -2281,6 +2958,10 @@ tp_planner_hook(
 	{
 		saved_context = NULL;
 	}
+
+	/* A nested planner call restores its caller's carry state. */
+	saved_carry_oids	 = partition_carry_oids;
+	partition_carry_oids = query_has_partition_scores ? &oid_cache : NULL;
 
 	/* Call previous hook or standard planner */
 	PG_TRY();
@@ -2300,6 +2981,8 @@ tp_planner_hook(
 	}
 	PG_FINALLY();
 	{
+		partition_carry_oids = saved_carry_oids;
+
 		/* Restore previous context and clean up if we set one up */
 		if (explicit_indexes != NIL)
 		{
@@ -2329,6 +3012,17 @@ tp_planner_hook(
 		validate_explicit_index_usage(result->planTree, &oid_cache);
 
 		replace_scores_in_plan(result->planTree, &oid_cache);
+	}
+
+	if (query_has_partition_scores)
+	{
+		ListCell *lc;
+
+		bind_partition_scores_in_plan(
+				result->planTree, result->rtable, &oid_cache);
+		foreach (lc, result->subplans)
+			bind_partition_scores_in_plan(
+					lfirst(lc), result->rtable, &oid_cache);
 	}
 
 	/*
@@ -2363,4 +3057,12 @@ tp_planner_hook_init(void)
 
 	prev_planner_hook = planner_hook;
 	planner_hook	  = tp_planner_hook;
+
+#if PG_VERSION_NUM >= 190000
+	prev_build_simple_rel_hook = build_simple_rel_hook;
+	build_simple_rel_hook	   = tp_build_simple_rel_hook;
+#else
+	prev_get_relation_info_hook = get_relation_info_hook;
+	get_relation_info_hook		= tp_get_relation_info_hook;
+#endif
 }
