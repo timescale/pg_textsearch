@@ -396,6 +396,8 @@ A small `LIMIT` does not guarantee little work. Very common terms, broad
 filters, or too few qualifying rows can limit score-based pruning. Phrase
 counts can be expensive even when only a few rows ultimately match.
 Prefix conditions retain ordinary ranked traversal and heap rechecks.
+Ranked queries with more than 64 exact Boolean term operands use a planner
+fallback or heap rechecks instead of internal predicate filtering.
 Check `EXPLAIN` for an ordered BM25 index scan rather than standalone scoring
 followed by a sort; see [verifying index usage](#verifying-index-usage).
 
