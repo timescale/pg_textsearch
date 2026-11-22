@@ -160,6 +160,22 @@ EXECUTE ranked_boolean_scan(''::tsquery);
 ----
 (0 rows)
 
+-- Generic plans must recheck queries beyond the internal predicate budget.
+SELECT '(beta & !padding) | ' || string_agg('unused' || g, ' | ')
+    AS oversized_query FROM generate_series(1, 63) g \gset
+EXECUTE ranked_boolean_scan(:'oversized_query'::tsquery);
+  id  
+------
+ 9001
+(1 row)
+
+SELECT '!alpha & ' || string_agg('!unused' || g, ' & ')
+    AS oversized_query FROM generate_series(1, 64) g \gset
+EXECUTE ranked_boolean_scan(:'oversized_query'::tsquery);
+ id 
+----
+(0 rows)
+
 DEALLOCATE ranked_boolean_scan;
 RESET plan_cache_mode;
 SELECT wanted.n, found.id

@@ -904,10 +904,20 @@ tp_boolean_ranked_filter_reset(void *arg)
 TpBMWFilter *
 tp_boolean_filter_create(TSQuery query, bool *recheck)
 {
-	TpBMWFilter			  *predicate = palloc0(sizeof(*predicate));
-	TpBooleanRankedFilter *filter	 = palloc0(sizeof(*filter));
+	TpBMWFilter			  *predicate;
+	TpBooleanRankedFilter *filter;
 	const char			 **terms;
 
+	/* Generic plans cannot validate runtime predicates during costing. */
+	if (tp_boolean_query_exact_operand_count(query) >
+		TP_BOOLEAN_MAX_EXACT_OPERANDS)
+	{
+		*recheck = true;
+		return NULL;
+	}
+
+	predicate		= palloc0(sizeof(*predicate));
+	filter			= palloc0(sizeof(*filter));
 	filter->query	= tp_boolean_extract_terms(query);
 	filter->context = CurrentMemoryContext;
 	*recheck		= filter->query.requires_recheck;
