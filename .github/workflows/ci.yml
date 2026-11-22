@@ -282,6 +282,7 @@ jobs:
         rm -rf tmp_hypertable_test
 
     - name: Run TimescaleDB ownership regression
+      if: matrix.pg_version != 19
       timeout-minutes: 5
       run: |
         export PATH="/usr/lib/postgresql/${{ matrix.pg_version }}/bin:$PATH"
@@ -1068,6 +1069,12 @@ jobs:
         (cd test/scripts && ./hypertable.sh) || true
         pg_ctl stop -D tmp_hypertable_test/data || true
         rm -rf tmp_hypertable_test
+
+    - name: Run TimescaleDB ownership regression
+      timeout-minutes: 5
+      run: |
+        export PATH="/usr/lib/postgresql/17/bin:$PATH"
+        make test-timescaledb-owner
 
     - name: Run upgrade compat test (v6 metapage → in-place upgrade path)
       timeout-minutes: 5

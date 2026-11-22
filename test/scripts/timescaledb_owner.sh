@@ -81,6 +81,21 @@ BEGIN
   EXCEPTION WHEN wrong_object_type THEN NULL;
   END;
 END $$;
+SET ROLE owner_target;
+DO $$
+BEGIN
+  BEGIN
+    ALTER MATERIALIZED VIEW docs OWNER TO owner_unrelated;
+    RAISE EXCEPTION 'ordinary table was incorrectly accepted';
+  EXCEPTION WHEN wrong_object_type THEN NULL;
+  END;
+  BEGIN
+    ALTER TABLE docs OWNER TO owner_unrelated;
+    RAISE EXCEPTION 'unauthorized target ownership change was accepted';
+  EXCEPTION WHEN insufficient_privilege THEN NULL;
+  END;
+END $$;
+RESET ROLE;
 SET ROLE owner_unrelated;
 DO $$
 BEGIN

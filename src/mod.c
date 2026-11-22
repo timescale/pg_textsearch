@@ -4893,6 +4893,7 @@ tp_process_utility_impl(
 			/*
 			 * Leave relation-kind validation to the next utility hook. Other
 			 * extensions can implement materialized views using plain views.
+			 * Matview commands only need owner tracking for native matviews.
 			 */
 			relation_oid = RangeVarGetRelidExtended(
 					stmt->relation,
@@ -4902,7 +4903,9 @@ tp_process_utility_impl(
 					NULL);
 			if (OidIsValid(relation_oid) &&
 				object_ownercheck(
-						RelationRelationId, relation_oid, GetUserId()))
+						RelationRelationId, relation_oid, GetUserId()) &&
+				(stmt->objtype != OBJECT_MATVIEW ||
+				 get_rel_relkind(relation_oid) == RELKIND_MATVIEW))
 			{
 				List *indexoids;
 				List *candidates;
