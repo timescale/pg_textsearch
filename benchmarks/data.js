@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795244355284,
+  "lastUpdate": 1795328451703,
   "repoUrl": "https://github.com/timescale/pg_textsearch",
   "entries": {
     "cranfield Benchmarks": [
@@ -13202,6 +13202,43 @@ window.BENCHMARK_DATA = {
           {
             "name": "cranfield (1.4K docs) - Throughput (avg ms/query)",
             "value": 0.45,
+            "unit": "ms"
+          },
+          {
+            "name": "cranfield (1.4K docs) - Index Size",
+            "value": 0.68,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tjgreen@gmail.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "5f715d72d1eab7d57b204458175f0325b94ade60",
+          "message": "Fix partition-local scoring with parent BM25 indexes (#618)\n\nUse each row's leaf-partition statistics when scoring through a parent\nBM25 index, including implicit queries and nested partitions. Preserve\nparent-only permissions and ordered index scans; error when partition\ncontext is unavailable.\n\nFixes #552.",
+          "timestamp": "2026-11-22T04:28:34Z",
+          "url": "https://github.com/timescale/pg_textsearch/commit/5f715d72d1eab7d57b204458175f0325b94ade60"
+        },
+        "date": 1795328324879,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "cranfield (1.4K docs) - Index Build Time",
+            "value": 226.56,
+            "unit": "ms"
+          },
+          {
+            "name": "cranfield (1.4K docs) - Throughput (avg ms/query)",
+            "value": 0.43,
             "unit": "ms"
           },
           {
