@@ -969,6 +969,7 @@ tp_boolean_filter_create(TSQuery query, bool *recheck)
 	TpBMWFilter			  *predicate;
 	TpBooleanRankedFilter *filter;
 	const char			 **terms;
+	QueryItem			  *items = GETQUERY(query);
 
 	/* Generic plans cannot validate runtime predicates during costing. */
 	if (tp_boolean_query_exact_operand_count(query) >
@@ -992,7 +993,16 @@ tp_boolean_filter_create(TSQuery query, bool *recheck)
 	predicate->memtable_matches = tp_boolean_ranked_memtable_matches;
 	predicate->segment_matches	= tp_boolean_ranked_segment_matches;
 	predicate->segment_next		= tp_boolean_ranked_segment_next;
-	predicate->reset			= tp_boolean_ranked_filter_reset;
+	/* Prefix streams may enumerate all postings before density is known. */
+	for (int i = 0; i < query->size; i++)
+	{
+		if (items[i].type == QI_VAL && items[i].qoperand.prefix)
+		{
+			predicate->segment_next = NULL;
+			break;
+		}
+	}
+	predicate->reset = tp_boolean_ranked_filter_reset;
 	return predicate;
 }
 

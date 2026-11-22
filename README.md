@@ -378,6 +378,27 @@ which can grow as more rows are requested.
 SELECT * FROM documents ORDER BY content <@> 'search terms' LIMIT 10;
 ```
 
+Prefer this direct ordered query over materializing matches and then scoring
+and sorting them. A Boolean condition on the same indexed text expression can
+be evaluated inside the ranked scan; selective conditions can drive it from
+matching postings.
+
+| Query shape | Expected work |
+|---|---|
+| Ranked search, small `LIMIT` | BMW can skip noncompetitive blocks |
+| Selective ranked `@@` filter | Can seek to Boolean candidates |
+| Counts or exhaustive retrieval | Must visit all matching candidates |
+| Phrase, prefix, or weight restriction | May retokenize rows for rechecks |
+| Other filters on a BM25 scan | Post-filtering may require deeper scoring |
+| Standalone scoring | Scores rows individually; may need a large sort |
+
+A small `LIMIT` does not guarantee little work. Very common terms, broad
+filters, or too few qualifying rows can limit score-based pruning. Phrase
+counts can be expensive even when only a few rows ultimately match.
+Prefix conditions retain ordinary ranked traversal and heap rechecks.
+Check `EXPLAIN` for an ordered BM25 index scan rather than standalone scoring
+followed by a sort; see [verifying index usage](#verifying-index-usage).
+
 Segment compression is enabled by default. Disable it only when decompression
 is a measured bottleneck:
 

@@ -93,4 +93,46 @@ SELECT array_agg(id ORDER BY id) AS tied_candidates FROM (
 ) s;
 SELECT bm25_debug_scoring_passes(true) = 1 AS no_duplicate_backoff;
 DROP TABLE boolean_candidate_ties;
+
+CREATE TABLE boolean_candidate_prefix (id int, body text);
+INSERT INTO boolean_candidate_prefix
+SELECT g, CASE WHEN g = 1 THEN repeat('rankcommon ', 100)
+               ELSE 'rankcommon ' END || 'prefix' || (g % 512)
+FROM generate_series(1, 4096) g;
+CREATE INDEX boolean_candidate_prefix_idx
+ON boolean_candidate_prefix USING bm25(body) WITH (text_config = 'simple');
+SET pg_textsearch.default_limit = 1;
+CREATE FUNCTION pg_temp.bounded_candidate_reads(query text)
+RETURNS boolean LANGUAGE plpgsql AS $$
+DECLARE
+    plan json;
+BEGIN
+    EXECUTE 'EXPLAIN (ANALYZE, TIMING OFF, BUFFERS, FORMAT JSON) ' || query
+        INTO plan;
+    RETURN plan->0->'Plan'->'Plans'->0->>'Node Type' = 'Index Scan'
+       AND plan->0->'Plan'->'Plans'->0->>'Order By' IS NOT NULL
+       AND (plan->0->'Plan'->>'Shared Hit Blocks')::bigint
+         + (plan->0->'Plan'->>'Shared Read Blocks')::bigint < 256;
+END
+$$;
+-- A dense prefix must not enumerate all postings before falling back.
+SELECT pg_temp.bounded_candidate_reads($q$
+    SELECT id FROM boolean_candidate_prefix
+    WHERE body @@ 'prefix:*'::tsquery
+    ORDER BY body <@> to_bm25query('rankcommon',
+                                 'boolean_candidate_prefix_idx')
+    LIMIT 1
+$q$) AS dense_prefix_bounded;
+SELECT pg_temp.bounded_candidate_reads($q$
+    SELECT id FROM boolean_candidate_prefix
+    WHERE body @@ 'prefix:*'::tsquery
+    ORDER BY body <@> to_bm25query('absentfirst absentsecond',
+                                 'boolean_candidate_prefix_idx')
+    LIMIT 1
+$q$) AS absent_ranking_bounded;
+SELECT id FROM boolean_candidate_prefix
+WHERE body @@ 'prefix:*'::tsquery
+ORDER BY body <@> to_bm25query('rankcommon', 'boolean_candidate_prefix_idx')
+LIMIT 1;
+DROP TABLE boolean_candidate_prefix;
 DROP EXTENSION pg_textsearch;
