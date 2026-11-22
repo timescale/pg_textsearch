@@ -11,8 +11,10 @@
 #include <access/relation.h>
 #include <access/table.h>
 #include <access/xact.h>
+#include <catalog/index.h>
 #include <catalog/indexing.h>
 #include <catalog/namespace.h>
+#include <catalog/partition.h>
 #include <catalog/pg_am.h>
 #include <catalog/pg_class.h>
 #include <catalog/pg_index.h>
@@ -29,6 +31,7 @@
 #include <tsearch/ts_type.h>
 #include <utils/builtins.h>
 #include <utils/fmgroids.h>
+#include <utils/hsearch.h>
 #include <utils/lsyscache.h>
 #include <utils/regproc.h>
 #include <utils/rel.h>
@@ -63,7 +66,8 @@
  * slow with 1.86M rows and multiple segments.
  *
  * The cache is stored in fn_extra and persists for the duration of the
- * query. IDF values are computed once on first call and reused.
+ * query. IDF values are computed once on first call and reused.  Rows
+ * scored through a partitioned index keep one cache per leaf.
  *
  * Cached terms are capped: the cache is keyed by index state, not by
  * query text, so a per-row query value would otherwise accumulate the
@@ -90,6 +94,31 @@ typedef struct QueryScoreCache
 	MemoryContext context;
 	TermIdfEntry *terms;
 } QueryScoreCache;
+
+/*
+ * A partitioned index's leaf for a scored row's table.  Resolving it
+ * scans catalogs, so a call site does that once per table, and rows
+ * from alternating leaves do not evict each other's IDF caches.
+ */
+typedef struct LeafScoreKey
+{
+	Oid parent_index_oid;
+	Oid table_oid;
+} LeafScoreKey;
+
+typedef struct LeafScore
+{
+	LeafScoreKey	 key;
+	Oid				 index_oid;
+	QueryScoreCache *cache;
+} LeafScore;
+
+/* fn_extra of a scoring call site */
+typedef struct ScoreCallState
+{
+	QueryScoreCache *cache; /* for an index that is not partitioned */
+	HTAB			*leaves;
+} ScoreCallState;
 
 /* Local helper functions */
 
@@ -429,41 +458,64 @@ to_tpquery_text_index(PG_FUNCTION_ARGS)
 }
 
 /*
- * Find the first child index of a partitioned index via pg_inherits.
- * Returns InvalidOid if no children found.
+ * Resolve a parent index through the scored row's table ancestry. Never
+ * substitute an arbitrary sibling's statistics.
  */
 static Oid
-find_first_child_index(Oid parent_index_oid)
+find_partition_index(Oid parent_index_oid, Oid table_oid)
 {
-	Relation	inhrel;
-	SysScanDesc scan;
-	HeapTuple	tuple;
-	ScanKeyData skey;
-	Oid			child_oid = InvalidOid;
+	Oid	  parent_table = IndexGetRelation(parent_index_oid, false);
+	Oid	  index_oid	   = parent_index_oid;
+	List *ancestors;
+	bool  found_parent = false;
 
-	inhrel = table_open(InheritsRelationId, AccessShareLock);
-
-	ScanKeyInit(
-			&skey,
-			Anum_pg_inherits_inhparent,
-			BTEqualStrategyNumber,
-			F_OIDEQ,
-			ObjectIdGetDatum(parent_index_oid));
-
-	scan = systable_beginscan(
-			inhrel, InheritsParentIndexId, true, NULL, 1, &skey);
-
-	tuple = systable_getnext(scan);
-	if (tuple != NULL)
+	if (!OidIsValid(table_oid))
 	{
-		Form_pg_inherits inhform = (Form_pg_inherits)GETSTRUCT(tuple);
-		child_oid				 = inhform->inhrelid;
+		if (!tp_partition_scoring_available())
+			ereport(ERROR,
+					(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
+					 errmsg("partitioned BM25 scoring requires updating the "
+							"pg_textsearch extension"),
+					 errhint("Run ALTER EXTENSION pg_textsearch UPDATE.")));
+		ereport(ERROR,
+				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+				 errmsg("partitioned BM25 scoring requires a row's partition"),
+				 errhint("Score rows where the partitioned table is "
+						 "scanned, before grouping or set operations, or "
+						 "name a leaf partition's index.")));
 	}
 
-	systable_endscan(scan);
-	table_close(inhrel, AccessShareLock);
+	ancestors = lcons_oid(table_oid, get_partition_ancestors(table_oid));
+	for (int i = list_length(ancestors) - 1; i >= 0; i--)
+	{
+		Oid		 child_table_oid = list_nth_oid(ancestors, i);
+		Relation child_table;
 
-	return child_oid;
+		if (!found_parent)
+		{
+			found_parent = (child_table_oid == parent_table);
+			continue;
+		}
+
+		child_table = table_open(child_table_oid, AccessShareLock);
+		index_oid	= index_get_partition(child_table, index_oid);
+		table_close(child_table, AccessShareLock);
+		if (!OidIsValid(index_oid))
+			break;
+	}
+	list_free(ancestors);
+
+	if (!found_parent || !OidIsValid(index_oid) ||
+		get_rel_relkind(index_oid) != RELKIND_INDEX)
+		ereport(ERROR,
+				(errcode(ERRCODE_WRONG_OBJECT_TYPE),
+				 errmsg("table is not a leaf partition of the BM25 index"),
+				 errdetail(
+						 "Index \"%s\" cannot score rows from table \"%s\".",
+						 get_rel_name(parent_index_oid),
+						 get_rel_name(table_oid))));
+
+	return index_oid;
 }
 
 /*
@@ -598,19 +650,68 @@ find_first_child_bm25_index(Oid parent_index_oid, const char *indexed_colname)
 }
 
 /*
+ * Find the scored table's leaf of a partitioned index, resolving it only
+ * on the call site's first row from that table.
+ */
+static LeafScore *
+lookup_leaf_score(
+		ScoreCallState *state,
+		MemoryContext	context,
+		Oid				parent_index_oid,
+		Oid				table_oid)
+{
+	LeafScoreKey key;
+	LeafScore	*leaf;
+	Oid			 index_oid;
+
+	if (state->leaves == NULL)
+	{
+		HASHCTL ctl;
+
+		ctl.keysize	  = sizeof(LeafScoreKey);
+		ctl.entrysize = sizeof(LeafScore);
+		ctl.hcxt	  = context;
+		state->leaves = hash_create(
+				"pg_textsearch leaf scores",
+				16,
+				&ctl,
+				HASH_ELEM | HASH_BLOBS | HASH_CONTEXT);
+	}
+
+	key.parent_index_oid = parent_index_oid;
+	key.table_oid		 = table_oid;
+	leaf				 = hash_search(state->leaves, &key, HASH_FIND, NULL);
+	if (leaf != NULL)
+		return leaf;
+
+	/* Resolve first, so a failed lookup leaves no entry behind. */
+	index_oid		= find_partition_index(parent_index_oid, table_oid);
+	leaf			= hash_search(state->leaves, &key, HASH_ENTER, NULL);
+	leaf->index_oid = index_oid;
+	leaf->cache		= NULL;
+	return leaf;
+}
+
+/*
  * Helper: Validate query and get index
- * Returns opened index relation, sets index_oid_out if provided
+ * Returns opened index relation, sets index_oid_out if provided, and
+ * points cache_slot_out at the IDF cache for the returned index.
  *
- * For partitioned indexes (created on partitioned tables), this function
- * finds the first child index to use for text config. The actual corpus
- * stats are aggregated from all children later.
+ * For partitioned indexes, use the row's leaf index for both configuration
+ * and statistics, but authorize access through the caller-named parent.
  */
 static Relation
-validate_and_open_index(TpQuery *query, Oid *index_oid_out)
+validate_and_open_index(
+		FmgrInfo		  *flinfo,
+		TpQuery			  *query,
+		Oid				   table_oid,
+		Oid				  *index_oid_out,
+		QueryScoreCache ***cache_slot_out)
 {
-	Oid		 index_oid = get_tpquery_index_oid(query);
-	Relation index_rel;
-	char	 relkind;
+	ScoreCallState *state;
+	Oid				index_oid = get_tpquery_index_oid(query);
+	Relation		index_rel;
+	char			relkind;
 
 	if (!OidIsValid(index_oid))
 	{
@@ -638,28 +739,28 @@ validate_and_open_index(TpQuery *query, Oid *index_oid_out)
 	 */
 	tp_check_index_read_privilege(index_oid);
 
+	state = flinfo->fn_extra;
+	if (state == NULL)
+	{
+		state = MemoryContextAllocZero(flinfo->fn_mcxt, sizeof(*state));
+		flinfo->fn_extra = state;
+	}
+	*cache_slot_out = &state->cache;
+
 	/*
 	 * Check if this is a partitioned index. Partitioned indexes don't have
-	 * storage - they're just templates. We need to use a child index for
-	 * text config, but aggregate stats from all children.
+	 * storage - they're just templates.
 	 */
 	relkind = index_rel->rd_rel->relkind;
 	if (relkind == RELKIND_PARTITIONED_INDEX)
 	{
-		Relation parent_rel		 = index_rel;
-		Oid		 child_index_oid = find_first_child_index(index_oid);
-		if (!OidIsValid(child_index_oid))
-		{
-			ereport(ERROR,
-					(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
-					 errmsg("partitioned index has no child partitions"),
-					 errdetail(
-							 "The index \"%s\" is a partitioned index with "
-							 "no partition indexes.",
-							 get_rel_name(index_oid))));
-		}
-		/* Use the child index for text config access */
-		index_rel = index_open(child_index_oid, AccessShareLock);
+		Relation   parent_rel = index_rel;
+		LeafScore *leaf		  = lookup_leaf_score(
+				  state, flinfo->fn_mcxt, index_oid, table_oid);
+
+		index_oid		= leaf->index_oid;
+		*cache_slot_out = &leaf->cache;
+		index_rel		= index_open(index_oid, AccessShareLock);
 		relation_close(parent_rel, AccessShareLock);
 	}
 
@@ -731,7 +832,8 @@ calculate_term_score(
 
 static QueryScoreCache *
 tp_standalone_prepare_cache(
-		FunctionCallInfo   fcinfo,
+		QueryScoreCache	 **slot,
+		MemoryContext	   parent_context,
 		Oid				   index_oid,
 		TpScoringSnapshot *snapshot,
 		TpIndexMetaPage	  *metap_out,
@@ -742,6 +844,7 @@ tp_standalone_prepare_cache(
 	TpIndexMetaPage	 metap;
 	QueryScoreCache *cache;
 
+	Assert(slot != NULL);
 	Assert(snapshot != NULL);
 	Assert(metap_out != NULL);
 	Assert(text_config_oid != NULL);
@@ -754,26 +857,27 @@ tp_standalone_prepare_cache(
 	*total_docs		 = snapshot->total_docs;
 	*avg_doc_len	 = snapshot->avg_doc_len;
 
-	cache = (QueryScoreCache *)fcinfo->flinfo->fn_extra;
+	cache = *slot;
 	if (!cache_is_valid(cache, index_oid, snapshot->serial))
 	{
 		MemoryContext cache_context;
 
 		if (cache != NULL)
 			MemoryContextDelete(cache->context);
+		/* Small blocks: a call site may keep one cache per leaf. */
 		cache_context = AllocSetContextCreate(
-				fcinfo->flinfo->fn_mcxt,
+				parent_context,
 				"pg_textsearch standalone score cache",
-				ALLOCSET_DEFAULT_SIZES);
+				ALLOCSET_SMALL_SIZES);
 		cache = (QueryScoreCache *)
 				MemoryContextAllocZero(cache_context, sizeof(QueryScoreCache));
-		cache->index_oid		 = index_oid;
-		cache->snapshot_serial	 = snapshot->serial;
-		cache->total_docs		 = *total_docs;
-		cache->avg_doc_len		 = *avg_doc_len;
-		cache->num_terms		 = 0;
-		cache->context			 = cache_context;
-		fcinfo->flinfo->fn_extra = cache;
+		cache->index_oid	   = index_oid;
+		cache->snapshot_serial = snapshot->serial;
+		cache->total_docs	   = *total_docs;
+		cache->avg_doc_len	   = *avg_doc_len;
+		cache->num_terms	   = 0;
+		cache->context		   = cache_context;
+		*slot				   = cache;
 	}
 
 	return cache;
@@ -813,27 +917,27 @@ bm25_text_bm25query_score(PG_FUNCTION_ARGS)
 	char				   *query_lexemes_start;
 	TpLocalIndexState	   *index_state;
 	TpDataSource *volatile memtable_src = NULL;
-	float4			 avg_doc_len;
-	int32			 total_docs;
-	float8			 result = 0.0;
-	int				 q_i;
-	float4			 doc_length;
-	int				 query_term_count;
-	QueryScoreCache *cache;
-	bool			 is_partitioned;
-	char			*indexed_colname = NULL;
+	float4			  avg_doc_len;
+	int32			  total_docs;
+	float8			  result = 0.0;
+	int				  q_i;
+	float4			  doc_length;
+	int				  query_term_count;
+	QueryScoreCache	 *cache;
+	QueryScoreCache **cache_slot;
+	bool			  is_partitioned;
+	char			 *indexed_colname = NULL;
 
-	/* Get index OID from query */
-	index_oid = get_tpquery_index_oid(query);
-
-	/*
-	 * Validate query and open index. For partitioned indexes, this opens
-	 * the first child index for text config access.
-	 */
-	index_rel = validate_and_open_index(query, &index_oid);
-
-	/* Check if this is a partitioned index */
-	is_partitioned = (get_rel_relkind(index_oid) == RELKIND_PARTITIONED_INDEX);
+	is_partitioned =
+			(get_rel_relkind(get_tpquery_index_oid(query)) ==
+			 RELKIND_PARTITIONED_INDEX);
+	/* The planner passes the row's tableoid as an opaque internal Datum. */
+	index_rel = validate_and_open_index(
+			fcinfo->flinfo,
+			query,
+			PG_NARGS() == 3 ? PG_GETARG_OID(2) : InvalidOid,
+			&index_oid,
+			&cache_slot);
 
 	/*
 	 * Get the indexed column name for child index matching.
@@ -872,11 +976,7 @@ bm25_text_bm25query_score(PG_FUNCTION_ARGS)
 		 */
 		tp_warn_if_pending_docid(index_rel);
 
-		if (is_partitioned)
-			index_state = tp_get_local_index_state(
-					RelationGetRelid(index_rel));
-		else
-			index_state = tp_get_local_index_state(index_oid);
+		index_state = tp_get_local_index_state(index_oid);
 		if (!index_state)
 			ereport(ERROR,
 					(errcode(ERRCODE_INTERNAL_ERROR),
@@ -918,7 +1018,8 @@ bm25_text_bm25query_score(PG_FUNCTION_ARGS)
 			}
 		}
 		cache = tp_standalone_prepare_cache(
-				fcinfo,
+				cache_slot,
+				fcinfo->flinfo->fn_mcxt,
 				index_oid,
 				scoring,
 				&metap,
