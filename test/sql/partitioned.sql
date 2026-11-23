@@ -347,4 +347,118 @@ FROM (
 -- Cleanup
 SET enable_seqscan = on;
 DROP TABLE partitioned_scoring CASCADE;
+
+-- Issue #554: literal queries may name an index on a selected leaf.
+SET enable_seqscan = off;
+CREATE TABLE leaf_parent (tenant INT, id INT, body TEXT, other TEXT)
+    PARTITION BY LIST (tenant);
+CREATE TABLE leaf_first PARTITION OF leaf_parent FOR VALUES IN (1);
+CREATE TABLE leaf_nested PARTITION OF leaf_parent FOR VALUES IN (2)
+    PARTITION BY RANGE (id);
+
+-- An attached leaf can have different attribute numbers from both parents.
+CREATE TABLE leaf_deep (body TEXT, id INT, other TEXT, tenant INT);
+ALTER TABLE leaf_nested ATTACH PARTITION leaf_deep
+    FOR VALUES FROM (0) TO (1000);
+CREATE INDEX leaf_parent_idx ON leaf_parent USING bm25 (body)
+    WITH (text_config = 'english');
+CREATE INDEX leaf_deep_other_idx ON leaf_deep USING bm25 (other)
+    WITH (text_config = 'english');
+INSERT INTO leaf_parent VALUES
+    (1, 1, 'apple pie', 'unused'),
+    (1, 2, 'banana bread', 'unused'),
+    (2, 3, 'apple pie', 'unused'),
+    (2, 4, 'banana bread', 'unused');
+
+-- Parameter and literal forms must return the same row and score.
+PREPARE leaf_parameter(text) AS
+SELECT id,
+       ROUND((body <@> to_bm25query($1, 'leaf_first_body_idx'))::numeric, 4)
+           AS score
+FROM leaf_parent WHERE tenant = 1
+ORDER BY body <@> to_bm25query($1, 'leaf_first_body_idx')
+LIMIT 1;
+EXECUTE leaf_parameter('apple');
+DEALLOCATE leaf_parameter;
+
+SELECT id,
+       ROUND((body <@>
+           to_bm25query('apple', 'leaf_first_body_idx'))::numeric, 4) AS score
+FROM leaf_parent WHERE tenant = 1
+ORDER BY body <@> to_bm25query('apple', 'leaf_first_body_idx')
+LIMIT 1;
+
+SELECT id,
+       ROUND((body <@>
+           to_bm25query('apple', 'leaf_deep_body_idx'))::numeric, 4) AS score
+FROM leaf_parent WHERE tenant = 2
+ORDER BY body <@> to_bm25query('apple', 'leaf_deep_body_idx')
+LIMIT 1;
+
+-- The intermediate partitioned table is also an ancestor of the leaf.
+SELECT id,
+       ROUND((body <@>
+           to_bm25query('apple', 'leaf_deep_body_idx'))::numeric, 4) AS score
+FROM leaf_nested WHERE id < 1000
+ORDER BY body <@> to_bm25query('apple', 'leaf_deep_body_idx')
+LIMIT 1;
+
+-- Accepting the leaf's column must not allow scanning a sibling's index.
+\set VERBOSITY sqlstate
+SELECT id FROM leaf_parent WHERE tenant = 1
+ORDER BY body <@> to_bm25query('apple', 'leaf_deep_body_idx')
+LIMIT 1;
+\set VERBOSITY default
+
+-- The wrong column has the parent's body attnum: mapping by name matters.
+SELECT id FROM leaf_parent WHERE tenant = 2
+ORDER BY body <@> to_bm25query('apple', 'leaf_deep_other_idx')
+LIMIT 1;
+
+-- A same-named column on an unrelated table is not sufficient.
+CREATE TABLE leaf_unrelated (body TEXT);
+CREATE INDEX leaf_unrelated_idx ON leaf_unrelated USING bm25 (body)
+    WITH (text_config = 'english');
+SELECT id FROM leaf_parent WHERE tenant = 1
+ORDER BY body <@> to_bm25query('apple', 'leaf_unrelated_idx')
+LIMIT 1;
+
+DROP TABLE leaf_unrelated;
+
+-- Deliberately exercise standalone scoring with sequential scans enabled.
+SET enable_seqscan = on;
+SELECT id,
+       ROUND((body <@>
+           to_bm25query('apple', 'leaf_deep_body_idx'))::numeric, 4) AS score
+FROM leaf_parent WHERE tenant = 2 AND id = 3;
+
+\set VERBOSITY sqlstate
+SELECT id, body <@> to_bm25query('apple', 'leaf_first_body_idx') AS score
+FROM leaf_parent;
+SELECT id, body <@> to_bm25query('apple', 'leaf_first_body_idx') AS score
+FROM leaf_parent WHERE tenant = 2;
+UPDATE leaf_parent SET other = other WHERE tenant = 2
+RETURNING id, body <@> to_bm25query('apple', 'leaf_first_body_idx') AS score;
+\set VERBOSITY default
+
+-- An unindexed sibling must not bypass validation in a sorted seqscan.
+DROP INDEX leaf_parent_idx;
+CREATE INDEX leaf_first_body_idx ON leaf_first USING bm25 (body)
+    WITH (text_config = 'english');
+SET enable_indexscan = off;
+SELECT id,
+       ROUND((body <@>
+           to_bm25query('apple', 'leaf_first_body_idx'))::numeric, 4) AS score
+FROM leaf_parent WHERE tenant = 1 AND id = 1
+ORDER BY body <@> to_bm25query('apple', 'leaf_first_body_idx')
+LIMIT 1;
+\set VERBOSITY sqlstate
+SELECT id FROM leaf_parent
+ORDER BY body <@> to_bm25query('apple', 'leaf_first_body_idx')
+LIMIT 1;
+\set VERBOSITY default
+RESET enable_indexscan;
+
+DROP TABLE leaf_parent CASCADE;
+RESET enable_seqscan;
 DROP EXTENSION pg_textsearch CASCADE;
