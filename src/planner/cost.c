@@ -188,8 +188,13 @@ tp_costestimate(
 			if (!tp_boolean_get_constant_query(
 						lfirst_node(IndexClause, lc), &boolean_query))
 			{
-				/* Unordered ranked fallbacks cannot recheck oversized keys. */
-				if (!has_orderby && tp_query_has_ranked_sort(root, path))
+				/*
+				 * Unordered scans reject runtime keys over the operand cap.
+				 * Combined keys have no plan-time bound, and ranked queries
+				 * have an ordered path that rechecks instead.
+				 */
+				if (!has_orderby && (list_length(path->indexclauses) > 1 ||
+									 tp_query_has_ranked_sort(root, path)))
 				{
 					tp_disable_index_path(
 							path,

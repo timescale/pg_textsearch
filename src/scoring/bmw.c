@@ -461,11 +461,12 @@ fill_zero_score_results(
 
 	hash_ctl.keysize   = sizeof(ItemPointerData);
 	hash_ctl.entrysize = sizeof(ItemPointerData);
+	hash_ctl.hcxt	   = CurrentMemoryContext;
 	state.seen		   = hash_create(
 			"Boolean zero-score candidates",
 			Max(heap->size, 128),
 			&hash_ctl,
-			HASH_ELEM | HASH_BLOBS);
+			HASH_ELEM | HASH_BLOBS | HASH_CONTEXT);
 	for (int i = 0; i < heap->size; i++)
 		hash_search(state.seen, &heap->ctids[i], HASH_ENTER, NULL);
 

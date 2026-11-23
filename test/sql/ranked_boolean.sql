@@ -310,7 +310,24 @@ EXECUTE ranked_runtime_keys('', 'beta');
 EXECUTE ranked_runtime_keys('beta', '');
 EXECUTE ranked_runtime_keys(NULL, 'beta');
 EXECUTE ranked_runtime_keys('beta', '!absent');
+
+-- Individually bounded runtime keys can exceed the combined operand cap.
+SELECT 'beta | ' || string_agg('unused' || g, ' | ') AS first_query,
+       '!alpha & ' || string_agg('!unused' || g, ' & ') AS second_query
+FROM generate_series(1, 39) g \gset
+EXECUTE ranked_runtime_keys(:'first_query', :'second_query');
 DEALLOCATE ranked_runtime_keys;
+PREPARE boolean_runtime_keys(tsquery, tsquery) AS
+SELECT array_agg(id ORDER BY id) AS runtime_matches
+FROM ranked_disjoint_docs WHERE body @@ $1 AND body @@ $2;
+EXECUTE boolean_runtime_keys(:'first_query', :'second_query');
+DEALLOCATE boolean_runtime_keys;
+PREPARE boolean_mixed_keys(tsquery) AS
+SELECT array_agg(id ORDER BY id) AS mixed_matches
+FROM ranked_disjoint_docs
+WHERE body @@ :'first_query'::tsquery AND body @@ $1;
+EXECUTE boolean_mixed_keys(:'second_query');
+DEALLOCATE boolean_mixed_keys;
 RESET plan_cache_mode;
 
 INSERT INTO ranked_disjoint_docs VALUES (5, 'beta delta'), (6, '');
