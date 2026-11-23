@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795416798699,
+  "lastUpdate": 1795416803652,
   "repoUrl": "https://github.com/timescale/pg_textsearch",
   "entries": {
     "cranfield Benchmarks": [
@@ -379453,6 +379453,88 @@ window.BENCHMARK_DATA = {
           {
             "name": "paradedb_msmarco_concurrent - Throughput (avg ms/query)",
             "value": 80.15,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Kerem Urhan",
+            "username": "walsykerem",
+            "email": "walsykeremurhan@gmail.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "a07c9ba6c8e001a8abffdb21b4bdea5b884b3b11",
+          "message": "Move operand cap check before Boolean term dedup (#620)\n\nMove the 64-operand cap check before Boolean term dedup.\n\n`tp_boolean_execute` called `tp_boolean_extract_terms` first. A\nparameterized `@@` query with more than 64 exact operands ran an O(N^2)\ndedup, about 5e9 memcmps at N=100000, before returning the limit error.\nThe check now uses the existing `tp_boolean_query_exact_operand_count`\nhelper. Error code, message and accepted queries are unchanged.\n\nVerified: 3 rounds fail on original and pass on fix. One source file\nchanged, +9/-6. Behavior and exported symbols match the original. Docker\nPostgreSQL 17: SQL output identical, installcheck 83/83 on both builds,\n23/23 upgrade edges rc=0, final version 1.6.0-dev.\n\nPre-existing issue, not from this change: a continuous 0.0.1 to\n1.6.0-dev upgrade stops at 0.6.1 to 1.0.0 with `ERROR: function\nbm25_summarize_index(text) does not exist`. Original and fixed behave\nthe same. Individual edges all pass.\n\nCo-authored-by: walsykerem <walsykerem@users.noreply.github.com>\nCo-authored-by: Todd J. Green <tjgreen@gmail.com>",
+          "timestamp": "2026-11-23T04:56:08Z",
+          "url": "https://github.com/timescale/pg_textsearch/commit/a07c9ba6c8e001a8abffdb21b4bdea5b884b3b11"
+        },
+        "date": 1795416802952,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "paradedb_msmarco_concurrent - Index Build Time",
+            "value": 3.471,
+            "unit": "ms"
+          },
+          {
+            "name": "paradedb_msmarco_concurrent - Insert Time",
+            "value": 0.392,
+            "unit": "ms"
+          },
+          {
+            "name": "paradedb_msmarco_concurrent - Concurrent Insert Time",
+            "value": 1075174.301012,
+            "unit": "ms"
+          },
+          {
+            "name": "paradedb_msmarco_concurrent - 1 Token Query (p50)",
+            "value": 58.51,
+            "unit": "ms"
+          },
+          {
+            "name": "paradedb_msmarco_concurrent - 2 Token Query (p50)",
+            "value": 24.46,
+            "unit": "ms"
+          },
+          {
+            "name": "paradedb_msmarco_concurrent - 3 Token Query (p50)",
+            "value": 62.84,
+            "unit": "ms"
+          },
+          {
+            "name": "paradedb_msmarco_concurrent - 4 Token Query (p50)",
+            "value": 64.55,
+            "unit": "ms"
+          },
+          {
+            "name": "paradedb_msmarco_concurrent - 5 Token Query (p50)",
+            "value": 67.22,
+            "unit": "ms"
+          },
+          {
+            "name": "paradedb_msmarco_concurrent - 6 Token Query (p50)",
+            "value": 72.84,
+            "unit": "ms"
+          },
+          {
+            "name": "paradedb_msmarco_concurrent - 7 Token Query (p50)",
+            "value": 74.3,
+            "unit": "ms"
+          },
+          {
+            "name": "paradedb_msmarco_concurrent - 8+ Token Query (p50)",
+            "value": 78.51,
+            "unit": "ms"
+          },
+          {
+            "name": "paradedb_msmarco_concurrent - Throughput (avg ms/query)",
+            "value": 61.52,
             "unit": "ms"
           }
         ]
