@@ -39,6 +39,20 @@ SELECT id
 FROM boolean_docs
 WHERE body @@ to_tsquery('english', 'refund & fraud');
 
+CREATE FUNCTION pg_temp.has_ranked_boolean_scan(query text)
+RETURNS boolean
+LANGUAGE plpgsql
+AS $$
+DECLARE
+    plan jsonb;
+BEGIN
+    EXECUTE 'EXPLAIN (FORMAT JSON, COSTS OFF) ' || query INTO plan;
+    RETURN jsonb_path_exists(plan,
+        '$.** ? (@."Node Type" == "Index Scan"'
+        ' && exists(@."Index Cond") && exists(@."Order By"))');
+END
+$$;
+
 CREATE FUNCTION pg_temp.first_plan_child(query text)
 RETURNS text
 LANGUAGE plpgsql
@@ -56,22 +70,22 @@ INSERT INTO boolean_other SELECT generate_series(1, 9);
 
 \pset format unaligned
 SET enable_sort = off;
-SELECT pg_temp.first_plan_child($query$
+SELECT pg_temp.has_ranked_boolean_scan($query$
     SELECT id
     FROM boolean_docs
     WHERE body @@ to_tsquery('english', 'refund')
     ORDER BY body <@> to_bm25query('refund', 'boolean_docs_body_idx')
     LIMIT 1
-$query$) = 'Sort' AS unsupported_path_falls_back;
+$query$) AS combined_path_uses_index;
 SET enable_nestloop = off;
-SELECT pg_temp.first_plan_child($query$
+SELECT pg_temp.has_ranked_boolean_scan($query$
     SELECT d.id
     FROM boolean_docs d
     JOIN boolean_other other ON other.id = d.id
     WHERE d.body @@ to_tsquery('english', 'refund')
     ORDER BY d.body <@> to_bm25query('refund', 'boolean_docs_body_idx')
     LIMIT 1
-$query$) = 'Sort' AS unsupported_join_path_falls_back;
+$query$) AS combined_join_path_uses_index;
 SELECT (
     SELECT id
     FROM boolean_docs

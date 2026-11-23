@@ -1359,7 +1359,7 @@ score_function_is_unsafe(Oid funcid, void *context)
 	if (funcid == oids->score_stub_func_oid ||
 		funcid == oids->partition_score_func_oid ||
 		funcid == oids->partition_array_score_func_oid ||
-		funcid == F_CURRENT_SETTING_TEXT ||
+		funcid == F_TS_MATCH_TQ || funcid == F_CURRENT_SETTING_TEXT ||
 		funcid == F_CURRENT_SETTING_TEXT_BOOL)
 		return false;
 
@@ -1395,7 +1395,8 @@ replace_scores_in_indexscan(IndexScan *scan, BM25OidCache *oids)
 
 	orderby_expr = linitial(scan->indexorderbyorig);
 	if (!is_bm25_score_opexpr((Node *)orderby_expr, oids) ||
-		score_projection_is_unsafe((Node *)scan->scan.plan.qual, oids))
+		score_projection_is_unsafe((Node *)scan->scan.plan.qual, oids) ||
+		score_projection_is_unsafe((Node *)scan->indexqualorig, oids))
 		return;
 
 	foreach (lc, scan->scan.plan.targetlist)
