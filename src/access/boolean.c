@@ -198,7 +198,7 @@ tp_boolean_extract_terms(TSQuery query)
 
 	memset(&state, 0, sizeof(state));
 	state.query = query;
-	state.terms = palloc0(Max(query->size, 1) * sizeof(TpBooleanTerm));
+	/* Reject oversized lists before allocation and the O(N^2) dedup scan. */
 	state.exact_operand_count = tp_boolean_query_exact_operand_count(query);
 	if (state.exact_operand_count > TP_BOOLEAN_MAX_EXACT_OPERANDS)
 		ereport(ERROR,
@@ -209,6 +209,8 @@ tp_boolean_extract_terms(TSQuery query)
 				 errdetail(
 						 "Query contains %d exact term operands.",
 						 state.exact_operand_count)));
+
+	state.terms = palloc0(Max(query->size, 1) * sizeof(TpBooleanTerm));
 
 	for (int i = 0; i < query->size; i++)
 	{
