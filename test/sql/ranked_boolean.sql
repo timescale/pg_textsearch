@@ -56,6 +56,25 @@ SELECT count(*) AS limited_matches FROM (
 ) s;
 SELECT bm25_debug_scoring_passes(true) = 1 AS boolean_limit_seeded;
 
+SET pg_textsearch.filtered_seed = on;
+SELECT count(*) AS residual_matches FROM (
+    SELECT id FROM ranked_boolean_docs
+    WHERE body @@ 'alpha & beta'::tsquery AND id % 2 = 0
+    ORDER BY body <@> to_bm25query('alpha', 'ranked_boolean_idx')
+    LIMIT 5
+) s;
+SELECT bm25_debug_scoring_passes(true) > 1 AS residual_qual_keeps_backoff;
+SET pg_textsearch.filtered_seed = off;
+SET pg_textsearch.default_limit = 1000;
+SELECT count(*) AS lossy_matches FROM (
+    SELECT id FROM ranked_boolean_docs
+    WHERE body @@ 'alpha <-> beta'::tsquery
+    ORDER BY body <@> to_bm25query('alpha', 'ranked_boolean_idx')
+    LIMIT 2
+) s;
+SELECT bm25_debug_scoring_passes(true) = 1 AS lossy_qual_keeps_default;
+SET pg_textsearch.default_limit = 1;
+
 SET pg_textsearch.memtable_cache_enabled = off;
 SELECT id FROM ranked_boolean_docs
 WHERE body @@ 'alpha & beta & !padding'::tsquery

@@ -1016,8 +1016,7 @@ tp_boolean_filter_create(TSQuery query, bool *recheck)
 		};
 
 		terms[i] = filter->query.terms[i].lexeme;
-		/* If absence makes the predicate false, every match needs this term.
-		 */
+		/* A false predicate under absence proves the term is required. */
 		required[i] = TS_execute_ternary(
 							  GETQUERY(query),
 							  &requirement,
