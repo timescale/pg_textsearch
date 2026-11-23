@@ -14,3 +14,17 @@ BEGIN
             'Add pg_textsearch to shared_preload_libraries and restart.';
     END IF;
 END $$;
+
+-- Planner-only overloads carrying the scored row's physical partition.  SQL
+-- cannot construct an internal value, so callers cannot name a partition.
+CREATE FUNCTION @extschema@.bm25_text_bm25query_score(
+    text, @extschema@.bm25query, internal)
+RETURNS float8
+AS 'MODULE_PATHNAME', 'bm25_text_bm25query_score'
+LANGUAGE C STABLE STRICT PARALLEL UNSAFE COST 1000;
+
+CREATE FUNCTION @extschema@.bm25_textarray_bm25query_score(
+    text[], @extschema@.bm25query, internal)
+RETURNS float8
+AS 'MODULE_PATHNAME', 'bm25_textarray_bm25query_score'
+LANGUAGE C STABLE STRICT PARALLEL UNSAFE COST 1000;

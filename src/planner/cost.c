@@ -23,6 +23,7 @@
 #include "constants.h"
 #include "index/metapage.h"
 #include "planner/cost.h"
+#include "planner/hooks.h"
 
 static bool
 tp_boolean_get_constant_query(IndexPath *path, TSQuery *query)
@@ -127,7 +128,8 @@ tp_costestimate(
 	 * Multiple Boolean keys and combined filtering/ranking are follow-ups.
 	 */
 	if ((!has_orderby && !has_boolean) || (has_orderby && has_boolean) ||
-		(has_boolean && list_length(path->indexclauses) != 1))
+		(has_boolean && list_length(path->indexclauses) != 1) ||
+		(has_orderby && tp_indexpath_requires_other_index(path)))
 	{
 		tp_disable_index_path(
 				path,

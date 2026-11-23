@@ -85,9 +85,9 @@ in both lock-acquisition orders. It pauses between suffix inspection and
 truncation, checks writer-gate exclusion, and verifies segment page references
 and exact ranked results before and after crash recovery.
 
-CI builds PostgreSQL 17, 18, and 19 RC2 with injection points enabled and
-caches the installed prefixes. PG19 runs with both GCC and Clang and is
-required by the CI gate. The sanitizer builds use the same configure option.
+CI builds PostgreSQL 17, 18, and 19 with injection points enabled and
+caches the installed prefixes. All three versions have required package,
+GCC/Clang, MSVC, injection-point, and sanitizer checks.
 
 `memtable_stale_tail_injection` pauses normal and oversized writers after
 reading the tail, advances it from another session, then requires both writers
@@ -100,8 +100,8 @@ pinned horizon keeps the valid chain prefix parked.
 
 ## Sanitizers
 
-Pull-request CI builds PostgreSQL 17.2 and 18.1 and pg_textsearch with Clang
-AddressSanitizer and UndefinedBehaviorSanitizer. It runs SQL regression;
+Pull-request CI builds PostgreSQL 17.2, 18.1, and 19.0 and pg_textsearch with
+Clang AddressSanitizer and UndefinedBehaviorSanitizer. It runs SQL regression;
 concurrency, duplicate-read, and VACUUM/merge race tests; crash, deferred
 reclaim, and shutdown-spill recovery tests; multi-backend segment tests;
 `CREATE INDEX CONCURRENTLY`; multi-index, user, and schema tests; and standby
@@ -149,3 +149,16 @@ For `make test-local`, PostgreSQL logs are written to
 `tmp_check_shared/data/logfile` while the temporary cluster exists. Shell tests
 print their commands and diagnostics directly; rerun the corresponding
 individual target to isolate a failure.
+
+## TimescaleDB compatibility
+
+`make test-timescaledb-owner` runs an optional integration regression in a
+fresh temporary cluster. Install TimescaleDB for the selected `PG_CONFIG`
+first, then build and install pg_textsearch. Run as a non-root PostgreSQL
+user. The test preloads `timescaledb,pg_textsearch` and checks continuous
+aggregate ownership both before and after `CREATE EXTENSION pg_textsearch`,
+including internal-object owners, native relations with BM25 indexes, and
+object-type/ownership rejection. It creates no persistent database objects
+and does not connect to an existing server. This target is separate from
+`test-shell` because TimescaleDB is an optional third-party dependency.
+CI runs it in the PostgreSQL 17/18 jobs alongside the hypertable tests.

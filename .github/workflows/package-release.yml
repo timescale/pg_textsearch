@@ -16,6 +16,7 @@ permissions:
 
 jobs:
   test-upgrades:
+    # Older extension releases cannot be built against PostgreSQL 19.
     runs-on: ubuntu-latest
     strategy:
       matrix:
@@ -47,7 +48,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        pg_version: [17, 18]
+        pg_version: [17, 18, 19]
         platform:
           - type: amd64
             docker_platform: linux/amd64
@@ -77,6 +78,9 @@ jobs:
       uses: docker/setup-buildx-action@v3
 
     - name: Build extension in Docker
+      env:
+        # TimescaleDB does not yet publish a PG19 build image.
+        BUILD_IMAGE: ${{ matrix.pg_version == 19 && 'debian:bookworm-slim' || format('timescale/timescaledb-ha:pg{0}-all', matrix.pg_version) }}
       run: |
         # Create a build script
         cat > build.sh << 'BUILDSCRIPT'
@@ -85,6 +89,16 @@ jobs:
 
         PG_VERSION="$3"
         echo "Building for PostgreSQL version: $PG_VERSION"
+
+        if [ "$PG_VERSION" = "19" ]; then
+            apt-get update -o Acquire::Retries=3
+            apt-get install -y -o Acquire::Retries=3 ca-certificates curl
+            curl -fsSL --retry 3 \
+                https://www.postgresql.org/media/keys/ACCC4CF8.asc \
+                -o /usr/share/keyrings/postgresql.asc
+            echo "deb [signed-by=/usr/share/keyrings/postgresql.asc] https://apt.postgresql.org/pub/repos/apt bookworm-pgdg main" \
+                > /etc/apt/sources.list.d/pgdg.list
+        fi
 
         # Installing packages under QEMU emulation occasionally dies with
         # a segfault in a maintainer script (see issue #466), so retry
@@ -132,7 +146,7 @@ jobs:
 
         chmod +x build.sh
 
-        # Run build in TimescaleDB container with proper architecture
+        # Run build in the selected container with proper architecture.
         # Run as root to install dependencies. arm64 runs under QEMU
         # emulation, which is prone to spurious crashes, so retry the
         # whole container run a few times before failing the job.
@@ -142,7 +156,7 @@ jobs:
             -v "$PWD:/build" \
             -w /build \
             --user root \
-            timescale/timescaledb-ha:pg${{ matrix.pg_version }}-all \
+            "$BUILD_IMAGE" \
             /build/build.sh "$VERSION" '${{ matrix.platform.type }}' '${{ matrix.pg_version }}'; then
             echo "Build succeeded on attempt $attempt"
             exit 0
@@ -275,7 +289,7 @@ jobs:
     - name: Verify all platform packages were built
       run: |
         MISSING=""
-        for pg in 17 18; do
+        for pg in 17 18 19; do
           for arch in amd64 arm64; do
             if ! ls artifacts/*/pg-textsearch-*-pg${pg}-${arch}.zip \
                  >/dev/null 2>&1; then

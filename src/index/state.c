@@ -195,6 +195,8 @@ init_memtable(TpMemtable *memtable)
 	memset(&memtable->cursor_locator, 0, sizeof(memtable->cursor_locator));
 	memtable->cursor_locator_valid = false;
 	pg_atomic_init_u64(&memtable->cursor_seq, 0);
+	memtable->pending_term_dp	 = InvalidDsaPointer;
+	memtable->pending_posting_dp = InvalidDsaPointer;
 	pg_atomic_init_u64(&memtable->estimated_bytes, 0);
 }
 

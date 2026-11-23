@@ -194,6 +194,8 @@ tp_score_documents(
 
 		/* Calculate IDF */
 		idf = tp_calculate_idf(doc_freq, total_docs);
+		if (query_frequencies != NULL)
+			idf *= query_frequencies[0];
 
 		/* Allocate scores array */
 		scores = (float4 *)palloc(max_results * sizeof(float4));

@@ -17,6 +17,7 @@
 
 #include "common/hashfn.h"
 #include "constants.h"
+#include "debug/injection.h"
 #include "index/metapage.h"
 #include "index/registry.h"
 #include "index/state.h"
@@ -157,6 +158,7 @@ tp_add_document_to_posting_list(
 		}
 		new_size = (Size)new_capacity * sizeof(TpPostingEntry);
 
+		TP_INJECTION_POINT(TP_INJECTION_CACHE_ALLOC_ENTRIES);
 		new_entries_dp = dsa_allocate(local_state->dsa, new_size);
 		if (!DsaPointerIsValid(new_entries_dp))
 			elog(ERROR, "Failed to allocate posting entries in DSA");
