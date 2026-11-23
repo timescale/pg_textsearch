@@ -188,7 +188,8 @@ cache_foreach_document(
 
 	dshash_seq_init(&seq, cs->doclength_table, false);
 	while ((entry = (TpDocLengthEntry *)dshash_seq_next(&seq)) != NULL)
-		callback(&entry->ctid, arg);
+		if (!callback(&entry->ctid, arg))
+			break;
 	dshash_seq_term(&seq);
 }
 

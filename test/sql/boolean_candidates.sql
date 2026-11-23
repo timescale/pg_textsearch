@@ -132,6 +132,59 @@ SELECT pg_temp.bounded_candidate_reads($q$
                                  'boolean_candidate_prefix_idx')
     LIMIT 1
 $q$) AS absent_ranking_bounded;
+SELECT pg_temp.bounded_candidate_reads($q$
+    SELECT id FROM boolean_candidate_prefix
+    WHERE body @@ 'prefix1 | prefix2'::tsquery
+    ORDER BY body <@> to_bm25query('absentfirst absentsecond',
+                                 'boolean_candidate_prefix_idx')
+    LIMIT 1
+$q$) AS independent_candidates_bounded;
+SELECT pg_temp.bounded_candidate_reads($q$
+    SELECT id FROM boolean_candidate_prefix
+    WHERE body @@ '!absent'::tsquery
+    ORDER BY body <@> to_bm25query('absent',
+                                 'boolean_candidate_prefix_idx')
+    LIMIT 1
+$q$) AS negative_zero_fill_bounded;
+SELECT pg_temp.bounded_candidate_reads($q$
+    SELECT id FROM boolean_candidate_prefix
+    WHERE body @@ 'prefix:*'::tsquery
+    ORDER BY body <@> to_bm25query('rankcommon',
+                                 'boolean_candidate_prefix_idx')
+    LIMIT 1
+$q$) AS unanchored_prefix_bounded;
+SELECT pg_temp.bounded_candidate_reads($q$
+    SELECT id FROM boolean_candidate_prefix
+    WHERE body @@ 'prefix:*'::tsquery
+    ORDER BY body <@> to_bm25query('absent',
+                                 'boolean_candidate_prefix_idx')
+    LIMIT 1
+$q$) AS prefix_zero_fill_bounded;
+SELECT pg_temp.bounded_candidate_reads($q$
+    SELECT id FROM boolean_candidate_prefix
+    WHERE body @@ 'missing & prefix:*'::tsquery
+    ORDER BY body <@> to_bm25query('absent',
+                                 'boolean_candidate_prefix_idx')
+    LIMIT 1
+$q$) AS missing_prefix_anchor_bounded;
+SELECT bool_and(pg_temp.bounded_candidate_reads(format($q$
+    SELECT id FROM boolean_candidate_prefix WHERE body @@ %L::tsquery
+    ORDER BY body <@> to_bm25query('absent',
+                                 'boolean_candidate_prefix_idx')
+    LIMIT 1
+$q$, predicate), 32)) AS negative_prefix_anchors_bounded
+FROM (VALUES
+    ('!absent & missingprefix:*'),
+    ('missingprefix:* & !absent'),
+    ('(!absent | another) & missingprefix:*')
+) queries(predicate);
+SELECT count(*) = 4096 AS complete_prefix_zero_matches FROM (
+    SELECT id FROM boolean_candidate_prefix
+    WHERE body @@ 'prefix:*'::tsquery
+    ORDER BY body <@> to_bm25query('absent',
+                                 'boolean_candidate_prefix_idx')
+    LIMIT 5000
+) s;
 SELECT id FROM boolean_candidate_prefix
 WHERE body @@ 'rankcommon & prefix:*'::tsquery
 ORDER BY body <@> to_bm25query('rankcommon', 'boolean_candidate_prefix_idx')

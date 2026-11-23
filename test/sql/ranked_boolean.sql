@@ -254,5 +254,91 @@ SELECT count(*) = 1 AND
        AS recheck_score_parity
 FROM ranked_recheck_scores;
 DROP TABLE ranked_recheck_scores;
+
+\pset format unaligned
+SELECT name, pg_temp.ranked_boolean_plan(format($q$
+    SELECT id FROM ranked_disjoint_docs WHERE body @@ %L::tsquery
+    ORDER BY body <@> to_bm25query(%L, 'ranked_disjoint_idx') LIMIT 10
+$q$, predicate, ranking)) AS ordered_index_scan
+FROM (VALUES
+    ('independent', 'beta', 'alpha'),
+    ('nested', '(beta | gamma) & !alpha', 'alpha gamma'),
+    ('negative', '!alpha', 'alpha'),
+    ('prefix', 'bet:*', 'alpha'),
+    ('empty ranking', 'beta', '')
+) cases(name, predicate, ranking)
+ORDER BY name;
+SELECT pg_temp.ranked_boolean_plan($q$
+    SELECT id FROM ranked_disjoint_docs
+    WHERE body @@ 'beta'::tsquery AND body @@ '!alpha'::tsquery
+    ORDER BY body <@> to_bm25query('alpha', 'ranked_disjoint_idx') LIMIT 10
+$q$) AS multiple_boolean_keys;
+SELECT array_agg(id ORDER BY id) AS nested_zero_matches FROM (
+    SELECT id FROM ranked_disjoint_docs
+    WHERE body @@ '(beta | gamma) & !alpha'::tsquery
+    ORDER BY body <@> to_bm25query('alpha absent', 'ranked_disjoint_idx')
+    LIMIT 10
+) s;
+SELECT count(*) = 2 AND bool_and(score = 0) AS empty_ranking_scores FROM (
+    SELECT body <@> to_bm25query('', 'ranked_disjoint_idx') AS score
+    FROM ranked_disjoint_docs WHERE body @@ 'beta'::tsquery
+    ORDER BY body <@> to_bm25query('', 'ranked_disjoint_idx') LIMIT 10
+) s;
+
+SET plan_cache_mode = force_generic_plan;
+PREPARE ranked_runtime_both(tsquery, bm25query) AS
+SELECT id, (body <@> $2) IS NULL AS null_score
+FROM ranked_disjoint_docs WHERE body @@ $1
+ORDER BY body <@> $2 LIMIT 10;
+SELECT pg_temp.ranked_boolean_plan($q$
+    EXECUTE ranked_runtime_both(
+        'beta', to_bm25query('absent', 'ranked_disjoint_idx'))
+$q$) AS runtime_queries_ordered_index_scan;
+EXECUTE ranked_runtime_both(
+    'beta', to_bm25query('absent', 'ranked_disjoint_idx'));
+EXECUTE ranked_runtime_both('!absent', NULL);
+EXECUTE ranked_runtime_both(
+    NULL, to_bm25query('alpha', 'ranked_disjoint_idx'));
+EXECUTE ranked_runtime_both(
+    'beta', to_bm25query('absent', 'ranked_disjoint_idx'));
+DEALLOCATE ranked_runtime_both;
+PREPARE ranked_runtime_keys(tsquery, tsquery) AS
+SELECT id FROM ranked_disjoint_docs WHERE body @@ $1 AND body @@ $2
+ORDER BY body <@> to_bm25query('alpha', 'ranked_disjoint_idx') LIMIT 10;
+EXECUTE ranked_runtime_keys('beta', '!alpha');
+EXECUTE ranked_runtime_keys('', 'beta');
+EXECUTE ranked_runtime_keys('beta', '');
+EXECUTE ranked_runtime_keys(NULL, 'beta');
+EXECUTE ranked_runtime_keys('beta', '!absent');
+DEALLOCATE ranked_runtime_keys;
+RESET plan_cache_mode;
+
+INSERT INTO ranked_disjoint_docs VALUES (5, 'beta delta'), (6, '');
+CREATE FUNCTION pg_temp.ranked_zero_matches()
+RETURNS integer[] LANGUAGE sql AS $$
+    SELECT array_agg(id ORDER BY id) FROM (
+        SELECT id FROM ranked_disjoint_docs WHERE body @@ '!alpha'::tsquery
+        ORDER BY body <@> to_bm25query('alpha absent', 'ranked_disjoint_idx')
+        LIMIT 10
+    ) s;
+$$;
+SELECT pg_temp.ranked_zero_matches() AS mixed_zero_matches;
+SET pg_textsearch.memtable_cache_enabled = off;
+SELECT pg_temp.ranked_zero_matches() AS chain_zero_matches;
+RESET pg_textsearch.memtable_cache_enabled;
+UPDATE ranked_disjoint_docs SET body = 'alpha' WHERE id = 2;
+DELETE FROM ranked_disjoint_docs WHERE id = 4;
+SELECT pg_temp.ranked_zero_matches() AS live_zero_matches;
+SELECT bm25_spill_index('ranked_disjoint_idx') > 0 AS zero_spilled;
+VACUUM ranked_disjoint_docs;
+SELECT pg_temp.ranked_zero_matches() AS spilled_zero_matches;
+SELECT bm25_force_merge('ranked_disjoint_idx') IS NOT NULL AS zero_merged;
+SELECT pg_temp.ranked_zero_matches() AS merged_zero_matches;
+TRUNCATE ranked_disjoint_docs;
+INSERT INTO ranked_disjoint_docs VALUES (7, ''), (8, '');
+SELECT pg_temp.ranked_zero_matches() AS empty_corpus_matches;
+SELECT bm25_spill_index('ranked_disjoint_idx') > 0 AS empty_corpus_spilled;
+SELECT pg_temp.ranked_zero_matches() AS empty_segment_matches;
+\pset format aligned
 DROP TABLE ranked_disjoint_docs;
 DROP EXTENSION pg_textsearch;

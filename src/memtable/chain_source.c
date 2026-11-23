@@ -445,7 +445,13 @@ chain_foreach_document(
 
 	hash_seq_init(&sequence, src->doclen_ht);
 	while ((entry = hash_seq_search(&sequence)) != NULL)
-		callback(&entry->ctid, arg);
+	{
+		if (!callback(&entry->ctid, arg))
+		{
+			hash_seq_term(&sequence);
+			break;
+		}
+	}
 }
 
 static void

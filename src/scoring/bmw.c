@@ -395,6 +395,128 @@ compute_bm25_score(
 	return idf * tf_component;
 }
 
+typedef struct TpZeroScoreState
+{
+	TpTopKHeap	 *heap;
+	TpDataSource *source;
+	TpBMWFilter	 *filter;
+	TpBMWStats	 *stats;
+	HTAB		 *seen;
+} TpZeroScoreState;
+
+static bool
+add_zero_score_result(TpZeroScoreState *state, ItemPointer ctid)
+{
+	bool found;
+
+	if (state->heap->size >= state->heap->capacity)
+		return false;
+	hash_search(state->seen, ctid, HASH_ENTER, &found);
+	if (found)
+		return false;
+	tp_topk_add_memtable(state->heap, *ctid, 0.0f);
+	return true;
+}
+
+static bool
+add_memtable_zero_score(ItemPointer ctid, void *arg)
+{
+	TpZeroScoreState *state = arg;
+
+	CHECK_FOR_INTERRUPTS();
+	if (state->heap->size < state->heap->capacity &&
+		state->filter->memtable_matches(
+				state->filter->state, state->source, ctid) &&
+		add_zero_score_result(state, ctid) && state->stats != NULL)
+		state->stats->memtable_docs++;
+
+	return state->heap->size < state->heap->capacity;
+}
+
+/*
+ * BMW visits ranking postings only. Once every positive-score candidate fits
+ * in the batch, fill the remaining slots from the Boolean index candidates.
+ * The seen set excludes positives without reopening their ranking postings.
+ */
+static void
+fill_zero_score_results(
+		TpTopKHeap					 *heap,
+		Relation					  index,
+		const TpSegmentGraphSnapshot *snapshot,
+		TpDataSource				 *memtable_src,
+		TpBMWStats					 *stats,
+		TpBMWFilter					 *filter)
+{
+	HASHCTL			 hash_ctl = {0};
+	TpZeroScoreState state	  = {
+			   .heap   = heap,
+			   .source = memtable_src,
+			   .filter = filter,
+			   .stats  = stats,
+	   };
+
+	if (filter == NULL || !filter->include_zero_scores ||
+		heap->size >= heap->capacity)
+		return;
+
+	hash_ctl.keysize   = sizeof(ItemPointerData);
+	hash_ctl.entrysize = sizeof(ItemPointerData);
+	state.seen		   = hash_create(
+			"Boolean zero-score candidates",
+			Max(heap->size, 128),
+			&hash_ctl,
+			HASH_ELEM | HASH_BLOBS);
+	for (int i = 0; i < heap->size; i++)
+		hash_search(state.seen, &heap->ctids[i], HASH_ENTER, NULL);
+
+	if (memtable_src != NULL)
+	{
+		tp_source_foreach_document(
+				memtable_src, add_memtable_zero_score, &state);
+		filter->reset(filter->state);
+	}
+
+	for (uint32 level = 0;
+		 level < TP_MAX_LEVELS && heap->size < heap->capacity;
+		 level++)
+	{
+		uint32			   root_count;
+		const BlockNumber *roots =
+				tp_segment_graph_snapshot_level(snapshot, level, &root_count);
+
+		for (uint32 root_idx = 0;
+			 root_idx < root_count && heap->size < heap->capacity;
+			 root_idx++)
+		{
+			TpSegmentReader *reader	 = tp_segment_open(index, roots[root_idx]);
+			uint32			 minimum = 0;
+
+			while (heap->size < heap->capacity)
+			{
+				uint32			doc_id;
+				ItemPointerData ctid;
+
+				CHECK_FOR_INTERRUPTS();
+				if (!filter->segment_next(
+							filter->state, reader, minimum, &doc_id, false))
+					elog(ERROR, "BM25 Boolean candidate traversal declined");
+				if (doc_id == UINT32_MAX)
+					break;
+				minimum = doc_id + 1;
+				if (!tp_segment_is_alive(reader, doc_id))
+					continue;
+				tp_segment_lookup_ctid(reader, doc_id, &ctid);
+				if (ItemPointerIsValid(&ctid) &&
+					add_zero_score_result(&state, &ctid) && stats != NULL)
+					stats->segment_docs_scored++;
+			}
+			filter->reset(filter->state);
+			tp_segment_close(reader);
+		}
+	}
+	hash_destroy(state.seen);
+}
+
 /*
  * ------------------------------------------------------------
  * Single-Term BMW Scoring
@@ -501,8 +623,8 @@ score_segment_single_term_bmw(
 	if (drive_candidates)
 	{
 		uint32 candidate;
-		drive_candidates =
-				filter->segment_next(filter->state, reader, 0, &candidate);
+		drive_candidates = filter->segment_next(
+				filter->state, reader, 0, &candidate, true);
 		if (drive_candidates && candidate == UINT32_MAX)
 		{
 			tp_segment_posting_iterator_free(&iter);
@@ -573,7 +695,8 @@ score_segment_single_term_bmw(
 							filter->state,
 							reader,
 							posting->doc_id,
-							&candidate))
+							&candidate,
+							true))
 				{
 					drive_candidates = false;
 					break;
@@ -736,6 +859,8 @@ tp_score_single_term_bmw(
 
 	/* Resolve CTIDs for segment results before extraction */
 	tp_topk_resolve_ctids(&heap, index);
+	fill_zero_score_results(
+			&heap, index, snapshot, memtable_src, stats, filter);
 
 	/* Extract sorted results */
 	result_count = tp_topk_extract(&heap, result_ctids, result_scores);
@@ -1604,8 +1729,8 @@ score_segment_multi_term_bmw(
 	if (drive_candidates)
 	{
 		uint32 candidate;
-		drive_candidates =
-				filter->segment_next(filter->state, reader, 0, &candidate);
+		drive_candidates = filter->segment_next(
+				filter->state, reader, 0, &candidate, true);
 		if (drive_candidates && candidate == UINT32_MAX)
 			return;
 	}
@@ -1639,7 +1764,7 @@ score_segment_multi_term_bmw(
 			uint32 minimum = term_current_doc_id(terms[0]);
 			uint32 candidate;
 			if (!filter->segment_next(
-						filter->state, reader, minimum, &candidate))
+						filter->state, reader, minimum, &candidate, true))
 				drive_candidates = false;
 			else if (candidate == UINT32_MAX)
 				break;
@@ -1864,6 +1989,8 @@ tp_score_multi_term_bmw(
 
 	/* Resolve CTIDs for segment results before extraction */
 	tp_topk_resolve_ctids(&heap, index);
+	fill_zero_score_results(
+			&heap, index, snapshot, memtable_src, stats, filter);
 
 	/* Extract sorted results */
 	result_count = tp_topk_extract(&heap, result_ctids, result_scores);

@@ -31,5 +31,8 @@ bool tp_boolean_execute(IndexScanDesc scan, TpLocalIndexState *index_state);
 
 bool tp_boolean_next(IndexScanDesc scan);
 
-/* NULL requests heap rechecking for queries beyond the filter budget. */
-struct TpBMWFilter *tp_boolean_filter_create(TSQuery query, bool *recheck);
+struct TpBMWFilter *tp_boolean_filter_create(
+		TSQuery			   query,
+		const char *const *ranking_terms,
+		int				   ranking_term_count,
+		bool			  *recheck);

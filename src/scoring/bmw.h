@@ -128,17 +128,19 @@ typedef struct TpBMWFilter
 {
 	const char *const *terms;
 	int				   term_count;
+	bool			   include_zero_scores;
 	void			  *state;
 	bool (*memtable_matches)(
 			void *state, TpDataSource *source, ItemPointer ctid);
 	bool (*segment_matches)(
 			void *state, TpSegmentReader *reader, uint32 doc_id);
-	/* false uses ordinary BMW; UINT32_MAX means no candidates remain. */
+	/* selective may decline in favor of BMW; UINT32_MAX means exhausted. */
 	bool (*segment_next)(
 			void			*state,
 			TpSegmentReader *reader,
 			uint32			 minimum,
-			uint32			*doc_id);
+			uint32			*doc_id,
+			bool			 selective);
 	void (*reset)(void *state);
 } TpBMWFilter;
 

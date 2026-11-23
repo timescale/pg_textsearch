@@ -49,17 +49,9 @@ tp_memtable_search(
 	if (!so)
 		return false;
 
-	if (scan->numberOfKeys > 0)
-	{
-		if (so->boolean_query == NULL || so->boolean_query->size == 0)
-			return false;
-
-		MemoryContextReset(so->boolean_context);
-		oldcontext = MemoryContextSwitchTo(so->boolean_context);
-		filter	   = tp_boolean_filter_create(
-				so->boolean_query, &so->boolean_recheck);
-		MemoryContextSwitchTo(oldcontext);
-	}
+	if (scan->numberOfKeys > 0 &&
+		(so->boolean_query == NULL || so->boolean_query->size == 0))
+		return false;
 
 	/* Use limit from scan state, fallback to GUC parameter */
 	if (so->limit > 0)
@@ -93,6 +85,18 @@ tp_memtable_search(
 
 		query_terms[i]		 = term_str;
 		query_frequencies[i] = (int32)v.frequency;
+	}
+
+	if (scan->numberOfKeys > 0)
+	{
+		MemoryContextReset(so->boolean_context);
+		oldcontext = MemoryContextSwitchTo(so->boolean_context);
+		filter	   = tp_boolean_filter_create(
+				so->boolean_query,
+				(const char *const *)query_terms,
+				entry_count,
+				&so->boolean_recheck);
+		MemoryContextSwitchTo(oldcontext);
 	}
 
 	/* Allocate result arrays in scan context */
