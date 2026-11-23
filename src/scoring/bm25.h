@@ -11,6 +11,7 @@
 #include <storage/itemptr.h>
 
 typedef struct TpLocalIndexState TpLocalIndexState;
+struct TpBMWFilter;
 
 /*
  * Document score entry for query result accumulation.
@@ -24,14 +25,15 @@ typedef struct DocumentScoreEntry
 } DocumentScoreEntry;
 
 extern int tp_score_documents(
-		TpLocalIndexState *local_state,
-		Relation		   index_relation,
-		char			 **query_terms,
-		int32			  *query_frequencies,
-		int				   query_term_count,
-		int				   max_results,
-		ItemPointer		   result_ctids,
-		float4			 **result_scores);
+		TpLocalIndexState  *local_state,
+		Relation			index_relation,
+		char			  **query_terms,
+		int32			   *query_frequencies,
+		int					query_term_count,
+		int					max_results,
+		ItemPointer			result_ctids,
+		float4			  **result_scores,
+		struct TpBMWFilter *filter);
 
 /* IDF calculation */
 extern float4 tp_calculate_idf(int32 doc_freq, int32 total_docs);

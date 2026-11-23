@@ -317,12 +317,6 @@ tp_rescan(
 	Assert(scan != NULL);
 	Assert(scan->opaque != NULL);
 
-	if (nkeys > 0 && norderbys > 0)
-		ereport(ERROR,
-				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-				 errmsg("pg_textsearch does not support Boolean filtering "
-						"and BM25 ordering in the same index scan")));
-
 	if (!so)
 		return;
 

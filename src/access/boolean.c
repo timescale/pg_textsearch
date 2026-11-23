@@ -16,6 +16,7 @@
 #include "access/am.h"
 #include "access/boolean.h"
 #include "memtable/chain_walker.h"
+#include "scoring/bmw.h"
 #include "segment/alive_bitset.h"
 #include "segment/graph_snapshot.h"
 #include "segment/io.h"
@@ -198,6 +199,15 @@ tp_boolean_extract_terms(TSQuery query)
 	state.query = query;
 	state.terms = palloc0(Max(query->size, 1) * sizeof(TpBooleanTerm));
 	state.exact_operand_count = tp_boolean_query_exact_operand_count(query);
+	if (state.exact_operand_count > TP_BOOLEAN_MAX_EXACT_OPERANDS)
+		ereport(ERROR,
+				(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
+				 errmsg("BM25 Boolean queries support at most %d exact term "
+						"operands",
+						TP_BOOLEAN_MAX_EXACT_OPERANDS),
+				 errdetail(
+						 "Query contains %d exact term operands.",
+						 state.exact_operand_count)));
 
 	for (int i = 0; i < query->size; i++)
 	{
@@ -764,6 +774,165 @@ tp_boolean_segment_candidate_matches(
 				   tp_boolean_segment_has_term) != TS_NO;
 }
 
+typedef struct TpBooleanRankedFilter
+{
+	TpBooleanEvalState	 query;
+	MemoryContext		 context;
+	TpBooleanTermCursor *cursors;
+	TpDataSource		*source;
+	TpPostingData	   **postings;
+	bool				*term_present;
+} TpBooleanRankedFilter;
+
+static int
+tp_boolean_compare_ctids(const void *left, const void *right)
+{
+	return ItemPointerCompare((ItemPointer)left, (ItemPointer)right);
+}
+
+static bool
+tp_boolean_ranked_memtable_matches(
+		void *arg, TpDataSource *source, ItemPointer ctid)
+{
+	TpBooleanRankedFilter *filter = arg;
+	TpBooleanEvalState	  *query  = &filter->query;
+	TpBooleanMemtableEval  eval;
+
+	if (filter->postings == NULL)
+	{
+		MemoryContext old = MemoryContextSwitchTo(filter->context);
+
+		filter->source	 = source;
+		filter->postings = palloc0(
+				Max(query->term_count, 1) * sizeof(TpPostingData *));
+		filter->term_present = palloc0(
+				Max(query->term_count, 1) * sizeof(bool));
+		for (int i = 0; i < query->term_count; i++)
+		{
+			TpPostingData *postings =
+					tp_source_get_postings(source, query->terms[i].lexeme);
+
+			/* These private copies are used only for CTID membership. */
+			if (postings != NULL)
+				qsort(postings->ctids,
+					  postings->count,
+					  sizeof(ItemPointerData),
+					  tp_boolean_compare_ctids);
+			filter->postings[i] = postings;
+		}
+		MemoryContextSwitchTo(old);
+	}
+
+	for (int i = 0; i < query->term_count; i++)
+	{
+		TpPostingData *postings = filter->postings[i];
+
+		filter->term_present[i] = postings != NULL &&
+								  bsearch(ctid,
+										  postings->ctids,
+										  postings->count,
+										  sizeof(ItemPointerData),
+										  tp_boolean_compare_ctids) != NULL;
+	}
+	eval.query		  = query;
+	eval.term_present = filter->term_present;
+	return TS_execute_ternary(
+				   GETQUERY(query->query),
+				   &eval,
+				   TS_EXEC_PHRASE_NO_POS,
+				   tp_boolean_memtable_has_term) != TS_NO;
+}
+
+static bool
+tp_boolean_ranked_segment_matches(
+		void *arg, TpSegmentReader *reader, uint32 doc_id)
+{
+	TpBooleanRankedFilter *filter = arg;
+	TpBooleanEvalState	  *query  = &filter->query;
+
+	if (filter->cursors == NULL)
+	{
+		MemoryContext old = MemoryContextSwitchTo(filter->context);
+
+		filter->cursors = palloc0(
+				Max(query->term_count, 1) * sizeof(TpBooleanTermCursor));
+		for (int i = 0; i < query->term_count; i++)
+		{
+			TpBooleanTermCursor *cursor = &filter->cursors[i];
+
+			cursor->initialized = tp_segment_posting_iterator_init(
+					&cursor->iterator, reader, query->terms[i].lexeme);
+			/* BMW already retains ranking iterators; do not retain locks. */
+			cursor->iterator.force_copy = true;
+		}
+		MemoryContextSwitchTo(old);
+	}
+	return tp_boolean_segment_candidate_matches(
+			query, filter->cursors, doc_id);
+}
+
+static void
+tp_boolean_ranked_filter_reset(void *arg)
+{
+	TpBooleanRankedFilter *filter = arg;
+
+	if (filter->cursors != NULL)
+	{
+		for (int i = 0; i < filter->query.term_count; i++)
+		{
+			if (filter->cursors[i].initialized)
+				tp_segment_posting_iterator_free(&filter->cursors[i].iterator);
+		}
+		pfree(filter->cursors);
+		filter->cursors = NULL;
+	}
+	if (filter->postings != NULL)
+	{
+		for (int i = 0; i < filter->query.term_count; i++)
+		{
+			if (filter->postings[i] != NULL)
+				tp_source_free_postings(filter->source, filter->postings[i]);
+		}
+		pfree(filter->postings);
+		pfree(filter->term_present);
+		filter->postings	 = NULL;
+		filter->term_present = NULL;
+		filter->source		 = NULL;
+	}
+}
+
+TpBMWFilter *
+tp_boolean_filter_create(TSQuery query, bool *recheck)
+{
+	TpBMWFilter			  *predicate;
+	TpBooleanRankedFilter *filter;
+	const char			 **terms;
+
+	/* Generic plans cannot validate runtime predicates during costing. */
+	if (tp_boolean_query_exact_operand_count(query) >
+		TP_BOOLEAN_MAX_EXACT_OPERANDS)
+	{
+		*recheck = true;
+		return NULL;
+	}
+
+	predicate		= palloc0(sizeof(*predicate));
+	filter			= palloc0(sizeof(*filter));
+	filter->query	= tp_boolean_extract_terms(query);
+	filter->context = CurrentMemoryContext;
+	*recheck		= filter->query.requires_recheck;
+	terms = palloc(Max(filter->query.term_count, 1) * sizeof(char *));
+	for (int i = 0; i < filter->query.term_count; i++)
+		terms[i] = filter->query.terms[i].lexeme;
+	predicate->terms			= terms;
+	predicate->term_count		= filter->query.term_count;
+	predicate->state			= filter;
+	predicate->memtable_matches = tp_boolean_ranked_memtable_matches;
+	predicate->segment_matches	= tp_boolean_ranked_segment_matches;
+	predicate->reset			= tp_boolean_ranked_filter_reset;
+	return predicate;
+}
+
 static void
 tp_boolean_write_segment(
 		TpSegmentReader *reader, TpBooleanResultWriter *writer)
@@ -827,7 +996,7 @@ tp_boolean_rescan(
 						"condition")));
 
 	so->boolean_query	= NULL;
-	so->is_boolean_scan = true;
+	so->is_boolean_scan = scan->numberOfOrderBys == 0;
 	so->boolean_recheck = false;
 
 	if (keys[0].sk_flags & SK_ISNULL)
@@ -862,17 +1031,8 @@ tp_boolean_execute(IndexScanDesc scan, TpLocalIndexState *index_state)
 				 errmsg("BM25 Boolean execution must acquire its own index "
 						"lock")));
 
-	old_context = MemoryContextSwitchTo(so->boolean_context);
-	state		= tp_boolean_extract_terms(so->boolean_query);
-	if (state.exact_operand_count > TP_BOOLEAN_MAX_EXACT_OPERANDS)
-		ereport(ERROR,
-				(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
-				 errmsg("BM25 Boolean queries support at most %d exact term "
-						"operands",
-						TP_BOOLEAN_MAX_EXACT_OPERANDS),
-				 errdetail(
-						 "Query contains %d exact term operands.",
-						 state.exact_operand_count)));
+	old_context			= MemoryContextSwitchTo(so->boolean_context);
+	state				= tp_boolean_extract_terms(so->boolean_query);
 	so->boolean_recheck = state.requires_recheck;
 
 	tp_acquire_index_lock(index_state, LW_SHARED);

@@ -140,15 +140,25 @@ match the index configuration:
 SET default_text_search_config = 'english';
 ```
 
-If that setting changes after a Boolean prepared statement has switched to a
-generic plan, `DEALLOCATE` and prepare the statement again. A newly planned
-query can choose the correct sequential fallback, while the cached plan is
-rejected to avoid incorrect index results.
+If that setting changes while a cached plan uses a Boolean index scan,
+`DEALLOCATE` and prepare the statement again. A newly planned query can choose
+the correct sequential fallback, while a mismatched Boolean index scan is
+rejected to avoid incorrect results.
 
-Combining Boolean filtering with BM25 ranking is supported, but is not yet
-optimized as a single index scan. PostgreSQL currently evaluates the filter,
-calculates standalone scores for the matching rows, and then sorts them. This
-is most effective when the Boolean filter matches relatively few rows.
+Combine Boolean filtering and BM25 ranking in a single ordered index scan:
+
+```sql
+SELECT * FROM documents
+WHERE content @@ to_tsquery('english', 'postgres & search')
+ORDER BY content <@> 'postgres search'
+LIMIT 10;
+```
+
+The ordered fast path requires constant queries whose Boolean predicate
+guarantees that every match contains a ranking term. Other forms, including
+generic plans with unknown query terms, use PostgreSQL filtering and sorting
+so that zero-score matches are retained. Phrase, prefix, and weight
+restrictions may require heap rechecks.
 
 ### Verifying Index Usage
 
