@@ -1008,7 +1008,9 @@ seek_term_to_doc(TpTermState *ts, uint32 target_doc_id)
 		 */
 		block_count = ts->iter.dict_entry.block_count;
 		left		= ts->iter.current_block + 1;
-		right		= (int)block_count - 1;
+		right		= left;
+		if (left < block_count && ts->block_last_doc_ids[left] < target_doc_id)
+			right = (int)block_count - 1;
 
 		while (left < right)
 		{
