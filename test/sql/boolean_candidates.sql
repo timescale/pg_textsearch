@@ -188,4 +188,49 @@ DROP TABLE boolean_candidate_dominated;
 RESET max_parallel_maintenance_workers;
 RESET pg_textsearch.memtable_pages_threshold;
 RESET pg_textsearch.bulk_load_threshold;
+
+CREATE TABLE boolean_required_terms (id int, body text);
+INSERT INTO boolean_required_terms
+SELECT g, CASE WHEN g % 512 = 0 THEN 'leftterm rightterm'
+               WHEN g % 2 = 0 THEN 'leftterm'
+               ELSE 'rightterm' END
+FROM generate_series(1, 4096) g;
+CREATE INDEX boolean_required_terms_idx ON boolean_required_terms
+USING bm25(body) WITH (text_config = 'simple');
+SET log_statement = none;
+SET client_min_messages = log;
+SET pg_textsearch.log_bmw_stats = on;
+-- Both lists are dense, but only their intersection needs scoring.
+SELECT array_agg(id ORDER BY id) AS required_term_matches FROM (
+    SELECT id FROM boolean_required_terms
+    WHERE body @@ 'leftterm & rightterm'::tsquery
+    ORDER BY body <@> to_bm25query(
+        'leftterm rightterm', 'boolean_required_terms_idx')
+    LIMIT 5000
+) s;
+RESET pg_textsearch.log_bmw_stats;
+SET client_min_messages = warning;
+RESET log_statement;
+SELECT count(*) AS either_term_matches FROM (
+    SELECT id FROM boolean_required_terms
+    WHERE body @@ 'leftterm | rightterm'::tsquery
+    ORDER BY body <@> to_bm25query(
+        'leftterm rightterm', 'boolean_required_terms_idx')
+    LIMIT 5000
+) s;
+SELECT count(*) AS shared_or_term_matches FROM (
+    SELECT id FROM boolean_required_terms
+    WHERE body @@ 'leftterm | (leftterm & rightterm)'::tsquery
+    ORDER BY body <@> to_bm25query(
+        'leftterm rightterm', 'boolean_required_terms_idx')
+    LIMIT 5000
+) s;
+SELECT array_agg(id ORDER BY id) AS demorgan_matches FROM (
+    SELECT id FROM boolean_required_terms
+    WHERE body @@ '!(!leftterm | !rightterm)'::tsquery
+    ORDER BY body <@> to_bm25query(
+        'leftterm rightterm', 'boolean_required_terms_idx')
+    LIMIT 5000
+) s;
+DROP TABLE boolean_required_terms;
 DROP EXTENSION pg_textsearch;
