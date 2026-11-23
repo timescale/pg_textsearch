@@ -13,6 +13,7 @@ on:
       - 'src/segment/**'
       - 'src/index/**'
       - 'test/scripts/upgrade_matrix.sh'
+      - 'test/scripts/upgrade_verify.sh'
       - 'pg_textsearch.control'
       - '.github/workflows/upgrade-tests.yml'
   push:
@@ -388,7 +389,7 @@ jobs:
       run: |
         export PATH=/usr/lib/postgresql/${{ matrix.pg_version }}/bin:$PATH
         EXPECTED_VERSION=$(awk -F"'" '/^[\t ]*default_version/ {print $2}' \
-          pg_textsearch.control | cut -d. -f1,2)
+          pg_textsearch.control)
 
         psql -h /tmp -d upgrade_test << 'SQL'
         \set ON_ERROR_STOP on
@@ -641,17 +642,17 @@ jobs:
           END $$;
 
           -- Phase 5: Version check
-          CREATE TEMP TABLE _expected(version_prefix text);
+          CREATE TEMP TABLE _expected(version text);
           INSERT INTO _expected VALUES (:'expected_version');
 
           DO $$
           DECLARE ver text; expected text;
           BEGIN
-            SELECT version_prefix INTO expected FROM _expected;
+            SELECT version INTO expected FROM _expected;
             SELECT extversion INTO ver
             FROM pg_extension WHERE extname = 'pg_textsearch';
-            IF ver NOT LIKE expected || '%' THEN
-              RAISE EXCEPTION 'FAIL: version %, expected %*', ver, expected;
+            IF ver IS DISTINCT FROM expected THEN
+              RAISE EXCEPTION 'FAIL: version %, expected %', ver, expected;
             END IF;
             RAISE NOTICE 'PASS: extension version %', ver;
           END $$;
@@ -687,18 +688,18 @@ jobs:
             -v expected_version="$EXPECTED_VERSION" << 'SQL'
           \set ON_ERROR_STOP on
 
-          CREATE TEMP TABLE _expected(version_prefix text);
+          CREATE TEMP TABLE _expected(version text);
           INSERT INTO _expected VALUES (:'expected_version');
 
           -- Test 1: Version check
           DO $$
           DECLARE ver text; expected text;
           BEGIN
-            SELECT version_prefix INTO expected FROM _expected;
+            SELECT version INTO expected FROM _expected;
             SELECT extversion INTO ver
             FROM pg_extension WHERE extname = 'pg_textsearch';
-            IF ver NOT LIKE expected || '%' THEN
-              RAISE EXCEPTION 'FAIL: version %, expected %*', ver, expected;
+            IF ver IS DISTINCT FROM expected THEN
+              RAISE EXCEPTION 'FAIL: version %, expected %', ver, expected;
             END IF;
             RAISE NOTICE 'PASS: extension version %', ver;
           END $$;
@@ -800,6 +801,12 @@ jobs:
         SQL
         fi
 
+    - name: Verify catalog parity and partition scoring
+      run: |
+        export PG_CONFIG=/usr/lib/postgresql/${{ matrix.pg_version }}/bin/pg_config
+        export PGHOST=/tmp PGDATABASE=upgrade_test
+        bash test/scripts/upgrade_verify.sh
+
     - name: Cleanup
       if: always()
       run: |
@@ -854,7 +861,7 @@ jobs:
         pg_ctl -D $PGDATA start -w -l $PGDATA/logfile || { cat $PGDATA/logfile; exit 1; }
         createdb -h /tmp clean_test
 
-        psql -h /tmp -d clean_test << 'SQL'
+        psql -v ON_ERROR_STOP=1 -h /tmp -d clean_test << 'SQL'
         CREATE EXTENSION pg_textsearch;
 
         -- Verify version
@@ -875,8 +882,11 @@ jobs:
         ORDER BY score
         LIMIT 3;
 
-        RAISE NOTICE 'Clean installation test passed!';
         SQL
+
+        PG_CONFIG=/usr/lib/postgresql/${{ matrix.pg_version }}/bin/pg_config \
+          PGHOST=/tmp PGDATABASE=clean_test \
+          bash test/scripts/upgrade_verify.sh
 
         pg_ctl -D $PGDATA stop -m immediate
         rm -rf $PGDATA

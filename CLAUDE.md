@@ -10,7 +10,7 @@ ranking. (Internal name: Tapir) It implements a memtable-based architecture
 similar to LSM trees, with in-memory structures that spill to disk segments
 for scalability.
 
-**Current Version**: 1.6.0-dev
+**Current Version**: 1.6.0
 
 **Postgres Version Support**: 17, 18, and 19 (required CI checks).
 
