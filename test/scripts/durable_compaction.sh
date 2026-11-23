@@ -10024,6 +10024,7 @@ ${reuse_output}"
 
 test_background_vacuum_rewrites_sparse_singleton() {
     local after_docs after_root after_state before_docs before_root before_state
+    local delete_xid horizon_clear
     local index_oid instance_id signal_events_after signal_events_before
     local rewritten=false
 
@@ -10068,8 +10069,25 @@ test_background_vacuum_rewrites_sparse_singleton() {
           AND event_data::jsonb->>'type' = 'ExternalEvent'
           AND event_data::jsonb->>'name' = 'compact';")"
 
-    sql_as durable_owner -c "DELETE FROM
-        public.background_vacuum_sparse_docs WHERE id <= 50;" >/dev/null
+    delete_xid="$(sql_as durable_owner -c "DELETE FROM
+        public.background_vacuum_sparse_docs WHERE id <= 50;
+        SELECT pg_catalog.pg_current_xact_id()::pg_catalog.xid;")"
+    # Workflow transactions can retain a snapshot across the deletion.
+    # Let their horizons pass before asking VACUUM to mark all 50 dead docs.
+    for _ in $(seq 1 60); do
+        horizon_clear="$(sql_super -c "SELECT NOT EXISTS (
+            SELECT 1 FROM pg_catalog.pg_stat_activity AS activity
+            WHERE activity.datname = pg_catalog.current_database()
+              AND activity.pid <> pg_catalog.pg_backend_pid()
+              AND (pg_catalog.age(activity.backend_xmin) >=
+                       pg_catalog.age('${delete_xid}'::pg_catalog.xid)
+                   OR pg_catalog.age(activity.backend_xid) >=
+                       pg_catalog.age('${delete_xid}'::pg_catalog.xid)));")"
+        [ "${horizon_clear}" = "t" ] && break
+        sleep 1
+    done
+    assert_eq "sparse VACUUM deletion has crossed active snapshots" \
+        "t" "${horizon_clear}"
     sql_as durable_owner -c \
         "VACUUM public.background_vacuum_sparse_docs;" >/dev/null
 
