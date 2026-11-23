@@ -489,11 +489,26 @@ score_segment_single_term_bmw(
 	TpDictEntry				*dict_entry;
 	uint32					 block_count;
 	float4					*block_max_scores;
+	uint32					*block_last_doc_ids = NULL;
 	uint32					 i;
+	bool drive_candidates = filter != NULL && filter->segment_next != NULL;
 
 	/* Initialize iterator for this term */
 	if (!tp_segment_posting_iterator_init(&iter, reader, term))
 		return; /* Term not found in segment */
+	iter.force_copy = filter != NULL;
+
+	if (drive_candidates)
+	{
+		uint32 candidate;
+		drive_candidates =
+				filter->segment_next(filter->state, reader, 0, &candidate);
+		if (drive_candidates && candidate == UINT32_MAX)
+		{
+			tp_segment_posting_iterator_free(&iter);
+			return;
+		}
+	}
 
 	/* Get dictionary entry for block count and skip index */
 	dict_entry	= &iter.dict_entry;
@@ -501,6 +516,8 @@ score_segment_single_term_bmw(
 
 	/* Pre-compute block max scores */
 	block_max_scores = palloc(block_count * sizeof(float4));
+	if (drive_candidates)
+		block_last_doc_ids = palloc(block_count * sizeof(uint32));
 	for (i = 0; i < block_count; i++)
 	{
 		TpSkipEntry skip;
@@ -508,6 +525,8 @@ score_segment_single_term_bmw(
 				reader, dict_entry->skip_index_offset, i, &skip);
 		block_max_scores[i] =
 				tp_compute_block_max_score(&skip, idf, k1, b, avg_doc_len);
+		if (block_last_doc_ids != NULL)
+			block_last_doc_ids[i] = skip.last_doc_id;
 	}
 
 	/* Process blocks with BMW */
@@ -546,6 +565,72 @@ score_segment_single_term_bmw(
 			if (iter.current_block != i)
 				break;
 
+			while (drive_candidates)
+			{
+				uint32 candidate;
+				CHECK_FOR_INTERRUPTS();
+				if (!filter->segment_next(
+							filter->state,
+							reader,
+							posting->doc_id,
+							&candidate))
+				{
+					drive_candidates = false;
+					break;
+				}
+				if (candidate == UINT32_MAX)
+					goto done;
+				if (candidate <= posting->doc_id)
+					break;
+				if (candidate <= iter.skip_entry.last_doc_id)
+				{
+					do
+					{
+						if (!tp_segment_posting_iterator_next(&iter, &posting))
+							goto done;
+					} while (posting->doc_id < candidate);
+					continue;
+				}
+				{
+					uint32 target_block = i + 1;
+					uint32 end			= block_count;
+
+					while (target_block < end)
+					{
+						uint32 mid = target_block + (end - target_block) / 2;
+						if (block_last_doc_ids[mid] < candidate)
+							target_block = mid + 1;
+						else
+							end = mid;
+					}
+					if (stats)
+						stats->blocks_skipped += target_block - i - 1;
+					if (target_block == block_count)
+						goto done;
+					/* Apply the BMW gate before loading the target block. */
+					if (block_max_scores[target_block] <
+						tp_topk_threshold(heap))
+					{
+						i = target_block - 1;
+						goto next_block;
+					}
+				}
+				if (!tp_segment_posting_iterator_seek(
+							&iter, candidate, &posting))
+					goto done;
+				/* Consume it unless seek's next-block fallback already did. */
+				if (iter.current_in_block < iter.skip_entry.doc_count &&
+					iter.block_postings[iter.current_in_block].doc_id ==
+							posting->doc_id)
+					iter.current_in_block++;
+				i = iter.current_block;
+				if (stats)
+				{
+					stats->blocks_scanned++;
+					stats->seeks_performed++;
+				}
+			}
+
 			/* Skip dead docs */
 			if (!tp_segment_is_alive(reader, posting->doc_id))
 			{
@@ -574,8 +659,12 @@ score_segment_single_term_bmw(
 			if (stats)
 				stats->segment_docs_scored++;
 		}
+	next_block:;
 	}
 
+done:
+	if (block_last_doc_ids != NULL)
+		pfree(block_last_doc_ids);
 	pfree(block_max_scores);
 	tp_segment_posting_iterator_free(&iter);
 }
@@ -1509,7 +1598,17 @@ score_segment_multi_term_bmw(
 		TpBMWStats		*stats,
 		TpBMWFilter		*filter)
 {
-	int active_count;
+	int	 active_count;
+	bool drive_candidates = filter != NULL && filter->segment_next != NULL;
+
+	if (drive_candidates)
+	{
+		uint32 candidate;
+		drive_candidates =
+				filter->segment_next(filter->state, reader, 0, &candidate);
+		if (drive_candidates && candidate == UINT32_MAX)
+			return;
+	}
 
 	active_count = init_segment_term_states(
 			terms, term_count, reader, k1, b, avg_doc_len);
@@ -1534,6 +1633,32 @@ score_segment_multi_term_bmw(
 		int	   i;
 
 		CHECK_FOR_INTERRUPTS();
+
+		if (drive_candidates)
+		{
+			uint32 minimum = term_current_doc_id(terms[0]);
+			uint32 candidate;
+			if (!filter->segment_next(
+						filter->state, reader, minimum, &candidate))
+				drive_candidates = false;
+			else if (candidate == UINT32_MAX)
+				break;
+			else if (candidate > minimum)
+			{
+				for (i = 0; i < term_count; i++)
+				{
+					if (term_current_doc_id(terms[i]) < candidate)
+					{
+						if (!seek_term_to_doc(terms[i], candidate))
+							active_count--;
+						if (stats)
+							stats->seeks_performed++;
+					}
+				}
+				sort_terms_by_doc_id(terms, term_count);
+				continue;
+			}
+		}
 
 		threshold = tp_topk_threshold(heap);
 
