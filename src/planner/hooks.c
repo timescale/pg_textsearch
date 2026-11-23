@@ -3127,8 +3127,8 @@ tp_attach_seed_hint(
 	Relation	   heap;
 	double		   selectivity = 0.0;
 
-	if (list_length(scan->indexorderby) != 1 || scan->indexqual != NIL ||
-		!tp_limit_k(limit, &k) || scan->scan.scanrelid <= 0)
+	if (list_length(scan->indexorderby) != 1 || !tp_limit_k(limit, &k) ||
+		scan->scan.scanrelid <= 0)
 		return;
 	if (get_rel_relam(scan->indexid) != oids->bm25_am_oid)
 		return;

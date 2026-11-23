@@ -62,6 +62,24 @@ SELECT bm25_debug_scoring_passes(true) = 1 AS filter_before_topk;
  t
 (1 row)
 
+-- A pushed predicate must not discard the scan's LIMIT/OFFSET hint.
+SELECT count(*) AS limited_matches FROM (
+    SELECT id FROM ranked_boolean_docs
+    WHERE body @@ 'alpha & beta'::tsquery
+    ORDER BY body <@> to_bm25query('alpha', 'ranked_boolean_idx')
+    LIMIT 5 OFFSET 5
+) s;
+ limited_matches 
+-----------------
+               5
+(1 row)
+
+SELECT bm25_debug_scoring_passes(true) = 1 AS boolean_limit_seeded;
+ boolean_limit_seeded 
+----------------------
+ t
+(1 row)
+
 SET pg_textsearch.memtable_cache_enabled = off;
 SELECT id FROM ranked_boolean_docs
 WHERE body @@ 'alpha & beta & !padding'::tsquery
