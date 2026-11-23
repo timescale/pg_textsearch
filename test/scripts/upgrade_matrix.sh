@@ -103,6 +103,11 @@ _mktemp_sql() { local f; f="$(mktemp "${TMPDIR:-/tmp}/um.XXXXXX.sql")"; printf '
 scalar() { local f; f="$(_mktemp_sql "$1")"; as_pg psql -h "$SOCK_DIR" -p "$TEST_PORT" -d upg -tAqf "$f" 2>/dev/null; rm -f "$f"; }
 runsql() { local f; f="$(_mktemp_sql "$1")"; as_pg psql -h "$SOCK_DIR" -p "$TEST_PORT" -d upg -v ON_ERROR_STOP=1 -q -f "$f" >/dev/null; local rc=$?; rm -f "$f"; return $rc; }
 run_capture() { local f; f="$(_mktemp_sql "$1")"; as_pg psql -h "$SOCK_DIR" -p "$TEST_PORT" -d upg -tAqf "$f" >"$2" 2>"$3"; rm -f "$f"; }
+verify_current() {
+  as_pg env PG_CONFIG="$PG_CONFIG" PGHOST="$SOCK_DIR" \
+    PGPORT="$TEST_PORT" PGDATABASE=upg \
+    bash "$SCRIPT_DIR/upgrade_verify.sh"
+}
 
 cleanup() {
   as_pg pg_ctl -D "$DATA_DIR" stop -m immediate >/dev/null 2>&1 || true
@@ -222,6 +227,10 @@ run_compat_shape() { # $1=version $2=shape
     fail "$v/$st: expected $CURRENT_VERSION, SQL=$installed_version library=$loaded_version"
     return
   fi
+  verify_current || {
+    fail "$v/$st: current catalog or partition scoring verification failed"
+    return
+  }
   local mark; mark="$(log_marker)"
   runsql "INSERT INTO d(c) VALUES ('alpha beta gamma writeprobe token');"
   post="$(scalar "$RECALL_Q")"
@@ -277,6 +286,14 @@ run_legacy() { # $1=version
   fi
   rm -f "$out" "$err_f"
 
+  runsql "ALTER EXTENSION pg_textsearch UPDATE;" || {
+    fail "$v(legacy): ALTER EXTENSION UPDATE failed"
+    return
+  }
+  verify_current || {
+    fail "$v(legacy): current catalog or partition scoring verification failed"
+    return
+  }
   runsql "REINDEX INDEX i;"
   local reidx; reidx="$(scalar "$RECALL_Q")"
   stop_pg
@@ -297,7 +314,14 @@ run_boolean_completeness_upgrade() {
 
   build_install_current || { fail "current build/install failed"; return; }
   start_pg || { fail "1.4.0/boolean: NEW server failed to start"; return; }
-  runsql "ALTER EXTENSION pg_textsearch UPDATE TO '1.6.0-dev';"
+  runsql "ALTER EXTENSION pg_textsearch UPDATE TO '$CURRENT_VERSION';" || {
+    fail "1.4.0/boolean: ALTER EXTENSION UPDATE failed"
+    return
+  }
+  verify_current || {
+    fail "1.4.0/boolean: current catalog or partition scoring verification failed"
+    return
+  }
 
   local out err_f
   out="$(mktemp)"; err_f="$(mktemp)"
@@ -398,7 +422,14 @@ run_v8_tombstone_compaction_upgrade() {
     fail "1.4.0/v8-tombstone: NEW server failed to start"
     return
   }
-  runsql "ALTER EXTENSION pg_textsearch UPDATE TO '1.6.0-dev';"
+  runsql "ALTER EXTENSION pg_textsearch UPDATE TO '$CURRENT_VERSION';" || {
+    fail "1.4.0/v8-tombstone: ALTER EXTENSION UPDATE failed"
+    return
+  }
+  verify_current || {
+    fail "1.4.0/v8-tombstone: current catalog or partition scoring verification failed"
+    return
+  }
 
   local before compact_result after post out err_f
   before="$(scalar "SELECT bm25_pending_free_pages('i');")"

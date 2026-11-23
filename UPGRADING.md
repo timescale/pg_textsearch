@@ -72,13 +72,13 @@ update the index’s header without rebuilding its contents.
 versions each listed reader accepts. A Yes does not establish complete
 query results; the version notes explain the rebuild cases.
 
-| Metapage | Written at build by | v1.3.0 | v1.3.1 / v1.4.0 | v1.5.0 / v1.5.1 |
+| Metapage | Written at build by | v1.3.0 | v1.3.1 / v1.4.0 | v1.5.x / v1.6.0 |
 |----------|---------------------|--------|-----------------|-----------------|
 | <=5 | v0.5.0 or earlier | No | No | No |
 | 6 | v0.5.1–v1.2.0 | Yes | Yes | Yes |
 | 7 | v1.3.0 | Yes | Yes | Yes |
 | 8 | v1.3.1–v1.4.0 | No | Yes | Yes |
-| 9 | v1.5.0–v1.5.1 | No | No | Yes |
+| 9 | v1.5.0–v1.6.0 | No | No | Yes |
 
 The build column refers to the binary used for the last full build or
 rebuild. The header may have advanced since then. Extend this table as
@@ -128,7 +128,7 @@ Include empty and stopword-only rows when checking negative Boolean queries.
 An automatic upgrade to header version 9 does not backfill those documents.
 Upgrading SQL or adding new rows does not backfill them either.
 
-**Replicas and rollback:** v1.5.0 and v1.5.1 can change an older index to
+**Replicas and rollback:** v1.5.x and v1.6.0 can change an older index to
 header version 9 while writing to or maintaining it. Pre-v1.5 servers
 cannot read that format. Upgrade all servers that use those indexes before
 letting a new server change them. This can happen before `ALTER EXTENSION`;
@@ -143,3 +143,17 @@ In this release, there is no supported non-superuser SQL function to inspect
 an index's header state. `bm25_dump_index()` shows the header version, but
 requires superuser. If an index's history is unknown, rebuilding it removes
 the uncertainty about omitted documents.
+
+### v1.6.0
+
+No additional index-format changes from v1.5.1.
+
+**REINDEX affected indexes:** earlier parallel builds on tables with HOT
+update chains could omit rows. A crash during VACUUM could also leave alive
+bitmaps and live-document counts inconsistent, causing incorrect top-k
+results. Rebuild indexes affected by either bug; installing the new binary
+and updating the extension SQL does not repair their contents.
+
+After restarting with the new library, run
+`ALTER EXTENSION pg_textsearch UPDATE TO '1.6.0';` in each database to install
+the partition-aware scoring functions for `text` and `text[]`.
