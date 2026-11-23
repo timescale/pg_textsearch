@@ -112,19 +112,19 @@ DO $$
 DECLARE
     correct boolean;
 BEGIN
-    SELECT count(*) = 2 AND bool_and(abs(
+    SELECT count(*) = 2 AND bool_and((abs(
         (body <@> to_bm25query('apple', 'upgrade_verify_text')) +
         CASE WHEN tenant = 1 THEN ln(1 + 9.5 / 1.5)
-             ELSE ln(1 + 0.5 / 10.5) END) < 0.000001)
+             ELSE ln(1 + 0.5 / 10.5) END) < 0.000001) IS TRUE)
     INTO correct FROM upgrade_verify_docs WHERE id = 1;
     IF correct IS DISTINCT FROM true THEN
         RAISE EXCEPTION 'Partition-local text scoring failed after upgrade';
     END IF;
 
-    SELECT count(*) = 2 AND bool_and(abs(
+    SELECT count(*) = 2 AND bool_and((abs(
         (tags <@> to_bm25query('apple', 'upgrade_verify_array')) +
         CASE WHEN tenant = 1 THEN ln(1 + 9.5 / 1.5)
-             ELSE ln(1 + 0.5 / 10.5) END) < 0.000001)
+             ELSE ln(1 + 0.5 / 10.5) END) < 0.000001) IS TRUE)
     INTO correct FROM upgrade_verify_docs WHERE id = 1;
     IF correct IS DISTINCT FROM true THEN
         RAISE EXCEPTION 'Partition-local text[] scoring failed after upgrade';
