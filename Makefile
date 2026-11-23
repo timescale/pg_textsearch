@@ -97,12 +97,13 @@ PG_CPPFLAGS += -Wno-unknown-warning-option -Wno-clobbered -Wno-packed-not-aligne
 # PG_CPPFLAGS += -DDEBUG_DUMP_INDEX
 
 # Test configuration
-REGRESS = preload abort aerodocs basic binary_io bmw bmw_long_documents bmw_skip_advance boolean_queries build_progress bulk_load cache_apply cache_memory_cap cache_source cache_spill catalog_stats chain_source compaction compaction_request compression concurrent_build coverage deletion vacuum vacuum_bitmap vacuum_extended vacuum_rebuild dropped empty explicit_index expression_index filtered_seed force_merge implicit index inheritance large_documents limits lock manyterms memory memtable_append memtable_page memtable_spill memtable_spill_dead memtable_reclaim merge mixed parallel_build parallel_bmw partitioned partitioned_many partial_index pgstats queries quoted_identifiers rescan rls schema scoring1 scoring2 scoring3 scoring4 scoring5 scoring6 security security_acl segment segment_integrity segment_reclaim tombstone_reuse tombstone_recover strings temp_table text_array text_config unsupported updates vector vector_v1_rejected unlogged_index wand
+REGRESS = preload abort aerodocs basic binary_io bmw bmw_long_documents bmw_skip_advance boolean_queries build_progress bulk_load cache_apply cache_memory_cap cache_source cache_spill catalog_stats chain_source compaction compaction_request compression concurrent_build coverage deletion vacuum vacuum_bitmap vacuum_extended vacuum_rebuild dropped empty explicit_index expression_index filtered_seed force_merge implicit index inheritance large_documents limits lock manyterms memory memtable_append memtable_page memtable_spill memtable_spill_dead memtable_reclaim merge mixed parallel_build parallel_build_hot_root parallel_bmw partitioned partitioned_many partial_index pgstats queries quoted_identifiers rescan rls schema scoring1 scoring2 scoring3 scoring4 scoring5 scoring6 security security_acl segment segment_integrity segment_reclaim tombstone_reuse tombstone_recover strings temp_table text_array text_config unsupported updates vector vector_v1_rejected unlogged_index wand
 INJECTION_REGRESS = scoring_injection merge_injection compaction_injection \
 	compaction_error_injection cache_error_injection \
 	force_merge_injection segment_reclaim_injection tombstone_bounds_injection \
 	vacuum_rebuild_injection query_hint_roundtrip memtable_stale_tail_injection
 REGRESS += compaction_policy
+REGRESS += partitioned_scoring
 REGRESS_OPTS = --inputdir=test --outputdir=test
 
 PG_CONFIG ?= pg_config
@@ -339,6 +340,10 @@ test-cross-database-registry:
 test-drop-rollback:
 	@bash test/scripts/drop_index_rollback.sh
 
+# Optional cross-extension regression; TimescaleDB must also be installed.
+test-timescaledb-owner:
+	@bash test/scripts/timescaledb_owner.sh
+
 test-shell: test-concurrency test-recovery test-segment test-cic test-multi-index test-reindex test-cross-database-registry test-drop-rollback
 	@echo "All shell-based tests completed"
 
@@ -495,6 +500,7 @@ help:
 	@echo "  make test-durable     - Run managed pg_durable compaction tests"
 	@echo "  make test-cross-database-registry - Run issue #464 registry regression"
 	@echo "  make test-drop-rollback - Run multi-backend DROP rollback regression"
+	@echo "  make test-timescaledb-owner - Run optional TimescaleDB ownership regression"
 	@echo "  make expected     - Generate expected output files from test results"
 	@echo ""
 	@echo "Code formatting targets:"
@@ -531,7 +537,7 @@ help:
 	test-recovery test-segment test-stress test-cic test-chinese \
 	test-replication test-replication-extended \
 	test-logical-replication test-multi-index test-reindex \
-	test-cross-database-registry test-drop-rollback \
+	test-cross-database-registry test-drop-rollback test-timescaledb-owner \
 	test-shell test-all expected lint-format format format-check \
 	format-diff format-single coverage coverage-build coverage-clean \
 	coverage-report help
