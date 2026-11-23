@@ -423,6 +423,42 @@ SELECT id FROM leaf_parent WHERE tenant = 1
 ORDER BY body <@> to_bm25query('apple', 'leaf_unrelated_idx')
 LIMIT 1;
 
-DROP TABLE leaf_unrelated, leaf_parent CASCADE;
+DROP TABLE leaf_unrelated;
+
+-- Deliberately exercise standalone scoring with sequential scans enabled.
+SET enable_seqscan = on;
+SELECT id,
+       ROUND((body <@>
+           to_bm25query('apple', 'leaf_deep_body_idx'))::numeric, 4) AS score
+FROM leaf_parent WHERE tenant = 2 AND id = 3;
+
+\set VERBOSITY sqlstate
+SELECT id, body <@> to_bm25query('apple', 'leaf_first_body_idx') AS score
+FROM leaf_parent;
+SELECT id, body <@> to_bm25query('apple', 'leaf_first_body_idx') AS score
+FROM leaf_parent WHERE tenant = 2;
+UPDATE leaf_parent SET other = other WHERE tenant = 2
+RETURNING id, body <@> to_bm25query('apple', 'leaf_first_body_idx') AS score;
+\set VERBOSITY default
+
+-- An unindexed sibling must not bypass validation in a sorted seqscan.
+DROP INDEX leaf_parent_idx;
+CREATE INDEX leaf_first_body_idx ON leaf_first USING bm25 (body)
+    WITH (text_config = 'english');
+SET enable_indexscan = off;
+SELECT id,
+       ROUND((body <@>
+           to_bm25query('apple', 'leaf_first_body_idx'))::numeric, 4) AS score
+FROM leaf_parent WHERE tenant = 1 AND id = 1
+ORDER BY body <@> to_bm25query('apple', 'leaf_first_body_idx')
+LIMIT 1;
+\set VERBOSITY sqlstate
+SELECT id FROM leaf_parent
+ORDER BY body <@> to_bm25query('apple', 'leaf_first_body_idx')
+LIMIT 1;
+\set VERBOSITY default
+RESET enable_indexscan;
+
+DROP TABLE leaf_parent CASCADE;
 RESET enable_seqscan;
 DROP EXTENSION pg_textsearch CASCADE;

@@ -1492,7 +1492,8 @@ typedef struct PartitionScoreContext
  * core carries through the plan instead.
  */
 static Oid
-score_expression_table(Plan *plan, Node *expr, List *rtable)
+score_expression_table(
+		Plan *plan, Node *expr, List *rtable, bool include_partitioned)
 {
 	List *vars = pull_var_clause(
 			expr,
@@ -1523,7 +1524,10 @@ score_expression_table(Plan *plan, Node *expr, List *rtable)
 
 				if (tle != NULL)
 					table_oid = score_expression_table(
-							child, (Node *)tle->expr, rtable);
+							child,
+							(Node *)tle->expr,
+							rtable,
+							include_partitioned);
 			}
 		}
 		else if (
@@ -1533,7 +1537,8 @@ score_expression_table(Plan *plan, Node *expr, List *rtable)
 			RangeTblEntry *rte = rt_fetch(var->varno, rtable);
 
 			if (rte->rtekind == RTE_RELATION &&
-				rte->relkind != RELKIND_PARTITIONED_TABLE)
+				(include_partitioned ||
+				 rte->relkind != RELKIND_PARTITIONED_TABLE))
 				table_oid = rte->relid;
 			else if (IsA(plan, SubqueryScan))
 			{
@@ -1543,8 +1548,21 @@ score_expression_table(Plan *plan, Node *expr, List *rtable)
 
 				if (tle != NULL)
 					table_oid = score_expression_table(
-							child, (Node *)tle->expr, rtable);
+							child,
+							(Node *)tle->expr,
+							rtable,
+							include_partitioned);
 			}
+		}
+
+		/* An Append or aggregate can obscure the physical source. */
+		if (!OidIsValid(table_oid) && include_partitioned &&
+			var->varnosyn > 0 && var->varnosyn <= (Index)list_length(rtable))
+		{
+			RangeTblEntry *rte = rt_fetch(var->varnosyn, rtable);
+
+			if (rte->rtekind == RTE_RELATION)
+				table_oid = rte->relid;
 		}
 
 		if (!OidIsValid(table_oid) ||
@@ -1558,6 +1576,9 @@ score_expression_table(Plan *plan, Node *expr, List *rtable)
 	list_free(vars);
 	return result;
 }
+
+static Oid		get_index_table_oid(Oid index_oid);
+static TpQuery *extract_tpquery_from_expr(Node *node, BM25OidCache *oids);
 
 static bool
 score_needs_partition_context(OpExpr *op, BM25OidCache *oids)
@@ -1573,13 +1594,20 @@ score_needs_partition_context(OpExpr *op, BM25OidCache *oids)
 		right = eval_const_expressions(NULL, right);
 	if (IsA(right, Const))
 	{
-		Const *value = (Const *)right;
+		Const	*value = (Const *)right;
+		TpQuery *query;
+		Oid		 index_oid;
+		char	 relkind;
 
 		if (value->constisnull)
 			return false;
-		return get_rel_relkind(get_tpquery_index_oid(
-					   (TpQuery *)DatumGetPointer(value->constvalue))) ==
-			   RELKIND_PARTITIONED_INDEX;
+		query	  = (TpQuery *)DatumGetPointer(value->constvalue);
+		index_oid = get_tpquery_index_oid(query);
+		relkind	  = get_rel_relkind(index_oid);
+		return relkind == RELKIND_PARTITIONED_INDEX ||
+			   (relkind == RELKIND_INDEX && tpquery_is_explicit_index(query) &&
+				IsA(linitial(op->args), Var) &&
+				get_rel_relispartition(get_index_table_oid(index_oid)));
 	}
 	/* A parameter or subquery may name a parent index at run time. */
 	return true;
@@ -1946,6 +1974,7 @@ bind_partition_score_mutator(Node *node, void *arg)
 	Expr				  *table_expr = NULL;
 	Oid					   funcid;
 	bool				   ordering;
+	TpQuery				  *query;
 
 	if (node == NULL)
 		return NULL;
@@ -1988,6 +2017,36 @@ bind_partition_score_mutator(Node *node, void *arg)
 		(context->query->hasAggs || context->query->groupClause != NIL))
 		return node;
 
+	query = extract_tpquery_from_expr(node, context->oids);
+	if (query != NULL && tpquery_is_explicit_index(query) &&
+		IsA(linitial(op->args), Var) &&
+		get_rel_relkind(query->index_oid) == RELKIND_INDEX)
+	{
+		Oid table_oid;
+
+		/* Validate a named leaf only after partition pruning has run. */
+		if (context->query != NULL)
+			return node;
+
+		table_oid = score_expression_table(
+				context->plan, linitial(op->args), context->rtable, true);
+
+		if (OidIsValid(table_oid) &&
+			table_oid != get_index_table_oid(query->index_oid))
+			ereport(ERROR,
+					(errcode(ERRCODE_WRONG_OBJECT_TYPE),
+					 errmsg("index \"%s\" cannot score rows from table "
+							"\"%s\"",
+							get_rel_name(query->index_oid),
+							get_rel_name(table_oid)),
+					 errdetail(
+							 "An explicitly named leaf index can only "
+							 "score rows from its own partition."),
+					 errhint("Restrict the query to that partition, or "
+							 "name the parent index.")));
+		return node;
+	}
+
 	funcid = op->opno == context->oids->textarray_tpquery_operator_oid
 				   ? context->oids->partition_array_score_func_oid
 				   : context->oids->partition_score_func_oid;
@@ -2001,7 +2060,7 @@ bind_partition_score_mutator(Node *node, void *arg)
 	else
 	{
 		Oid table_oid = score_expression_table(
-				context->plan, linitial(op->args), context->rtable);
+				context->plan, linitial(op->args), context->rtable, false);
 
 		if (OidIsValid(table_oid))
 			table_expr = (Expr *)makeConst(
@@ -2111,6 +2170,9 @@ extract_tpquery_from_expr(Node *node, BM25OidCache *oids)
 		{
 			Node *right = lsecond(opexpr->args);
 
+			if (IsA(right, FuncExpr))
+				right = eval_const_expressions(NULL, right);
+
 			if (IsA(right, Const))
 			{
 				Const *constNode = (Const *)right;
@@ -2147,9 +2209,6 @@ find_tpquery_in_list(List *exprlist, BM25OidCache *oids)
 
 	return NULL;
 }
-
-/* Forward declaration */
-static Oid get_index_table_oid(Oid index_oid);
 
 /*
  * Check if scan_index is a descendant of specified_index via partitioned

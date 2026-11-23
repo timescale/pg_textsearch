@@ -537,6 +537,56 @@ LIMIT 1;
 ERROR:  index "leaf_unrelated_idx" is not on column "body"
 DETAIL:  The explicitly specified index is not built on the column being searched.
 HINT:  Use an index that is built on column "body" of table "leaf_parent", or omit the index name to use automatic index resolution.
-DROP TABLE leaf_unrelated, leaf_parent CASCADE;
+DROP TABLE leaf_unrelated;
+-- Deliberately exercise standalone scoring with sequential scans enabled.
+SET enable_seqscan = on;
+SELECT id,
+       ROUND((body <@>
+           to_bm25query('apple', 'leaf_deep_body_idx'))::numeric, 4) AS score
+FROM leaf_parent WHERE tenant = 2 AND id = 3;
+ id |  score  
+----+---------
+  3 | -0.6931
+(1 row)
+
+\set VERBOSITY sqlstate
+SELECT id, body <@> to_bm25query('apple', 'leaf_first_body_idx') AS score
+FROM leaf_parent;
+ERROR:  42809
+SELECT id, body <@> to_bm25query('apple', 'leaf_first_body_idx') AS score
+FROM leaf_parent WHERE tenant = 2;
+ERROR:  42809
+UPDATE leaf_parent SET other = other WHERE tenant = 2
+RETURNING id, body <@> to_bm25query('apple', 'leaf_first_body_idx') AS score;
+ERROR:  42809
+\set VERBOSITY default
+-- An unindexed sibling must not bypass validation in a sorted seqscan.
+DROP INDEX leaf_parent_idx;
+CREATE INDEX leaf_first_body_idx ON leaf_first USING bm25 (body)
+    WITH (text_config = 'english');
+NOTICE:  BM25 index build started for relation leaf_first_body_idx
+NOTICE:  Using text search configuration: english
+NOTICE:  Using index options: k1=1.20, b=0.75
+NOTICE:  BM25 index build completed: 2 documents, avg_length=2.00
+SET enable_indexscan = off;
+SELECT id,
+       ROUND((body <@>
+           to_bm25query('apple', 'leaf_first_body_idx'))::numeric, 4) AS score
+FROM leaf_parent WHERE tenant = 1 AND id = 1
+ORDER BY body <@> to_bm25query('apple', 'leaf_first_body_idx')
+LIMIT 1;
+ id |  score  
+----+---------
+  1 | -0.6931
+(1 row)
+
+\set VERBOSITY sqlstate
+SELECT id FROM leaf_parent
+ORDER BY body <@> to_bm25query('apple', 'leaf_first_body_idx')
+LIMIT 1;
+ERROR:  42809
+\set VERBOSITY default
+RESET enable_indexscan;
+DROP TABLE leaf_parent CASCADE;
 RESET enable_seqscan;
 DROP EXTENSION pg_textsearch CASCADE;
