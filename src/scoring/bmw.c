@@ -489,6 +489,7 @@ score_segment_single_term_bmw(
 	TpDictEntry				*dict_entry;
 	uint32					 block_count;
 	float4					*block_max_scores;
+	uint32					*block_last_doc_ids = NULL;
 	uint32					 i;
 	bool drive_candidates = filter != NULL && filter->segment_next != NULL;
 
@@ -515,6 +516,8 @@ score_segment_single_term_bmw(
 
 	/* Pre-compute block max scores */
 	block_max_scores = palloc(block_count * sizeof(float4));
+	if (drive_candidates)
+		block_last_doc_ids = palloc(block_count * sizeof(uint32));
 	for (i = 0; i < block_count; i++)
 	{
 		TpSkipEntry skip;
@@ -522,6 +525,8 @@ score_segment_single_term_bmw(
 				reader, dict_entry->skip_index_offset, i, &skip);
 		block_max_scores[i] =
 				tp_compute_block_max_score(&skip, idf, k1, b, avg_doc_len);
+		if (block_last_doc_ids != NULL)
+			block_last_doc_ids[i] = skip.last_doc_id;
 	}
 
 	/* Process blocks with BMW */
@@ -577,6 +582,39 @@ score_segment_single_term_bmw(
 					goto done;
 				if (candidate <= posting->doc_id)
 					break;
+				if (candidate <= iter.skip_entry.last_doc_id)
+				{
+					do
+					{
+						if (!tp_segment_posting_iterator_next(&iter, &posting))
+							goto done;
+					} while (posting->doc_id < candidate);
+					continue;
+				}
+				{
+					uint32 target_block = i + 1;
+					uint32 end			= block_count;
+
+					while (target_block < end)
+					{
+						uint32 mid = target_block + (end - target_block) / 2;
+						if (block_last_doc_ids[mid] < candidate)
+							target_block = mid + 1;
+						else
+							end = mid;
+					}
+					if (stats)
+						stats->blocks_skipped += target_block - i - 1;
+					if (target_block == block_count)
+						goto done;
+					/* Apply the BMW gate before loading the target block. */
+					if (block_max_scores[target_block] <
+						tp_topk_threshold(heap))
+					{
+						i = target_block - 1;
+						goto next_block;
+					}
+				}
 				if (!tp_segment_posting_iterator_seek(
 							&iter, candidate, &posting))
 					goto done;
@@ -587,7 +625,10 @@ score_segment_single_term_bmw(
 					iter.current_in_block++;
 				i = iter.current_block;
 				if (stats)
+				{
+					stats->blocks_scanned++;
 					stats->seeks_performed++;
+				}
 			}
 
 			/* Skip dead docs */
@@ -618,9 +659,12 @@ score_segment_single_term_bmw(
 			if (stats)
 				stats->segment_docs_scored++;
 		}
+	next_block:;
 	}
 
 done:
+	if (block_last_doc_ids != NULL)
+		pfree(block_last_doc_ids);
 	pfree(block_max_scores);
 	tp_segment_posting_iterator_free(&iter);
 }

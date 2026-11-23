@@ -379,14 +379,15 @@ SELECT * FROM documents ORDER BY content <@> 'search terms' LIMIT 10;
 ```
 
 Prefer this direct ordered query over materializing matches and then scoring
-and sorting them. A Boolean condition on the same indexed text expression can
-be evaluated inside the ranked scan; selective conditions can drive it from
-matching postings.
+and sorting them. With constant queries whose Boolean predicate guarantees
+a ranking term, filtering can run inside the ranked scan; selective
+conditions can drive it from matching postings.
 
 | Query shape | Expected work |
 |---|---|
 | Ranked search, small `LIMIT` | BMW can skip noncompetitive blocks |
 | Selective ranked `@@` filter | Can seek to Boolean candidates |
+| Unproven or generic ranked `@@` | Fallback retains zero-score matches |
 | Counts or exhaustive retrieval | Must visit all matching candidates |
 | Phrase, prefix, or weight restriction | May retokenize rows for rechecks |
 | Other filters on a BM25 scan | Post-filtering may require deeper scoring |
@@ -395,7 +396,7 @@ matching postings.
 A small `LIMIT` does not guarantee little work. Very common terms, broad
 filters, or too few qualifying rows can limit score-based pruning. Phrase
 counts can be expensive even when only a few rows ultimately match.
-Prefix conditions retain ordinary ranked traversal and heap rechecks.
+Prefix conditions on eligible scans retain ranked traversal and heap rechecks.
 Ranked queries with more than 64 exact Boolean term operands use a planner
 fallback or heap rechecks instead of internal predicate filtering.
 Check `EXPLAIN` for an ordered BM25 index scan rather than standalone scoring
