@@ -140,15 +140,25 @@ match the index configuration:
 SET default_text_search_config = 'english';
 ```
 
-If that setting changes after a Boolean prepared statement has switched to a
-generic plan, `DEALLOCATE` and prepare the statement again. A newly planned
-query can choose the correct sequential fallback, while the cached plan is
-rejected to avoid incorrect index results.
+If that setting changes while a cached plan uses a Boolean index scan,
+`DEALLOCATE` and prepare the statement again. A newly planned query can choose
+the correct sequential fallback, while a mismatched Boolean index scan is
+rejected to avoid incorrect results.
 
-Combining Boolean filtering with BM25 ranking is supported, but is not yet
-optimized as a single index scan. PostgreSQL currently evaluates the filter,
-calculates standalone scores for the matching rows, and then sorts them. This
-is most effective when the Boolean filter matches relatively few rows.
+Combine Boolean filtering and BM25 ranking in a single ordered index scan:
+
+```sql
+SELECT * FROM documents
+WHERE content @@ to_tsquery('english', 'postgres & search')
+ORDER BY content <@> 'postgres search'
+LIMIT 10;
+```
+
+The ordered fast path requires constant queries whose Boolean predicate
+guarantees that every match contains a ranking term. Other forms, including
+generic plans with unknown query terms, use PostgreSQL filtering and sorting
+so that zero-score matches are retained. Phrase, prefix, and weight
+restrictions may require heap rechecks.
 
 ### Verifying Index Usage
 
@@ -367,6 +377,30 @@ which can grow as more rows are requested.
 ```sql
 SELECT * FROM documents ORDER BY content <@> 'search terms' LIMIT 10;
 ```
+
+Prefer this direct ordered query over materializing matches and then scoring
+and sorting them. With constant queries whose Boolean predicate guarantees
+a ranking term, filtering can run inside the ranked scan; selective
+conditions can drive it from matching postings.
+
+| Query shape | Expected work |
+|---|---|
+| Ranked search, small `LIMIT` | BMW can skip noncompetitive blocks |
+| Selective ranked `@@` filter | Can seek to Boolean candidates |
+| Unproven or generic ranked `@@` | Fallback retains zero-score matches |
+| Counts or exhaustive retrieval | Must visit all matching candidates |
+| Phrase, prefix, or weight restriction | May retokenize rows for rechecks |
+| Other filters on a BM25 scan | Post-filtering may require deeper scoring |
+| Standalone scoring | Scores rows individually; may need a large sort |
+
+A small `LIMIT` does not guarantee little work. Very common terms, broad
+filters, or too few qualifying rows can limit score-based pruning. Phrase
+counts can be expensive even when only a few rows ultimately match.
+Prefix conditions on eligible scans retain ranked traversal and heap rechecks.
+Ranked queries with more than 64 exact Boolean term operands use a planner
+fallback or heap rechecks instead of internal predicate filtering.
+Check `EXPLAIN` for an ordered BM25 index scan rather than standalone scoring
+followed by a sort; see [verifying index usage](#verifying-index-usage).
 
 Segment compression is enabled by default. Disable it only when decompression
 is a measured bottleneck:

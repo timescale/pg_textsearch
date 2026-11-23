@@ -6,6 +6,7 @@
 
 #include <postgres.h>
 
+#include <access/genam.h>
 #include <access/relscan.h>
 #include <tsearch/ts_type.h>
 
@@ -29,3 +30,6 @@ void tp_boolean_rescan(
 bool tp_boolean_execute(IndexScanDesc scan, TpLocalIndexState *index_state);
 
 bool tp_boolean_next(IndexScanDesc scan);
+
+/* NULL requests heap rechecking for queries beyond the filter budget. */
+struct TpBMWFilter *tp_boolean_filter_create(TSQuery query, bool *recheck);

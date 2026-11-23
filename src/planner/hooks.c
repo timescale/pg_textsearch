@@ -18,6 +18,7 @@
 #include <access/xact.h>
 #include <catalog/indexing.h>
 #include <catalog/namespace.h>
+#include <catalog/partition.h>
 #include <catalog/pg_am.h>
 #include <catalog/pg_extension.h>
 #include <catalog/pg_index.h>
@@ -46,8 +47,10 @@
 #include <utils/builtins.h>
 #include <utils/catcache.h>
 #include <utils/fmgroids.h>
+#include <utils/hsearch.h>
 #include <utils/inval.h>
 #include <utils/lsyscache.h>
+#include <utils/memutils.h>
 #include <utils/rel.h>
 #include <utils/syscache.h>
 
@@ -109,19 +112,42 @@ static bool			invalidation_registered = false;
 typedef struct ExplicitIndexRequirement
 {
 	Oid		   relid;			   /* Table OID */
+	Index	   rti;				   /* Range table entry at this query level */
 	AttrNumber attnum;			   /* Column attr (0 for expr) */
 	Node	  *expr;			   /* Expression (NULL for cols) */
 	Oid		   required_index_oid; /* The index that must be used */
 } ExplicitIndexRequirement;
 
+typedef struct ExplicitIndexMatch
+{
+	RelOptInfo	 *rel;
+	Oid			  required_index_oid;
+	IndexOptInfo *indexinfo;
+} ExplicitIndexMatch;
+
 /*
- * Planning context - stores explicit index requirements during planning.
- * This is set before standard_planner and cleared after.
+ * One cache entry per query planned with its own PlannerInfo, including
+ * subqueries not pulled up into their parent. Sibling subqueries have
+ * separate entries even at the same nesting depth. Each entry holds that
+ * query's list of ExplicitIndexRequirement objects.
+ */
+typedef struct ExplicitIndexRequirements
+{
+	PlannerInfo *root;		   /* Query planner; hash key must be first */
+	List		*requirements; /* ExplicitIndexRequirement list */
+} ExplicitIndexRequirements;
+
+/*
+ * Cache for one planner invocation, shared by the queries it plans.
+ * Recursive planner invocations save and restore the outer context.
  */
 typedef struct PlanningContext
 {
-	List *explicit_indexes; /* List of ExplicitIndexRequirement */
-	Oid	  bm25_am_oid;		/* Cached BM25 access method OID */
+	BM25OidCache			 *oid_cache;	 /* Borrowed planner OIDs */
+	MemoryContext			  cache_context; /* Owns this invocation's cache */
+	ExplicitIndexRequirements first; /* First query; NULL root if unused */
+	HTAB *other_roots;				 /* Other queries' requirement lists */
+	List *index_matches;			 /* List of ExplicitIndexMatch */
 } PlanningContext;
 
 static PlanningContext *current_planning_context = NULL;
@@ -332,13 +358,14 @@ tp_partition_scoring_available(void)
 
 /*
  * Check if an index is on a specific column of a table.
- * Returns true if the index is on the given table and column.
+ * The index may belong to a descendant partition of the queried table.
  */
 static bool
 index_is_on_column(Oid index_oid, Oid relid, AttrNumber attnum)
 {
 	HeapTuple	  idx_tuple;
 	Form_pg_index idx_form;
+	bool		  matches_relation;
 	bool		  result = false;
 
 	idx_tuple = SearchSysCache1(INDEXRELID, ObjectIdGetDatum(index_oid));
@@ -347,8 +374,26 @@ index_is_on_column(Oid index_oid, Oid relid, AttrNumber attnum)
 
 	idx_form = (Form_pg_index)GETSTRUCT(idx_tuple);
 
+	matches_relation = idx_form->indrelid == relid;
+	if (!matches_relation && get_rel_relispartition(idx_form->indrelid))
+	{
+		List *ancestors = get_partition_ancestors(idx_form->indrelid);
+
+		matches_relation = list_member_oid(ancestors, relid);
+		list_free(ancestors);
+
+		if (matches_relation)
+		{
+			char *column_name = get_attname(relid, attnum, false);
+
+			/* Attached partitions can have different attribute numbers. */
+			attnum = get_attnum(idx_form->indrelid, column_name);
+			pfree(column_name);
+		}
+	}
+
 	/* Check if index is on the correct table */
-	if (idx_form->indrelid == relid)
+	if (matches_relation && attnum != InvalidAttrNumber)
 	{
 		/* Check if index is on the correct column */
 		int nkeys = idx_form->indnatts;
@@ -1314,7 +1359,7 @@ score_function_is_unsafe(Oid funcid, void *context)
 	if (funcid == oids->score_stub_func_oid ||
 		funcid == oids->partition_score_func_oid ||
 		funcid == oids->partition_array_score_func_oid ||
-		funcid == F_CURRENT_SETTING_TEXT ||
+		funcid == F_TS_MATCH_TQ || funcid == F_CURRENT_SETTING_TEXT ||
 		funcid == F_CURRENT_SETTING_TEXT_BOOL)
 		return false;
 
@@ -1350,7 +1395,8 @@ replace_scores_in_indexscan(IndexScan *scan, BM25OidCache *oids)
 
 	orderby_expr = linitial(scan->indexorderbyorig);
 	if (!is_bm25_score_opexpr((Node *)orderby_expr, oids) ||
-		score_projection_is_unsafe((Node *)scan->scan.plan.qual, oids))
+		score_projection_is_unsafe((Node *)scan->scan.plan.qual, oids) ||
+		score_projection_is_unsafe((Node *)scan->indexqualorig, oids))
 		return;
 
 	foreach (lc, scan->scan.plan.targetlist)
@@ -1463,7 +1509,8 @@ typedef struct PartitionScoreContext
  * core carries through the plan instead.
  */
 static Oid
-score_expression_table(Plan *plan, Node *expr, List *rtable)
+score_expression_table(
+		Plan *plan, Node *expr, List *rtable, bool include_partitioned)
 {
 	List *vars = pull_var_clause(
 			expr,
@@ -1494,7 +1541,10 @@ score_expression_table(Plan *plan, Node *expr, List *rtable)
 
 				if (tle != NULL)
 					table_oid = score_expression_table(
-							child, (Node *)tle->expr, rtable);
+							child,
+							(Node *)tle->expr,
+							rtable,
+							include_partitioned);
 			}
 		}
 		else if (
@@ -1504,7 +1554,8 @@ score_expression_table(Plan *plan, Node *expr, List *rtable)
 			RangeTblEntry *rte = rt_fetch(var->varno, rtable);
 
 			if (rte->rtekind == RTE_RELATION &&
-				rte->relkind != RELKIND_PARTITIONED_TABLE)
+				(include_partitioned ||
+				 rte->relkind != RELKIND_PARTITIONED_TABLE))
 				table_oid = rte->relid;
 			else if (IsA(plan, SubqueryScan))
 			{
@@ -1514,8 +1565,21 @@ score_expression_table(Plan *plan, Node *expr, List *rtable)
 
 				if (tle != NULL)
 					table_oid = score_expression_table(
-							child, (Node *)tle->expr, rtable);
+							child,
+							(Node *)tle->expr,
+							rtable,
+							include_partitioned);
 			}
+		}
+
+		/* An Append or aggregate can obscure the physical source. */
+		if (!OidIsValid(table_oid) && include_partitioned &&
+			var->varnosyn > 0 && var->varnosyn <= (Index)list_length(rtable))
+		{
+			RangeTblEntry *rte = rt_fetch(var->varnosyn, rtable);
+
+			if (rte->rtekind == RTE_RELATION)
+				table_oid = rte->relid;
 		}
 
 		if (!OidIsValid(table_oid) ||
@@ -1529,6 +1593,9 @@ score_expression_table(Plan *plan, Node *expr, List *rtable)
 	list_free(vars);
 	return result;
 }
+
+static Oid		get_index_table_oid(Oid index_oid);
+static TpQuery *extract_tpquery_from_expr(Node *node, BM25OidCache *oids);
 
 static bool
 score_needs_partition_context(OpExpr *op, BM25OidCache *oids)
@@ -1544,13 +1611,20 @@ score_needs_partition_context(OpExpr *op, BM25OidCache *oids)
 		right = eval_const_expressions(NULL, right);
 	if (IsA(right, Const))
 	{
-		Const *value = (Const *)right;
+		Const	*value = (Const *)right;
+		TpQuery *query;
+		Oid		 index_oid;
+		char	 relkind;
 
 		if (value->constisnull)
 			return false;
-		return get_rel_relkind(get_tpquery_index_oid(
-					   (TpQuery *)DatumGetPointer(value->constvalue))) ==
-			   RELKIND_PARTITIONED_INDEX;
+		query	  = (TpQuery *)DatumGetPointer(value->constvalue);
+		index_oid = get_tpquery_index_oid(query);
+		relkind	  = get_rel_relkind(index_oid);
+		return relkind == RELKIND_PARTITIONED_INDEX ||
+			   (relkind == RELKIND_INDEX && tpquery_is_explicit_index(query) &&
+				IsA(linitial(op->args), Var) &&
+				get_rel_relispartition(get_index_table_oid(index_oid)));
 	}
 	/* A parameter or subquery may name a parent index at run time. */
 	return true;
@@ -1917,6 +1991,7 @@ bind_partition_score_mutator(Node *node, void *arg)
 	Expr				  *table_expr = NULL;
 	Oid					   funcid;
 	bool				   ordering;
+	TpQuery				  *query;
 
 	if (node == NULL)
 		return NULL;
@@ -1959,6 +2034,36 @@ bind_partition_score_mutator(Node *node, void *arg)
 		(context->query->hasAggs || context->query->groupClause != NIL))
 		return node;
 
+	query = extract_tpquery_from_expr(node, context->oids);
+	if (query != NULL && tpquery_is_explicit_index(query) &&
+		IsA(linitial(op->args), Var) &&
+		get_rel_relkind(query->index_oid) == RELKIND_INDEX)
+	{
+		Oid table_oid;
+
+		/* Validate a named leaf only after partition pruning has run. */
+		if (context->query != NULL)
+			return node;
+
+		table_oid = score_expression_table(
+				context->plan, linitial(op->args), context->rtable, true);
+
+		if (OidIsValid(table_oid) &&
+			table_oid != get_index_table_oid(query->index_oid))
+			ereport(ERROR,
+					(errcode(ERRCODE_WRONG_OBJECT_TYPE),
+					 errmsg("index \"%s\" cannot score rows from table "
+							"\"%s\"",
+							get_rel_name(query->index_oid),
+							get_rel_name(table_oid)),
+					 errdetail(
+							 "An explicitly named leaf index can only "
+							 "score rows from its own partition."),
+					 errhint("Restrict the query to that partition, or "
+							 "name the parent index.")));
+		return node;
+	}
+
 	funcid = op->opno == context->oids->textarray_tpquery_operator_oid
 				   ? context->oids->partition_array_score_func_oid
 				   : context->oids->partition_score_func_oid;
@@ -1972,7 +2077,7 @@ bind_partition_score_mutator(Node *node, void *arg)
 	else
 	{
 		Oid table_oid = score_expression_table(
-				context->plan, linitial(op->args), context->rtable);
+				context->plan, linitial(op->args), context->rtable, false);
 
 		if (OidIsValid(table_oid))
 			table_expr = (Expr *)makeConst(
@@ -2082,6 +2187,9 @@ extract_tpquery_from_expr(Node *node, BM25OidCache *oids)
 		{
 			Node *right = lsecond(opexpr->args);
 
+			if (IsA(right, FuncExpr))
+				right = eval_const_expressions(NULL, right);
+
 			if (IsA(right, Const))
 			{
 				Const *constNode = (Const *)right;
@@ -2118,9 +2226,6 @@ find_tpquery_in_list(List *exprlist, BM25OidCache *oids)
 
 	return NULL;
 }
-
-/* Forward declaration */
-static Oid get_index_table_oid(Oid index_oid);
 
 /*
  * Check if scan_index is a descendant of specified_index via partitioned
@@ -2257,11 +2362,133 @@ is_bm25_index(Oid index_oid, Oid bm25_am_oid)
 	return result;
 }
 
+static IndexOptInfo *find_index_opt_info(RelOptInfo *rel, Oid index_oid);
+
+/*
+ * Cache index identity, not usability: ordering and predicates are per path.
+ */
+static IndexOptInfo *
+find_required_index_opt_info(RelOptInfo *rel, Oid required_index)
+{
+	IndexOptInfo *indexinfo;
+	ListCell	 *lc;
+
+	if (current_planning_context != NULL)
+	{
+		foreach (lc, current_planning_context->index_matches)
+		{
+			ExplicitIndexMatch *match = (ExplicitIndexMatch *)lfirst(lc);
+
+			if (match->rel == rel &&
+				match->required_index_oid == required_index)
+				return match->indexinfo;
+		}
+	}
+
+	indexinfo = find_index_opt_info(rel, required_index);
+	if (indexinfo == NULL &&
+		get_rel_relkind(required_index) == RELKIND_PARTITIONED_INDEX)
+	{
+		foreach (lc, rel->indexlist)
+		{
+			IndexOptInfo *candidate = lfirst_node(IndexOptInfo, lc);
+
+			if (is_child_partition_index(required_index, candidate->indexoid))
+			{
+				indexinfo = candidate;
+				break;
+			}
+		}
+	}
+
+	if (current_planning_context != NULL)
+	{
+		MemoryContext old_context = MemoryContextSwitchTo(
+				current_planning_context->cache_context);
+		ExplicitIndexMatch *match = palloc(sizeof(ExplicitIndexMatch));
+
+		match->rel				  = rel;
+		match->required_index_oid = required_index;
+		match->indexinfo		  = indexinfo;
+		current_planning_context->index_matches =
+				lappend(current_planning_context->index_matches, match);
+		MemoryContextSwitchTo(old_context);
+	}
+
+	return indexinfo;
+}
+
+static bool
+index_matches_path_ordering(
+		IndexPath *path, IndexOptInfo *candidate, Oid bm25_am_oid)
+{
+	OpExpr *orderby;
+
+	if (candidate->relam != bm25_am_oid || !candidate->amcanorderbyop ||
+		candidate->nkeycolumns != path->indexinfo->nkeycolumns ||
+		candidate->indexkeys[0] != path->indexinfo->indexkeys[0] ||
+		!equal(candidate->indexprs, path->indexinfo->indexprs))
+		return false;
+
+	orderby = linitial_node(OpExpr, path->indexorderbys);
+	if (OidIsValid(candidate->indexcollations[0]) &&
+		candidate->indexcollations[0] != orderby->inputcollid)
+		return false;
+
+	if (candidate->opfamily[0] != path->indexinfo->opfamily[0] &&
+		get_op_opfamily_sortfamily(orderby->opno, candidate->opfamily[0]) !=
+				linitial_node(PathKey, path->path.pathkeys)->pk_opfamily)
+		return false;
+
+	return true;
+}
+
+/*
+ * Constrain paths using their folded ordering query.
+ * Reject a mismatched path only if the named index is usable on this relation;
+ * otherwise leave the path for the existing explicit-index validation.
+ */
+bool
+tp_indexpath_requires_other_index(IndexPath *path)
+{
+	BM25OidCache  oids;
+	TpQuery		 *query;
+	Oid			  required_index;
+	IndexOptInfo *candidate;
+
+	if (!get_bm25_oids(&oids))
+		return false;
+
+	query = find_tpquery_in_list(path->indexorderbys, &oids);
+	if (query == NULL || !tpquery_is_explicit_index(query))
+		return false;
+
+	required_index = get_tpquery_index_oid(query);
+	if (!OidIsValid(required_index) ||
+		required_index == path->indexinfo->indexoid)
+		return false;
+
+	/* Regular table inheritance has no corresponding index hierarchy. */
+	if (get_rel_relkind(required_index) == RELKIND_INDEX &&
+		is_child_partition_index(required_index, path->indexinfo->indexoid))
+		return false;
+
+	candidate =
+			find_required_index_opt_info(path->indexinfo->rel, required_index);
+	if (candidate == NULL || candidate == path->indexinfo ||
+		(candidate->indpred != NIL && !candidate->predOK) ||
+		!index_matches_path_ordering(path, candidate, oids.bm25_am_oid))
+		return false;
+
+	return true;
+}
+
 /*
  * Walker context for collecting explicit index requirements from a query.
  */
 typedef struct CollectExplicitIndexContext
 {
+	PlannerInfo	 *root;
 	BM25OidCache *oid_cache;
 	List		 *requirements; /* List of ExplicitIndexRequirement */
 } CollectExplicitIndexContext;
@@ -2353,9 +2580,20 @@ collect_explicit_indexes_walker(Node *node, void *context_arg)
 							if (OidIsValid(table_oid))
 							{
 								ExplicitIndexRequirement *req;
+								Bitmapset				 *relids;
+								int						  rti;
+
+								relids = pull_varnos(context->root, left);
+								if (!bms_get_singleton_member(relids, &rti))
+								{
+									bms_free(relids);
+									return false;
+								}
+								bms_free(relids);
 
 								req = palloc(sizeof(ExplicitIndexRequirement));
 								req->relid				= table_oid;
+								req->rti				= rti;
 								req->required_index_oid = index_oid;
 
 								if (IsA(left, Var))
@@ -2368,7 +2606,7 @@ collect_explicit_indexes_walker(Node *node, void *context_arg)
 								else
 								{
 									req->attnum = 0;
-									req->expr	= copyObject(left);
+									req->expr	= left;
 								}
 								context->requirements =
 										lappend(context->requirements, req);
@@ -2394,39 +2632,104 @@ collect_explicit_indexes_walker(Node *node, void *context_arg)
  * expressions with explicit index names, which is rare.
  */
 static List *
-collect_explicit_index_requirements(Query *parse, BM25OidCache *oid_cache)
+collect_explicit_index_requirements(PlannerInfo *root, BM25OidCache *oid_cache)
 {
 	CollectExplicitIndexContext context;
 
+	context.root		 = root;
 	context.oid_cache	 = oid_cache;
 	context.requirements = NIL;
 
 	/* Collect requirements at this query level only. */
-	query_tree_walker(parse, collect_explicit_indexes_walker, &context, 0);
+	query_tree_walker(
+			root->parse, collect_explicit_indexes_walker, &context, 0);
 
 	return context.requirements;
+}
+
+/* Pullup and expression preprocessing are complete before base paths are
+ * built. Child queries have separate roots, so cache even an empty result
+ * once per actual PlannerInfo, rather than walking the query for each alias.
+ * The private context belongs to this planner invocation, including errors. */
+static List *
+get_explicit_index_requirements(PlannerInfo *root, PlanningContext *context)
+{
+	ExplicitIndexRequirements *entry;
+	MemoryContext			   old_context;
+	List					  *requirements;
+
+	if (context->first.root == root)
+		return context->first.requirements;
+
+	if (context->other_roots != NULL)
+	{
+		entry = hash_search(context->other_roots, &root, HASH_FIND, NULL);
+		if (entry != NULL)
+			return entry->requirements;
+	}
+
+	old_context = MemoryContextSwitchTo(context->cache_context);
+	PG_TRY();
+	{
+		requirements =
+				collect_explicit_index_requirements(root, context->oid_cache);
+
+		/* Collect before publishing: collection can invoke the planner. */
+		if (context->first.root == NULL)
+		{
+			context->first.requirements = requirements;
+			context->first.root			= root;
+		}
+		else
+		{
+			if (context->other_roots == NULL)
+			{
+				HASHCTL ctl = {0};
+
+				ctl.keysize			 = sizeof(root);
+				ctl.entrysize		 = sizeof(ExplicitIndexRequirements);
+				ctl.hcxt			 = context->cache_context;
+				context->other_roots = hash_create(
+						"BM25 query requirements",
+						8,
+						&ctl,
+						HASH_ELEM | HASH_BLOBS | HASH_CONTEXT);
+			}
+			entry = hash_search(context->other_roots, &root, HASH_ENTER, NULL);
+			entry->requirements = requirements;
+		}
+	}
+	PG_FINALLY();
+	{
+		MemoryContextSwitchTo(old_context);
+	}
+	PG_END_TRY();
+
+	return requirements;
 }
 
 /*
  * Find an explicit index requirement for a given relation and
  * column or expression.  For plain columns (attnum > 0), matches
- * by relid and attnum.  For expression indexes (attnum == 0),
- * matches by relid and expression tree equality.
- * Returns NULL if no explicit requirement exists.
+ * by range table entry, relid and attnum. For expression indexes (attnum ==
+ * 0), matches by relid and expression tree equality. Returns NULL if no
+ * explicit requirement exists.
  */
 static ExplicitIndexRequirement *
-find_explicit_requirement(Oid relid, AttrNumber attnum, Node *expr)
+find_explicit_requirement(
+		List	  *requirements,
+		Index	   rti,
+		Oid		   relid,
+		AttrNumber attnum,
+		Node	  *expr)
 {
 	ListCell *lc;
 
-	if (current_planning_context == NULL)
-		return NULL;
-
-	foreach (lc, current_planning_context->explicit_indexes)
+	foreach (lc, requirements)
 	{
 		ExplicitIndexRequirement *req = (ExplicitIndexRequirement *)lfirst(lc);
 
-		if (req->relid != relid)
+		if (req->relid != relid || req->rti != rti)
 			continue;
 
 		if (attnum != 0 && req->attnum == attnum)
@@ -2484,7 +2787,12 @@ find_index_opt_info(RelOptInfo *rel, Oid index_oid)
  */
 static void
 fix_bm25_indexpaths(
-		List *pathlist, RelOptInfo *rel, Oid relid, Oid bm25_am_oid)
+		List	   *pathlist,
+		RelOptInfo *rel,
+		Index		rti,
+		Oid			relid,
+		Oid			bm25_am_oid,
+		List	   *requirements)
 {
 	ListCell *lc;
 
@@ -2515,7 +2823,8 @@ fix_bm25_indexpaths(
 			if (attnum == 0 && indexpath->indexinfo->indexprs)
 				idx_expr = (Node *)linitial(indexpath->indexinfo->indexprs);
 
-			req = find_explicit_requirement(relid, attnum, idx_expr);
+			req = find_explicit_requirement(
+					requirements, rti, relid, attnum, idx_expr);
 		}
 		if (req == NULL)
 			continue;
@@ -2527,7 +2836,13 @@ fix_bm25_indexpaths(
 			continue;
 
 		correct_indexinfo = find_index_opt_info(rel, req->required_index_oid);
-		if (correct_indexinfo == NULL)
+		if (correct_indexinfo == NULL ||
+			(correct_indexinfo->indpred != NIL && !correct_indexinfo->predOK))
+			continue;
+
+		if (indexpath->indexorderbys != NIL &&
+			!index_matches_path_ordering(
+					indexpath, correct_indexinfo, bm25_am_oid))
 			continue;
 
 		indexpath->indexinfo = correct_indexinfo;
@@ -2545,14 +2860,18 @@ fix_bm25_indexpaths(
  * parent index.
  *
  * Performance note: This hook returns immediately for non-BM25 queries since
- * current_planning_context will be NULL (we only set it when there are
- * explicit index requirements). The overhead for non-BM25 queries is just
- * a single pointer comparison.
+ * current_planning_context will be NULL when the query has no BM25 operators.
+ * The overhead for non-BM25 queries is just a single pointer comparison.
  */
 static void
 tp_set_rel_pathlist_hook(
 		PlannerInfo *root, RelOptInfo *rel, Index rti, RangeTblEntry *rte)
 {
+	List		 *requirements;
+	BM25OidCache *oids;
+	ListCell	 *cell;
+	bool		  has_bm25_index = false;
+
 	if (prev_set_rel_pathlist_hook)
 		prev_set_rel_pathlist_hook(root, rel, rti, rte);
 
@@ -2564,16 +2883,38 @@ tp_set_rel_pathlist_hook(
 	if (current_planning_context == NULL)
 		return;
 
+	/* Subqueries are planned by subquery_planner, without re-entering our
+	 * planner hook. Collect from the actual root after pullup has adjusted
+	 * Vars, and keep aliases distinct by their range table entry. */
+	oids = current_planning_context->oid_cache;
+	foreach (cell, rel->indexlist)
+	{
+		if (lfirst_node(IndexOptInfo, cell)->relam == oids->bm25_am_oid)
+		{
+			has_bm25_index = true;
+			break;
+		}
+	}
+	if (!has_bm25_index)
+		return;
+	requirements =
+			get_explicit_index_requirements(root, current_planning_context);
+	if (requirements == NIL)
+		return;
 	fix_bm25_indexpaths(
 			rel->pathlist,
 			rel,
+			rti,
 			rte->relid,
-			current_planning_context->bm25_am_oid);
+			oids->bm25_am_oid,
+			requirements);
 	fix_bm25_indexpaths(
 			rel->partial_pathlist,
 			rel,
+			rti,
 			rte->relid,
-			current_planning_context->bm25_am_oid);
+			oids->bm25_am_oid,
+			requirements);
 }
 
 /*
@@ -2875,10 +3216,11 @@ tp_planner_hook(
 {
 	PlannedStmt		*result;
 	BM25OidCache	 oid_cache;
-	PlanningContext	 planning_context;
+	PlanningContext *planning_context = NULL;
+	MemoryContext	 planning_cache	  = NULL;
+	MemoryContext	 caller_context	  = CurrentMemoryContext;
 	PlanningContext *saved_context;
 	BM25OidCache	*saved_carry_oids;
-	List			*explicit_indexes;
 	bool			 query_has_bm25_operators;
 	bool			 query_has_partition_scores;
 
@@ -2899,24 +3241,14 @@ tp_planner_hook(
 					boundParams TP_PLANNER_HOOK_PASS_EXTRA);
 	}
 
-	/*
-	 * Collect explicit index requirements from the query. This walks the
-	 * query tree looking for to_bm25query() calls with explicit index names.
-	 *
-	 * Performance optimization: Only set up the planning context if we
-	 * actually find explicit requirements. For non-BM25 queries or queries
-	 * without explicit index names, this avoids any overhead in the
-	 * set_rel_pathlist_hook.
-	 */
+	/* Each recursive planner call owns its context, including calls that
+	 * contain no BM25 operators. Query-level requirements are collected in
+	 * the path hook from the PlannerInfo being processed. */
 	query_has_bm25_operators =
 			has_bm25_operator_walker((Node *)parse, &oid_cache);
 	query_has_partition_scores =
 			query_has_bm25_operators &&
 			has_partition_score_walker((Node *)parse, &oid_cache);
-	explicit_indexes =
-			query_has_bm25_operators
-					? collect_explicit_index_requirements(parse, &oid_cache)
-					: NIL;
 	if (query_has_partition_scores)
 	{
 		PartitionScoreContext context = {.oids = &oid_cache};
@@ -2925,19 +3257,19 @@ tp_planner_hook(
 		parse = (Query *)bind_partition_score_mutator((Node *)parse, &context);
 	}
 
-	if (explicit_indexes != NIL)
+	if (query_has_bm25_operators)
 	{
-		planning_context.explicit_indexes = explicit_indexes;
-		planning_context.bm25_am_oid	  = oid_cache.bm25_am_oid;
-
-		/* Save and set current planning context */
-		saved_context			 = current_planning_context;
-		current_planning_context = &planning_context;
+		planning_cache = AllocSetContextCreate(
+				CurrentMemoryContext,
+				"BM25 planner requirements",
+				ALLOCSET_SMALL_SIZES);
+		planning_context = MemoryContextAllocZero(
+				planning_cache, sizeof(*planning_context));
+		planning_context->oid_cache		= &oid_cache;
+		planning_context->cache_context = planning_cache;
 	}
-	else
-	{
-		saved_context = NULL;
-	}
+	saved_context			 = current_planning_context;
+	current_planning_context = planning_context;
 
 	/* A nested planner call restores its caller's carry state. */
 	saved_carry_oids	 = partition_carry_oids;
@@ -2961,13 +3293,12 @@ tp_planner_hook(
 	}
 	PG_FINALLY();
 	{
-		partition_carry_oids = saved_carry_oids;
-
-		/* Restore previous context and clean up if we set one up */
-		if (explicit_indexes != NIL)
+		partition_carry_oids	 = saved_carry_oids;
+		current_planning_context = saved_context;
+		if (planning_cache != NULL)
 		{
-			current_planning_context = saved_context;
-			list_free_deep(explicit_indexes);
+			MemoryContextSwitchTo(caller_context);
+			MemoryContextDelete(planning_cache);
 		}
 	}
 	PG_END_TRY();
