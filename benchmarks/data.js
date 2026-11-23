@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795416771427,
+  "lastUpdate": 1795416775733,
   "repoUrl": "https://github.com/timescale/pg_textsearch",
   "entries": {
     "cranfield Benchmarks": [
@@ -303277,6 +303277,83 @@ window.BENCHMARK_DATA = {
           {
             "name": "paradedb_msmarco (8.8M docs) - Index Size",
             "value": 1504.14,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Kerem Urhan",
+            "username": "walsykerem",
+            "email": "walsykeremurhan@gmail.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "a07c9ba6c8e001a8abffdb21b4bdea5b884b3b11",
+          "message": "Move operand cap check before Boolean term dedup (#620)\n\nMove the 64-operand cap check before Boolean term dedup.\n\n`tp_boolean_execute` called `tp_boolean_extract_terms` first. A\nparameterized `@@` query with more than 64 exact operands ran an O(N^2)\ndedup, about 5e9 memcmps at N=100000, before returning the limit error.\nThe check now uses the existing `tp_boolean_query_exact_operand_count`\nhelper. Error code, message and accepted queries are unchanged.\n\nVerified: 3 rounds fail on original and pass on fix. One source file\nchanged, +9/-6. Behavior and exported symbols match the original. Docker\nPostgreSQL 17: SQL output identical, installcheck 83/83 on both builds,\n23/23 upgrade edges rc=0, final version 1.6.0-dev.\n\nPre-existing issue, not from this change: a continuous 0.0.1 to\n1.6.0-dev upgrade stops at 0.6.1 to 1.0.0 with `ERROR: function\nbm25_summarize_index(text) does not exist`. Original and fixed behave\nthe same. Individual edges all pass.\n\nCo-authored-by: walsykerem <walsykerem@users.noreply.github.com>\nCo-authored-by: Todd J. Green <tjgreen@gmail.com>",
+          "timestamp": "2026-11-23T04:56:08Z",
+          "url": "https://github.com/timescale/pg_textsearch/commit/a07c9ba6c8e001a8abffdb21b4bdea5b884b3b11"
+        },
+        "date": 1795416775025,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "paradedb_msmarco (8.8M docs) - Index Build Time",
+            "value": 142476.245,
+            "unit": "ms"
+          },
+          {
+            "name": "paradedb_msmarco (8.8M docs) - 1 Token Query (p50)",
+            "value": 6.93,
+            "unit": "ms"
+          },
+          {
+            "name": "paradedb_msmarco (8.8M docs) - 2 Token Query (p50)",
+            "value": 2.33,
+            "unit": "ms"
+          },
+          {
+            "name": "paradedb_msmarco (8.8M docs) - 3 Token Query (p50)",
+            "value": 7.45,
+            "unit": "ms"
+          },
+          {
+            "name": "paradedb_msmarco (8.8M docs) - 4 Token Query (p50)",
+            "value": 7.62,
+            "unit": "ms"
+          },
+          {
+            "name": "paradedb_msmarco (8.8M docs) - 5 Token Query (p50)",
+            "value": 8.87,
+            "unit": "ms"
+          },
+          {
+            "name": "paradedb_msmarco (8.8M docs) - 6 Token Query (p50)",
+            "value": 11.28,
+            "unit": "ms"
+          },
+          {
+            "name": "paradedb_msmarco (8.8M docs) - 7 Token Query (p50)",
+            "value": 12.57,
+            "unit": "ms"
+          },
+          {
+            "name": "paradedb_msmarco (8.8M docs) - 8+ Token Query (p50)",
+            "value": 15.54,
+            "unit": "ms"
+          },
+          {
+            "name": "paradedb_msmarco (8.8M docs) - Throughput (avg ms/query)",
+            "value": 10.04,
+            "unit": "ms"
+          },
+          {
+            "name": "paradedb_msmarco (8.8M docs) - Index Size",
+            "value": 1505.06,
             "unit": "MB"
           }
         ]
