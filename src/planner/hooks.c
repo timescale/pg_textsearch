@@ -54,6 +54,7 @@
 #include <utils/rel.h>
 #include <utils/syscache.h>
 
+#include "access/boolean.h"
 #include "compat.h"
 #include "index/limit.h"
 #include "planner/hooks.h"
@@ -3117,6 +3118,46 @@ tp_limit_k(Limit *limit, int64 *k)
 	return true;
 }
 
+static bool
+tp_ranked_indexquals_are_exact(IndexScan *scan)
+{
+	OpExpr	  *clause;
+	Node	  *argument;
+	Const	  *constant;
+	TSQuery	   query;
+	QueryItem *items;
+
+	if (scan->indexqual == NIL)
+		return true;
+	/* Residual quals need their own selectivity, not the combined estimate. */
+	if (scan->scan.plan.qual != NIL || list_length(scan->indexqual) != 1 ||
+		!IsA(linitial(scan->indexqual), OpExpr))
+		return false;
+	clause = linitial_node(OpExpr, scan->indexqual);
+	if (list_length(clause->args) != 2)
+		return false;
+	argument = lsecond(clause->args);
+	if (!IsA(argument, Const))
+		return false;
+	constant = (Const *)argument;
+	if (constant->constisnull || constant->consttype != TSQUERYOID)
+		return false;
+	query = DatumGetTSQuery(constant->constvalue);
+	if (tp_boolean_query_exact_operand_count(query) >
+		TP_BOOLEAN_MAX_EXACT_OPERANDS)
+		return false;
+	items = GETQUERY(query);
+	for (int i = 0; i < query->size; i++)
+	{
+		if ((items[i].type == QI_OPR &&
+			 items[i].qoperator.oper == OP_PHRASE) ||
+			(items[i].type == QI_VAL &&
+			 (items[i].qoperand.prefix || items[i].qoperand.weight != 0)))
+			return false;
+	}
+	return true;
+}
+
 static void
 tp_attach_seed_hint(
 		IndexScan *scan, Limit *limit, List *rtable, BM25OidCache *oids)
@@ -3127,10 +3168,12 @@ tp_attach_seed_hint(
 	Relation	   heap;
 	double		   selectivity = 0.0;
 
-	if (list_length(scan->indexorderby) != 1 || scan->indexqual != NIL ||
-		!tp_limit_k(limit, &k) || scan->scan.scanrelid <= 0)
+	if (list_length(scan->indexorderby) != 1 || !tp_limit_k(limit, &k) ||
+		scan->scan.scanrelid <= 0)
 		return;
 	if (get_rel_relam(scan->indexid) != oids->bm25_am_oid)
+		return;
+	if (!tp_ranked_indexquals_are_exact(scan))
 		return;
 	rte = rt_fetch(scan->scan.scanrelid, rtable);
 	if (rte == NULL || !OidIsValid(rte->relid))

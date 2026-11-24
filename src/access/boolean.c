@@ -965,12 +965,32 @@ tp_boolean_ranked_filter_reset(void *arg)
 	}
 }
 
+typedef struct TpBooleanTermRequirement
+{
+	TpBooleanEvalState *query;
+	TpBooleanTerm	   *term;
+} TpBooleanTermRequirement;
+
+static TSTernaryValue
+tp_boolean_without_term(void *arg, QueryOperand *operand, ExecPhraseData *data)
+{
+	TpBooleanTermRequirement *requirement = arg;
+	const char				 *lexeme = GETOPERAND(requirement->query->query) +
+						 operand->distance;
+
+	if (!operand->prefix && operand->length == requirement->term->length &&
+		memcmp(lexeme, requirement->term->lexeme, operand->length) == 0)
+		return TS_NO;
+	return TS_MAYBE;
+}
+
 TpBMWFilter *
 tp_boolean_filter_create(TSQuery query, bool *recheck)
 {
 	TpBMWFilter			  *predicate;
 	TpBooleanRankedFilter *filter;
 	const char			 **terms;
+	bool				  *required;
 	QueryItem			  *items = GETQUERY(query);
 
 	/* Generic plans cannot validate runtime predicates during costing. */
@@ -986,10 +1006,25 @@ tp_boolean_filter_create(TSQuery query, bool *recheck)
 	filter->query	= tp_boolean_extract_terms(query);
 	filter->context = CurrentMemoryContext;
 	*recheck		= filter->query.requires_recheck;
-	terms = palloc(Max(filter->query.term_count, 1) * sizeof(char *));
+	terms	 = palloc(Max(filter->query.term_count, 1) * sizeof(char *));
+	required = palloc(Max(filter->query.term_count, 1) * sizeof(bool));
 	for (int i = 0; i < filter->query.term_count; i++)
+	{
+		TpBooleanTermRequirement requirement = {
+				.query = &filter->query,
+				.term  = &filter->query.terms[i],
+		};
+
 		terms[i] = filter->query.terms[i].lexeme;
+		/* A false predicate under absence proves the term is required. */
+		required[i] = TS_execute_ternary(
+							  GETQUERY(query),
+							  &requirement,
+							  TS_EXEC_PHRASE_NO_POS,
+							  tp_boolean_without_term) == TS_NO;
+	}
 	predicate->terms			= terms;
+	predicate->required			= required;
 	predicate->term_count		= filter->query.term_count;
 	predicate->state			= filter;
 	predicate->memtable_matches = tp_boolean_ranked_memtable_matches;

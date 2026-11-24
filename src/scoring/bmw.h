@@ -127,6 +127,7 @@ typedef struct TpBMWStats
 typedef struct TpBMWFilter
 {
 	const char *const *terms;
+	const bool		  *required;
 	int				   term_count;
 	void			  *state;
 	bool (*memtable_matches)(

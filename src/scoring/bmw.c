@@ -760,6 +760,7 @@ typedef struct TpTermState
 	const char *term;
 	float4		idf;
 	int32		query_freq; /* Query term frequency (for boosting) */
+	bool		required;	/* Required by the Boolean predicate */
 
 	/* Global maximum score across all blocks (for WAND pivot) */
 	float4 max_score;
@@ -967,7 +968,7 @@ static bool
 seek_term_to_doc(TpTermState *ts, uint32 target_doc_id)
 {
 	uint32 block_count;
-	int	   left, right, mid;
+	uint32 left, right, mid;
 	uint32 target_block;
 
 	if (!ts->found || ts->iter.finished)
@@ -1007,7 +1008,9 @@ seek_term_to_doc(TpTermState *ts, uint32 target_doc_id)
 		 */
 		block_count = ts->iter.dict_entry.block_count;
 		left		= ts->iter.current_block + 1;
-		right		= (int)block_count - 1;
+		right		= left;
+		if (left < block_count && ts->block_last_doc_ids[left] < target_doc_id)
+			right = block_count - 1;
 
 		while (left < right)
 		{
@@ -1278,6 +1281,7 @@ static bool
 find_wand_pivot(
 		TpTermState **terms,
 		int			  term_count,
+		int			  required_count,
 		float4		  threshold,
 		int			 *pivot_len_out,
 		uint32		 *pivot_doc_id_out)
@@ -1292,7 +1296,9 @@ find_wand_pivot(
 			break; /* No more active terms */
 
 		accumulated += terms[i]->max_score;
-		if (accumulated > threshold)
+		if (terms[i]->required)
+			required_count--;
+		if (accumulated > threshold && required_count == 0)
 		{
 			/*
 			 * Found pivot: terms[i] is the pivot term.
@@ -1599,7 +1605,11 @@ score_segment_multi_term_bmw(
 		TpBMWFilter		*filter)
 {
 	int	 active_count;
+	int	 required_count	  = 0;
 	bool drive_candidates = filter != NULL && filter->segment_next != NULL;
+
+	for (int i = 0; i < term_count; i++)
+		required_count += terms[i]->required;
 
 	if (drive_candidates)
 	{
@@ -1664,13 +1674,22 @@ score_segment_multi_term_bmw(
 
 		/* Step 1: Find WAND pivot */
 		if (!find_wand_pivot(
-					terms, term_count, threshold, &pivot_len, &pivot_doc_id))
+					terms,
+					term_count,
+					required_count,
+					threshold,
+					&pivot_len,
+					&pivot_doc_id))
 			break; /* No term combination can beat threshold */
 
 		/* Step 2: Seek pre-pivot terms to pivot_doc_id */
 		if (!seek_to_pivot(
 					terms, term_count, pivot_len, pivot_doc_id, &active_count))
 			continue; /* Re-pivot with updated positions */
+
+		/* A required term may have sought beyond the proposed pivot. */
+		if (!verify_pivot_alignment(terms, pivot_len, pivot_doc_id))
+			continue;
 
 		/*
 		 * Step 3: Block-max refinement.
@@ -1722,10 +1741,6 @@ score_segment_multi_term_bmw(
 
 		if (stats)
 			stats->blocks_scanned++;
-
-		/* Step 4: Verify all pivot terms are at pivot_doc_id */
-		if (!verify_pivot_alignment(terms, pivot_len, pivot_doc_id))
-			continue; /* Re-pivot with new positions */
 
 		/* Skip dead docs */
 		if (!tp_segment_is_alive(reader, pivot_doc_id))
@@ -1812,6 +1827,19 @@ tp_score_multi_term_bmw(
 		terms[i]->term		 = query_terms[i];
 		terms[i]->idf		 = idfs[i];
 		terms[i]->query_freq = query_freqs[i];
+		terms[i]->required	 = false;
+		if (filter != NULL)
+		{
+			for (int j = 0; j < filter->term_count; j++)
+			{
+				if (filter->required[j] &&
+					strcmp(query_terms[i], filter->terms[j]) == 0)
+				{
+					terms[i]->required = true;
+					break;
+				}
+			}
+		}
 	}
 
 	/* Score memtable (exhaustive - no skip index) */
