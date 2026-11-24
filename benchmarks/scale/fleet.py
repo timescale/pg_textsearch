@@ -46,6 +46,7 @@ MEASURED_FAILURES = {
     "plan_gated",
     "plan_audit_failed",
 }
+RETRYABLE_STATUSES = {"pending", "cleanup_pending"}
 
 
 def _atomic_json(path, value):
@@ -114,9 +115,16 @@ def _validate_terminal(result_dir, engine, cell, marker):
             raise ConfigError(
                 f"terminal referenced artifact is missing: {path}"
             )
+    status = TERMINAL_MARKERS[marker]
+    if (
+        marker == "complete.json"
+        and cell["operation"] == "concurrent-writes"
+        and not (result_dir / "write-cleanup.json").is_file()
+    ):
+        status = "cleanup_pending"
     return {
         "cell_id": cell["cell_id"],
-        "status": TERMINAL_MARKERS[marker],
+        "status": status,
         "marker": marker,
         "result_dir": str(result_dir),
     }
@@ -184,7 +192,7 @@ def scan_cell_results(
 def run_pending_cells(runner, engine, cells, statuses):
     pending_ids = {
         status["cell_id"] for status in statuses
-        if status["status"] == "pending"
+        if status["status"] in RETRYABLE_STATUSES
     }
     pending = [
         cell for cell in cells if cell["cell_id"] in pending_ids
@@ -534,7 +542,7 @@ def execute_shard(
     history = shard_dir / "history"
     pending = [
         status for status in statuses
-        if status["status"] == "pending"
+        if status["status"] in RETRYABLE_STATUSES
     ]
     run_error = None
     if pending:

@@ -983,6 +983,70 @@ class FleetControlTest(unittest.TestCase):
         with self.assertRaisesRegex(ControlError, "partition mismatch"):
             control.reconcile(rows[:-1] + [rows[0]])
 
+    def test_status_requires_cleanup_for_completed_concurrent_writes(self):
+        root = self.root / "artifacts"
+        config = private_config(self.state) | {"root": str(root)}
+        self.config_path.write_text(json.dumps(config))
+        control = self.control()
+        host = control.host("host1")
+        assigned = [
+            row for row in control.plan()["partition"]
+            if row["host"] == host["host"]
+        ]
+        write = next(
+            row for row in assigned
+            if row["operation"] == "concurrent-writes"
+        )
+        read = next(
+            row for row in assigned if row["operation"] == "search"
+        )
+        failed = next(
+            row for row in assigned
+            if row["operation"] == "count"
+        )
+
+        def cell_path(row):
+            run_id = (
+                control.config["msmarco_run_id"]
+                if row["dataset"] == "msmarco-v2"
+                else control.config["wikipedia_run_id"]
+            )
+            path = (
+                root / "runs" / run_id / "tin" / "results"
+                / row["engine"] / row["cell_id"]
+            )
+            path.mkdir(parents=True)
+            return path
+
+        write_path = cell_path(write)
+        read_path = cell_path(read)
+        failed_path = cell_path(failed)
+        (write_path / "complete.json").write_text("{}\n")
+        (read_path / "complete.json").write_text("{}\n")
+        (failed_path / "failed.json").write_text("{}\n")
+        command = control._status_command(host)
+
+        pending = json.loads(subprocess.check_output(
+            ["bash", "-c", command], text=True
+        ))
+        self.assertEqual(
+            {row["cell_id"] for row in pending},
+            {read["cell_id"], failed["cell_id"]},
+        )
+
+        (write_path / "write-cleanup.json").write_text("{}\n")
+        cleaned = json.loads(subprocess.check_output(
+            ["bash", "-c", command], text=True
+        ))
+        self.assertEqual(
+            {row["cell_id"] for row in cleaned},
+            {
+                write["cell_id"],
+                read["cell_id"],
+                failed["cell_id"],
+            },
+        )
+
     def test_wait_polls_until_full_terminal_coverage(self):
         control = self.control()
         control.status = Mock(side_effect=[

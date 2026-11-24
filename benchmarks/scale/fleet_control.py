@@ -1854,11 +1854,18 @@ print(json.dumps({
             "msmarco-v2": self.config["msmarco_run_id"],
             "wikipedia": self.config["wikipedia_run_id"],
         }
+        operations = {}
+        for row in self.plan()["partition"]:
+            if row["host"] == host["host"]:
+                operations.setdefault(row["dataset"], {})[
+                    row["cell_id"]
+                ] = row["operation"]
         script = r'''
 from pathlib import Path
 import json
 root=Path(__ROOT__)
 runs=json.loads(__RUNS__)
+operations=json.loads(__OPERATIONS__)
 engine=__ENGINE__
 rows=[]
 for dataset,run_id in runs.items():
@@ -1875,15 +1882,24 @@ for dataset,run_id in runs.items():
             )
             if (cell/name).is_file()
         ]
+        operation=operations.get(dataset,{}).get(cell.name)
+        if (
+            markers==["complete.json"]
+            and operation=="concurrent-writes"
+            and not (cell/"write-cleanup.json").is_file()
+        ):
+            continue
         rows.append({
             "dataset":dataset,"engine":engine,
-            "cell_id":cell.name,"markers":markers,
+            "cell_id":cell.name,"operation":operation,
+            "markers":markers,
         })
 print(json.dumps(rows))
 '''
         script = (
             script.replace("__ROOT__", repr(root))
             .replace("__RUNS__", repr(json.dumps(runs)))
+            .replace("__OPERATIONS__", repr(json.dumps(operations)))
             .replace("__ENGINE__", repr(host["engine"]))
         )
         return "python3 - <<'PY'\n" + script + "\nPY"

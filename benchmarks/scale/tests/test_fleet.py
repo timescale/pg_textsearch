@@ -77,6 +77,10 @@ class FleetResultTest(unittest.TestCase):
         (path / name).write_text(json.dumps(payload))
         if name == "complete.json":
             (path / "k6-summary.json").write_text('{"metrics": {}}')
+            if cell["operation"] == "concurrent-writes":
+                (path / "write-cleanup.json").write_text(
+                    '{"removed": true}'
+                )
 
     def execute_with_run_error(self, error, *, legitimate_summary):
         root = Path(self._testMethodName)
@@ -184,6 +188,84 @@ class FleetResultTest(unittest.TestCase):
                 [status["status"] for status in statuses],
                 ["completed", "failed"],
             )
+
+    def test_fleet_retries_only_unfinished_completed_write_cleanup(self):
+        for cleanup_succeeds in (True, False):
+            with (
+                self.subTest(cleanup_succeeds=cleanup_succeeds),
+                tempfile.TemporaryDirectory() as directory,
+            ):
+                root = Path(directory)
+                tin_dir = root / "tin"
+                plan = fleet_plan("msmarco-v2")
+                cells = shard_cells(plan, "pg_textsearch", "high")
+                write_cell = next(
+                    cell for cell in cells
+                    if cell["operation"] == "concurrent-writes"
+                )
+                for cell in cells:
+                    result = self.result_dir(
+                        tin_dir, "pg_textsearch", cell
+                    )
+                    self.marker(
+                        result, "complete.json", "pg_textsearch", cell
+                    )
+                result = (
+                    tin_dir / "results/pg_textsearch"
+                    / write_cell["cell_id"]
+                )
+                cleanup = result / "write-cleanup.json"
+                cleanup.unlink()
+                resumed = []
+
+                def run_cells(_engines, selected):
+                    resumed.extend(selected)
+                    if not cleanup_succeeds:
+                        raise ConfigError("cleanup still unavailable")
+                    cleanup.write_text('{"removed": true}')
+
+                runner = SimpleNamespace(
+                    run_id="cleanup-retry",
+                    tin_dir=tin_dir,
+                    dataset_kind="msmarco-v2",
+                    dataset=root / "dataset",
+                    root=root,
+                    run_cells=run_cells,
+                    _write_or_validate_json=(
+                        Runner._write_or_validate_json
+                    ),
+                )
+                with (
+                    patch(
+                        "benchmarks.scale.fleet.validate_imported_inputs",
+                        return_value={"images": "pinned"},
+                    ),
+                    patch(
+                        "benchmarks.scale.fleet._source_manifest",
+                        return_value={"host": "worker-1"},
+                    ),
+                    patch(
+                        "benchmarks.scale.fleet._write_quality",
+                        return_value=[],
+                    ),
+                ):
+                    summary, exit_code = execute_shard(
+                        runner,
+                        engine="pg_textsearch",
+                        profile="high",
+                        dataset="msmarco-v2",
+                        host="worker-1",
+                        attempt_id="cleanup-1",
+                    )
+                self.assertEqual(resumed, [write_cell])
+                self.assertEqual(
+                    exit_code, 0 if cleanup_succeeds else 3
+                )
+                self.assertEqual(
+                    summary["status"],
+                    "ok" if cleanup_succeeds else "infrastructure_error",
+                )
+                self.assertEqual(cleanup.is_file(), cleanup_succeeds)
 
     def test_invalid_or_incomplete_terminal_artifacts_are_rejected(self):
         cell = fleet_plan("wikipedia")["selected_cells"][0]
