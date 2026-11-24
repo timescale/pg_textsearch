@@ -36,13 +36,35 @@ ASSETS = {
 
 
 def download_assets(
-    output: Path, *, accepted: bool = False
+    output: Path, *, accepted: bool = False,
+    names: tuple[str, ...] | None = None,
 ) -> dict[str, Path]:
     require_terms_acceptance(accepted)
+    if names is None:
+        names = tuple(ASSETS)
+    if (
+        not names or len(set(names)) != len(names)
+        or any(name not in ASSETS for name in names)
+    ):
+        raise DatasetError("Invalid MS MARCO download asset selection")
     output.mkdir(parents=True, exist_ok=True)
     paths = {}
     records = {}
-    for name, asset in ASSETS.items():
+    manifest = output / "downloads.json"
+    if manifest.is_file():
+        try:
+            previous = json.loads(manifest.read_text())
+        except (json.JSONDecodeError, UnicodeDecodeError) as error:
+            raise DatasetError("Invalid MS MARCO download manifest") from error
+        if (
+            not isinstance(previous, dict)
+            or previous.get("dataset") != "msmarco-passage-v2"
+            or not isinstance(previous.get("assets"), dict)
+        ):
+            raise DatasetError("Incompatible MS MARCO download manifest")
+        records.update(previous["assets"])
+    for name in names:
+        asset = ASSETS[name]
         target = output / asset["filename"]
         candidate = target
         if not target.exists():
@@ -68,7 +90,6 @@ def download_assets(
         },
         "assets": records,
     }
-    manifest = output / "downloads.json"
     partial = manifest.with_suffix(".json.partial")
     partial.write_text(json.dumps(record, indent=2) + "\n")
     partial.replace(manifest)

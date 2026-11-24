@@ -463,7 +463,12 @@ class Runner:
         ).lower() in {"1", "true", "yes"}
         require_terms_acceptance(accepted)
         assets = None
-        if not (self.dataset / "manifest.json").is_file():
+        manifest = self.dataset / "manifest.json"
+        corpus_complete = (
+            manifest.is_file()
+            and json.loads(manifest.read_text()).get("complete") is True
+        )
+        if not corpus_complete:
             archive = os.environ.get("MSMARCO_ARCHIVE")
             if not archive:
                 assets = download_assets(
@@ -534,6 +539,7 @@ class Runner:
                     assets = download_assets(
                         self.artifacts / "downloads/msmarco-v2",
                         accepted=accepted,
+                        names=("dev1", "dev2"),
                     )
                 query_specs = [
                     f"dev1={assets['dev1']}",

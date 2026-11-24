@@ -699,15 +699,14 @@ runs={
 for dataset,run_id in runs.items():
     runner=TinRunner(repo,root,False,run_id,dataset,None)
     manifest_path=runner.dataset/"manifest.json"
-    if not manifest_path.is_file():
-        if dataset=="msmarco-v2":
-            runner._prepare_msmarco()
-        else:
-            runner.command([
-                os.sys.executable,
-                str(repo/"benchmarks/scale/wikipedia.py"),
-                "--output",str(runner.dataset),
-            ],output=runner.run_dir/"wikipedia-prepare.log")
+    if dataset=="msmarco-v2":
+        runner._prepare_msmarco()
+    elif not manifest_path.is_file():
+        runner.command([
+            os.sys.executable,
+            str(repo/"benchmarks/scale/wikipedia.py"),
+            "--output",str(runner.dataset),
+        ],output=runner.run_dir/"wikipedia-prepare.log")
     manifest=json.loads(manifest_path.read_text())
     runner._validate_dataset(manifest)
     runner._validate_query_packs(runner.dataset)

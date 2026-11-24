@@ -474,6 +474,65 @@ class RunPlanTest(unittest.TestCase):
             self.assertEqual(run.call_count, 4)
             self.assertEqual(run.call_args_list[1].args[0][0], "psql")
 
+    def test_msmarco_prepare_resumes_existing_corpus_checkpoint(self):
+        scale_dir = Path(__file__).resolve().parents[1]
+        with tempfile.TemporaryDirectory(dir=scale_dir) as directory:
+            artifacts = Path(directory)
+            runner = Runner(
+                scale_dir.parents[1], artifacts, False,
+                "corpus-resume", "msmarco-v2", None,
+            )
+            runner.dataset.mkdir(parents=True)
+            manifest = runner.dataset / "manifest.json"
+            checkpoint = json.dumps({
+                "complete": False,
+                "members": [{"file": "completed-shard.parquet", "rows": 10}],
+            }).encode()
+            manifest.write_bytes(checkpoint)
+            with (
+                patch.dict("os.environ", {
+                    "MSMARCO_ACCEPT_TERMS": "1",
+                    "MSMARCO_ARCHIVE": str(artifacts / "archive.tar"),
+                    "MSMARCO_QUERY_FILES": "dev1=queries.tsv",
+                }, clear=True),
+                patch(
+                    "benchmarks.scale.run.prepare_main", return_value=0
+                ) as prepare,
+            ):
+                runner._prepare_msmarco()
+            self.assertEqual(
+                [call.args[0][0] for call in prepare.call_args_list],
+                ["corpus", "queries"],
+            )
+            self.assertEqual(manifest.read_bytes(), checkpoint)
+
+    def test_existing_corpus_requests_only_query_downloads(self):
+        scale_dir = Path(__file__).resolve().parents[1]
+        with tempfile.TemporaryDirectory(dir=scale_dir) as directory:
+            runner = Runner(
+                scale_dir.parents[1], Path(directory), False,
+                "query-download", "msmarco-v2", None,
+            )
+            runner.dataset.mkdir(parents=True)
+            (runner.dataset / "manifest.json").write_text(
+                '{"complete":true}'
+            )
+            with (
+                patch.dict("os.environ", {
+                    "MSMARCO_ACCEPT_TERMS": "1",
+                    "MSMARCO_ARCHIVE": "provided-archive.tar",
+                }, clear=True),
+                patch("benchmarks.scale.run.download_assets", return_value={
+                    "dev1": Path(directory) / "dev1.tsv",
+                    "dev2": Path(directory) / "dev2.tsv",
+                }) as download,
+                patch("benchmarks.scale.run.prepare_main", return_value=0),
+            ):
+                runner._prepare_msmarco()
+            self.assertEqual(
+                download.call_args.kwargs.get("names"), ("dev1", "dev2")
+            )
+
     def test_msmarco_prepare_downloads_and_merges_pinned_assets(self):
         scale_dir = Path(__file__).resolve().parents[1]
         with tempfile.TemporaryDirectory(

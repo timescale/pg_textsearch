@@ -22,6 +22,7 @@ from benchmarks.scale.fleet_control import (
     verify_frozen_tree,
 )
 from benchmarks.scale.fleet import fleet_plan
+from benchmarks.scale.queries import build_corpus_span_queries
 from benchmarks.scale.run import Runner
 
 
@@ -410,6 +411,49 @@ class FleetControlTest(unittest.TestCase):
                     json.loads(path.read_text()), fleet_plan(dataset)
                 )
 
+    def test_source_preparation_resumes_msmarco_with_existing_manifest(self):
+        backend = FakeBackend()
+        control = self.control(backend)
+        control.write_stage("provision", {"status": "complete"})
+        control.prepare()
+        command = next(
+            call[2] for call in backend.calls if call[0] == "run"
+        )
+        script = command.split("<<'PY'\n", 1)[1].split("\nPY\n", 1)[0]
+        runners = []
+
+        def make_runner(repo, root, smoke, run_id, dataset, dataset_path):
+            runner = Mock()
+            runner.dataset = self.root / dataset
+            runner.dataset.mkdir(exist_ok=True)
+            (runner.dataset / "manifest.json").write_text(
+                json.dumps({"complete": False})
+            )
+            runner.tin_dir = self.root / run_id
+            runner.tin_dir.mkdir(exist_ok=True)
+            runners.append((dataset, runner))
+            return runner
+
+        with (
+            patch("benchmarks.scale.tin.TinRunner", side_effect=make_runner),
+            patch("benchmarks.scale.tin.Runner"),
+            patch.dict(os.environ, {
+                "TIN_ROOT": str(self.root),
+                "TIN_REPO": str(self.root),
+                "MSMARCO_RUN_ID": "ms-resume",
+                "WIKIPEDIA_RUN_ID": "wiki-resume",
+                "PGTS_SQL_SHAPE": "filter_first",
+            }),
+        ):
+            exec(compile(script, "<source-prepare-resume>", "exec"), {})
+
+        msmarco = [
+            runner for dataset, runner in runners
+            if dataset == "msmarco-v2"
+        ]
+        self.assertEqual(len(msmarco), 2)
+        msmarco[1]._prepare_msmarco.assert_called_once_with()
+
     def test_preflight_accepts_the_selected_released_native_version(self):
         config = private_config(self.state) | {"root": str(self.root)}
         self.config_path.write_text(json.dumps(config))
@@ -649,10 +693,22 @@ class FleetControlTest(unittest.TestCase):
             (dataset / "manifest.json").write_text(
                 json.dumps(manifest)
             )
-            for pack in ("natural", "spans"):
-                (queries / f"{pack}.json").write_text(json.dumps([
-                    {"id": f"{pack}-1", "text": "search terms"},
-                ]))
+            natural = [{"id": "natural-1", "text": "search terms"}]
+            spans = [{"id": "spans-1", "text": "search terms"}]
+            if name == "msmarco-v2":
+                spans = build_corpus_span_queries(
+                    [{
+                        "source_id": "fixture",
+                        "body": " ".join(
+                            f"term{number}" for number in range(20)
+                        ),
+                    }],
+                    spans=range(2, 16),
+                    per_span=100,
+                    seed=1729,
+                )
+            (queries / "natural.json").write_text(json.dumps(natural))
+            (queries / "spans.json").write_text(json.dumps(spans))
             (queries / "update_targets.json").write_text("[1]\n")
 
         import benchmarks.scale.tin as tin_module
@@ -671,11 +727,15 @@ class FleetControlTest(unittest.TestCase):
             patch.object(tin_module, "Runner", Runner),
             patch.object(TinRunner, "install"),
             patch.object(TinRunner, "build_selected"),
+            patch("benchmarks.scale.run.prepare_main") as prepare_main,
+            patch("benchmarks.scale.run.download_assets") as download,
         ):
             exec(compile(
                 script, "<generated-fresh-prepare>", "exec"
             ), {"__name__": "__main__"})
 
+        prepare_main.assert_not_called()
+        download.assert_not_called()
         for run_id in run_ids:
             self.assertTrue(
                 (
