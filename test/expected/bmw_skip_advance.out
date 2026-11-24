@@ -118,4 +118,123 @@ SELECT count(*) FROM (
 (1 row)
 
 DROP TABLE bmw_skip_advance;
+CREATE TABLE bmw_shallow_pruning (id int, content text);
+SET pg_textsearch.bulk_load_threshold = 0;
+SET pg_textsearch.memtable_pages_threshold = 0;
+SET max_parallel_maintenance_workers = 0;
+INSERT INTO bmw_shallow_pruning
+SELECT g, CASE g % 3
+    WHEN 0 THEN 'alpha beta '
+    WHEN 1 THEN 'alpha gamma '
+    ELSE 'beta gamma ' END || repeat('padding ', 96)
+FROM generate_series(1, 32768) g;
+INSERT INTO bmw_shallow_pruning VALUES
+    (32769, repeat('alpha beta gamma ', 100));
+CREATE INDEX bmw_shallow_pruning_idx ON bmw_shallow_pruning USING bm25(content)
+WITH (text_config = 'simple');
+NOTICE:  BM25 index build started for relation bmw_shallow_pruning_idx
+NOTICE:  Using text search configuration: simple
+NOTICE:  Using index options: k1=1.20, b=0.75
+NOTICE:  BM25 index build completed: 32769 documents, avg_length=98.01
+INSERT INTO bmw_shallow_pruning VALUES
+    (32770, repeat('alpha beta gamma ', 20));
+CREATE FUNCTION pg_temp.shallow_pruning_is_bounded()
+RETURNS boolean LANGUAGE plpgsql AS $$
+DECLARE
+    plan json;
+BEGIN
+    EXECUTE $q$
+        EXPLAIN (ANALYZE, TIMING OFF, BUFFERS, FORMAT JSON)
+        SELECT id FROM bmw_shallow_pruning
+        ORDER BY content <@> to_bm25query(
+            'alpha beta gamma', 'bmw_shallow_pruning_idx')
+        LIMIT 1
+    $q$ INTO plan;
+    RETURN plan->0->'Plan'->'Plans'->0->>'Node Type' = 'Index Scan'
+       AND (plan->0->'Plan'->>'Shared Hit Blocks')::bigint
+         + (plan->0->'Plan'->>'Shared Read Blocks')::bigint < 256;
+END
+$$;
+-- Weak, misaligned blocks should be rejected without decoding their postings.
+SELECT pg_temp.shallow_pruning_is_bounded() AS shallow_pruning_bounded;
+ shallow_pruning_bounded 
+-------------------------
+ t
+(1 row)
+
+SET log_statement = none;
+SET client_min_messages = log;
+SET pg_textsearch.log_bmw_stats = on;
+SELECT id FROM bmw_shallow_pruning
+ORDER BY content <@> to_bm25query(
+    'alpha beta gamma', 'bmw_shallow_pruning_idx')
+LIMIT 1;
+LOG:  BMW stats: memtable=1 docs, segments=1 docs (blocks: 1 scanned, 340 skipped, 99.7% skip), seeks=0, results=1
+  id   
+-------
+ 32769
+(1 row)
+
+RESET pg_textsearch.log_bmw_stats;
+RESET client_min_messages;
+RESET log_statement;
+DROP TABLE bmw_shallow_pruning;
+CREATE TABLE bmw_shallow_ties (id int, content text);
+INSERT INTO bmw_shallow_ties
+SELECT g, 'alpha beta keep' FROM generate_series(1, 8192) g;
+INSERT INTO bmw_shallow_ties VALUES
+    (8193, repeat('alpha beta ', 100));
+CREATE INDEX bmw_shallow_ties_idx ON bmw_shallow_ties USING bm25(content)
+WITH (text_config = 'simple');
+NOTICE:  BM25 index build started for relation bmw_shallow_ties_idx
+NOTICE:  Using text search configuration: simple
+NOTICE:  Using index options: k1=1.20, b=0.75
+NOTICE:  BM25 index build completed: 8193 documents, avg_length=3.02
+INSERT INTO bmw_shallow_ties VALUES (8194, 'alpha beta keep');
+-- Equal scores can replace the memtable seed with an earlier heap TID.
+SELECT id FROM bmw_shallow_ties
+WHERE content @@ 'keep'::tsquery
+ORDER BY content <@> to_bm25query('alpha beta', 'bmw_shallow_ties_idx')
+LIMIT 1;
+ id 
+----
+  1
+(1 row)
+
+DROP TABLE bmw_shallow_ties;
+CREATE TABLE bmw_shallow_sparse (id int, content text);
+INSERT INTO bmw_shallow_sparse
+SELECT g,
+    CASE WHEN g % 7 = 0 THEN 'what ' ELSE '' END ||
+    CASE WHEN g % 19 = 0 THEN 'good ' ELSE '' END ||
+    CASE WHEN g % 2 = 0 THEN 'for ' ELSE '' END ||
+    CASE WHEN g % 3 = 0 THEN 'a ' ELSE '' END ||
+    CASE WHEN g % 5 = 0 THEN 'is ' ELSE '' END ||
+    CASE WHEN g % 43 = 0 THEN repeat('popul ', 5) ELSE '' END ||
+    CASE WHEN g % 67 = 0 THEN repeat('size ', 7) ELSE '' END ||
+    CASE WHEN g % 101 = 0 THEN repeat('sampl ', 3) ELSE '' END ||
+    CASE WHEN g % 257 = 0 THEN '' ELSE repeat('padding ', 96) END
+FROM generate_series(1, 32768) g;
+INSERT INTO bmw_shallow_sparse VALUES
+    (32769, repeat('what good for a is popul size sampl ', 100));
+CREATE INDEX bmw_shallow_sparse_idx ON bmw_shallow_sparse USING bm25(content)
+WITH (text_config = 'simple');
+NOTICE:  BM25 index build started for relation bmw_shallow_sparse_idx
+NOTICE:  Using text search configuration: simple
+NOTICE:  Using index options: k1=1.20, b=0.75
+NOTICE:  BM25 index build completed: 32769 documents, avg_length=97.13
+-- Sparse non-pivot cursors must not move backward when a seek overshoots.
+SELECT id FROM bmw_shallow_sparse
+ORDER BY content <@> to_bm25query(
+    'what good for a is popul size sampl', 'bmw_shallow_sparse_idx')
+LIMIT 1;
+  id   
+-------
+ 32769
+(1 row)
+
+DROP TABLE bmw_shallow_sparse;
+RESET pg_textsearch.bulk_load_threshold;
+RESET pg_textsearch.memtable_pages_threshold;
+RESET max_parallel_maintenance_workers;
 DROP EXTENSION pg_textsearch CASCADE;
