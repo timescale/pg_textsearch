@@ -11,7 +11,9 @@ from unittest.mock import patch
 class DownloadTests(unittest.TestCase):
     def module(self):
         path = Path(__file__).with_name("msmarco_download.py")
-        self.assertTrue(path.exists(), "MS MARCO asset download is not implemented")
+        self.assertTrue(
+            path.exists(), "MS MARCO asset download is not implemented"
+        )
         return importlib.import_module("benchmarks.scale.msmarco_download")
 
     def test_terms_gate_precedes_filesystem_and_network_access(self):

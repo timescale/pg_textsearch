@@ -25,7 +25,9 @@ def select_disks(topology):
             raise ValueError(f"Refusing nonempty/unsafe disk {disk['path']}")
         disks.append(disk["path"])
     if not disks:
-        raise ValueError("No unused Azure local NVMe disks; no OS-disk fallback")
+        raise ValueError(
+            "No unused Azure local NVMe disks; no OS-disk fallback"
+        )
     return sorted(disks)
 
 
@@ -83,7 +85,9 @@ def main():
             ["blkid", "-p", disk], capture_output=True, text=True,
         )
         if signature.returncode != 2:
-            raise ValueError(f"Refusing disk with signature or read error: {disk}")
+            raise ValueError(
+                f"Refusing disk with signature or read error: {disk}"
+            )
     device = disks[0]
     if len(disks) > 1:
         device = "/dev/md/searchbench"

@@ -2,6 +2,7 @@
 """Run the pinned, sequential large-scale text-search benchmark."""
 
 import argparse
+from collections import Counter
 import datetime as dt
 import hashlib
 import json
@@ -20,7 +21,12 @@ if str(REPO_ROOT) not in sys.path:
 from benchmarks.scale.dataset import require_terms_acceptance
 from benchmarks.scale.msmarco_download import download_assets
 from benchmarks.scale.prepare_data import main as prepare_main
-from benchmarks.scale.queries import QueryError, lead_disjunction
+from benchmarks.scale.queries import (
+    DEFAULT_QUERY_SPANS,
+    DEFAULT_QUERIES_PER_SPAN,
+    QueryError,
+    lead_disjunction,
+)
 
 
 BENCHMARKER_SHA = "4b262c05af138991d3bf28c683a0fc6b7f113df3"
@@ -84,7 +90,8 @@ def validate_storage(
         )
     if not is_mount(mount):
         raise ConfigError(
-            "/srv/searchbench is not mounted; wait for bootstrap before running"
+            "/srv/searchbench is not mounted; "
+            "wait for bootstrap before running"
         )
     minimum = 10 * 1024**3 if smoke else 500 * 1024**3
     available = free_bytes(mount)
@@ -247,7 +254,9 @@ class Runner:
                 ]
             )
         self.command(["git", "fetch", "--all", "--tags"], cwd=checkout)
-        self.command(["git", "checkout", "--detach", BENCHMARKER_SHA], cwd=checkout)
+        self.command(
+            ["git", "checkout", "--detach", BENCHMARKER_SHA], cwd=checkout
+        )
         tool_tmp = self.tools / "tmp"
         tool_tmp.mkdir(parents=True, exist_ok=True)
         go_env = os.environ | {
@@ -316,7 +325,10 @@ class Runner:
                 "-t",
                 f"pg_textsearch-scale:{PG_TEXTSEARCH_SHA}",
                 "-f",
-                str(self.root / "benchmarks/scale/docker/pg_textsearch.Dockerfile"),
+                str(
+                    self.root / "benchmarks/scale/docker/"
+                    "pg_textsearch.Dockerfile"
+                ),
                 str(self.root),
             ]
         )
@@ -331,7 +343,9 @@ class Runner:
         image = json.loads(inspect.stdout)[0]
         digests = image.get("RepoDigests") or []
         if not digests:
-            raise ConfigError("ParadeDB tag did not resolve to a registry digest")
+            raise ConfigError(
+                "ParadeDB tag did not resolve to a registry digest"
+            )
         lock = {
             "benchmarker": BENCHMARKER_SHA,
             "xk6": XK6_VERSION,
@@ -466,10 +480,48 @@ class Runner:
             if status:
                 raise ConfigError("MS MARCO corpus preparation failed")
         query_dir = self.dataset / "k6"
-        if not all(
+        query_ready = all(
             (query_dir / name).is_file()
             for name in ("natural.json", "spans.json")
-        ):
+        )
+        if query_ready:
+            try:
+                span_queries = json.loads(
+                    (query_dir / "spans.json").read_text()
+                )
+            except (json.JSONDecodeError, UnicodeDecodeError):
+                query_ready = False
+            else:
+                query_ready = (
+                    isinstance(span_queries, list)
+                    and len(span_queries)
+                    == len(DEFAULT_QUERY_SPANS) * DEFAULT_QUERIES_PER_SPAN
+                    and all(
+                        isinstance(query, dict)
+                        and query.get("source") == "corpus-span"
+                        and isinstance(query.get("id"), str)
+                        and bool(query["id"])
+                        and type(query.get("span")) is int
+                        and isinstance(query.get("text"), str)
+                        and len(query["text"].split()) == query["span"]
+                        and isinstance(query.get("source_doc_id"), str)
+                        and bool(query["source_doc_id"])
+                        for query in span_queries
+                    )
+                    and len({query["id"] for query in span_queries})
+                    == len(span_queries)
+                    and Counter(query["span"] for query in span_queries)
+                    == {
+                        span: DEFAULT_QUERIES_PER_SPAN
+                        for span in DEFAULT_QUERY_SPANS
+                    }
+                )
+            if not query_ready:
+                print(
+                    "Regenerating incomplete MS MARCO corpus-span cache",
+                    file=sys.stderr,
+                )
+        if not query_ready:
             configured = os.environ.get("MSMARCO_QUERY_FILES")
             if configured:
                 query_specs = [
@@ -515,7 +567,9 @@ class Runner:
             6_407_814 if self.dataset_kind == "wikipedia" else 138_364_198
         )
         if manifest.get("rows") != expected:
-            raise ConfigError("dataset row count does not match selected corpus")
+            raise ConfigError(
+                "dataset row count does not match selected corpus"
+            )
         if manifest.get("columns") != {
             "id": "int64", "source_id": "string", "body": "string"
         }:
@@ -526,7 +580,9 @@ class Runner:
         for item in shards:
             shard = self.dataset / "data" / item["file"]
             if not shard.is_file() or file_sha256(shard) != item["sha256"]:
-                raise ConfigError(f"dataset shard checksum failed: {shard.name}")
+                raise ConfigError(
+                    f"dataset shard checksum failed: {shard.name}"
+                )
         if self.dataset_kind == "msmarco-v2" and not self.smoke:
             if (
                 manifest.get("dataset") != "msmarco-v2"
@@ -771,7 +827,8 @@ class Runner:
         server_args = [
             "docker", "run", "-d", "--name", name, "--shm-size=64g",
             "--cpuset-cpus=0-23", "--memory=192g", "--memory-swap=192g",
-            "--mount", f"type=volume,source={volume},target=/var/lib/postgresql",
+            "--mount",
+            f"type=volume,source={volume},target=/var/lib/postgresql",
             "-e", "POSTGRES_PASSWORD=postgres",
             "-p", "127.0.0.1:15432:5432",
             images[engine],
@@ -955,7 +1012,8 @@ class Runner:
                                 "VUS": str(vus),
                                 "ROWS": (
                                     "10000" if self.smoke else
-                                    "6407814" if self.dataset_kind == "wikipedia"
+                                    "6407814"
+                                    if self.dataset_kind == "wikipedia"
                                     else "138364198"
                                 ),
                                 "BACKENDS_DIR": str(
@@ -1001,9 +1059,13 @@ class Runner:
                                 )
                             complete = result_dir / "complete.json"
                             if complete.is_file():
-                                if json.loads(complete.read_text()) != fingerprint:
+                                if (
+                                    json.loads(complete.read_text())
+                                    != fingerprint
+                                ):
                                     raise ConfigError(
-                                        f"incompatible cell resume: {result_dir}"
+                                        "incompatible cell resume: "
+                                        f"{result_dir}"
                                     )
                                 continue
                             failed = result_dir / "failed.json"
@@ -1062,8 +1124,10 @@ class Runner:
                     stderr=subprocess.STDOUT,
                     check=False,
                 )
-            subprocess.run(["docker", "rm", "-f", name], check=False,
-                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            subprocess.run(
+                ["docker", "rm", "-f", name], check=False,
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            )
 
     def _run_k6_cell(self, benchmarker, script, run_env, result_dir):
         base_command = [
@@ -1249,7 +1313,8 @@ class Runner:
                     ),
                     "count": (
                         "SELECT count(*) FROM documents WHERE body @@ "
-                        "(SELECT string_agg(quote_literal(lexeme),' | ')::tsquery "
+                        "(SELECT string_agg(quote_literal(lexeme),' | ')"
+                        "::tsquery "
                         "FROM unnest(tsvector_to_array(to_tsvector("
                         f"'english',{literal}))) AS lexeme)"
                     ),
@@ -1263,7 +1328,9 @@ class Runner:
                 if engine == "pg_textsearch":
                     sql = pgts[mode]
                 elif engine == "paradedb":
-                    prefix = "SELECT count(*)" if mode == "count" else "SELECT id"
+                    prefix = (
+                        "SELECT count(*)" if mode == "count" else "SELECT id"
+                    )
                     suffix = "" if mode == "count" else (
                         " ORDER BY paradedb.score(id) DESC LIMIT 100"
                     )

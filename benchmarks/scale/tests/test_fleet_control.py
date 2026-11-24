@@ -3,7 +3,9 @@ import hashlib
 import io
 import os
 import re
+import shlex
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -122,6 +124,192 @@ class FleetControlTest(unittest.TestCase):
             backend=backend or FakeBackend(),
         )
 
+    def run_native_import(
+        self, *, tag_id="", list_status=0, proof_id="sha256:locked",
+        include_volume=False,
+    ):
+        repository = self.root / "repository"
+        install = repository / "benchmarks/scale/install.sh"
+        install.parent.mkdir(parents=True)
+        install.write_text("#!/bin/sh\nexit 0\n")
+        install.chmod(0o755)
+        artifacts = self.root / "artifacts"
+        artifacts.mkdir()
+        source = artifacts / "frozen-source.json"
+        source.write_text("{}\n")
+        image = artifacts / "native-image.tar.zst"
+        image.write_bytes(b"image")
+        config = private_config(self.state) | {
+            "root": str(self.root / "worker"),
+            "remote_repo": str(repository),
+        }
+        self.config_path.write_text(json.dumps(config))
+        control = self.control()
+        proof = {
+            "id": "sha256:locked",
+            "architecture": "amd64",
+            "os": "linux",
+            "created": "2026-01-01T00:00:00Z",
+            "rootfs_layers": ["sha256:layer"],
+        }
+        imported = [
+            {
+                "kind": "source_manifest",
+                "path": str(source),
+                "sha256": hashlib.sha256(source.read_bytes()).hexdigest(),
+            },
+            {
+                "kind": "native_image",
+                "path": str(image),
+                "image_id": "sha256:locked",
+                "image_proof": proof,
+            },
+        ]
+        if include_volume:
+            volume = artifacts / "volume.tar.zst"
+            volume.write_bytes(b"volume")
+            imported.append({
+                "kind": "volume",
+                "path": str(volume),
+                "volume": {
+                    "name": "native-volume",
+                    "labels": {"managed-by": "pg_textsearch-tin"},
+                },
+            })
+
+        bin_dir = self.root / "bin"
+        bin_dir.mkdir()
+        log = self.root / "docker.jsonl"
+        docker = bin_dir / "docker"
+        docker.write_text(
+            "#!/usr/bin/env python3\n"
+            "import json,os,sys\n"
+            "args=sys.argv[1:]\n"
+            "with open(os.environ['DOCKER_LOG'],'a') as stream:\n"
+            " stream.write(json.dumps(args)+'\\n')\n"
+            "if args[:2]==['ps','-q']:\n"
+            " raise SystemExit\n"
+            "if args[:2]==['load']:\n"
+            " sys.stdin.buffer.read()\n"
+            " print('Loaded image')\n"
+            " raise SystemExit\n"
+            "if args[:2]==['image','inspect']:\n"
+            " print(json.dumps([json.loads(os.environ['IMAGE_PROOF'])]))\n"
+            " raise SystemExit\n"
+            "if args[:2]==['image','ls']:\n"
+            " status=int(os.environ['LIST_STATUS'])\n"
+            " if status:\n"
+            "  raise SystemExit(status)\n"
+            " if os.environ.get('TAG_ID'):\n"
+            "  print(os.environ['TAG_ID'])\n"
+            " raise SystemExit\n"
+            "if args[:2]==['image','tag']:\n"
+            " raise SystemExit\n"
+            "if args[:2]==['volume','inspect']:\n"
+            " raise SystemExit(1)\n"
+            "if args[:2]==['volume','create']:\n"
+            " print(args[-1])\n"
+            " raise SystemExit\n"
+            "raise SystemExit('unexpected docker command: '+repr(args))\n"
+        )
+        sudo = bin_dir / "sudo"
+        sudo.write_text("#!/bin/sh\nshift\nexec \"$@\"\n")
+        zstd = bin_dir / "zstd"
+        zstd.write_text("#!/bin/sh\ncat \"$2\"\n")
+        python3 = bin_dir / "python3"
+        python3.write_text(
+            "#!/bin/sh\n"
+            "if test \"$1\" = -m && test \"$2\" = venv; then\n"
+            " mkdir -p \"$3/bin\"\n"
+            " printf '#!/bin/sh\\nexit 0\\n' > \"$3/bin/pip\"\n"
+            " chmod +x \"$3/bin/pip\"\n"
+            " exit 0\n"
+            "fi\n"
+            "exec " + shlex.quote(sys.executable) + " \"$@\"\n"
+        )
+        for executable in (docker, sudo, zstd, python3):
+            executable.chmod(0o755)
+        actual_proof = proof | {"id": proof_id}
+        environment = os.environ | {
+            "PATH": str(bin_dir) + os.pathsep + os.environ["PATH"],
+            "DOCKER_LOG": str(log),
+            "IMAGE_PROOF": json.dumps({
+                "Id": actual_proof["id"],
+                "Architecture": actual_proof["architecture"],
+                "Os": actual_proof["os"],
+                "Created": actual_proof["created"],
+                "RootFS": {"Layers": actual_proof["rootfs_layers"]},
+            }),
+            "TAG_ID": tag_id,
+            "LIST_STATUS": str(list_status),
+        }
+        result = subprocess.run(
+            ["bash", "-c", control._import_command(
+                control.host("host1"), imported
+            )],
+            env=environment,
+            capture_output=True,
+            text=True,
+        )
+        calls = [
+            json.loads(line) for line in log.read_text().splitlines()
+        ]
+        return control, result, calls
+
+    def test_native_import_tags_verified_image_when_tag_is_absent(self):
+        control, result, calls = self.run_native_import()
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn([
+            "image", "tag", "sha256:locked",
+            f"pg_textsearch-scale:{control.config['native_source']}",
+        ], calls)
+
+    def test_native_import_accepts_existing_tag_for_locked_image(self):
+        _, result, calls = self.run_native_import(
+            tag_id="sha256:locked"
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertFalse(any(
+            call[:2] == ["image", "tag"] for call in calls
+        ))
+
+    def test_native_import_rejects_foreign_tag_before_volume_mutation(self):
+        _, result, calls = self.run_native_import(
+            tag_id="sha256:foreign", include_volume=True
+        )
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertFalse(any(
+            call[:2] == ["image", "tag"]
+            or call[:2] == ["volume", "create"]
+            for call in calls
+        ))
+
+    def test_native_import_aborts_when_tag_listing_fails(self):
+        _, result, calls = self.run_native_import(
+            list_status=42, include_volume=True
+        )
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertFalse(any(
+            call[:2] == ["image", "tag"]
+            or call[:2] == ["volume", "create"]
+            for call in calls
+        ))
+
+    def test_native_import_rejects_proof_mismatch_before_tag_review(self):
+        _, result, calls = self.run_native_import(
+            proof_id="sha256:different"
+        )
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertFalse(any(
+            call[:2] in (["image", "ls"], ["image", "tag"])
+            for call in calls
+        ))
+
     def test_native_selection_reaches_build_export_and_workers(self):
         candidate = "0123456789abcdef0123456789abcdef01234567"
         config = private_config(self.state) | {"native_source": candidate}
@@ -218,7 +406,9 @@ class FleetControlTest(unittest.TestCase):
             exec(compile(script, "<source-prepare>", "exec"), {})
         for dataset, path in captured:
             if path.is_file():
-                self.assertEqual(json.loads(path.read_text()), fleet_plan(dataset))
+                self.assertEqual(
+                    json.loads(path.read_text()), fleet_plan(dataset)
+                )
 
     def test_preflight_accepts_the_selected_released_native_version(self):
         config = private_config(self.state) | {"root": str(self.root)}
@@ -280,8 +470,12 @@ class FleetControlTest(unittest.TestCase):
         control.run()
         self.assertEqual(backend.calls, [])
 
-    def test_loaded_failed_worker_is_restarted_without_starting_another_unit(self):
-        config = private_config(self.state) | {"root": str(self.root / "artifacts")}
+    def test_loaded_failed_worker_is_restarted_without_starting_another_unit(
+        self,
+    ):
+        config = private_config(self.state) | {
+            "root": str(self.root / "artifacts")
+        }
         self.config_path.write_text(json.dumps(config))
         control = self.control()
         bin_dir = self.root / "bin"

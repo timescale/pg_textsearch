@@ -8,6 +8,9 @@ import random
 import re
 from typing import Iterable, Sequence
 
+DEFAULT_QUERY_SPANS = tuple(range(2, 16))
+DEFAULT_QUERIES_PER_SPAN = 100
+
 
 class QueryError(RuntimeError):
     """A safe, actionable query preparation error."""
@@ -69,7 +72,9 @@ def load_queries(
 def _tokens(queries: Iterable[dict[str, str]]) -> list[str]:
     tokens: list[str] = []
     for query in queries:
-        tokens.extend(re.findall(r"[^\W_]+(?:'[^\W_]+)?", query["text"].lower()))
+        tokens.extend(re.findall(
+            r"[^\W_]+(?:'[^\W_]+)?", query["text"].lower()
+        ))
     return tokens
 
 
@@ -247,7 +252,8 @@ def build_workload_matrix() -> list[dict[str, object]]:
                 ),
                 **(
                     {
-                        "reason": "Lead stores no search index data, so update "
+                        "reason": "Lead stores no search index data, "
+                        "so update "
                         "cost is not performance-comparable"
                     }
                     if engine == "lead"
@@ -265,12 +271,14 @@ def write_query_pack(
     spans: Iterable[int],
     per_span: int,
     seed: int,
+    span_queries: Sequence[dict[str, object]] | None = None,
 ) -> None:
     """Write deterministic JSON inputs consumed directly by k6 scripts."""
     output.mkdir(parents=True, exist_ok=True)
-    span_queries = build_span_queries(
-        natural, spans=spans, per_span=per_span, seed=seed
-    )
+    if span_queries is None:
+        span_queries = build_span_queries(
+            natural, spans=spans, per_span=per_span, seed=seed
+        )
     files = {
         "natural.json": list(natural),
         "spans.json": span_queries,

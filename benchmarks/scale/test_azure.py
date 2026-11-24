@@ -17,8 +17,12 @@ MODULE = pathlib.Path(__file__).with_name("azure.py")
 
 class AzureTemplateTests(unittest.TestCase):
     def module(self):
-        self.assertTrue(MODULE.exists(), "Azure provisioning is not implemented")
-        spec = importlib.util.spec_from_file_location("azure_benchmark", MODULE)
+        self.assertTrue(
+            MODULE.exists(), "Azure provisioning is not implemented"
+        )
+        spec = importlib.util.spec_from_file_location(
+            "azure_benchmark", MODULE
+        )
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
         return module
@@ -36,7 +40,9 @@ class AzureTemplateTests(unittest.TestCase):
         self.assertEqual(vm["properties"]["expirationDate"],
                          "2026-12-03T02:00:00Z")
         self.assertTrue(vm["properties"]["isAuthenticationWithSshKey"])
-        self.assertFalse(any("roleAssignments" in r["type"] for r in resources))
+        self.assertFalse(any(
+            "roleAssignments" in r["type"] for r in resources
+        ))
 
     def test_network_is_closed_before_vm_exists(self):
         resources = self.template()["resources"]
@@ -53,7 +59,8 @@ class AzureTemplateTests(unittest.TestCase):
         self.assertIn("networkSecurityGroup", json.dumps(vnet))
         self.assertIn("benchmark-nsg", str(vnet["dependsOn"]))
         labnet = next(r for r in resources
-                      if r["type"] == "Microsoft.DevTestLab/labs/virtualNetworks")
+                      if r["type"] ==
+                      "Microsoft.DevTestLab/labs/virtualNetworks")
         self.assertIn("benchmark-vnet", str(labnet["dependsOn"]))
 
     def test_refuses_unbounded_or_public_ssh(self):
@@ -79,7 +86,10 @@ class AzureTemplateTests(unittest.TestCase):
                             {"id": identifier}
                             for present, identifier in (
                                 (state["lab"], lab),
-                                (state["vm"], lab + "/virtualMachines/searchbench"),
+                                (
+                                    state["vm"],
+                                    lab + "/virtualMachines/searchbench",
+                                ),
                             ) if present
                         ]
                     if args[:2] == ("resource", "delete"):
@@ -89,13 +99,15 @@ class AzureTemplateTests(unittest.TestCase):
                             state["lab"] = False
                         else:
                             self.assertEqual(target,
-                                             lab + "/virtualMachines/searchbench")
+                                             lab +
+                                             "/virtualMachines/searchbench")
                             state["vm"] = False
                         return None
                     if args[:2] == ("group", "delete"):
                         if state["lab"]:
                             raise subprocess.CalledProcessError(
-                                1, args, stderr="ScopeLocked: DevTestLabs Lock",
+                                1, args,
+                                stderr="ScopeLocked: DevTestLabs Lock",
                             )
                         state["group"] = False
                         return None
@@ -118,7 +130,10 @@ class AzureTemplateTests(unittest.TestCase):
         with patch.object(module.subprocess, "run", side_effect=failure):
             with contextlib.redirect_stderr(error_output):
                 with self.assertRaises(subprocess.CalledProcessError):
-                    module.az("test", "group", "delete", "-n", "searchbench-test")
+                    module.az(
+                        "test", "group", "delete", "-n",
+                        "searchbench-test",
+                    )
         self.assertIn("ScopeLocked: DevTestLabs Lock", error_output.getvalue())
 
     def test_describe_vm_refuses_unowned_resources_before_reading_ip(self):
@@ -259,7 +274,7 @@ class AzureTemplateTests(unittest.TestCase):
         self.assertIn("terms acceptance is required before allocating",
                       result.stderr)
 
-    def test_collection_copies_only_the_selected_run_without_provisioning(self):
+    def test_collection_copies_only_selected_run_without_provisioning(self):
         with tempfile.TemporaryDirectory() as directory:
             root = pathlib.Path(directory)
             tools = root / "bin"
@@ -307,7 +322,9 @@ class AzureTemplateTests(unittest.TestCase):
             )
             self.assertEqual(result.returncode, 0, result.stderr)
             copied = root / "results" / "test-run" / "summary.json"
-            self.assertEqual(json.loads(copied.read_text()), {"complete": True})
+            self.assertEqual(
+                json.loads(copied.read_text()), {"complete": True}
+            )
 
     def test_setup_syncs_go_helper_and_passes_validated_compute_id(self):
         root = pathlib.Path(

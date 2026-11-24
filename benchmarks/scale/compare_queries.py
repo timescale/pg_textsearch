@@ -136,7 +136,9 @@ def _validated_run(records):
             for row in databases
         )
     ):
-        raise ValueError("missing, duplicate, or incomplete database provenance")
+        raise ValueError(
+            "missing, duplicate, or incomplete database provenance"
+        )
     queries = {}
     for row in records[1:-1]:
         if row.get("type") != "query":

@@ -25,7 +25,7 @@ class QueriesTest(unittest.TestCase):
     def tearDown(self):
         self._temporary.cleanup()
 
-    def test_queries_are_selected_deterministically_independent_of_input_order(self):
+    def test_query_selection_is_input_order_independent(self):
         first = self.scratch / "first.tsv"
         second = self.scratch / "second.tsv"
         rows = ["9\tred blue\n", "2\tgreen yellow\n", "5\tblack white\n"]
@@ -66,7 +66,9 @@ class QueriesTest(unittest.TestCase):
             "span02-0001",
             "span05-0001",
         ])
-        self.assertEqual([len(row["text"].split()) for row in spans], [2, 5, 2, 5])
+        self.assertEqual(
+            [len(row["text"].split()) for row in spans], [2, 5, 2, 5]
+        )
 
     def test_corpus_spans_never_cross_document_boundaries(self):
         documents = [

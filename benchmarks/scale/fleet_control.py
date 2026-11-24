@@ -1191,6 +1191,17 @@ print(json.dumps(value))
                     + shlex.quote(image_id)
                     + " | python3 -c " + shlex.quote(verifier)
                     + " " + shlex.quote(expected)
+                    + "; native_tag_id=\"$(sudo -A docker image ls "
+                    "--no-trunc --format '{{.ID}}' --filter "
+                    + shlex.quote("reference=" + database_image)
+                    + ")\"; if test -z \"$native_tag_id\"; then "
+                    "sudo -A docker image tag "
+                    + shlex.quote(image_id) + " "
+                    + shlex.quote(database_image)
+                    + "; elif test \"$native_tag_id\" != "
+                    + shlex.quote(image_id)
+                    + "; then echo 'native image tag points to a "
+                    "foreign image' >&2; exit 1; fi"
                 )
             elif artifact["kind"] == "source_manifest":
                 lines.append(
@@ -2017,8 +2028,12 @@ def main(argv=None):
         ),
     )
     parser.add_argument("--config", type=Path)
-    parser.add_argument("--source-ref", help="harness revision for schema output")
-    parser.add_argument("--native-source", help="native commit for schema output")
+    parser.add_argument(
+        "--source-ref", help="harness revision for schema output"
+    )
+    parser.add_argument(
+        "--native-source", help="native commit for schema output"
+    )
     parser.add_argument(
         "--sql-shape", choices=("original", "filter_first", "rank_first"),
         help="native SQL shape for schema output",
@@ -2045,7 +2060,9 @@ def main(argv=None):
     if any(value is not None for value in (
         args.source_ref, args.native_source, args.sql_shape,
     )):
-        parser.error("source and SQL selection flags are only valid for schema")
+        parser.error(
+            "source and SQL selection flags are only valid for schema"
+        )
     if args.config is None:
         parser.error("--config is required")
     try:

@@ -2,7 +2,8 @@
 
 Reproducible, single-host comparisons using
 [ParadeDB's benchmarker](https://github.com/paradedb/benchmarker).
-Workload shapes follow the [TIN launch](https://planetscale.com/blog/introducing-tin)
+Workload shapes follow the
+[TIN launch](https://planetscale.com/blog/introducing-tin)
 and [ParadeDB response](https://www.paradedb.com/blog/opening-a-closed-tin):
 ranked disjunctions, conjunctions and phrases, counts, and concurrent updates.
 
@@ -70,12 +71,14 @@ Foreign Go shims are not replaced, and `/usr/local/go` is untouched.
 **NVMe is ephemeral.** Do not deallocate/redeploy the VM expecting data to
 survive. Copy results off the machine before expiration.
 
-`launch.sh provision`, `setup`, and `run` run individual stages. `DATASET=smoke`
+`launch.sh provision`, `setup`, and `run` run individual stages.
+`DATASET=smoke`
 uses 10,000 synthetic documents to exercise the actual engines and driver.
 `RUN_ID` selects a run; `STATE` selects a local, ignored provisioning record.
 Set `RESUME=1` to retry provisioning with that record's original expiration.
 
-After the service finishes, `RUN_ID=<run> bash benchmarks/scale/launch.sh collect`
+After the service finishes,
+`RUN_ID=<run> bash benchmarks/scale/launch.sh collect`
 copies its artifacts to the ignored `benchmarks/scale/artifacts/runs/`.
 Set `RESULTS_DIR` to use another local destination.
 
@@ -276,7 +279,8 @@ python3 -m benchmarks.scale.fleet_control all \
 Keep the config and controller state private. Remove `existing_group`
 for a fresh six-machine fleet, or set it to adopt a managed source host.
 The common expiry is saved once and verified through Azure's native VM
-expiration, not just tags; resume does not extend it or provision expired state.
+expiration, not just tags; resume does not extend it or provision expired
+state.
 Capacity failures preserve exact failed-attempt groups in `cleanup_required`.
 Inspect and explicitly run their recorded marker-guarded `destroy_command`;
 resume clears obligations only after Azure reports those groups absent.
@@ -291,7 +295,8 @@ The controller stages exports off the source host before its queries
 resume, and keeps the staging host idle until all fanout transfers end.
 It retains original indexes rather than deleting them after measurement.
 The expanded November 19 measurement sources are preserved at
-the tag `benchmarks/tin-expanded-20261119-final-v1`; shard manifests also record
+the tag `benchmarks/tin-expanded-20261119-final-v1`; shard manifests also
+record
 the deployed worker overlay's hash.
 
 For an already provisioned worker:
@@ -388,7 +393,8 @@ python -m benchmarks.scale.replay_queries \
 Use standard libpq environment variables or a passfile for authentication.
 This read-only, persistent single-client diagnostic defaults to the first
 and last queries, a 60-second statement timeout, and three warm executions
-after `EXPLAIN ANALYZE`. Filtered search plans must contain Boolean conditions and
+after `EXPLAIN ANALYZE`. Filtered search plans must contain Boolean conditions
+and
 ordering in the same BM25 Index Scan, without a Sort or materialized CTE.
 Ranked OR uses the direct unfiltered ordering and a separate ordered-plan gate.
 Returned IDs are checked independently with `to_tsvector`. Use `--all` for
@@ -422,7 +428,8 @@ installed runtime binary. For other PostgreSQL versions, pass `--library`.
 
 From a checkout on an idle benchmark host, use libpq service/passfiles for
 the retained native and ParadeDB endpoints; do not put passwords in arguments.
-Run the same prepared pack before and after a guarded native binary replacement:
+Run the same prepared pack before and after a guarded native binary
+replacement:
 
 ```bash
 python -m benchmarks.scale.compare_queries run \
@@ -438,7 +445,8 @@ python -m benchmarks.scale.compare_queries analyze \
 
 Use `--all`, explicit `--ordinal`, or `--operation count` as needed.
 Sampling is deterministic; single-query packs are supported. EXPLAIN, settings,
-index identity, ordered IDs, timings, timeouts, and completion counts are saved.
+index identity, ordered IDs, timings, timeouts, and completion counts are
+saved.
 Analysis rejects incomplete/mismatched runs, reports native changes separately
 from ParadeDB drift, and fails for native row changes or unsuccessful queries.
 It never excuses changed top-K membership using a score tolerance: investigate
@@ -462,8 +470,9 @@ initial build, use `--expected-binary-sha256` instead of a deployment receipt.
 The profiler verifies ownership, proves its SQL connection belongs to that
 container, maps its backend PID, rejects deleted/mismatched mapped binaries,
 checks the index identity against the deployment receipt,
-and stops only its own perf child. It records EXPLAIN and self/inclusive reports,
-without reading Docker passwords or restarting PostgreSQL. Outputs are exclusive;
+and stops only its own perf child. It records EXPLAIN and self/inclusive
+reports, without reading Docker passwords or restarting PostgreSQL.
+Outputs are exclusive;
 sudo-created artifacts are returned to the invoking user's ownership.
 Keep all profiling and symbol-copy I/O outside timed benchmark phases.
 
@@ -472,7 +481,8 @@ Keep all profiling and symbol-copy I/O outside timed benchmark phases.
 Perform this from a fresh checkout with no session artifacts or existing fleet:
 
 1. Create a Python virtual environment, install `requirements.txt`, and run
-   the tests below. Select full harness/native commits and the SQL lane explicitly.
+   the tests below. Select full harness/native commits and the SQL lane
+   explicitly.
 2. Supply Azure login, regional SKU/quota, SSH keys, controller IP, and private
    state paths. Check ARM `plan` before allocation. Never use a shared host or
    adopt an existing group for this rehearsal.

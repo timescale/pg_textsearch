@@ -9,6 +9,11 @@ import re
 import subprocess
 import urllib.request
 
+if __package__:
+    from .queries import _interleave_spans
+else:
+    from queries import _interleave_spans
+
 
 REVISION = "b04c8d1ceb2f5cd4588862100d08de323dccfbaa"
 CONFIG = "20231101.en"
@@ -29,7 +34,9 @@ def sha256(path):
 def download(url, output, expected_sha):
     if output.exists():
         if sha256(output) != expected_sha:
-            raise ValueError(f"Existing download has bad SHA256: {output.name}")
+            raise ValueError(
+                f"Existing download has bad SHA256: {output.name}"
+            )
         return
     partial = output.with_suffix(output.suffix + ".partial")
     # curl resumes large public files and retries transient failures.
@@ -52,7 +59,7 @@ def article_queries(source_id, body, seed):
             f"{seed}:{source_id}:{span}".encode(),
         ).digest()
         start = int.from_bytes(rank[:8], "big") % (len(words) - span + 1)
-        # Reject punctuation-crossing spans rather than changing phrase meaning.
+        # Reject punctuation-crossing spans to preserve phrase meaning.
         original = body[words[start].start():words[start + span - 1].end()]
         if not re.fullmatch(r"[A-Za-z0-9]+(?:\s+[A-Za-z0-9]+)*", original):
             continue
@@ -101,7 +108,10 @@ def convert_shard(source, output, *, seed):
                     f"{seed}:{identifier}".encode(),
                 ).digest()
                 first_article = rows == len(batch) and offset == 0
-                if first_article or int.from_bytes(rank[:4], "big") % 1000 == 0:
+                if (
+                    first_article
+                    or int.from_bytes(rank[:4], "big") % 1000 == 0
+                ):
                     queries.extend(article_queries(identifier, record["text"],
                                                    seed))
                     titles.append({
@@ -158,7 +168,9 @@ def main():
             info, sampled = saved["info"], saved["queries"]
             if (saved["seed"] != args.seed or not output.exists()
                     or sha256(output) != info["sha256"]):
-                raise ValueError("Incompatible or corrupted conversion checkpoint")
+                raise ValueError(
+                    "Incompatible or corrupted conversion checkpoint"
+                )
         else:
             info, sampled = convert_shard(source, output, seed=args.seed)
             write_json(checkpoint, {
@@ -167,8 +179,11 @@ def main():
         titles.extend(info["titles"])
         queries.extend(sampled)
         shards.append({k: v for k, v in info.items() if k != "titles"})
-        print(f"Converted {number + 1}/41 shards, "
-              f"{sum(shard['rows'] for shard in shards):,} articles", flush=True)
+        print(
+            f"Converted {number + 1}/41 shards, "
+            f"{sum(shard['rows'] for shard in shards):,} articles",
+            flush=True,
+        )
     rows = sum(shard["rows"] for shard in shards)
     if rows != EXPECTED_ROWS:
         raise ValueError(f"Expected {EXPECTED_ROWS:,} articles, got {rows:,}")
@@ -180,14 +195,15 @@ def main():
         selected.extend([q for q in queries if q["span"] == span][:100])
     if len(selected) != 1400:
         raise ValueError("Corpus did not yield enough controlled-span queries")
-    write_json(root / "k6" / "spans.json", selected)
+    write_json(root / "k6" / "spans.json", _interleave_spans(selected, 100))
     write_json(root / "k6" / "natural.json", titles[:1000])
     write_json(root / "manifest.json", {
         "dataset": DATASET, "complete": True, "rows": rows,
         "text_bytes": sum(shard["text_bytes"] for shard in shards),
         "source": SOURCE, "revision": REVISION, "config": CONFIG,
         "license": LICENSE, "attribution": (
-            "Wikipedia contributors; source article IDs preserved in source_id. "
+            "Wikipedia contributors; "
+            "source article IDs preserved in source_id. "
             "Original article URLs and titles remain in the pinned raw shards."
         ),
         "columns": {"id": "int64", "source_id": "string", "body": "string"},

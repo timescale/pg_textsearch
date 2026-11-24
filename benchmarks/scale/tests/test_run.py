@@ -28,7 +28,8 @@ class RunPlanTest(unittest.TestCase):
             [
                 sys.executable, "-c",
                 "import json; from benchmarks.scale.run import build_plan; "
-                "print(json.dumps(build_plan(smoke=True, accept_terms=False)))",
+                "print(json.dumps("
+                "build_plan(smoke=True, accept_terms=False)))",
             ],
             env=os.environ | {"PGTS_NATIVE_SOURCE": candidate},
             capture_output=True, text=True, check=True,
@@ -37,7 +38,7 @@ class RunPlanTest(unittest.TestCase):
             json.loads(result.stdout)["pg_textsearch_sha"], candidate
         )
 
-    def test_native_selection_rejects_moving_refs_and_abbreviated_commits(self):
+    def test_native_selection_rejects_moving_and_short_refs(self):
         for value in ("main", "v1.6.0", "01234567", "z" * 40, ""):
             with self.subTest(value=value):
                 result = subprocess.run(
@@ -124,6 +125,92 @@ class RunPlanTest(unittest.TestCase):
                 (runner.dataset / "k6/natural.json").read_text()
             )
             self.assertEqual(natural[0]["text"], "search ranking")
+
+    def corpus_span_cache(self):
+        from benchmarks.scale.queries import build_corpus_span_queries
+
+        return build_corpus_span_queries(
+            [{"source_id": "fixture", "body": " ".join(["word"] * 20)}],
+            spans=range(2, 16), per_span=100, seed=20260304,
+        )
+
+    def test_msmarco_resume_repairs_provisional_or_truncated_span_cache(self):
+        scale_dir = Path(__file__).resolve().parents[1]
+        corpus = self.corpus_span_cache()
+        duplicate = [dict(query) for query in corpus]
+        duplicate[-1]["id"] = duplicate[0]["id"]
+        imbalanced = [dict(query) for query in corpus]
+        imbalanced[-1].update(span=2, text="word word")
+        caches = (
+            b'[{"id":"old","text":"old words",'
+            b'"source":"deterministic-span"}]',
+            b'[{"id":"truncated"',
+            json.dumps(corpus[:1]).encode(),
+            json.dumps(duplicate).encode(),
+            json.dumps(imbalanced).encode(),
+        )
+        for cached in caches:
+            with (
+                self.subTest(cache=cached[:100]),
+                tempfile.TemporaryDirectory(
+                    prefix=".test-tmp-", dir=scale_dir
+                ) as directory,
+            ):
+                artifacts = Path(directory)
+                runner = Runner(
+                    scale_dir.parents[1], artifacts, False,
+                    "query-resume", "msmarco-v2", None,
+                )
+                prepare_synthetic(runner.dataset, rows=10)
+                query_dir = runner.dataset / "k6"
+                query_dir.mkdir()
+                (query_dir / "natural.json").write_text(
+                    '[{"id":"old","text":"old query"}]'
+                )
+                span_path = query_dir / "spans.json"
+                span_path.write_bytes(cached)
+                source = artifacts / "queries.tsv"
+                source.write_text("1\tsearch ranking\n")
+                with patch.dict("os.environ", {
+                    "MSMARCO_ACCEPT_TERMS": "1",
+                    "MSMARCO_QUERY_FILES": f"dev1={source}",
+                }):
+                    runner._prepare_msmarco()
+                self.assertFalse(
+                    span_path.read_bytes() == cached,
+                    "incomplete cached pack must be regenerated",
+                )
+                self.assertTrue(all(
+                    query["source"] == "corpus-span"
+                    for query in json.loads(span_path.read_text())
+                ))
+                runner._validate_query_packs(runner.dataset)
+
+    def test_msmarco_resume_keeps_valid_frozen_query_packs(self):
+        scale_dir = Path(__file__).resolve().parents[1]
+        with tempfile.TemporaryDirectory(
+            prefix=".test-tmp-", dir=scale_dir
+        ) as directory:
+            runner = Runner(
+                scale_dir.parents[1], Path(directory), False,
+                "frozen-queries", "msmarco-v2", None,
+            )
+            prepare_synthetic(runner.dataset, rows=10)
+            query_dir = runner.dataset / "k6"
+            query_dir.mkdir()
+            values = json.dumps(self.corpus_span_cache()).encode()
+            for name in ("natural.json", "spans.json"):
+                (query_dir / name).write_bytes(values)
+            with (
+                patch.dict("os.environ", {"MSMARCO_ACCEPT_TERMS": "1"}),
+                patch(
+                    "benchmarks.scale.run.prepare_main",
+                    side_effect=AssertionError("must not regenerate"),
+                ),
+            ):
+                runner._prepare_msmarco()
+            for name in ("natural.json", "spans.json"):
+                self.assertEqual((query_dir / name).read_bytes(), values)
 
     def test_lead_subset_cannot_reuse_another_corpus(self):
         scale_dir = Path(__file__).resolve().parents[1]

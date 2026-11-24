@@ -22,7 +22,8 @@ runner = Runner(
 runner.prepare()
 PY
 sha="$("$root/venv/bin/python" -c \
-    'from benchmarks.scale.run import PG_TEXTSEARCH_SHA; print(PG_TEXTSEARCH_SHA)')"
+    'from benchmarks.scale.run import PG_TEXTSEARCH_SHA
+print(PG_TEXTSEARCH_SHA)')"
 docker run --rm -d --name "$name" --label purpose=writer-validation \
     --cpuset-cpus=0-23 --memory=16g --shm-size=2g \
     -e POSTGRES_PASSWORD=postgres -p 127.0.0.1:15432:5432 \

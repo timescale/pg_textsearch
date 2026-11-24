@@ -47,7 +47,9 @@ def summarize(root, engines):
     for engine in engines:
         cells = sorted((root / engine).glob("*/*/*vu"))
         if not cells:
-            raise ValueError(f"no workload cells for requested engine: {engine}")
+            raise ValueError(
+                f"no workload cells for requested engine: {engine}"
+            )
         for cell in cells:
             complete = (cell / "complete.json").is_file()
             failed = (cell / "failed.json").is_file()
@@ -128,7 +130,9 @@ def summarize(root, engines):
                     count != len(update_query["latencies"])
                     or updates["value"] != 0
                 ):
-                    raise ValueError(f"inconsistent update sample count: {cell}")
+                    raise ValueError(
+                        f"inconsistent update sample count: {cell}"
+                    )
                 row.update(
                     achieved_updates=count, update_seconds=update_seconds,
                     achieved_updates_per_second=count / update_seconds,

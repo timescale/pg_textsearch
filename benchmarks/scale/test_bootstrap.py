@@ -23,7 +23,9 @@ class EphemeralDiskTests(unittest.TestCase):
         return module
 
     def select(self, devices):
-        self.assertTrue(MODULE.exists(), "Safe disk selection is not implemented")
+        self.assertTrue(
+            MODULE.exists(), "Safe disk selection is not implemented"
+        )
         return self.module().select_disks({"blockdevices": devices})
 
     def disk(self, path, **changes):

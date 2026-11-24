@@ -13,7 +13,8 @@ test "$(docker info --format '{{.DockerRootDir}}')" = /srv/searchbench/docker
 mkdir -p "$out"
 python="$root/venv/bin/python"
 sha="$("$python" -c \
-    'from benchmarks.scale.run import PG_TEXTSEARCH_SHA; print(PG_TEXTSEARCH_SHA)')"
+    'from benchmarks.scale.run import PG_TEXTSEARCH_SHA
+print(PG_TEXTSEARCH_SHA)')"
 docker run --rm -d --name "$name" --label purpose=native-rewrite-validation \
     --cpuset-cpus=0-7 --memory=8g --shm-size=2g \
     -e POSTGRES_PASSWORD=postgres "pg_textsearch-scale:$sha" \

@@ -40,7 +40,7 @@ class RowWriter(Protocol):
 def require_terms_acceptance(
     accepted_flag: bool, environment: Mapping[str, str] | None = None
 ) -> None:
-    """Refuse dataset access until the operator explicitly accepts its terms."""
+    """Refuse dataset access until the operator accepts its terms."""
     environment = os.environ if environment is None else environment
     accepted_env = environment.get("MSMARCO_ACCEPT_TERMS", "").lower()
     if not accepted_flag and accepted_env not in {"1", "true", "yes"}:
@@ -110,7 +110,7 @@ def iter_archive_members(
     """Yield each gzip JSONL member and its rows in archive order.
 
     The caller must fully consume one member's rows before requesting the next
-    member. This keeps memory bounded while retaining deterministic numeric IDs.
+    member. This bounds memory while retaining deterministic numeric IDs.
     """
     next_id = [1]
     skip_members = {} if skip_members is None else skip_members

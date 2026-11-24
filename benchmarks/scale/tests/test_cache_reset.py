@@ -1,6 +1,8 @@
 import os
+import json
 from pathlib import Path
 import sys
+import subprocess
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -54,6 +56,56 @@ class CacheResetTests(unittest.TestCase):
                     "/srv/searchbench/pg_textsearch-scale/runs/test",
                     "pgts-tin-example",
                 )
+
+    def test_custom_root_preserves_foreign_volume_rejection(self):
+        root = Path("/srv/searchbench/custom-benchmarks")
+        with (
+            patch(
+                "benchmarks.scale.cache_reset.validate_storage"
+            ) as validate,
+            patch(
+                "benchmarks.scale.cache_reset.docker_output",
+                side_effect=[
+                    "/srv/searchbench/docker", "",
+                    json.dumps([{
+                        "Labels": {"managed-by": "another-owner"},
+                    }]),
+                ],
+            ),
+        ):
+            with self.assertRaisesRegex(ConfigError, "foreign"):
+                reset_volume("phase", root / "runs/test", "foreign-volume")
+        validate.assert_called_once_with(root, smoke=True)
+
+    def test_shell_hook_uses_system_python_not_artifacts_interpreter(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            capture = root / "arguments.json"
+            sudo = root / "sudo"
+            sudo.write_text(
+                "#!/usr/bin/python3\n"
+                "import json, os, sys\n"
+                "with open(os.environ['CAPTURE'], 'w') as stream:\n"
+                "    json.dump(sys.argv[1:], stream)\n"
+            )
+            sudo.chmod(0o700)
+            script = Path(__file__).resolve().parents[1] / "cache_reset.sh"
+            result = subprocess.run(
+                ["bash", str(script), "phase", "run-directory", "volume"],
+                env={
+                    **os.environ,
+                    "PATH": f"{root}:{os.environ['PATH']}",
+                    "CAPTURE": str(capture),
+                },
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            arguments = json.loads(capture.read_text())
+        self.assertEqual(arguments[:2], ["-A", "/usr/bin/python3"])
+        self.assertEqual(arguments[3:], [
+            "phase", "run-directory", "volume",
+        ])
 
 
 if __name__ == "__main__":

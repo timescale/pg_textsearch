@@ -164,6 +164,10 @@ class TinSummaryTests(unittest.TestCase):
 
     def test_write_cleanup_checkpoint_is_not_a_dashboard(self):
         self.completed()
+        self.write_json("write-cleanup-failed.json", {
+            "error": "interrupted cleanup",
+            "volume": "completed-disposable-write-volume",
+        })
         self.write_json("write-cleanup.json", {
             "removed": True,
             "volume": "completed-disposable-write-volume",

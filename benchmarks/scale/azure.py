@@ -142,8 +142,10 @@ def _owned_dtl_vm(subscription, group):
     resource_group = az(subscription, "group", "show", "-n", group)
     if resource_group.get("tags", {}).get("managed-by") != MARKER:
         raise ValueError("Resource group ownership marker is missing")
-    vm_id = (f"/subscriptions/{subscription}/resourceGroups/{group}/providers/"
-             "Microsoft.DevTestLab/labs/searchbench/virtualmachines/searchbench")
+    vm_id = (
+        f"/subscriptions/{subscription}/resourceGroups/{group}/providers/"
+        "Microsoft.DevTestLab/labs/searchbench/virtualmachines/searchbench"
+    )
     vm = az(subscription, "rest", "--method", "get", "--url",
             f"https://management.azure.com{vm_id}?api-version=2018-09-15")
     if vm.get("tags", {}).get("managed-by") != MARKER:
@@ -162,8 +164,10 @@ def establish_compute_ownership(subscription, group, expires):
 
 
 def validate_existing_guest_ownership(subscription, group):
-    vm_id = (f"/subscriptions/{subscription}/resourceGroups/{group}/providers/"
-             "Microsoft.DevTestLab/labs/searchbench/virtualmachines/searchbench")
+    vm_id = (
+        f"/subscriptions/{subscription}/resourceGroups/{group}/providers/"
+        "Microsoft.DevTestLab/labs/searchbench/virtualmachines/searchbench"
+    )
     resources = az(subscription, "resource", "list", "-g", group)
     if not any(
         resource.get("id", "").lower() == vm_id.lower()
@@ -203,13 +207,17 @@ def describe_vm(subscription, group):
                        "-g", compute_group, "-n", "searchbench")
         public = addresses[0]["virtualMachine"]["network"]["publicIpAddresses"]
         if public:
-            result["networkInterface"]["publicIpAddress"] = public[0]["ipAddress"]
+            result["networkInterface"]["publicIpAddress"] = (
+                public[0]["ipAddress"]
+            )
     return result
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("action", choices=["plan", "create", "status", "destroy"])
+    parser.add_argument(
+        "action", choices=["plan", "create", "status", "destroy"]
+    )
     parser.add_argument("--subscription", required=True)
     parser.add_argument("--group", required=True)
     parser.add_argument("--location", default="westus2")
@@ -217,9 +225,12 @@ def main():
     parser.add_argument("--ssh-key", type=pathlib.Path)
     parser.add_argument("--ssh-cidr")
     parser.add_argument("--days", type=int, default=14)
-    parser.add_argument("--expires", help="UTC ISO timestamp (for expiry tests)")
+    parser.add_argument(
+        "--expires", help="UTC ISO timestamp (for expiry tests)"
+    )
     parser.add_argument("--resume", action="store_true",
-                        help="Retry a marked deployment using its saved expiry")
+                        help=("Retry a marked deployment using its saved "
+                              "expiry"))
     parser.add_argument("--state", type=pathlib.Path,
                         default=pathlib.Path("benchmarks/results/azure.json"))
     args = parser.parse_args()
@@ -232,8 +243,11 @@ def main():
             if (saved["subscription"] == args.subscription
                     and saved["group"] == args.group):
                 saved.update(
-                    status=("provisioned" if vm["provisioningState"] == "Succeeded"
-                            else "provisioning"),
+                    status=(
+                        "provisioned"
+                        if vm["provisioningState"] == "Succeeded"
+                        else "provisioning"
+                    ),
                     vm=vm,
                 )
                 args.state.write_text(json.dumps(saved, indent=2) + "\n")

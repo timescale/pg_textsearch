@@ -19,6 +19,8 @@ from benchmarks.scale.dataset import (
     require_terms_acceptance,
 )
 from benchmarks.scale.queries import (
+    DEFAULT_QUERY_SPANS,
+    DEFAULT_QUERIES_PER_SPAN,
     QueryError,
     load_queries,
     sample_parquet_spans,
@@ -78,8 +80,13 @@ def _parser() -> argparse.ArgumentParser:
         default=0,
         help="stable total subset size; 0 keeps all queries",
     )
-    queries.add_argument("--spans", default="2-15")
-    queries.add_argument("--per-span", type=int, default=100)
+    queries.add_argument(
+        "--spans",
+        default=f"{DEFAULT_QUERY_SPANS[0]}-{DEFAULT_QUERY_SPANS[-1]}",
+    )
+    queries.add_argument(
+        "--per-span", type=int, default=DEFAULT_QUERIES_PER_SPAN
+    )
     queries.add_argument(
         "--corpus-parquet",
         type=Path,
@@ -220,23 +227,22 @@ def main(
         natural = _select_natural(
             natural, args.seed, args.natural_limit
         )
+        span_queries = None
+        if args.corpus_parquet:
+            span_queries = sample_parquet_spans(
+                args.corpus_parquet,
+                spans=_spans(args.spans),
+                per_span=args.per_span,
+                seed=args.seed,
+            )
         write_query_pack(
             args.output,
             natural,
             spans=_spans(args.spans),
             per_span=args.per_span,
             seed=args.seed,
+            span_queries=span_queries,
         )
-        if args.corpus_parquet:
-            spans = sample_parquet_spans(
-                args.corpus_parquet,
-                spans=_spans(args.spans),
-                per_span=args.per_span,
-                seed=args.seed,
-            )
-            (args.output / "spans.json").write_text(
-                json.dumps(spans, indent=2, ensure_ascii=False) + "\n"
-            )
         print(f"prepared {len(natural)} natural queries")
         return 0
     except (DatasetError, QueryError, OSError) as error:

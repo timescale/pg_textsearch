@@ -201,7 +201,9 @@ class DatasetTest(unittest.TestCase):
             def close(self):
                 pass
 
-        with self.assertRaisesRegex(DatasetError, "expected 2 rows, converted 1"):
+        with self.assertRaisesRegex(
+            DatasetError, "expected 2 rows, converted 1"
+        ):
             prepare_parquet(
                 archive,
                 self.scratch / "prepared",

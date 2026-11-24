@@ -70,7 +70,7 @@ class FleetAzureTest(unittest.TestCase):
         with self.assertRaisesRegex(ConfigError, "incompatible"):
             FleetAzure(changed, self.root).prepare_manifest(now=now)
 
-    def test_expired_deadline_rejects_provision_before_any_azure_mutation(self):
+    def test_expired_deadline_blocks_all_azure_mutation(self):
         now = dt.datetime(2026, 11, 20, tzinfo=dt.timezone.utc)
         config = dict(
             self.config, existing_group="searchbench-existing"

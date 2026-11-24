@@ -60,11 +60,11 @@ def docker_output(*args):
 
 
 def reset_volume(phase, run_dir, volume):
-    root = Path("/srv/searchbench/pg_textsearch-scale")
-    validate_storage(root, smoke=True)
     run_dir = Path(run_dir).resolve()
-    if run_dir.parent != root / "runs":
+    if run_dir.parent.name != "runs":
         raise ConfigError("cache reset requires a dedicated benchmark run")
+    root = run_dir.parent.parent
+    validate_storage(root, smoke=True)
     docker_root = Path(docker_output(
         "info", "--format", "{{.DockerRootDir}}"
     ))

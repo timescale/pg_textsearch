@@ -18,14 +18,16 @@ def _literal(value):
 
 
 def enrich_queries(container, text_config, queries):
-    """Compute Boolean query trees with the index's actual PostgreSQL analyzer."""
+    """Compute Boolean trees using the index's PostgreSQL analyzer."""
     config = _literal(text_config) + "::regconfig"
     records = []
     for ordinal, query in enumerate(queries):
         if not isinstance(query.get("text"), str):
             raise RewriteError("query text must be a string")
         # Base64 keeps COPY's end marker and embedded newlines out of its data.
-        encoded = base64.b64encode(query["text"].encode("utf-8")).decode("ascii")
+        encoded = base64.b64encode(
+            query["text"].encode("utf-8")
+        ).decode("ascii")
         records.append(f"{ordinal}\t{encoded}\n")
     if not records:
         return []
@@ -37,7 +39,8 @@ def enrich_queries(container, text_config, queries):
         + "".join(records)
         + "\\.\n"
         "WITH inputs AS (\n"
-        " SELECT ordinal, convert_from(decode(encoded,'base64'),'UTF8') AS body\n"
+        " SELECT ordinal, "
+        "convert_from(decode(encoded,'base64'),'UTF8') AS body\n"
         " FROM rewrite_inputs\n"
         ")\n"
         "SELECT json_build_object(\n"
@@ -65,7 +68,9 @@ def enrich_queries(container, text_config, queries):
     try:
         rows = [json.loads(line) for line in result.stdout.splitlines()]
     except json.JSONDecodeError as error:
-        raise RewriteError("invalid PostgreSQL query preparation output") from error
+        raise RewriteError(
+            "invalid PostgreSQL query preparation output"
+        ) from error
     if (
         len(rows) != len(queries)
         or [row.get("ordinal") for row in rows] != list(range(len(queries)))

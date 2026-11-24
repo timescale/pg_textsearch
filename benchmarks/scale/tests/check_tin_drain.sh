@@ -15,10 +15,12 @@ cp benchmarks/scale/benchmarker/schema.yaml "$out/schema.yaml"
 printf '%s\n' '[{"id":"slow","text":"fixture"}]' > "$out/k6/queries.json"
 printf '%s\n' '[1,2]' > "$out/k6/update_targets.json"
 printf '%s\n' \
-    '{"kinds":["disjunction"],"sql":{"disjunction":"SELECT $1::text, pg_sleep(35)"}}' \
+    '{"kinds":["disjunction"],
+      "sql":{"disjunction":"SELECT $1::text, pg_sleep(35)"}}' \
     > "$out/k6/scenario.json"
 sha="$("$root/venv/bin/python" -c \
-    'from benchmarks.scale.run import PG_TEXTSEARCH_SHA; print(PG_TEXTSEARCH_SHA)')"
+    'from benchmarks.scale.run import PG_TEXTSEARCH_SHA
+print(PG_TEXTSEARCH_SHA)')"
 docker run --rm -d --name "$name" \
     --label managed-by=pg_textsearch-tin --label purpose=driver-drain \
     --cpuset-cpus=0-7 --memory=16g --memory-swap=16g --shm-size=2g \

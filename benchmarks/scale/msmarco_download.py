@@ -35,7 +35,9 @@ ASSETS = {
 }
 
 
-def download_assets(output: Path, *, accepted: bool = False) -> dict[str, Path]:
+def download_assets(
+    output: Path, *, accepted: bool = False
+) -> dict[str, Path]:
     require_terms_acceptance(accepted)
     output.mkdir(parents=True, exist_ok=True)
     paths = {}
@@ -79,7 +81,9 @@ def main():
     parser.add_argument("--accept-msmarco-terms", action="store_true")
     args = parser.parse_args()
     paths = download_assets(args.output, accepted=args.accept_msmarco_terms)
-    print(json.dumps({key: str(path) for key, path in paths.items()}, indent=2))
+    print(json.dumps(
+        {key: str(path) for key, path in paths.items()}, indent=2
+    ))
 
 
 if __name__ == "__main__":

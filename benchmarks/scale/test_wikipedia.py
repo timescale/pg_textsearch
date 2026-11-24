@@ -12,7 +12,9 @@ MODULE = Path(__file__).with_name("wikipedia.py")
 class WikipediaTests(unittest.TestCase):
     def module(self):
         self.assertTrue(MODULE.exists(), "Wikipedia preparation is missing")
-        spec = importlib.util.spec_from_file_location("wikipedia_prepare", MODULE)
+        spec = importlib.util.spec_from_file_location(
+            "wikipedia_prepare", MODULE
+        )
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
         return module
