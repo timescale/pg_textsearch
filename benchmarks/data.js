@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795504172316,
+  "lastUpdate": 1795504176618,
   "repoUrl": "https://github.com/timescale/pg_textsearch",
   "entries": {
     "cranfield Benchmarks": [
@@ -227701,6 +227701,93 @@ window.BENCHMARK_DATA = {
           {
             "name": "wikipedia_insert (0 docs) - Weighted Throughput (avg ms/query)",
             "value": 0.79,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia_insert (0 docs) - Index Size",
+            "value": 401.68,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tjgreen@gmail.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "8827063c73f53fd90433dd6371db53c13d0a9c59",
+          "message": "Release v1.6.0 (#626)\n\nFinalize v1.6.0 version references and SQL filenames, with release and\nupgrade notes and the linear `1.5.0 -> 1.5.1 -> 1.6.0` upgrade path.\n\nStrengthen upgrade coverage with exact version checks, fresh-install\ncatalog parity, partition-local `text`/`text[]` scoring, and fail-fast\nclean installs.\n\nVerified on PostgreSQL 17/18: all 87 SQL regressions, all 17 historical\nupgrade paths, storage matrices (including strict 1.5.1 upgrades),\nquoted\nschemas, and negative checks.",
+          "timestamp": "2026-11-23T16:58:58Z",
+          "url": "https://github.com/timescale/pg_textsearch/commit/8827063c73f53fd90433dd6371db53c13d0a9c59"
+        },
+        "date": 1795504175906,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "wikipedia_insert (0 docs) - Index Build Time",
+            "value": 0.894,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia_insert (0 docs) - Insert Time",
+            "value": 30283.137,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia_insert (0 docs) - 1 Token Query (p50)",
+            "value": 0.34,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia_insert (0 docs) - 2 Token Query (p50)",
+            "value": 0.52,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia_insert (0 docs) - 3 Token Query (p50)",
+            "value": 0.66,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia_insert (0 docs) - 4 Token Query (p50)",
+            "value": 0.86,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia_insert (0 docs) - 5 Token Query (p50)",
+            "value": 1.06,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia_insert (0 docs) - 6 Token Query (p50)",
+            "value": 1.22,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia_insert (0 docs) - 7 Token Query (p50)",
+            "value": 1.4,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia_insert (0 docs) - 8+ Token Query (p50)",
+            "value": 1.86,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia_insert (0 docs) - Weighted Latency (p50, ms)",
+            "value": 0.8,
+            "unit": "ms"
+          },
+          {
+            "name": "wikipedia_insert (0 docs) - Weighted Throughput (avg ms/query)",
+            "value": 0.82,
             "unit": "ms"
           },
           {
