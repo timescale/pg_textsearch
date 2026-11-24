@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795418642938,
+  "lastUpdate": 1795504890947,
   "repoUrl": "https://github.com/timescale/pg_textsearch",
   "entries": {
     "Concurrent INSERT (pg_textsearch)": [
@@ -14512,6 +14512,68 @@ window.BENCHMARK_DATA = {
           {
             "name": "pg_textsearch INSERT latency (c=8)",
             "value": 0.759,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tjgreen@gmail.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "8827063c73f53fd90433dd6371db53c13d0a9c59",
+          "message": "Release v1.6.0 (#626)\n\nFinalize v1.6.0 version references and SQL filenames, with release and\nupgrade notes and the linear `1.5.0 -> 1.5.1 -> 1.6.0` upgrade path.\n\nStrengthen upgrade coverage with exact version checks, fresh-install\ncatalog parity, partition-local `text`/`text[]` scoring, and fail-fast\nclean installs.\n\nVerified on PostgreSQL 17/18: all 87 SQL regressions, all 17 historical\nupgrade paths, storage matrices (including strict 1.5.1 upgrades),\nquoted\nschemas, and negative checks.",
+          "timestamp": "2026-11-23T16:58:58Z",
+          "url": "https://github.com/timescale/pg_textsearch/commit/8827063c73f53fd90433dd6371db53c13d0a9c59"
+        },
+        "date": 1795504821823,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "pg_textsearch INSERT TPS (c=1)",
+            "value": 2486.361364,
+            "unit": "tps"
+          },
+          {
+            "name": "pg_textsearch INSERT latency (c=1)",
+            "value": 0.402,
+            "unit": "ms"
+          },
+          {
+            "name": "pg_textsearch INSERT TPS (c=2)",
+            "value": 4258.815069,
+            "unit": "tps"
+          },
+          {
+            "name": "pg_textsearch INSERT latency (c=2)",
+            "value": 0.47,
+            "unit": "ms"
+          },
+          {
+            "name": "pg_textsearch INSERT TPS (c=4)",
+            "value": 7328.296127,
+            "unit": "tps"
+          },
+          {
+            "name": "pg_textsearch INSERT latency (c=4)",
+            "value": 0.546,
+            "unit": "ms"
+          },
+          {
+            "name": "pg_textsearch INSERT TPS (c=8)",
+            "value": 10558.052675,
+            "unit": "tps"
+          },
+          {
+            "name": "pg_textsearch INSERT latency (c=8)",
+            "value": 0.758,
             "unit": "ms"
           }
         ]
