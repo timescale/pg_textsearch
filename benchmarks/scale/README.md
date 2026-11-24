@@ -179,6 +179,12 @@ checkpoints. Failed or censored cells do not prevent the remaining workloads
 and engines from running; the aggregate run still reports failure.
 Query inputs, data, cloud state and raw results are ignored by Git.
 
+Failed write cells keep their cloned volumes for forensics. Retention
+checkpoints remain authoritative after fleet archival: retries refuse to
+delete those volumes. Inspect the checkpoint, volume labels and database
+state before approving manual cleanup; remove its retention checkpoint only
+after the retained volume has been safely removed.
+
 After collection, export search-only statistics:
 
 ```bash

@@ -1048,6 +1048,25 @@ class TinRunner(Runner):
         )
 
     def _remove_owned_write_volume(self, name, labels):
+        for checkpoint in self.tin_dir.rglob("retention.json"):
+            try:
+                retention = json.loads(checkpoint.read_text())
+            except json.JSONDecodeError as error:
+                raise ConfigError(
+                    f"invalid write retention checkpoint: {checkpoint}"
+                ) from error
+            if not isinstance(retention, dict):
+                raise ConfigError(
+                    f"invalid write retention checkpoint: {checkpoint}"
+                )
+            if retention.get("volume") == name and (
+                retention.get("retained") is True
+                or retention.get("retention_requested") is True
+            ):
+                raise ConfigError(
+                    f"refusing retained write volume: {name}; "
+                    f"inspect {checkpoint} before approved manual cleanup"
+                )
         inspect = subprocess.run(
             ["docker", "volume", "inspect", name],
             capture_output=True,

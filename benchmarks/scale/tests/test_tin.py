@@ -1356,6 +1356,83 @@ class TinRunnerTest(unittest.TestCase):
             self.assertEqual(first, second)
             self.assertEqual(first["audited_queries"], 2)
 
+    def test_write_retry_preserves_retained_and_archived_volumes(self):
+        for location, flag in (
+            ("results", "retained"),
+            ("fleet/forensics", "retained"),
+            ("fleet/forensics", "retention_requested"),
+        ):
+            with (
+                self.subTest(location=location, flag=flag),
+                tempfile.TemporaryDirectory() as directory,
+            ):
+                root = Path(directory)
+                runner = TinRunner(
+                    Path(__file__).resolve().parents[3],
+                    root, True, "write-retention", "msmarco-v2", None,
+                )
+                volume = runner._volume_name(
+                    "write", "pg_textsearch",
+                    "english-high-035d20cc5cda",
+                )
+                labels = {
+                    "kind": "write-attempt",
+                    "engine": "pg_textsearch",
+                    "analyzer": "english",
+                    "profile": "high",
+                    "cell": "cell-id",
+                }
+                record = (
+                    runner.tin_dir / location / "old-attempt"
+                    / "retention.json"
+                )
+                record.parent.mkdir(parents=True)
+                record.write_text(json.dumps({
+                    flag: True, "volume": volume, "labels": labels,
+                }))
+                volumes = {volume}
+
+                def docker(args, **_kwargs):
+                    if args[:3] == ["docker", "volume", "inspect"]:
+                        return subprocess.CompletedProcess(
+                            args, 0, stdout=json.dumps([{
+                                "Labels": {
+                                    "managed-by": "pg_textsearch-tin",
+                                    "run-id": runner.run_id,
+                                } | labels,
+                            }]),
+                        )
+                    return subprocess.CompletedProcess(args, 0, stdout="")
+
+                def command(args, **_kwargs):
+                    if args[:3] == ["docker", "volume", "rm"]:
+                        volumes.remove(args[-1])
+
+                with (
+                    patch(
+                        "benchmarks.scale.tin.subprocess.run",
+                        side_effect=docker,
+                    ),
+                    patch.object(runner, "command", side_effect=command),
+                    patch.object(runner, "_clone_volume"),
+                ):
+                    arguments = dict(
+                        engine="pg_textsearch",
+                        analyzer="english",
+                        profile="high",
+                        cell_id="cell-id",
+                        source_volume="source",
+                        image="sha256:pinned",
+                        result_dir=runner.tin_dir / "results/current",
+                    )
+                    with self.assertRaisesRegex(ConfigError, "retained"):
+                        runner._prepare_write_volume(**arguments)
+                    self.assertEqual(volumes, {volume})
+                    self.assertTrue(record.is_file())
+                    record.unlink()
+                    runner._prepare_write_volume(**arguments)
+                    self.assertEqual(volumes, set())
+
     def test_write_attempt_volume_is_recreated_from_analyzer_source(self):
         with tempfile.TemporaryDirectory(
             prefix=".test-tmp-",
