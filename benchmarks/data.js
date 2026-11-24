@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795501179128,
+  "lastUpdate": 1795502872501,
   "repoUrl": "https://github.com/timescale/pg_textsearch",
   "entries": {
     "cranfield Benchmarks": [
@@ -285382,6 +285382,43 @@ window.BENCHMARK_DATA = {
           {
             "name": "paradedb_cranfield (1.4K docs) - Index Build Time",
             "value": 94.428,
+            "unit": "ms"
+          },
+          {
+            "name": "paradedb_cranfield (1.4K docs) - Throughput (avg ms/query)",
+            "value": 0.71,
+            "unit": "ms"
+          },
+          {
+            "name": "paradedb_cranfield (1.4K docs) - Index Size",
+            "value": 3.25,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tjgreen@gmail.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "8827063c73f53fd90433dd6371db53c13d0a9c59",
+          "message": "Release v1.6.0 (#626)\n\nFinalize v1.6.0 version references and SQL filenames, with release and\nupgrade notes and the linear `1.5.0 -> 1.5.1 -> 1.6.0` upgrade path.\n\nStrengthen upgrade coverage with exact version checks, fresh-install\ncatalog parity, partition-local `text`/`text[]` scoring, and fail-fast\nclean installs.\n\nVerified on PostgreSQL 17/18: all 87 SQL regressions, all 17 historical\nupgrade paths, storage matrices (including strict 1.5.1 upgrades),\nquoted\nschemas, and negative checks.",
+          "timestamp": "2026-11-23T16:58:58Z",
+          "url": "https://github.com/timescale/pg_textsearch/commit/8827063c73f53fd90433dd6371db53c13d0a9c59"
+        },
+        "date": 1795502770529,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "paradedb_cranfield (1.4K docs) - Index Build Time",
+            "value": 85.086,
             "unit": "ms"
           },
           {
