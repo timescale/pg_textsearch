@@ -56,6 +56,17 @@ class ReplayTests(unittest.TestCase):
             "Order By": "body <@> query", "Filter": "body @@ query",
         }}]))
 
+    def test_unfiltered_or_scan_has_a_separate_ordered_plan_gate(self):
+        plan = [{"Plan": {
+            "Node Type": "Index Scan", "Index Name": "documents_bm25",
+            "Order By": "body <@> query",
+        }}]
+        self.assertFalse(validate_ranked_plan(plan))
+        self.assertTrue(validate_ranked_plan(plan, require_filter=False))
+        self.assertNotIn(
+            "WHERE", prepared_statement("search", 10, kind="disjunction")
+        )
+
 
 @unittest.skipUnless(
     os.environ.get("PGTS_REPLAY_TEST_DSN"),
@@ -84,16 +95,24 @@ class ReplayIntegrationTests(unittest.TestCase):
                 "WITH (text_config='simple')"
             )
             query = {
-                "id": "fixture", "text": "alpha",
-                "pg_tsquery": {"conjunction": "'beta'"},
+                "id": "fixture", "text": "alpha beta",
+                "pg_tsquery": {
+                    "conjunction": "'alpha' & 'beta'",
+                    "disjunction": "'alpha' | 'beta'",
+                },
             }
             result = replay_case(
                 connection, query, "conjunction", "search", 1, 2
             )
             self.assertEqual(result["status"], "ok")
-            self.assertEqual(result["rows"], [[3]])
+            self.assertEqual(result["rows"], [[2]])
             self.assertTrue(result["row_filter_verified"])
             self.assertTrue(result["ranked_plan_verified"])
+            disjunction = replay_case(
+                connection, query, "disjunction", "search", 1, 2
+            )
+            self.assertEqual(disjunction["rows"], [[2]])
+            self.assertTrue(disjunction["ranked_plan_verified"])
             connection.execute("SET statement_timeout='1ms'")
             with self.assertRaises(psycopg.errors.QueryCanceled):
                 connection.execute("SELECT pg_sleep(0.1)")

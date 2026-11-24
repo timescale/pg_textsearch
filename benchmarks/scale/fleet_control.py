@@ -18,6 +18,9 @@ import tarfile
 import time
 
 from benchmarks.scale.fleet import fleet_plan, shard_cells
+from benchmarks.scale.run import (
+    BASELINE_PG_TEXTSEARCH_SHA, ConfigError, native_source,
+)
 from benchmarks.scale.tin import PARADEDB_IMAGE, PG_TEXTSEARCH_SHA
 
 
@@ -52,6 +55,7 @@ SCHEMA = {
     "root": "/srv/searchbench/pg_textsearch-scale",
     "remote_repo": "/opt/searchbench/campaign",
     "source_ref": "immutable-source-commit",
+    "native_source": PG_TEXTSEARCH_SHA,
     "campaign_id": "caller-selected-safe-id",
     "sql_shape": "filter_first",
     "state_dir": "/private/ignored/controller-state",
@@ -147,8 +151,14 @@ def load_private_config(path):
             "private fleet configuration is missing: "
             + ", ".join(missing)
         )
-    if config["sql_shape"] != "filter_first":
-        raise ControlError("fleet sql_shape must be filter_first")
+    if config["sql_shape"] not in {"original", "filter_first", "rank_first"}:
+        raise ControlError("unknown fleet sql_shape")
+    try:
+        config["native_source"] = native_source(
+            config.get("native_source", PG_TEXTSEARCH_SHA)
+        )
+    except ConfigError as error:
+        raise ControlError(str(error)) from error
     campaign = _safe_component(config["campaign_id"], "campaign_id")
     config["msmarco_run_id"] = config.get(
         "msmarco_run_id", f"tin-msmarco-{campaign}"
@@ -245,7 +255,7 @@ def build_partition(config, manifest):
     partition = []
     for host in hosts:
         for dataset in DATASETS:
-            plan = fleet_plan(dataset)
+            plan = fleet_plan(dataset, config["sql_shape"])
             cells = shard_cells(
                 plan, host["engine"], host["profile"]
             )
@@ -532,13 +542,32 @@ class FleetControl:
         return self.state_dir / "control" / f"{name}.json"
 
     def write_stage(self, name, value):
-        _atomic_json(self.stage_path(name), value)
+        _atomic_json(self.stage_path(name), value | {
+            "source_selection": self.source_selection(),
+        })
+
+    def source_selection(self):
+        return {
+            key: self.config[key]
+            for key in ("source_ref", "native_source", "sql_shape")
+        }
+
+    def legacy_selection(self, state):
+        return {
+            "source_ref": state.get("source_ref", self.config["source_ref"]),
+            "native_source": BASELINE_PG_TEXTSEARCH_SHA,
+            "sql_shape": "filter_first",
+        }
 
     def read_stage(self, name):
         path = self.stage_path(name)
         if not path.is_file():
             raise ControlError(f"required stage is incomplete: {name}")
         state = _read_json(path, f"{name} stage")
+        if state.get(
+            "source_selection", self.legacy_selection(state)
+        ) != self.source_selection():
+            raise ControlError("fleet source selection changed during resume")
         if state.get("status") != "complete":
             raise ControlError(f"required stage is not complete: {name}")
         return state
@@ -575,6 +604,7 @@ class FleetControl:
             "status": "complete",
             "created_at": dt.datetime.now(dt.timezone.utc).isoformat(),
             "source_ref": self.config["source_ref"],
+            "source_selection": self.source_selection(),
             "partition_sha256": hashlib.sha256(
                 json.dumps(partition, sort_keys=True).encode()
             ).hexdigest(),
@@ -591,6 +621,9 @@ class FleetControl:
                 key: value for key, value in prior.items()
                 if key != "created_at"
             }
+            prior_stable.setdefault(
+                "source_selection", self.legacy_selection(prior)
+            )
             if prior_stable != stable:
                 raise ControlError("fleet plan changed during resume")
             return prior
@@ -644,8 +677,9 @@ import json,os,pathlib,subprocess
 import benchmarks.scale.tin as tin_module
 from benchmarks.scale.run import LEAD_IMAGE,Runner
 from benchmarks.scale.tin import (
-    ANALYZERS,TinRunner,build_tin_plan,
+    ANALYZERS,TinRunner,
 )
+from benchmarks.scale.fleet import fleet_plan
 root=pathlib.Path(os.environ["TIN_ROOT"])
 repo=pathlib.Path(os.environ["TIN_REPO"])
 class NoLeadRunner(Runner):
@@ -682,11 +716,7 @@ for dataset,run_id in runs.items():
         repo/"benchmarks/scale/benchmarker",runner.dataset
     )
     runner._write_or_validate_json(
-        runner.tin_dir/"plan.json",build_tin_plan(
-            smoke=False,
-            accept_terms=True,
-            dataset_kind=dataset,
-        )
+        runner.tin_dir/"plan.json",fleet_plan(dataset)
     )
     analyzers=(
         list(ANALYZERS)
@@ -699,6 +729,8 @@ for dataset,run_id in runs.items():
 '''
         environment = [
             "PYTHONPATH=" + shlex.quote(repo),
+            "PGTS_NATIVE_SOURCE=" + self.config["native_source"],
+            "PGTS_SQL_SHAPE=" + shlex.quote(self.config["sql_shape"]),
             "TIN_ROOT=" + shlex.quote(root),
             "TIN_REPO=" + shlex.quote(repo),
             "MSMARCO_RUN_ID="
@@ -761,8 +793,10 @@ for dataset,run_id in runs.items():
                 self.config["msmarco_run_id"],
                 self.config["wikipedia_run_id"],
             ],
-            "native_image": f"pg_textsearch-scale:{PG_TEXTSEARCH_SHA}",
-            "native_source": PG_TEXTSEARCH_SHA,
+            "native_image": (
+                f"pg_textsearch-scale:{self.config['native_source']}"
+            ),
+            "native_source": self.config["native_source"],
             "source_ref": self.config["source_ref"],
         }
         script = r'''
@@ -1060,7 +1094,7 @@ print(json.dumps(value))
             'test -z "$(sudo -A docker ps -q)"',
         ]
         database_image = (
-            f"pg_textsearch-scale:{PG_TEXTSEARCH_SHA}"
+            f"pg_textsearch-scale:{self.config['native_source']}"
             if host["engine"] == "pg_textsearch"
             else PARADEDB_IMAGE
         )
@@ -1312,6 +1346,10 @@ print(json.dumps(value))
                 )
             worker = (
                 "set -eu; export PYTHONPATH=" + shlex.quote(repo)
+                + "; export PGTS_NATIVE_SOURCE="
+                + self.config["native_source"]
+                + "; export PGTS_SQL_SHAPE="
+                + shlex.quote(self.config["sql_shape"])
                 + "; export PGTS_CACHE_RESET_HOOK="
                 + shlex.quote(repo + "/benchmarks/scale/cache_reset.sh")
                 + "; overall=0; " + "; ".join(commands)
@@ -1322,6 +1360,14 @@ print(json.dumps(value))
                 + host["engine"].replace("_", "-")
                 + "-" + host["profile"]
             )
+            identity = json.dumps({
+                "campaign_id": self.config["campaign_id"],
+                "source": self.source_selection(),
+                "worker": worker,
+            }, sort_keys=True).encode()
+            description = (
+                "pg_textsearch-scale:" + hashlib.sha256(identity).hexdigest()
+            )
             log = root + "/fleet-control/" + unit + ".log"
             return (
                 "set -eu; mkdir -p "
@@ -1330,6 +1376,7 @@ print(json.dumps(value))
                 + " >/dev/null 2>&1; then "
                 + "sudo -A systemd-run --unit="
                 + shlex.quote(unit)
+                + " --description=" + shlex.quote(description)
                 + " --uid=bench --gid=bench "
                 + "--property=SuccessExitStatus=2 "
                 + "--property=StandardOutput=append:"
@@ -1337,7 +1384,18 @@ print(json.dumps(value))
                 + " --property=StandardError=append:"
                 + shlex.quote(log)
                 + " bash -lc " + shlex.quote(worker)
-                + "; fi; systemctl show " + shlex.quote(unit)
+                + "; else description=$(systemctl show " + shlex.quote(unit)
+                + " -p Description --value); "
+                + "[ \"$description\" = " + shlex.quote(description)
+                + " ] || { echo 'foreign or legacy worker service; "
+                + "explicit reconciliation required' >&2; exit 1; }; "
+                + "state=$(systemctl show " + shlex.quote(unit)
+                + " -p ActiveState --value); "
+                + "case \"$state\" in failed|inactive) "
+                + "sudo -A systemctl restart " + shlex.quote(unit)
+                + " ;; active|activating|deactivating|reloading) ;; "
+                + "*) echo 'unexpected worker service state' >&2; exit 1 ;; "
+                + "esac; fi; systemctl show " + shlex.quote(unit)
                 + " -p LoadState -p ActiveState -p SubState "
                 + "-p ExecMainStatus"
             )
@@ -1347,6 +1405,8 @@ print(json.dumps(value))
                 "repo": repo,
                 "engine": host["engine"],
                 "profile": host["profile"],
+                "native_source": self.config["native_source"],
+                "sql_shape": self.config["sql_shape"],
                 "runs": {
                     "msmarco-v2": self.config["msmarco_run_id"],
                     "wikipedia": self.config["wikipedia_run_id"],
@@ -1355,6 +1415,8 @@ print(json.dumps(value))
             script = r'''
 import json,os,pathlib,subprocess
 cfg=json.loads(__SPEC__)
+os.environ["PGTS_NATIVE_SOURCE"]=cfg["native_source"]
+os.environ["PGTS_SQL_SHAPE"]=cfg["sql_shape"]
 root=pathlib.Path(cfg["root"])
 repo=pathlib.Path(cfg["repo"])
 import sys
@@ -1418,8 +1480,10 @@ for dataset,run_id in cfg["runs"].items():
                 else "pg_search"
             )
             sql=(
-                "SELECT extname,extversion FROM pg_extension "
-                "WHERE extname='"+extension+"';"
+                "SELECT e.extname,e.extversion FROM pg_extension e "
+                "JOIN pg_available_extensions a ON a.name=e.extname "
+                "WHERE e.extname='"+extension+"' "
+                "AND e.extversion=a.default_version;"
                 "SELECT relname,relkind,reltuples::bigint "
                 "FROM pg_class WHERE oid IN "
                 "('documents'::regclass,'documents_bm25'::regclass) "
@@ -1435,12 +1499,15 @@ for dataset,run_id in cfg["runs"].items():
                 "-XAt","-F","\t","-v","ON_ERROR_STOP=1",
                 "-c",sql,
             ],text=True)
-            expected_version=(
-                "1.6.0-dev"
-                if cfg["engine"]=="pg_textsearch"
-                else "0.27.0"
-            )
-            if extension+"\t"+expected_version+"\n" not in text:
+            versions=[
+                line.split("\t",1)[1]
+                for line in text.splitlines()
+                if line.startswith(extension+"\t")
+            ]
+            if (
+                len(versions)!=1 or not versions[0]
+                or (cfg["engine"]=="paradedb" and versions[0]!="0.27.0")
+            ):
                 raise RuntimeError("extension version proof failed")
             if "\nt\n" not in "\n"+text:
                 raise RuntimeError("index is not valid and ready")
@@ -1629,18 +1696,28 @@ print(json.dumps({
 
     def run(self, *, source_only=False):
         name = "run-source" if source_only else "run"
+        prior = None
         if self.stage_path(name).is_file():
-            return self.read_stage(name)
+            prior = self.read_stage(name)
         self.read_stage(
             "preflight-source" if source_only else "preflight"
         )
-        self.plan()
+        partition = self.plan()["partition"]
         hosts = (
             [self.host("host1")]
             if source_only
             else [host for host in self.hosts()
                   if host["host"] != "host1"]
         )
+        if prior is not None:
+            missing = {tuple(key) for key in self.status()["missing"]}
+            needed = {
+                row["host"] for row in partition
+                if (row["dataset"], row["engine"], row["cell_id"]) in missing
+            }
+            hosts = [host for host in hosts if host["host"] in needed]
+            if not hosts:
+                return prior
         launched = []
         for host in hosts:
             self.backend.run(host, self._worker_command(host, "run"))
@@ -1940,6 +2017,12 @@ def main(argv=None):
         ),
     )
     parser.add_argument("--config", type=Path)
+    parser.add_argument("--source-ref", help="harness revision for schema output")
+    parser.add_argument("--native-source", help="native commit for schema output")
+    parser.add_argument(
+        "--sql-shape", choices=("original", "filter_first", "rank_first"),
+        help="native SQL shape for schema output",
+    )
     parser.add_argument(
         "--source-only",
         action="store_true",
@@ -1947,8 +2030,22 @@ def main(argv=None):
     )
     args = parser.parse_args(argv)
     if args.action == "schema":
-        print(json.dumps(SCHEMA, indent=2))
+        schema = dict(SCHEMA)
+        if args.source_ref is not None:
+            schema["source_ref"] = args.source_ref
+        if args.native_source is not None:
+            try:
+                schema["native_source"] = native_source(args.native_source)
+            except ConfigError as error:
+                parser.error(str(error))
+        if args.sql_shape is not None:
+            schema["sql_shape"] = args.sql_shape
+        print(json.dumps(schema, indent=2))
         return 0
+    if any(value is not None for value in (
+        args.source_ref, args.native_source, args.sql_shape,
+    )):
+        parser.error("source and SQL selection flags are only valid for schema")
     if args.config is None:
         parser.error("--config is required")
     try:

@@ -4,6 +4,7 @@
 import argparse
 import hashlib
 import json
+import os
 import re
 import shutil
 import socket
@@ -54,14 +55,16 @@ def _atomic_json(path, value):
     temporary.replace(path)
 
 
-def fleet_plan(dataset):
+def fleet_plan(dataset, sql_shape=None):
+    if sql_shape is None:
+        sql_shape = os.environ.get("PGTS_SQL_SHAPE", "filter_first")
     plan = build_tin_plan(
         smoke=False,
         accept_terms=True,
         dataset_kind=dataset,
     )
     plan["selected_cells"] = apply_sql_shape(
-        plan["cells"], "filter_first"
+        plan["cells"], sql_shape
     )
     return plan
 

@@ -1,5 +1,7 @@
 import json
+import os
 import subprocess
+import sys
 import unittest
 from pathlib import Path
 import tempfile
@@ -20,6 +22,32 @@ from benchmarks.scale.run import (
 
 
 class RunPlanTest(unittest.TestCase):
+    def test_explicit_native_commit_is_recorded_in_the_plan(self):
+        candidate = "0123456789abcdef0123456789abcdef01234567"
+        result = subprocess.run(
+            [
+                sys.executable, "-c",
+                "import json; from benchmarks.scale.run import build_plan; "
+                "print(json.dumps(build_plan(smoke=True, accept_terms=False)))",
+            ],
+            env=os.environ | {"PGTS_NATIVE_SOURCE": candidate},
+            capture_output=True, text=True, check=True,
+        )
+        self.assertEqual(
+            json.loads(result.stdout)["pg_textsearch_sha"], candidate
+        )
+
+    def test_native_selection_rejects_moving_refs_and_abbreviated_commits(self):
+        for value in ("main", "v1.6.0", "01234567", "z" * 40, ""):
+            with self.subTest(value=value):
+                result = subprocess.run(
+                    [sys.executable, "-c", "import benchmarks.scale.run"],
+                    env=os.environ | {"PGTS_NATIVE_SOURCE": value},
+                    capture_output=True, text=True,
+                )
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("PGTS_NATIVE_SOURCE", result.stderr)
+
     def test_smoke_plan_is_sequential_and_uses_actual_benchmarker(self):
         plan = build_plan(smoke=True, accept_terms=False)
 

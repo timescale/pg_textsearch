@@ -25,6 +25,15 @@ from benchmarks.scale.run import ConfigError, Runner
 
 
 class FleetPlanTest(unittest.TestCase):
+    def test_selected_sql_shape_reaches_every_shard_cell(self):
+        with patch.dict("os.environ", {"PGTS_SQL_SHAPE": "original"}):
+            plan = fleet_plan("msmarco-v2")
+        self.assertTrue(all(
+            cell["sql_shape"] == "original"
+            and cell["cell_id"].endswith(".shape-original")
+            for cell in plan["selected_cells"]
+        ))
+
     def test_six_shards_cover_ms_matrix_and_wikipedia_controls(self):
         ms_plan = fleet_plan("msmarco-v2")
         wiki_plan = fleet_plan("wikipedia")

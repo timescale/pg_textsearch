@@ -30,7 +30,7 @@ jobs:
         run: |
           python -m unittest discover -s benchmarks/scale/tests -v
           python -m unittest discover -s benchmarks/scale -p 'test_*.py' -v
-          for script in benchmarks/scale/{launch,bootstrap,run,install}.sh \
+          for script in benchmarks/scale/{launch,bootstrap,run,install,install_go}.sh \
             benchmarks/scale/cache_reset.sh \
             benchmarks/scale/tests/check_{writer_capacity,phrase_semantics}.sh \
             benchmarks/scale/tests/check_native_rewrites.sh \

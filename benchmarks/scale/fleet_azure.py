@@ -273,6 +273,7 @@ class FleetAzure:
             } | {"ssh_public_key": self.config["ssh_public_key"]},
             "hosts": hosts,
             "regional_capacity": {},
+            "cleanup_required": [],
         }
         self._save(manifest)
         return manifest
@@ -327,11 +328,24 @@ class FleetAzure:
         return public[0]["ipAddress"] if public else None
 
     def _read_vm(self, group):
+        resource_group = self.azure("group", "show", "-n", group)
+        if resource_group.get("tags", {}).get("managed-by") != MARKER:
+            raise ConfigError(f"{group} resource group is not managed")
         vm = self.azure(
             "rest", "--method", "get", "--url", self._vm_url(group)
         )
+        if vm.get("tags", {}).get("managed-by") != MARKER:
+            raise ConfigError(f"{group} DevTest Labs VM is not managed")
         properties = vm["properties"]
         compute_id = properties.get("computeId")
+        if compute_id:
+            compute = self.azure(
+                "resource", "show", "--ids", compute_id
+            )
+            if compute.get("tags", {}).get("managed-by") != MARKER:
+                raise ConfigError(
+                    f"{group} underlying compute resource is not managed"
+                )
         return {
             "group": group,
             "location": vm["location"],
@@ -372,6 +386,16 @@ class FleetAzure:
         properties = current["properties"]
         if properties.get("size") != self.config["size"]:
             raise ConfigError("existing_group has an incompatible VM size")
+        compute_id = properties.get("computeId")
+        if not compute_id:
+            raise ConfigError("existing_group has no compute resource")
+        compute = self.azure(
+            "resource", "show", "--ids", compute_id
+        )
+        if compute.get("tags", {}).get("managed-by") != MARKER:
+            raise ConfigError(
+                "existing_group compute resource is not managed by this tool"
+            )
         allowed = {
             key: properties[key] for key in (
                 "allowClaim",
@@ -598,6 +622,7 @@ class FleetAzure:
                 "scp", *self._ssh_options(host),
                 str(scale / "bootstrap.sh"),
                 str(scale / "bootstrap_disks.py"),
+                str(scale / "install_go.sh"),
                 f"bench@{host['ip']}:/home/bench/scale-bootstrap/",
             ],
             check=True,
@@ -605,6 +630,7 @@ class FleetAzure:
         self._ssh(
             host, "sudo", "-A", "bash",
             "/home/bench/scale-bootstrap/bootstrap.sh",
+            host["compute_id"],
         )
         return self._verify_host(host)
 
@@ -615,8 +641,48 @@ class FleetAzure:
             and attempt.get("error_code") in CAPACITY_ERRORS
         }
 
+    def _require_live_deadline(self, manifest, now):
+        if _utc(manifest["common_deadline"]) <= now.astimezone(
+            dt.timezone.utc
+        ):
+            raise ConfigError(
+                "persisted common_deadline has expired; create new state"
+            )
+
+    def _cleanup_command(self, group):
+        return [
+            "python3",
+            str(Path(__file__).with_name("azure.py").resolve()),
+            "destroy",
+            "--subscription", self.config["subscription"],
+            "--group", group,
+        ]
+
+    def _refresh_cleanup(self, manifest):
+        manifest.setdefault("cleanup_required", [])
+        remaining = []
+        for obligation in manifest.get("cleanup_required", []):
+            if self.azure("group", "exists", "-n", obligation["group"]):
+                remaining.append(obligation)
+        if remaining != manifest.get("cleanup_required", []):
+            manifest["cleanup_required"] = remaining
+            self._save(manifest)
+        return remaining
+
+    def _reconcile_cleanup(self, manifest):
+        remaining = self._refresh_cleanup(manifest)
+        if remaining:
+            command = remote_command(remaining[0]["destroy_command"])
+            raise ConfigError(
+                "cleanup_required remains; inspect then run marker-guarded "
+                f"cleanup explicitly: {command}"
+            )
+
     def provision(self, *, now=None, only_hosts=None):
+        now = now or dt.datetime.now(dt.timezone.utc)
         manifest = self.prepare_manifest(now=now)
+        self._require_live_deadline(manifest, now)
+        self._reconcile_cleanup(manifest)
         if self.config.get("existing_group"):
             first = manifest["hosts"][0]
             if not first.get("compute_id"):
@@ -690,6 +756,21 @@ class FleetAzure:
                         provisioned = result
                         capacities[region]["available_hosts"] -= 1
                         break
+                    obligation = {
+                        "group": attempt["group"],
+                        "subscription": self.config["subscription"],
+                        "error_code": result["error_code"],
+                        "state_path": attempt["state_path"],
+                        "destroy_command": self._cleanup_command(
+                            attempt["group"]
+                        ),
+                    }
+                    if not any(
+                        item["group"] == obligation["group"]
+                        for item in manifest["cleanup_required"]
+                    ):
+                        manifest["cleanup_required"].append(obligation)
+                        self._save(manifest)
                     if result["error_code"] not in CAPACITY_ERRORS:
                         raise ConfigError(
                             f"deployment failed: {result['error_code']}"
@@ -714,11 +795,14 @@ class FleetAzure:
             host.update(calibration)
             host["bootstrap_ready"] = True
             self._save(manifest)
-        manifest["status"] = (
-            "ready"
-            if all(host["bootstrap_ready"] for host in manifest["hosts"])
-            else "partial"
-        )
+        if manifest.get("cleanup_required"):
+            manifest["status"] = "cleanup_required"
+        else:
+            manifest["status"] = (
+                "ready"
+                if all(host["bootstrap_ready"] for host in manifest["hosts"])
+                else "partial"
+            )
         self._save(manifest)
         return manifest
 
@@ -726,6 +810,7 @@ class FleetAzure:
         if not self.manifest_path.exists():
             raise ConfigError("fleet manifest does not exist")
         manifest = json.loads(self.manifest_path.read_text())
+        cleanup_required = self._refresh_cleanup(manifest)
         for host in manifest["hosts"]:
             if not host.get("group"):
                 host["bootstrap_ready"] = False
@@ -757,11 +842,14 @@ class FleetAzure:
                 host["bootstrap_verification"] = (
                     "not_checked_missing_ssh_config"
                 )
-        manifest["status"] = (
-            "ready"
-            if all(host["bootstrap_ready"] for host in manifest["hosts"])
-            else "partial"
-        )
+        if cleanup_required:
+            manifest["status"] = "cleanup_required"
+        else:
+            manifest["status"] = (
+                "ready"
+                if all(host["bootstrap_ready"] for host in manifest["hosts"])
+                else "partial"
+            )
         self._save(manifest)
         return manifest
 

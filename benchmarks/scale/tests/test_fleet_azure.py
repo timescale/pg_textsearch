@@ -2,6 +2,7 @@ import datetime as dt
 import json
 import shutil
 import subprocess
+import sys
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -68,6 +69,24 @@ class FleetAzureTest(unittest.TestCase):
         changed = dict(self.config, size="Standard_L32s_v3")
         with self.assertRaisesRegex(ConfigError, "incompatible"):
             FleetAzure(changed, self.root).prepare_manifest(now=now)
+
+    def test_expired_deadline_rejects_provision_before_any_azure_mutation(self):
+        now = dt.datetime(2026, 11, 20, tzinfo=dt.timezone.utc)
+        config = dict(
+            self.config, existing_group="searchbench-existing"
+        )
+        FleetAzure(config, self.root).prepare_manifest(now=now)
+        calls = []
+        fleet = FleetAzure(
+            config,
+            self.root,
+            azure=lambda *args: calls.append(args),
+        )
+
+        with self.assertRaisesRegex(ConfigError, "expired"):
+            fleet.provision(now=now + dt.timedelta(days=8))
+
+        self.assertEqual(calls, [])
 
     def test_capacity_uses_exact_sku_family_and_regional_quota(self):
         skus = [{
@@ -176,6 +195,105 @@ class FleetAzureTest(unittest.TestCase):
             host["attempts"][0]["deployment_id"],
             "failed-deployment",
         )
+        self.assertEqual(manifest["status"], "cleanup_required")
+        self.assertEqual(len(manifest["cleanup_required"]), 1)
+        obligation = manifest["cleanup_required"][0]
+        self.assertEqual(
+            obligation["group"], "searchbench-fleet-02-region-a"
+        )
+        self.assertEqual(
+            obligation["destroy_command"][-4:],
+            ["--subscription", "sub", "--group",
+             "searchbench-fleet-02-region-a"],
+        )
+
+    def test_cleanup_obligation_blocks_resume_without_deleting_resources(self):
+        class FakeFleet(FleetAzure):
+            def _region_capacities(self):
+                self.fail("capacity mutation must be blocked")
+
+        fleet = FleetAzure(self.config, self.root)
+        manifest = fleet.prepare_manifest(
+            now=dt.datetime(2026, 11, 20, tzinfo=dt.timezone.utc)
+        )
+        manifest["cleanup_required"] = [{
+            "group": "searchbench-fleet-02-region-a",
+            "subscription": "sub",
+            "error_code": "SkuNotAvailable",
+            "destroy_command": [
+                sys.executable,
+                str(Path("benchmarks/scale/azure.py").resolve()),
+                "destroy", "--subscription", "sub", "--group",
+                "searchbench-fleet-02-region-a",
+            ],
+        }]
+        fleet._save(manifest)
+        calls = []
+
+        def azure(*args):
+            calls.append(args)
+            if args[:2] == ("group", "exists"):
+                return True
+            self.fail(f"cleanup reconciliation must be read-only: {args}")
+
+        blocked = FleetAzure(self.config, self.root, azure=azure)
+        with self.assertRaisesRegex(
+            ConfigError, "azure.py.*destroy.*searchbench-fleet-02-region-a"
+        ):
+            blocked.provision(
+                now=dt.datetime(2026, 11, 21, tzinfo=dt.timezone.utc)
+            )
+
+        self.assertEqual(
+            calls,
+            [("group", "exists", "-n",
+              "searchbench-fleet-02-region-a")],
+        )
+
+    def test_absent_failed_group_is_reconciled_without_delete(self):
+        fleet = FleetAzure(self.config, self.root)
+        manifest = fleet.prepare_manifest(
+            now=dt.datetime(2026, 11, 20, tzinfo=dt.timezone.utc)
+        )
+        for host in manifest["hosts"]:
+            host["bootstrap_ready"] = True
+        manifest["cleanup_required"] = [{
+            "group": "searchbench-fleet-02-region-a",
+            "subscription": "sub",
+            "error_code": "SkuNotAvailable",
+            "destroy_command": ["python3", "azure.py", "destroy"],
+        }]
+        fleet._save(manifest)
+        calls = []
+
+        def azure(*args):
+            calls.append(args)
+            if args[:2] == ("group", "exists"):
+                return False
+            if args[:2] == ("vm", "list-skus"):
+                return [{
+                    "name": self.config["size"],
+                    "family": "standardLASv3Family",
+                    "restrictions": [],
+                }]
+            if args[:2] == ("vm", "list-usage"):
+                return [
+                    {"name": {"value": "standardLASv3Family"},
+                     "currentValue": 0, "limit": 200},
+                    {"name": {"value": "cores"},
+                     "currentValue": 0, "limit": 200},
+                ]
+            self.fail(f"unexpected Azure call: {args}")
+
+        result = FleetAzure(
+            self.config, self.root, azure=azure
+        ).provision(now=dt.datetime(
+            2026, 11, 21, tzinfo=dt.timezone.utc
+        ))
+
+        self.assertEqual(result["cleanup_required"], [])
+        self.assertEqual(result["status"], "ready")
+        self.assertFalse(any("delete" in call for call in calls))
 
     def test_existing_host_updates_and_reads_back_native_expiration(self):
         calls = []
@@ -211,6 +329,10 @@ class FleetAzureTest(unittest.TestCase):
                     body["properties"]["expirationDate"]
                 )
                 return current
+            if args[:2] == ("resource", "show"):
+                return {"tags": {
+                    "managed-by": "pg_textsearch-scale"
+                }}
             if args[:2] == ("vm", "list-ip-addresses"):
                 return [{"virtualMachine": {"network": {
                     "publicIpAddresses": [{"ipAddress": "203.0.113.1"}],
@@ -267,6 +389,44 @@ class FleetAzureTest(unittest.TestCase):
         with self.assertRaisesRegex(ConfigError, "managed"):
             fleet._adopt_existing(manifest)
 
+    def test_existing_host_requires_owned_compute_before_expiration_put(self):
+        calls = []
+        current = {
+            "location": "region-a",
+            "tags": {"managed-by": "pg_textsearch-scale"},
+            "properties": {
+                "computeId": (
+                    "/subscriptions/sub/resourceGroups/compute-group/"
+                    "providers/Microsoft.Compute/virtualMachines/searchbench"
+                ),
+                "provisioningState": "Succeeded",
+                "size": "Standard_L32as_v3",
+            },
+        }
+
+        def azure(*args):
+            calls.append(args)
+            if args[:2] == ("group", "show"):
+                return {"tags": {"managed-by": "pg_textsearch-scale"}}
+            if args[:3] == ("rest", "--method", "get"):
+                return current
+            if args[:2] == ("resource", "show"):
+                return {"tags": {}}
+            self.fail(f"unexpected Azure call: {args}")
+
+        config = dict(self.config, existing_group="searchbench-existing")
+        fleet = FleetAzure(config, self.root, azure=azure)
+        manifest = fleet.prepare_manifest(
+            now=dt.datetime(2026, 11, 20, tzinfo=dt.timezone.utc)
+        )
+
+        with self.assertRaisesRegex(ConfigError, "compute resource"):
+            fleet._adopt_existing(manifest)
+
+        self.assertFalse(any(
+            call[:3] == ("rest", "--method", "put") for call in calls
+        ))
+
     def test_status_validates_existing_manifest_with_read_only_calls(self):
         calls = []
         verified = []
@@ -296,9 +456,14 @@ class FleetAzureTest(unittest.TestCase):
 
         def azure(*args):
             calls.append(args)
+            if args[:2] == ("group", "show"):
+                return {"tags": {
+                    "managed-by": "pg_textsearch-scale"
+                }}
             if args[:3] == ("rest", "--method", "get"):
                 return {
                     "location": "region-a",
+                    "tags": {"managed-by": "pg_textsearch-scale"},
                     "properties": {
                         "computeId": (
                             "/subscriptions/sub/resourceGroups/compute/"
@@ -310,6 +475,10 @@ class FleetAzureTest(unittest.TestCase):
                         "size": "Standard_L32as_v3",
                     },
                 }
+            if args[:2] == ("resource", "show"):
+                return {"tags": {
+                    "managed-by": "pg_textsearch-scale"
+                }}
             if args[:2] == ("vm", "list-ip-addresses"):
                 return [{"virtualMachine": {"network": {
                     "publicIpAddresses": [{"ipAddress": "203.0.113.1"}],
@@ -323,8 +492,12 @@ class FleetAzureTest(unittest.TestCase):
         self.assertEqual(status["hosts"][0]["ip"], "203.0.113.1")
         self.assertEqual(verified, [1])
         self.assertTrue(all(
-            call[:3] == ("rest", "--method", "get")
-            or call[:2] == ("vm", "list-ip-addresses")
+            call[:2] in (
+                ("group", "show"),
+                ("resource", "show"),
+                ("vm", "list-ip-addresses"),
+            )
+            or call[:3] == ("rest", "--method", "get")
             for call in calls
         ))
 
@@ -359,6 +532,46 @@ class FleetAzureTest(unittest.TestCase):
 
         self.assertEqual(status["status"], "partial")
         self.assertFalse(status["hosts"][0]["bootstrap_ready"])
+
+    def test_status_never_reports_ready_while_cleanup_is_required(self):
+        fleet = FleetAzure(self.config, self.root)
+        manifest = fleet.prepare_manifest(
+            now=dt.datetime(2026, 11, 20, tzinfo=dt.timezone.utc)
+        )
+        manifest["cleanup_required"] = [{
+            "group": "searchbench-fleet-02-region-a",
+            "subscription": "sub",
+            "error_code": "SkuNotAvailable",
+            "destroy_command": ["python3", "azure.py", "destroy"],
+        }]
+        fleet._save(manifest)
+
+        status = FleetAzure(
+            self.config,
+            self.root,
+            azure=lambda *args: (
+                True if args[:2] == ("group", "exists") else self.fail(args)
+            ),
+        ).status()
+
+        self.assertEqual(status["status"], "cleanup_required")
+
+    def test_read_vm_rejects_wrong_ownership_before_ip_lookup(self):
+        calls = []
+
+        def azure(*args):
+            calls.append(args)
+            if args[:2] == ("group", "show"):
+                return {"tags": {}}
+            self.fail(f"ownership failure should stop reads: {args}")
+
+        fleet = FleetAzure(self.config, self.root, azure=azure)
+        with self.assertRaisesRegex(ConfigError, "resource group"):
+            fleet._read_vm("searchbench-fleet-02-region-a")
+
+        self.assertFalse(any(
+            call[:2] == ("vm", "list-ip-addresses") for call in calls
+        ))
 
     def test_bootstrap_ready_is_false_when_verification_fails(self):
         class FakeFleet(FleetAzure):
@@ -456,14 +669,54 @@ class FleetAzureTest(unittest.TestCase):
             "ssh-ed25519 test\n",
         )
 
+    def test_bootstrap_syncs_go_helper_and_passes_exact_compute_id(self):
+        class BootstrapFleet(FleetAzure):
+            def _capture_host_key(self, _host):
+                return None
+
+            def _verify_host(self, _host):
+                return {"verified": True}
+
+            def _ssh(self, host, *remote, capture=False):
+                ssh_calls.append((host, remote, capture))
+                return SimpleNamespace()
+
+        host = {
+            "ip": "203.0.113.2",
+            "known_hosts": str(self.root / "host2.known_hosts"),
+            "compute_id": (
+                "/subscriptions/sub/resourceGroups/compute/providers/"
+                "Microsoft.Compute/virtualMachines/searchbench"
+            ),
+        }
+        ssh_calls = []
+        fleet = BootstrapFleet(self.config, self.root)
+        with patch(
+            "benchmarks.scale.fleet_azure.subprocess.run",
+            return_value=SimpleNamespace(),
+        ) as run:
+            fleet._bootstrap_host(host)
+
+        copied = run.call_args.args[0]
+        self.assertTrue(any(
+            str(path).endswith("/install_go.sh") for path in copied
+        ))
+        bootstrap = ssh_calls[-1][1]
+        self.assertEqual(bootstrap[-1], host["compute_id"])
+
     def test_provisioned_state_is_reused_without_duplicate_cloud_create(self):
         calls = []
 
         def azure(*args):
             calls.append(args)
+            if args[:2] == ("group", "show"):
+                return {"tags": {
+                    "managed-by": "pg_textsearch-scale"
+                }}
             if args[:3] == ("rest", "--method", "get"):
                 return {
                     "location": "region-a",
+                    "tags": {"managed-by": "pg_textsearch-scale"},
                     "properties": {
                         "computeId": (
                             "/subscriptions/sub/resourceGroups/compute/"
@@ -475,6 +728,10 @@ class FleetAzureTest(unittest.TestCase):
                         "size": "Standard_L32as_v3",
                     },
                 }
+            if args[:2] == ("resource", "show"):
+                return {"tags": {
+                    "managed-by": "pg_textsearch-scale"
+                }}
             if args[:2] == ("vm", "list-ip-addresses"):
                 return [{"virtualMachine": {"network": {
                     "publicIpAddresses": [{"ipAddress": "203.0.113.2"}],
@@ -525,18 +782,26 @@ class FleetAzureTest(unittest.TestCase):
         )
 
     def test_stale_saved_vm_is_rejected_by_fresh_azure_readback(self):
+        def azure(*args):
+            if args[:2] == ("group", "show"):
+                return {"tags": {
+                    "managed-by": "pg_textsearch-scale"
+                }}
+            if args[:3] == ("rest", "--method", "get"):
+                return {
+                    "location": "region-a",
+                    "tags": {"managed-by": "pg_textsearch-scale"},
+                    "properties": {
+                        "computeId": None,
+                        "expirationDate": "2026-12-01T00:00:00Z",
+                        "provisioningState": "Failed",
+                        "size": "Standard_L32as_v3",
+                    },
+                }
+            self.fail(f"unexpected Azure call: {args}")
+
         fleet = FleetAzure(
-            self.config,
-            self.root,
-            azure=lambda *args: {
-                "location": "region-a",
-                "properties": {
-                    "computeId": None,
-                    "expirationDate": "2026-12-01T00:00:00Z",
-                    "provisioningState": "Failed",
-                    "size": "Standard_L32as_v3",
-                },
-            },
+            self.config, self.root, azure=azure
         )
         manifest = fleet.prepare_manifest(
             now=dt.datetime(2026, 11, 20, tzinfo=dt.timezone.utc)

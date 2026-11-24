@@ -10,6 +10,7 @@ import urllib.request
 
 
 MOUNT = Path("/srv/searchbench")
+MARKER = "pg_textsearch-scale"
 
 
 def select_disks(topology):
@@ -28,7 +29,7 @@ def select_disks(topology):
     return sorted(disks)
 
 
-def require_benchmark_vm():
+def require_benchmark_vm(expected_compute_id):
     request = urllib.request.Request(
         "http://169.254.169.254/metadata/instance/compute"
         "?api-version=2021-02-01", headers={"Metadata": "true"},
@@ -36,15 +37,28 @@ def require_benchmark_vm():
     opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
     with opener.open(request, timeout=5) as response:
         metadata = json.load(response)
-    if not metadata["name"].startswith("searchbench"):
-        raise ValueError("This bootstrap is only for searchbench Azure VMs")
+    if metadata.get("resourceId", "").lower() != expected_compute_id.lower():
+        raise ValueError("IMDS compute resource does not match the controller")
+    tags = {
+        item.get("name"): item.get("value")
+        for item in metadata.get("tagsList", [])
+    }
+    if not tags and metadata.get("tags"):
+        tags = dict(
+            item.split(":", 1)
+            for item in metadata["tags"].split(";")
+            if ":" in item
+        )
+    if tags.get("managed-by") != MARKER:
+        raise ValueError("IMDS ownership marker is missing")
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--expected-compute-id", required=True)
     parser.add_argument("--initialize-ephemeral-storage", action="store_true")
     args = parser.parse_args()
-    require_benchmark_vm()
+    require_benchmark_vm(args.expected_compute_id)
     mounted = subprocess.run(
         ["findmnt", "-rn", "-o", "LABEL", "--mountpoint", str(MOUNT)],
         capture_output=True, text=True,

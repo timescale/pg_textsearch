@@ -138,18 +138,67 @@ def az(subscription, *args):
     return json.loads(result.stdout) if result.stdout.strip() else None
 
 
-def describe_vm(subscription, group):
+def _owned_dtl_vm(subscription, group):
+    resource_group = az(subscription, "group", "show", "-n", group)
+    if resource_group.get("tags", {}).get("managed-by") != MARKER:
+        raise ValueError("Resource group ownership marker is missing")
     vm_id = (f"/subscriptions/{subscription}/resourceGroups/{group}/providers/"
              "Microsoft.DevTestLab/labs/searchbench/virtualmachines/searchbench")
     vm = az(subscription, "rest", "--method", "get", "--url",
             f"https://management.azure.com{vm_id}?api-version=2018-09-15")
+    if vm.get("tags", {}).get("managed-by") != MARKER:
+        raise ValueError("DevTest Labs VM ownership marker is missing")
+    return vm
+
+
+def establish_compute_ownership(subscription, group, expires):
+    vm = _owned_dtl_vm(subscription, group)
+    compute_id = vm.get("properties", {}).get("computeId")
+    if not compute_id:
+        raise ValueError("DevTest Labs VM has no underlying compute resource")
+    az(subscription, "tag", "update", "--resource-id", compute_id,
+       "--operation", "Merge", "--tags", f"managed-by={MARKER}",
+       f"expires={expires}")
+
+
+def validate_existing_guest_ownership(subscription, group):
+    vm_id = (f"/subscriptions/{subscription}/resourceGroups/{group}/providers/"
+             "Microsoft.DevTestLab/labs/searchbench/virtualmachines/searchbench")
+    resources = az(subscription, "resource", "list", "-g", group)
+    if not any(
+        resource.get("id", "").lower() == vm_id.lower()
+        for resource in resources
+    ):
+        return
+    vm = _owned_dtl_vm(subscription, group)
+    compute_id = vm.get("properties", {}).get("computeId")
+    if not compute_id:
+        return
+    compute = az(subscription, "resource", "show", "--ids", compute_id)
+    if compute.get("tags", {}).get("managed-by") != MARKER:
+        raise ValueError(
+            "Underlying compute resource ownership marker is missing; "
+            "repair it explicitly before --resume"
+        )
+
+
+def describe_vm(subscription, group):
+    vm = _owned_dtl_vm(subscription, group)
     properties = vm["properties"]
     result = {key: properties.get(key) for key in (
         "computeId", "expirationDate", "provisioningState", "size",
     )}
     result["networkInterface"] = dict(properties.get("networkInterface") or {})
     if properties.get("computeId"):
-        compute_group = properties["computeId"].split("/")[4]
+        compute_id = properties["computeId"]
+        compute = az(subscription, "resource", "show", "--ids", compute_id)
+        if compute.get("tags", {}).get("managed-by") != MARKER:
+            raise ValueError(
+                "Underlying compute resource ownership marker is missing; "
+                "repair explicitly with `az tag update --resource-id "
+                f"{compute_id} --operation Merge --tags managed-by={MARKER}`"
+            )
+        compute_group = compute_id.split("/")[4]
         addresses = az(subscription, "vm", "list-ip-addresses",
                        "-g", compute_group, "-n", "searchbench")
         public = addresses[0]["virtualMachine"]["network"]["publicIpAddresses"]
@@ -240,6 +289,12 @@ def main():
         group = az(args.subscription, "group", "show", "-n", args.group)
         if not previous or group.get("tags", {}).get("managed-by") != MARKER:
             parser.error("Group exists; use its matching state with --resume")
+        try:
+            validate_existing_guest_ownership(
+                args.subscription, args.group
+            )
+        except ValueError as error:
+            parser.error(str(error))
     else:
         az(args.subscription, "group", "create", "-n", args.group,
            "--location", args.location, "--tags",
@@ -261,7 +316,9 @@ def main():
             print(f"Deployment failed; inspect or destroy {args.group}.")
             raise
     state.update(status="provisioned",
-                 vm=describe_vm(args.subscription, args.group))
+                 vm=None)
+    establish_compute_ownership(args.subscription, args.group, expires)
+    state["vm"] = describe_vm(args.subscription, args.group)
     args.state.write_text(json.dumps(state, indent=2) + "\n")
     print(json.dumps(state, indent=2))
 

@@ -14,6 +14,23 @@ use explicit quoted TinQL OR terms, not TinQL's default implicit AND.
 
 [Full MS MARCO v2 baseline](reports/msmarco-v2-20261119.md).
 
+## Source selection
+
+Defaults reproduce the historical native build
+`8923a5ba16df2731627dfbde6f6e3b62e5b8273b`, not the latest release.
+Select a release or candidate explicitly with a full commit SHA:
+
+```bash
+git fetch origin --tags
+# Example released baseline; select the intended release/candidate.
+export PGTS_NATIVE_SOURCE="$(git rev-parse 'v1.6.0^{commit}')"
+```
+
+This pin is used for native image builds and recorded in plans/image locks.
+It is independent of the **harness** `source_ref`. Moving native refs and
+abbreviated commits are rejected. Keep new inputs in a new run/state directory;
+changing source selection cannot resume completed fleet stages.
+
 ## Provision and run
 
 Requires Azure CLI login, SSH, rsync, Python 3, and permission to create
@@ -43,6 +60,12 @@ localhost. The launcher pins the first SSH host key in its private state
 directory. Bootstrap checks Azure instance metadata and initializes only
 unused Azure local NVMe disks, never the OS disk. Docker and benchmark data
 live on their RAID0 at `/srv/searchbench`.
+
+Both controller and guest require ownership markers and the exact underlying
+Compute resource ID. Pre-existing unmarked VMs fail closed: verify their saved
+provenance before explicitly repairing tags; status does not repair ownership.
+Pinned Go is installed at `/opt/searchbench/toolchains/go1.26.11`.
+Foreign Go shims are not replaced, and `/usr/local/go` is untouched.
 
 **NVMe is ephemeral.** Do not deallocate/redeploy the VM expecting data to
 survive. Copy results off the machine before expiration.
@@ -209,10 +232,12 @@ Native SQL shapes are explicitly labeled: `original`, `rank_first`, and
 `filter_first`. The latter two separate Boolean filtering from ranking
 without an arbitrary candidate limit. Both passed independent result
 oracles, including a match below the first 2,000 ranked candidates.
-Full-corpus probes selected `filter_first` for this campaign: `rank_first`
+Historical full-corpus probes selected `filter_first`: `rank_first`
 can exhaust the ranked stream when fewer than ten documents match.
 Broad Boolean filters can still be expensive with either shape.
-No automatic planner-hook rewrite is installed.
+These are baseline choices, not current end-user recommendations. Builds
+starting with v1.6.0 support combined Boolean filtering and ranked BM25 scans;
+select `original` for their direct-query lane and verify the actual plan.
 Native query packs also undergo an all-query plan audit before timing;
 an empty analyzed query is retained as a zero-result case, not discarded.
 Each concurrent-write cell starts from a separate pristine index clone.
@@ -239,8 +264,10 @@ For controller-managed provisioning and execution:
 ```bash
 mkdir -p benchmarks/scale/artifacts
 python3 -m benchmarks.scale.fleet_control schema \
+  --source-ref "$(git rev-parse HEAD)" \
+  --native-source "$PGTS_NATIVE_SOURCE" --sql-shape original \
   > benchmarks/scale/artifacts/fleet.json
-# Fill in private Azure/SSH settings and an immutable source_ref.
+# Fill in private Azure/SSH settings; use a fresh state_dir/campaign_id.
 export MSMARCO_ACCEPT_TERMS=1
 python3 -m benchmarks.scale.fleet_control all \
   --config benchmarks/scale/artifacts/fleet.json
@@ -249,7 +276,14 @@ python3 -m benchmarks.scale.fleet_control all \
 Keep the config and controller state private. Remove `existing_group`
 for a fresh six-machine fleet, or set it to adopt a managed source host.
 The common expiry is saved once and verified through Azure's native VM
-expiration, not just tags; resume does not extend it. Individual stages
+expiration, not just tags; resume does not extend it or provision expired state.
+Capacity failures preserve exact failed-attempt groups in `cleanup_required`.
+Inspect and explicitly run their recorded marker-guarded `destroy_command`;
+resume clears obligations only after Azure reports those groups absent.
+No automatic group deletion occurs, and outstanding cleanup blocks completion.
+Worker resumes check the campaign/source/command fingerprint before reusing
+a service; foreign or legacy units require explicit operator reconciliation.
+Individual stages
 include `plan`, `provision`, `prepare`, `export`, `stage`, `distribute`,
 `preflight`, `run`, `wait`, `status`, `collect`, and `retain`.
 
@@ -257,7 +291,7 @@ The controller stages exports off the source host before its queries
 resume, and keeps the staging host idle until all fanout transfers end.
 It retains original indexes rather than deleting them after measurement.
 The expanded November 19 measurement sources are preserved at
-`benchmarks/tin-expanded-20261119-final-v1`; shard manifests also record
+the tag `benchmarks/tin-expanded-20261119-final-v1`; shard manifests also record
 the deployed worker overlay's hash.
 
 For an already provisioned worker:
@@ -354,8 +388,9 @@ python -m benchmarks.scale.replay_queries \
 Use standard libpq environment variables or a passfile for authentication.
 This read-only, persistent single-client diagnostic defaults to the first
 and last queries, a 60-second statement timeout, and three warm executions
-after `EXPLAIN ANALYZE`. Search plans must contain Boolean conditions and
+after `EXPLAIN ANALYZE`. Filtered search plans must contain Boolean conditions and
 ordering in the same BM25 Index Scan, without a Sort or materialized CTE.
+Ranked OR uses the direct unfiltered ordering and a separate ordered-plan gate.
 Returned IDs are checked independently with `to_tsvector`. Use `--all` for
 the complete pack or `--operation count` to diagnose unchanged Boolean-only
 counts. JSONL files are created exclusively; original results are not
@@ -382,6 +417,80 @@ library. Successful reruns require matching provenance and unchanged index
 identity; incomplete journals require explicit reconciliation. Keep
 the backup and journal: the Docker image ID no longer identifies the
 installed runtime binary. For other PostgreSQL versions, pass `--library`.
+
+### Paired diagnostics and CPU profiles
+
+From a checkout on an idle benchmark host, use libpq service/passfiles for
+the retained native and ParadeDB endpoints; do not put passwords in arguments.
+Run the same prepared pack before and after a guarded native binary replacement:
+
+```bash
+python -m benchmarks.scale.compare_queries run \
+  --native-dsn 'service=native' --parade-dsn 'service=parade' \
+  --queries /path/to/query-pack.json --samples 16 \
+  --effective-cache-size 160GB --provided-native-build-sha FULL_COMMIT \
+  --output /path/to/before.jsonl
+# Repeat as after.jsonl with the candidate installed.
+python -m benchmarks.scale.compare_queries analyze \
+  --before /path/to/before.jsonl --after /path/to/after.jsonl \
+  --output /path/to/comparison.json
+```
+
+Use `--all`, explicit `--ordinal`, or `--operation count` as needed.
+Sampling is deterministic; single-query packs are supported. EXPLAIN, settings,
+index identity, ordered IDs, timings, timeouts, and completion counts are saved.
+Analysis rejects incomplete/mismatched runs, reports native changes separately
+from ParadeDB drift, and fails for native row changes or unsuccessful queries.
+It never excuses changed top-K membership using a score tolerance: investigate
+exact cutoff scores/ties independently. These warm sequential diagnostics are
+not concurrent QPS measurements and do not evict caches.
+
+For a backend-specific CPU profile with copied runtime symbols:
+
+```bash
+# Set absolute PGSERVICEFILE/PGPASSFILE paths first; PYTHON is the host venv.
+sudo -A --preserve-env=PGSERVICEFILE,PGPASSFILE \
+  "$PYTHON" -m benchmarks.scale.profile_queries \
+  --dsn 'service=native' --container RETAINED_CONTAINER \
+  --receipt /path/to/deployment.json \
+  --queries /path/to/query-pack.json --ordinal 0 --kind disjunction \
+  --seconds 10 --output /path/to/new-profile
+```
+
+Unprivileged execution works where perf permissions allow it. For an unchanged
+initial build, use `--expected-binary-sha256` instead of a deployment receipt.
+The profiler verifies ownership, proves its SQL connection belongs to that
+container, maps its backend PID, rejects deleted/mismatched mapped binaries,
+checks the index identity against the deployment receipt,
+and stops only its own perf child. It records EXPLAIN and self/inclusive reports,
+without reading Docker passwords or restarting PostgreSQL. Outputs are exclusive;
+sudo-created artifacts are returned to the invoking user's ownership.
+Keep all profiling and symbol-copy I/O outside timed benchmark phases.
+
+### Post-merge clean-room acceptance
+
+Perform this from a fresh checkout with no session artifacts or existing fleet:
+
+1. Create a Python virtual environment, install `requirements.txt`, and run
+   the tests below. Select full harness/native commits and the SQL lane explicitly.
+2. Supply Azure login, regional SKU/quota, SSH keys, controller IP, and private
+   state paths. Check ARM `plan` before allocation. Never use a shared host or
+   adopt an existing group for this rehearsal.
+3. Run `DATASET=smoke RUN_ID=clean-smoke bash benchmarks/scale/launch.sh all`.
+   Require the named systemd service to finish successfully and all engine
+   cells to complete. Collect its artifacts, rerun the same compatible stages,
+   then explicitly destroy this smoke lab before allocating the fleet.
+4. For the full matrix, review dataset terms before accepting them, generate
+   fresh fleet config as above, and run `fleet_control all`. Keep six timed
+   workers separate. Interrupt only a worker/controller process—not its VM—
+   then resume with unchanged config; verify completed cells were preserved
+   and interrupted attempts archived.
+5. Require complete 174-cell coverage, resolved cleanup obligations, native
+   expiration on every VM, collection, and `retain`. Run paired replay/profile
+   commands against those originals; verify unchanged index identities.
+6. Copy results and receipts off ephemeral NVMe, explicitly destroy each exact
+   owned lab using `azure.py destroy`, and verify the groups are absent.
+   Expiration is a backstop, not a substitute for deliberate teardown.
 
 ### Original baseline
 

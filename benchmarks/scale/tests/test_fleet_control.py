@@ -1,5 +1,6 @@
 import json
 import hashlib
+import io
 import os
 import re
 import subprocess
@@ -7,15 +8,19 @@ import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import Mock, patch
+from contextlib import redirect_stdout
 
 from benchmarks.scale.fleet_control import (
     ControlError,
     FleetControl,
     build_partition,
     load_private_config,
+    main,
     validate_retained_container,
     verify_frozen_tree,
 )
+from benchmarks.scale.fleet import fleet_plan
+from benchmarks.scale.run import Runner
 
 
 ENGINES = ("pg_textsearch", "paradedb")
@@ -116,6 +121,212 @@ class FleetControlTest(unittest.TestCase):
             self.config_path,
             backend=backend or FakeBackend(),
         )
+
+    def test_native_selection_reaches_build_export_and_workers(self):
+        candidate = "0123456789abcdef0123456789abcdef01234567"
+        config = private_config(self.state) | {"native_source": candidate}
+        self.config_path.write_text(json.dumps(config))
+        backend = FakeBackend()
+        control = self.control(backend)
+        control.write_stage("provision", {"status": "complete"})
+        control.prepare()
+        setup = next(call[2] for call in backend.calls if call[0] == "run")
+        self.assertIn(f"PGTS_NATIVE_SOURCE={candidate}", setup)
+        self.assertIn(candidate, control._export_command())
+        self.assertIn(
+            f"PGTS_NATIVE_SOURCE={candidate}",
+            control._worker_command(control.host("host2"), "run"),
+        )
+        self.assertIn(
+            candidate,
+            control._worker_command(control.host("host2"), "preflight"),
+        )
+
+    def test_changed_native_selection_cannot_resume_completed_stages(self):
+        control = self.control()
+        control.write_stage("prepare", {"status": "complete"})
+        config = private_config(self.state) | {"native_source": "a" * 40}
+        self.config_path.write_text(json.dumps(config))
+        changed = self.control()
+        with self.assertRaisesRegex(ControlError, "selection.*resume"):
+            changed.prepare()
+        self.assertEqual(changed.backend.calls, [])
+
+    def test_explicit_null_native_source_is_not_a_default_selection(self):
+        config = private_config(self.state) | {"native_source": None}
+        self.config_path.write_text(json.dumps(config))
+        with self.assertRaisesRegex(ControlError, "PGTS_NATIVE_SOURCE"):
+            self.control()
+
+    def test_schema_can_pin_current_harness_native_and_sql_shape(self):
+        output = io.StringIO()
+        with redirect_stdout(output):
+            result = main([
+                "schema", "--source-ref", "a" * 40,
+                "--native-source", "b" * 40, "--sql-shape", "original",
+            ])
+        self.assertEqual(result, 0)
+        config = json.loads(output.getvalue())
+        self.assertEqual(config["source_ref"], "a" * 40)
+        self.assertEqual(config["native_source"], "b" * 40)
+        self.assertEqual(config["sql_shape"], "original")
+
+    def test_original_sql_shape_reaches_partition_and_workers(self):
+        config = private_config(self.state) | {"sql_shape": "original"}
+        self.config_path.write_text(json.dumps(config))
+        control = self.control()
+        partition = build_partition(control.config, fleet_manifest())
+        self.assertTrue(all(
+            row["cell_id"].endswith(".shape-original") for row in partition
+        ))
+        self.assertIn(
+            "PGTS_SQL_SHAPE=original",
+            control._worker_command(control.host("host1"), "run"),
+        )
+
+    def test_source_preparation_writes_the_same_plan_as_workers(self):
+        backend = FakeBackend()
+        control = self.control(backend)
+        control.write_stage("provision", {"status": "complete"})
+        control.prepare()
+        command = next(call[2] for call in backend.calls if call[0] == "run")
+        script = command.split("<<'PY'\n", 1)[1].split("\nPY\n", 1)[0]
+        captured = []
+
+        def make_runner(repo, root, smoke, run_id, dataset, dataset_path):
+            runner = Mock()
+            runner.dataset = self.root / dataset
+            runner.dataset.mkdir(exist_ok=True)
+            (runner.dataset / "manifest.json").write_text("{}")
+            runner.tin_dir = self.root / run_id
+            runner.tin_dir.mkdir(exist_ok=True)
+            runner._write_or_validate_json = Runner._write_or_validate_json
+            captured.append((dataset, runner.tin_dir / "plan.json"))
+            return runner
+
+        with (
+            patch("benchmarks.scale.tin.TinRunner", side_effect=make_runner),
+            patch("benchmarks.scale.tin.Runner"),
+            patch.dict(os.environ, {
+                "TIN_ROOT": str(self.root),
+                "TIN_REPO": str(self.root),
+                "MSMARCO_RUN_ID": "ms-plan",
+                "WIKIPEDIA_RUN_ID": "wiki-plan",
+                "PGTS_SQL_SHAPE": "filter_first",
+            }),
+        ):
+            exec(compile(script, "<source-prepare>", "exec"), {})
+        for dataset, path in captured:
+            if path.is_file():
+                self.assertEqual(json.loads(path.read_text()), fleet_plan(dataset))
+
+    def test_preflight_accepts_the_selected_released_native_version(self):
+        config = private_config(self.state) | {"root": str(self.root)}
+        self.config_path.write_text(json.dumps(config))
+        control = self.control()
+        command = control._worker_command(control.host("host1"), "preflight")
+        script = command.split("<<'PY'\n", 1)[1].split("\nPY", 1)[0]
+
+        def make_runner(repo, root, smoke, run_id, dataset, dataset_path):
+            runner = Mock()
+            runner.tin_dir = self.root / run_id / "tin"
+            runner.tin_dir.mkdir(parents=True, exist_ok=True)
+            runner._images.return_value = ({"pg_textsearch": "image"}, {})
+            runner._volume_name.return_value = "volume"
+            return runner
+
+        def output(argv, **kwargs):
+            if argv[:3] == ["docker", "ps", "-q"]:
+                return ""
+            if argv[:2] == ["docker", "exec"]:
+                return "pg_textsearch\t1.6.0\nt\n"
+            if argv[0] in ("lscpu", "lsblk"):
+                return "{}"
+            return "owned"
+
+        with (
+            patch("benchmarks.scale.tin.TinRunner", side_effect=make_runner),
+            patch("benchmarks.scale.fleet.validate_imported_inputs"),
+            patch("subprocess.check_output", side_effect=output),
+            patch("os.cpu_count", return_value=32),
+            patch.dict(os.environ, {
+                "PGTS_NATIVE_SOURCE": control.config["native_source"],
+                "PGTS_SQL_SHAPE": control.config["sql_shape"],
+            }),
+            redirect_stdout(io.StringIO()),
+        ):
+            exec(compile(script, "<preflight>", "exec"), {})
+        result = self.root / "fleet-control/preflight-pg_textsearch-high.json"
+        self.assertEqual(json.loads(result.read_text())["status"], "ok")
+
+    def test_resume_relaunches_only_hosts_with_missing_cells(self):
+        backend = FakeBackend()
+        control = self.control(backend)
+        control.write_stage("preflight", {"status": "complete"})
+        control.write_stage("run", {"status": "complete", "hosts": ["host2"]})
+        missing = next(
+            row for row in build_partition(control.config, fleet_manifest())
+            if row["host"] == "host2"
+        )
+        control.status = Mock(return_value={"missing": [[
+            missing["dataset"], missing["engine"], missing["cell_id"],
+        ]]})
+        control.run()
+        self.assertEqual(
+            [call[1] for call in backend.calls if call[0] == "run"], ["host2"]
+        )
+        backend.calls.clear()
+        control.status.return_value = {"missing": []}
+        control.run()
+        self.assertEqual(backend.calls, [])
+
+    def test_loaded_failed_worker_is_restarted_without_starting_another_unit(self):
+        config = private_config(self.state) | {"root": str(self.root / "artifacts")}
+        self.config_path.write_text(json.dumps(config))
+        control = self.control()
+        bin_dir = self.root / "bin"
+        bin_dir.mkdir()
+        log = self.root / "systemctl.jsonl"
+        systemctl = bin_dir / "systemctl"
+        systemctl.write_text(
+            "#!/usr/bin/env python3\n"
+            "import json,os,sys\n"
+            "with open(os.environ['SYSTEMCTL_LOG'],'a') as f:\n"
+            " f.write(json.dumps(sys.argv[1:])+'\\n')\n"
+            "if sys.argv[1]=='show':\n"
+            " print(os.environ['SYSTEMCTL_DESCRIPTION'] "
+            "if 'Description' in sys.argv else "
+            "('failed' if '--value' in sys.argv else 'ActiveState=failed'))\n"
+        )
+        sudo = bin_dir / "sudo"
+        sudo.write_text("#!/bin/sh\nshift\nexec \"$@\"\n")
+        systemctl.chmod(0o755)
+        sudo.chmod(0o755)
+        command = control._worker_command(control.host("host2"), "run")
+        match = re.search(r"--description=([A-Za-z0-9_:-]+)", command)
+        environment = os.environ | {
+            "PATH": str(bin_dir) + os.pathsep + os.environ["PATH"],
+            "SYSTEMCTL_LOG": str(log),
+            "SYSTEMCTL_DESCRIPTION": match[1] if match else "legacy",
+        }
+        subprocess.run(
+            ["bash", "-c", command], env=environment,
+            check=True, capture_output=True, text=True,
+        )
+        calls = [json.loads(line) for line in log.read_text().splitlines()]
+        self.assertEqual(
+            [call for call in calls if call[0] == "restart"],
+            [["restart", "pgts-tin-fleet-pg-textsearch-constrained32"]],
+        )
+        log.write_text("")
+        foreign = subprocess.run(
+            ["bash", "-c", command],
+            env=environment | {"SYSTEMCTL_DESCRIPTION": "foreign"},
+            capture_output=True, text=True,
+        )
+        self.assertNotEqual(foreign.returncode, 0)
+        calls = [json.loads(line) for line in log.read_text().splitlines()]
+        self.assertFalse(any(call[0] == "restart" for call in calls))
 
     def test_partition_is_disjoint_complete_and_bound_to_six_hosts(self):
         config = load_private_config(self.config_path)

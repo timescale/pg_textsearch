@@ -7,6 +7,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import sys
@@ -23,7 +24,7 @@ from benchmarks.scale.queries import QueryError, lead_disjunction
 
 
 BENCHMARKER_SHA = "4b262c05af138991d3bf28c683a0fc6b7f113df3"
-PG_TEXTSEARCH_SHA = "8923a5ba16df2731627dfbde6f6e3b62e5b8273b"
+BASELINE_PG_TEXTSEARCH_SHA = "8923a5ba16df2731627dfbde6f6e3b62e5b8273b"
 PARADEDB_TAG = "paradedb/paradedb:v0.26.8-pg18"
 LEAD_IMAGE = (
     "planetscale/lead@sha256:"
@@ -45,6 +46,19 @@ class BenchmarkCellsFailed(ConfigError):
         super().__init__(
             f"{engine} has {len(failures)} unsuccessful benchmark results"
         )
+
+
+def native_source(value):
+    if not isinstance(value, str) or not re.fullmatch(r"[0-9a-f]{40}", value):
+        raise ConfigError(
+            "PGTS_NATIVE_SOURCE must be a full lowercase Git commit SHA"
+        )
+    return value
+
+
+PG_TEXTSEARCH_SHA = native_source(
+    os.environ.get("PGTS_NATIVE_SOURCE", BASELINE_PG_TEXTSEARCH_SHA)
+)
 
 
 def file_sha256(path: Path) -> str:

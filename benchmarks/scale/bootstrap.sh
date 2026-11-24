@@ -1,8 +1,15 @@
 #!/bin/bash
 set -euxo pipefail
 cd "$(dirname "$0")"
-python3 -c 'from bootstrap_disks import require_benchmark_vm; require_benchmark_vm()'
+EXPECTED_COMPUTE_ID="${1:?expected Azure compute resource ID is required}"
+python3 - "$EXPECTED_COMPUTE_ID" <<'PY'
+import sys
+from bootstrap_disks import require_benchmark_vm
+require_benchmark_vm(sys.argv[1])
+PY
+source ./install_go.sh
 if [[ -f /opt/searchbench/bootstrap.ready ]]; then
+    install_pinned_go
     mountpoint -q /srv/searchbench
     python3 -c 'import json; assert json.load(open("/etc/docker/daemon.json"))["data-root"] == "/srv/searchbench/docker"'
     systemctl start docker
@@ -14,7 +21,9 @@ apt-get -o DPkg::Lock::Timeout=600 update -qq
 apt-get -o DPkg::Lock::Timeout=600 install -y -qq docker.io git curl jq python3-venv python3-pip \
     build-essential mdadm nvme-cli sysstat linux-tools-common \
     postgresql-client rsync zstd
-python3 bootstrap_disks.py --initialize-ephemeral-storage
+install_pinned_go
+python3 bootstrap_disks.py --expected-compute-id "$EXPECTED_COMPUTE_ID" \
+    --initialize-ephemeral-storage
 systemctl stop docker.service docker.socket
 if [[ -f /etc/docker/daemon.json ]]; then
     python3 -c 'import json; assert json.load(open("/etc/docker/daemon.json"))["data-root"] == "/srv/searchbench/docker"'

@@ -10,10 +10,15 @@ SSH_PUBLIC_KEY="${SSH_PUBLIC_KEY:-$SSH_PRIVATE_KEY.pub}"
 STATE="${STATE:-$HERE/artifacts/azure.json}"
 DATASET="${DATASET:-msmarco-v2}"
 RUN_ID="${RUN_ID:-$(date -u +%Y%m%dT%H%M%SZ)}"
+NATIVE_SOURCE="${PGTS_NATIVE_SOURCE:-8923a5ba16df2731627dfbde6f6e3b62e5b8273b}"
 ACTION="${1:-all}"
 case "$ACTION" in all|provision|setup|run|collect) ;; *) echo "Invalid action" >&2; exit 2 ;; esac
 case "$DATASET" in msmarco-v2|wikipedia|smoke) ;; *) echo "Invalid dataset" >&2; exit 2 ;; esac
 [[ "$RUN_ID" =~ ^[A-Za-z0-9_-]+$ ]] || { echo "Invalid run ID" >&2; exit 2; }
+[[ "$NATIVE_SOURCE" =~ ^[0-9a-f]{40}$ ]] || {
+    echo "PGTS_NATIVE_SOURCE must be 40 lowercase hexadecimal characters" >&2
+    exit 2
+}
 ACCEPT="${MSMARCO_ACCEPT_TERMS:-0}"
 case "$ACCEPT" in 0|1) ;; *) echo "Use MSMARCO_ACCEPT_TERMS=0 or 1" >&2; exit 2 ;; esac
 if [[ ( "$ACTION" == all || "$ACTION" == run ) && "$DATASET" == msmarco-v2 && "$ACCEPT" != 1 ]]; then
@@ -35,6 +40,8 @@ STATUS="$(python3 "$HERE/azure.py" status \
     --state "$STATE")"
 IP="$(printf '%s' "$STATUS" | python3 -c \
     'import ipaddress,json,sys; print(ipaddress.IPv4Address(json.load(sys.stdin)["networkInterface"]["publicIpAddress"]))')"
+COMPUTE_ID="$(printf '%s' "$STATUS" | python3 -c \
+    'import json,sys; print(json.load(sys.stdin)["computeId"])')"
 mkdir -p "$(dirname "$STATE")"
 SSH=(ssh -i "$SSH_PRIVATE_KEY" -o BatchMode=yes -o ConnectTimeout=10 \
     -o "UserKnownHostsFile=$STATE.known_hosts" -o StrictHostKeyChecking=accept-new)
@@ -58,8 +65,10 @@ if [[ "$ACTION" == all || "$ACTION" == setup ]]; then
     "${SSH[@]}" "$REMOTE" 'mkdir -p ~/bootstrap'
     scp -i "$SSH_PRIVATE_KEY" -o BatchMode=yes \
         -o "UserKnownHostsFile=$STATE.known_hosts" \
-        "$HERE/bootstrap.sh" "$HERE/bootstrap_disks.py" "$REMOTE:bootstrap/"
-    "${SSH[@]}" "$REMOTE" 'sudo -A bash ~/bootstrap/bootstrap.sh'
+        "$HERE/bootstrap.sh" "$HERE/bootstrap_disks.py" \
+        "$HERE/install_go.sh" "$REMOTE:bootstrap/"
+    "${SSH[@]}" "$REMOTE" \
+        "sudo -A bash ~/bootstrap/bootstrap.sh $(printf '%q' "$COMPUTE_ID")"
     rsync -az --mkpath -e "$RSYNC_SSH" \
         --exclude=.venv --exclude=artifacts --exclude=__pycache__ \
         --exclude='.test-tmp*' "$HERE/" \
@@ -82,6 +91,7 @@ fi
        --property=StandardOutput=append:/srv/searchbench/pg_textsearch-scale/launch-$RUN_ID.log \
        --property=StandardError=append:/srv/searchbench/pg_textsearch-scale/launch-$RUN_ID.log \
        env MSMARCO_ACCEPT_TERMS=$ACCEPT \
+       PGTS_NATIVE_SOURCE=$NATIVE_SOURCE \
        bash benchmarks/scale/run.sh $DATASET_ARGS --run-id $RUN_ID all && \
      systemctl is-active pgts-benchmark-$RUN_ID"
 printf 'Started %s on %s; native VM expiry is unchanged.\n' "$RUN_ID" "$IP"

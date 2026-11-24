@@ -25,16 +25,15 @@ def select_queries(queries, ordinals=None):
     return selected
 
 
-def prepared_statement(operation, limit):
-    # All Boolean kinds use the same SQL; their tsquery selects the semantics.
-    statement = query_sql("conjunction", operation, "original", limit)
+def prepared_statement(operation, limit, kind="conjunction"):
+    statement = query_sql(kind, operation, "original", limit)
     first = "tsquery" if operation == "count" else "text"
     return statement.replace("$1", f"%({first})s").replace(
         "$2", "%(tsquery)s"
     )
 
 
-def validate_ranked_plan(explanation, empty=False):
+def validate_ranked_plan(explanation, empty=False, require_filter=True):
     nodes = []
 
     def visit(node):
@@ -53,7 +52,7 @@ def validate_ranked_plan(explanation, empty=False):
     return any(
         node["Node Type"] == "Index Scan"
         and node.get("Index Name") == "documents_bm25"
-        and node.get("Index Cond") is not None
+        and (not require_filter or node.get("Index Cond") is not None)
         and node.get("Order By") is not None
         for node in nodes
     )
@@ -66,7 +65,7 @@ def replay_case(connection, query, kind, operation, limit, repeats):
     tsquery = query["pg_tsquery"][kind]
     if not isinstance(text, str) or not isinstance(tsquery, str):
         raise ValueError("prepared text and tsquery must be strings")
-    statement = prepared_statement(operation, limit)
+    statement = prepared_statement(operation, limit, kind)
     parameters = {"text": text, "tsquery": tsquery}
     start = time.perf_counter()
     explanation = connection.execute(
@@ -75,7 +74,7 @@ def replay_case(connection, query, kind, operation, limit, repeats):
     ).fetchone()[0]
     explained_wall_ms = (time.perf_counter() - start) * 1000
     verified = operation != "search" or validate_ranked_plan(
-        explanation, empty=not tsquery
+        explanation, empty=not tsquery, require_filter=kind != "disjunction"
     )
     if not verified:
         raise RuntimeError(
