@@ -291,6 +291,17 @@ Individual stages
 include `plan`, `provision`, `prepare`, `export`, `stage`, `distribute`,
 `preflight`, `run`, `wait`, `status`, `collect`, and `retain`.
 
+Corpus conversion resumes its per-member checkpoints; query preparation
+repairs incomplete packs. Failed download integrity checks discard only
+temporary `.partial` files, not existing final assets.
+
+Interrupted worker imports deliberately fail closed on an uncheckpointed
+volume or metadata tree. Do not delete it based on labels alone. Preserve
+the error, compare the worker identity, expected artifact checksum and
+volume labels with the private fleet/export manifests, and obtain explicit
+approval before removing a confirmed partial import or replacing that
+owned worker. Never clear source-host data to repair a worker import.
+
 The controller stages exports off the source host before its queries
 resume, and keeps the staging host idle until all fanout transfers end.
 It retains original indexes rather than deleting them after measurement.
@@ -492,7 +503,8 @@ Perform this from a fresh checkout with no session artifacts or existing fleet:
    then explicitly destroy this smoke lab before allocating the fleet.
 4. For the full matrix, review dataset terms before accepting them, generate
    fresh fleet config as above, and run `fleet_control all`. Keep six timed
-   workers separate. Interrupt only a worker/controller process—not its VM—
+   workers separate. After distribution succeeds, interrupt only a measured
+   run's worker/controller process—not its VM—
    then resume with unchanged config; verify completed cells were preserved
    and interrupted attempts archived.
 5. Require complete 174-cell coverage, resolved cleanup obligations, native

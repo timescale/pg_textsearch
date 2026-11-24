@@ -74,10 +74,17 @@ def download_assets(
                 "--retry", "5", "--retry-all-errors", "--continue-at", "-",
                 "--output", str(candidate), asset["url"],
             ], check=True)
-        verify_md5(candidate, asset["md5"])
-        size = candidate.stat().st_size
-        if asset["bytes"] is not None and size != asset["bytes"]:
-            raise DatasetError(f"Unexpected byte length for {target.name}")
+        try:
+            verify_md5(candidate, asset["md5"])
+            size = candidate.stat().st_size
+            if asset["bytes"] is not None and size != asset["bytes"]:
+                raise DatasetError(
+                    f"Unexpected byte length for {target.name}"
+                )
+        except DatasetError:
+            if candidate != target:
+                candidate.unlink()
+            raise
         if candidate != target:
             candidate.replace(target)
         paths[name] = target

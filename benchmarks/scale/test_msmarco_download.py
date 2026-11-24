@@ -53,13 +53,17 @@ class DownloadTests(unittest.TestCase):
             output = Path(directory) / "downloads"
             assets = {"dev1": {
                 "filename": "queries.tsv", "url": source.as_uri(),
-                "md5": hashlib.md5(b"abc").hexdigest(), "bytes": 9,
+                "md5": hashlib.md5(b"abc").hexdigest(), "bytes": 3,
             }}
             with patch.object(module, "ASSETS", assets):
                 with self.assertRaisesRegex(module.DatasetError, "checksum"):
                     module.download_assets(output, accepted=True)
-            self.assertFalse((output / "queries.tsv").exists())
-            self.assertFalse((output / "downloads.json").exists())
+                self.assertFalse((output / "queries.tsv.partial").exists())
+                self.assertFalse((output / "queries.tsv").exists())
+                self.assertFalse((output / "downloads.json").exists())
+                source.write_bytes(b"abc")
+                paths = module.download_assets(output, accepted=True)
+                self.assertEqual(paths["dev1"].read_bytes(), b"abc")
 
     def test_query_only_download_skips_archive_and_retains_provenance(self):
         module = self.module()
@@ -102,6 +106,37 @@ class DownloadTests(unittest.TestCase):
             self.assertEqual(
                 record["assets"]["archive"], prior["assets"]["archive"]
             )
+
+    def test_length_mismatch_discards_only_temporary_download(self):
+        module = self.module()
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "source.tsv"
+            source.write_bytes(b"abc")
+            output = Path(directory) / "downloads"
+            assets = {"dev1": {
+                "filename": "queries.tsv", "url": source.as_uri(),
+                "md5": hashlib.md5(b"abc").hexdigest(), "bytes": 4,
+            }}
+            with patch.object(module, "ASSETS", assets):
+                with self.assertRaisesRegex(module.DatasetError, "byte"):
+                    module.download_assets(output, accepted=True)
+            self.assertFalse((output / "queries.tsv.partial").exists())
+            self.assertFalse((output / "queries.tsv").exists())
+
+    def test_invalid_existing_final_asset_is_preserved(self):
+        module = self.module()
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory)
+            target = output / "queries.tsv"
+            target.write_bytes(b"original bytes")
+            assets = {"dev1": {
+                "filename": target.name, "url": "https://unused.invalid/",
+                "md5": hashlib.md5(b"abc").hexdigest(), "bytes": 3,
+            }}
+            with patch.object(module, "ASSETS", assets):
+                with self.assertRaisesRegex(module.DatasetError, "checksum"):
+                    module.download_assets(output, accepted=True)
+            self.assertEqual(target.read_bytes(), b"original bytes")
 
 
 if __name__ == "__main__":
