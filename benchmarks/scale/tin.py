@@ -1047,7 +1047,7 @@ class TinRunner(Runner):
             value,
         )
 
-    def _remove_owned_write_volume(self, name, labels):
+    def _remove_owned_write_volume(self, name, labels, *, completed=False):
         for checkpoint in self.tin_dir.rglob("retention.json"):
             try:
                 retention = json.loads(checkpoint.read_text())
@@ -1059,6 +1059,12 @@ class TinRunner(Runner):
                 raise ConfigError(
                     f"invalid write retention checkpoint: {checkpoint}"
                 )
+            if (
+                completed
+                and retention.get("reason") == "write-cleanup-failed"
+                and retention.get("retained") is not True
+            ):
+                continue
             if retention.get("volume") == name and (
                 retention.get("retained") is True
                 or retention.get("retention_requested") is True
@@ -2139,7 +2145,8 @@ class TinRunner(Runner):
                             clone = fingerprint["write_clone"]
                             try:
                                 self._remove_owned_write_volume(
-                                    clone["target"], clone["labels"]
+                                    clone["target"], clone["labels"],
+                                    completed=True,
                                 )
                             except (
                                 ConfigError,
@@ -2438,7 +2445,7 @@ class TinRunner(Runner):
                     pressure.append(quality)
                     try:
                         self._remove_owned_write_volume(
-                            write_volume, clone["labels"]
+                            write_volume, clone["labels"], completed=True
                         )
                     except (
                         ConfigError,

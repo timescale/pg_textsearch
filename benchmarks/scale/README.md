@@ -184,6 +184,9 @@ checkpoints remain authoritative after fleet archival: retries refuse to
 delete those volumes. Inspect the checkpoint, volume labels and database
 state before approving manual cleanup; remove its retention checkpoint only
 after the retained volume has been safely removed.
+This safety refusal halts a resume pending inspection; it is distinct from a
+measured SQL failure. Completed cells with validated artifacts still retry
+transient cleanup failures automatically.
 
 After collection, export search-only statistics:
 

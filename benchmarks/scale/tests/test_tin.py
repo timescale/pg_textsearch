@@ -1389,6 +1389,7 @@ class TinRunnerTest(unittest.TestCase):
                 record.parent.mkdir(parents=True)
                 record.write_text(json.dumps({
                     flag: True, "volume": volume, "labels": labels,
+                    "reason": "write-cleanup-failed",
                 }))
                 volumes = {volume}
 
@@ -1429,6 +1430,13 @@ class TinRunnerTest(unittest.TestCase):
                         runner._prepare_write_volume(**arguments)
                     self.assertEqual(volumes, {volume})
                     self.assertTrue(record.is_file())
+                    if flag == "retained":
+                        with self.assertRaisesRegex(
+                            ConfigError, "retained"
+                        ):
+                            runner._remove_owned_write_volume(
+                                volume, labels, completed=True
+                            )
                     record.unlink()
                     runner._prepare_write_volume(**arguments)
                     self.assertEqual(volumes, set())
@@ -1814,6 +1822,17 @@ class TinRunnerTest(unittest.TestCase):
                 "profile": "high",
                 "cell": cell["cell_id"],
             }
+            retention = (
+                result_dir / "write-attempts/123/retention.json"
+            )
+            retention.parent.mkdir(parents=True)
+            retention.write_text(json.dumps({
+                "retention_requested": True,
+                "volume": target,
+                "labels": labels,
+                "reason": "write-cleanup-failed",
+            }))
+            removed_volumes = []
             fingerprint = {
                 "base": "fingerprint",
                 "phase_resources": PROFILES["high"],
@@ -1852,6 +1871,20 @@ class TinRunnerTest(unittest.TestCase):
             def command(_args, *, output=None, **_kwargs):
                 if output is not None:
                     output.write_text("")
+                if _args[:3] == ["docker", "volume", "rm"]:
+                    removed_volumes.append(_args[-1])
+
+            def docker(args, **_kwargs):
+                if args[:3] == ["docker", "volume", "inspect"]:
+                    return subprocess.CompletedProcess(
+                        args, 0, stdout=json.dumps([{
+                            "Labels": {
+                                "managed-by": "pg_textsearch-tin",
+                                "run-id": runner.run_id,
+                            } | labels,
+                        }]),
+                    )
+                return subprocess.CompletedProcess(args, 0, stdout="")
 
             with (
                 patch.object(
@@ -1879,9 +1912,10 @@ class TinRunnerTest(unittest.TestCase):
                     return_value={"base": "fingerprint"},
                 ),
                 patch.object(runner, "_probe_cell"),
-                patch.object(
-                    runner, "_remove_owned_write_volume"
-                ) as remove,
+                patch(
+                    "benchmarks.scale.tin.subprocess.run",
+                    side_effect=docker,
+                ),
             ):
                 runner.run_cells(["paradedb"], [cell])
 
@@ -1893,7 +1927,7 @@ class TinRunnerTest(unittest.TestCase):
                 (runner.tin_dir / "summary.json").read_text()
             )
             self.assertEqual(summary["load_quality"], [quality])
-            remove.assert_called_once_with(target, labels)
+            self.assertEqual(removed_volumes, [target])
 
     def test_completed_write_quality_requires_metrics_and_matches_existing(
         self,
