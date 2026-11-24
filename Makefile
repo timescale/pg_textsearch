@@ -148,7 +148,7 @@ install-test-injection test-injection-sql test-injection-shell:
 endif
 
 # SQL regression tests
-test: test-replication-transport test-segment-io-limits \
+test: test-replication-transport test-segment-io-limits test-bmw-traversal \
 	test-compression test-mixed-update-query-benchmark \
 	test-filtered-seed-benchmark \
 	test-build-memory-benchmark
@@ -182,6 +182,33 @@ test-compression:
 test-mixed-update-query-benchmark:
 	@./test/scripts/mixed_update_query_benchmark_test.sh
 
+test-bmw-traversal:
+	@set -eu; \
+	tmp_dir=$$(mktemp -d); \
+	cleanup() { \
+		rm -f "$$tmp_dir/bmw_traversal_test" \
+			"$$tmp_dir/bmw_traversal_test.o" \
+			"$$tmp_dir/bmw_traversal_test.gcno" \
+			"$$tmp_dir/bmw_traversal_test.gcda"; \
+		rmdir "$$tmp_dir"; \
+	}; \
+	trap cleanup EXIT; \
+	$(CC) $(CFLAGS) $(CPPFLAGS) -std=gnu11 \
+		-ffunction-sections -fdata-sections \
+		-Isrc \
+		-isystem "$$($(PG_CONFIG) --includedir-server)" \
+		-isystem "$$($(PG_CONFIG) --includedir)" \
+		-c test/scripts/bmw_traversal_test.c \
+		-o "$$tmp_dir/bmw_traversal_test.o"; \
+	if test "$$(uname -s)" = Darwin; then \
+		gc_flag=-Wl,-dead_strip; \
+	else \
+		gc_flag=-Wl,--gc-sections; \
+	fi; \
+	$(CC) $(CFLAGS) "$$tmp_dir/bmw_traversal_test.o" $$gc_flag \
+		-o "$$tmp_dir/bmw_traversal_test"; \
+	"$$tmp_dir/bmw_traversal_test"
+
 test-filtered-seed-benchmark:
 	@bash test/scripts/filtered_seed_benchmark_test.sh
 
@@ -197,9 +224,11 @@ test-durable:
 	@cd test/scripts && ./durable_compaction.sh
 
 installcheck: test-replication-transport test-segment-io-limits \
+	test-bmw-traversal \
 	test-compression test-mixed-update-query-benchmark \
 	test-filtered-seed-benchmark test-build-memory-benchmark
 test-local: test-replication-transport test-segment-io-limits \
+	test-bmw-traversal \
 	test-compression test-mixed-update-query-benchmark \
 	test-filtered-seed-benchmark \
 	test-build-memory-benchmark
@@ -528,7 +557,7 @@ help:
 	@echo "  make format"
 
 .PHONY: \
-	test test-segment-io-limits test-compression \
+	test test-segment-io-limits test-compression test-bmw-traversal \
 	test-mixed-update-query-benchmark \
 	test-filtered-seed-benchmark test-build-memory-benchmark \
 	test-replication-transport \

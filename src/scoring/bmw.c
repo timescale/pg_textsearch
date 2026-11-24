@@ -381,6 +381,15 @@ tp_compute_block_max_score(
  * Compute BM25 score for a single posting.
  */
 static inline float4
+compute_bm25_score_from_norm(float4 idf, int32 tf, float4 len_norm, float4 k1)
+{
+	float4 tf_component = ((float4)tf * (k1 + 1.0f)) /
+						  ((float4)tf + k1 * len_norm);
+
+	return idf * tf_component;
+}
+
+static inline float4
 compute_bm25_score(
 		float4 idf,
 		int32  tf,
@@ -389,11 +398,9 @@ compute_bm25_score(
 		float4 b,
 		float4 avg_doc_len)
 {
-	float4 len_norm		= 1.0f - b + b * ((float4)doc_len / avg_doc_len);
-	float4 tf_component = ((float4)tf * (k1 + 1.0f)) /
-						  ((float4)tf + k1 * len_norm);
+	float4 len_norm = 1.0f - b + b * ((float4)doc_len / avg_doc_len);
 
-	return idf * tf_component;
+	return compute_bm25_score_from_norm(idf, tf, len_norm, k1);
 }
 
 /*
@@ -1561,11 +1568,7 @@ verify_pivot_alignment(TpTermState **terms, int pivot_len, uint32 pivot_doc_id)
  */
 static float4
 score_pivot_document(
-		TpTermState **terms,
-		int			  pivot_len,
-		float4		  k1,
-		float4		  b,
-		float4		  avg_doc_len)
+		TpTermState **terms, int pivot_len, float4 k1, const float4 *len_norms)
 {
 	float4 doc_score = 0.0f;
 	int	   i;
@@ -1579,15 +1582,11 @@ score_pivot_document(
 		if (!ts->found || ts->iter.finished)
 			continue;
 
-		bp		   = &ts->iter.block_postings[ts->iter.current_in_block];
-		term_score = compute_bm25_score(
-							 ts->idf,
-							 bp->frequency,
-							 (int32)decode_fieldnorm(bp->fieldnorm),
-							 k1,
-							 b,
-							 avg_doc_len) *
-					 ts->query_freq;
+		bp = &ts->iter.block_postings[ts->iter.current_in_block];
+		term_score =
+				compute_bm25_score_from_norm(
+						ts->idf, bp->frequency, len_norms[bp->fieldnorm], k1) *
+				ts->query_freq;
 		doc_score += term_score;
 	}
 
@@ -1622,6 +1621,7 @@ score_segment_multi_term_bmw(
 	uint32 shallow_bound_end   = 0;
 	float8 shallow_bound_score = 0.0;
 	bool   drive_candidates = filter != NULL && filter->segment_next != NULL;
+	float4 len_norms[lengthof(FIELDNORM_DECODE_TABLE)];
 
 	for (int i = 0; i < term_count; i++)
 		required_count += terms[i]->required;
@@ -1646,6 +1646,14 @@ score_segment_multi_term_bmw(
 
 	/* Sort terms by current doc_id for WAND traversal */
 	sort_terms_by_doc_id(terms, term_count);
+
+	/* Normalize the 256 length buckets once, not every scored posting. */
+	for (int i = 0; i < (int)lengthof(len_norms); i++)
+	{
+		int32 doc_len = (int32)decode_fieldnorm((uint8)i);
+
+		len_norms[i] = 1.0f - b + b * ((float4)doc_len / avg_doc_len);
+	}
 
 	/* WAND main loop */
 	while (active_count > 0)
@@ -1736,8 +1744,7 @@ score_segment_multi_term_bmw(
 		else
 		{
 			/* Step 5: Score the pivot document */
-			doc_score =
-					score_pivot_document(terms, pivot_len, k1, b, avg_doc_len);
+			doc_score = score_pivot_document(terms, pivot_len, k1, len_norms);
 
 			if (doc_score > 0.0f && !tp_topk_dominated(heap, doc_score) &&
 				(filter == NULL ||
