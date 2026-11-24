@@ -1,0 +1,7 @@
+driver: postgres
+container: ""
+envVar: LEAD_URL
+description: Lead compatibility-only PG18 image
+color: "#111827"
+extras:
+  indexAccessMethods: [tin]

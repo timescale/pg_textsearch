@@ -1,0 +1,23 @@
+#!/usr/bin/env bash
+set -euo pipefail
+if [[ "${EUID:-$(id -u)}" -ne 0 ]]; then
+  echo "run with sudo: sudo benchmarks/scale/install.sh" >&2
+  exit 2
+fi
+export DEBIAN_FRONTEND=noninteractive
+apt-get update -qq
+apt-get install -y --no-install-recommends \
+  ca-certificates curl docker.io git jq make python3 python3-pip \
+  python3-venv rsync
+EXPECTED_GO_ARCHIVE="go1.26.11.linux-amd64.tar.gz"
+read -r EXPECTED_GO_SHA256 <<'EOF'
+9849f4e04ee35303714e34fbc3ac8ab44ea3e448a95aa182f91e3b9b79c710ec
+EOF
+source "$(dirname "$0")/install_go.sh"
+[[ "$GO_ARCHIVE" == "$EXPECTED_GO_ARCHIVE" ]]
+[[ "$GO_SHA256" == "$EXPECTED_GO_SHA256" ]]
+install_pinned_go
+systemctl enable --now docker
+if [[ -n "${SUDO_USER:-}" ]]; then
+  usermod -aG docker "$SUDO_USER"
+fi
