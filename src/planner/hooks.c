@@ -36,6 +36,7 @@
 #include <nodes/makefuncs.h>
 #include <nodes/nodeFuncs.h>
 #include <nodes/plannodes.h>
+#include <optimizer/clauses.h>
 #include <optimizer/optimizer.h>
 #include <optimizer/pathnode.h>
 #include <optimizer/paths.h>
@@ -1394,7 +1395,8 @@ score_subplan_type_is_unsafe(Oid type)
 
 /*
  * Index AMs and opclass support functions can execute SQL without appearing
- * in expressions. Restrict lookups to btree with built-in support functions.
+ * in expressions. Restrict lookups to btree with built-in operator families
+ * and support functions.
  */
 static bool
 score_subplan_index_is_unsafe(Oid indexid, ScoreProjectionContext *context)
@@ -1410,7 +1412,8 @@ score_subplan_index_is_unsafe(Oid indexid, ScoreProjectionContext *context)
 	{
 		Oid type = index->rd_opcintype[i];
 
-		if (score_subplan_type_is_unsafe(type))
+		if (index->rd_opfamily[i] >= FirstNormalObjectId ||
+			score_subplan_type_is_unsafe(type))
 			unsafe = true;
 	}
 	for (i = 0; !unsafe && i < nprocs; i++)
@@ -1515,6 +1518,9 @@ score_projection_is_unsafe(Node *node, void *arg)
 		Plan *plan = list_nth(context->stmt->subplans, subplan->plan_id - 1);
 		ScoreProjectionContext subcontext = *context;
 
+		/* Hash subplans resolve additional operator-family support calls. */
+		if (subplan->useHashTable)
+			return true;
 		subcontext.in_subplan = true;
 		if (score_subplan_is_unsafe(plan, &subcontext))
 			return true;
@@ -1535,9 +1541,13 @@ score_projection_is_unsafe(Node *node, void *arg)
 		case T_TargetEntry:
 		case T_CaseWhen:
 			break;
+		case T_Param:
+			if (((Param *)node)->paramkind != PARAM_EXEC ||
+				score_subplan_type_is_unsafe(exprType(node)))
+				return true;
+			break;
 		case T_Var:
 		case T_Const:
-		case T_Param:
 		case T_OpExpr:
 		case T_DistinctExpr:
 		case T_NullIfExpr:
@@ -1568,20 +1578,43 @@ score_projection_is_unsafe(Node *node, void *arg)
 }
 
 static void
-replace_scores_in_indexscan(IndexScan *scan, ScoreProjectionContext *context)
+replace_scores_in_indexscan(
+		IndexScan			   *scan,
+		ScoreProjectionContext *context,
+		bool					unsafe_initplan_path)
 {
-	BM25OidCache *oids = context->oids;
-	Expr		 *orderby_expr;
-	ListCell	 *lc;
+	BM25OidCache		  *oids			= context->oids;
+	ScoreProjectionContext scan_context = *context;
+	Expr				  *orderby_expr;
+	ListCell			  *lc;
 
-	if (list_length(scan->indexorderbyorig) != 1 ||
+	if (unsafe_initplan_path || list_length(scan->indexorderbyorig) != 1 ||
 		!plan_has_bm25_indexscan((Plan *)scan, oids))
 		return;
 
 	orderby_expr = linitial(scan->indexorderbyorig);
-	if (!is_bm25_score_opexpr((Node *)orderby_expr, oids) ||
-		score_projection_is_unsafe((Node *)scan->scan.plan.qual, context) ||
-		score_projection_is_unsafe((Node *)scan->indexqualorig, context))
+	if (!is_bm25_score_opexpr((Node *)orderby_expr, oids))
+		return;
+
+	/* A newly allowed SubPlan must not leave sibling callbacks unchecked. */
+	scan_context.in_subplan |= contain_subplans(
+									   (Node *)scan->scan.plan.qual) ||
+							   contain_subplans((Node *)scan->indexqualorig);
+	foreach (lc, scan->scan.plan.targetlist)
+	{
+		TargetEntry *tle = lfirst_node(TargetEntry, lc);
+
+		if (!equal(tle->expr, orderby_expr) &&
+			contain_subplans((Node *)tle->expr))
+		{
+			scan_context.in_subplan = true;
+			break;
+		}
+	}
+
+	if (score_projection_is_unsafe(
+				(Node *)scan->scan.plan.qual, &scan_context) ||
+		score_projection_is_unsafe((Node *)scan->indexqualorig, &scan_context))
 		return;
 
 	foreach (lc, scan->scan.plan.targetlist)
@@ -1590,7 +1623,7 @@ replace_scores_in_indexscan(IndexScan *scan, ScoreProjectionContext *context)
 
 		/* Matching expressions are removed, so cannot run nested scans. */
 		if (!equal(tle->expr, orderby_expr) &&
-			score_projection_is_unsafe((Node *)tle->expr, context))
+			score_projection_is_unsafe((Node *)tle->expr, &scan_context))
 			return;
 	}
 
@@ -1616,20 +1649,26 @@ replace_scores_in_indexscan(IndexScan *scan, ScoreProjectionContext *context)
  * Recursively walk the plan tree and replace BM25 score expressions.
  */
 static void
-replace_scores_in_plan(Plan *plan, ScoreProjectionContext *context)
+replace_scores_in_plan(
+		Plan *plan, ScoreProjectionContext *context, bool unsafe_initplan_path)
 {
 	if (plan == NULL)
 		return;
 
+	/* Ancestor InitPlans can execute lazily during an IndexScan's quals. */
+	unsafe_initplan_path |=
+			score_projection_is_unsafe((Node *)plan->initPlan, context);
+
 	if (IsA(plan, IndexScan))
-		replace_scores_in_indexscan((IndexScan *)plan, context);
+		replace_scores_in_indexscan(
+				(IndexScan *)plan, context, unsafe_initplan_path);
 	else
 		/* Preserve score reuse in projections above ordered joins. */
 		replace_scores_in_targetlist(plan->targetlist, context->oids);
 
 	/* Recurse into child plans */
-	replace_scores_in_plan(plan->lefttree, context);
-	replace_scores_in_plan(plan->righttree, context);
+	replace_scores_in_plan(plan->lefttree, context, unsafe_initplan_path);
+	replace_scores_in_plan(plan->righttree, context, unsafe_initplan_path);
 
 	/* Handle plan-specific children */
 	switch (nodeTag(plan))
@@ -1640,7 +1679,8 @@ replace_scores_in_plan(Plan *plan, ScoreProjectionContext *context)
 		ListCell *lc;
 
 		foreach (lc, append->appendplans)
-			replace_scores_in_plan((Plan *)lfirst(lc), context);
+			replace_scores_in_plan(
+					(Plan *)lfirst(lc), context, unsafe_initplan_path);
 	}
 	break;
 
@@ -1650,7 +1690,8 @@ replace_scores_in_plan(Plan *plan, ScoreProjectionContext *context)
 		ListCell	*lc;
 
 		foreach (lc, merge->mergeplans)
-			replace_scores_in_plan((Plan *)lfirst(lc), context);
+			replace_scores_in_plan(
+					(Plan *)lfirst(lc), context, unsafe_initplan_path);
 	}
 	break;
 
@@ -1658,7 +1699,8 @@ replace_scores_in_plan(Plan *plan, ScoreProjectionContext *context)
 	{
 		SubqueryScan *subquery = (SubqueryScan *)plan;
 
-		replace_scores_in_plan(subquery->subplan, context);
+		replace_scores_in_plan(
+				subquery->subplan, context, unsafe_initplan_path);
 	}
 	break;
 
@@ -1668,7 +1710,8 @@ replace_scores_in_plan(Plan *plan, ScoreProjectionContext *context)
 		ListCell   *lc2;
 
 		foreach (lc2, cscan->custom_plans)
-			replace_scores_in_plan((Plan *)lfirst(lc2), context);
+			replace_scores_in_plan(
+					(Plan *)lfirst(lc2), context, unsafe_initplan_path);
 	}
 	break;
 
@@ -3509,7 +3552,7 @@ tp_planner_hook(
 		 */
 		validate_explicit_index_usage(result->planTree, &oid_cache);
 
-		replace_scores_in_plan(result->planTree, &context);
+		replace_scores_in_plan(result->planTree, &context, false);
 	}
 
 	if (query_has_partition_scores)
