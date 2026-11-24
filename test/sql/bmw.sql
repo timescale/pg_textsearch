@@ -465,8 +465,13 @@ FROM bmw_repeat
 ORDER BY content <@> 'cat cat'::bm25query LIMIT 1;
 
 -- Plain correlated lookups must not disable index-score reuse (#636).
-CREATE TABLE bmw_score_parents (id int PRIMARY KEY, visible boolean);
-INSERT INTO bmw_score_parents VALUES (1, false), (2, true), (3, false);
+CREATE TABLE bmw_score_parents (
+    id int PRIMARY KEY, visible boolean,
+    setting_name text DEFAULT 'application_name',
+    text_config regconfig DEFAULT 'simple'
+);
+INSERT INTO bmw_score_parents (id, visible)
+    VALUES (1, false), (2, true), (3, false);
 CREATE FUNCTION pg_temp.bmw_filter_score_is_cached(filter_sql text)
 RETURNS boolean LANGUAGE plpgsql AS $$
 DECLARE
@@ -518,6 +523,21 @@ VACUUM bmw_score_parents;
 SELECT pg_temp.bmw_filter_score_is_cached($q$
     (SELECT p.visible FROM bmw_score_parents p WHERE p.id = r.id)
 $q$) AS index_only_lookup_score_cached;
+-- Built-in functions can dispatch to user-defined GUC/dictionary callbacks.
+SELECT pg_temp.bmw_filter_score_is_cached($q$
+    (SELECT p.visible AND current_setting(p.setting_name) IS NOT NULL
+     FROM bmw_score_parents p WHERE p.id = r.id)
+$q$) AS setting_lookup_score_cached;
+SELECT pg_temp.bmw_filter_score_is_cached($q$
+    (SELECT to_tsvector(p.text_config, p.visible::text) @@
+            to_tsquery('simple', 'true')
+     FROM bmw_score_parents p WHERE p.id = r.id)
+$q$) AS dictionary_lookup_score_cached;
+-- Stable text-search operators can dispatch through the current config too.
+SELECT pg_temp.bmw_filter_score_is_cached($q$
+    (SELECT p.setting_name @@ to_tsquery('simple', 'application_name')
+     FROM bmw_score_parents p WHERE p.id = r.id)
+$q$) AS stable_operator_score_cached;
 -- A BM25 scan hidden inside a second subquery must still disable reuse.
 SELECT pg_temp.bmw_filter_score_is_cached($q$
     (SELECT p.visible FROM bmw_score_parents p

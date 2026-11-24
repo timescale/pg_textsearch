@@ -1361,15 +1361,17 @@ typedef struct ScoreProjectionContext
  * only built-in immutable functions and known scan-free stable/accessor calls.
  */
 static bool
-score_function_is_unsafe(Oid funcid, void *context)
+score_function_is_unsafe(Oid funcid, void *arg)
 {
-	BM25OidCache *oids = context;
+	ScoreProjectionContext *context = arg;
+	BM25OidCache		   *oids	= context->oids;
 
-	if (funcid == oids->score_stub_func_oid ||
-		funcid == oids->partition_score_func_oid ||
-		funcid == oids->partition_array_score_func_oid ||
-		funcid == F_TS_MATCH_TQ || funcid == F_CURRENT_SETTING_TEXT ||
-		funcid == F_CURRENT_SETTING_TEXT_BOOL)
+	if (!context->in_subplan &&
+		(funcid == oids->score_stub_func_oid ||
+		 funcid == oids->partition_score_func_oid ||
+		 funcid == oids->partition_array_score_func_oid ||
+		 funcid == F_TS_MATCH_TQ || funcid == F_CURRENT_SETTING_TEXT ||
+		 funcid == F_CURRENT_SETTING_TEXT_BOOL))
 		return false;
 
 	return funcid >= FirstNormalObjectId ||
@@ -1395,7 +1397,7 @@ score_subplan_type_is_unsafe(Oid type)
  * in expressions. Restrict lookups to btree with built-in support functions.
  */
 static bool
-score_subplan_index_is_unsafe(Oid indexid, BM25OidCache *oids)
+score_subplan_index_is_unsafe(Oid indexid, ScoreProjectionContext *context)
 {
 	Relation index	= index_open(indexid, AccessShareLock);
 	bool	 unsafe = index->rd_rel->relam != BTREE_AM_OID;
@@ -1415,7 +1417,7 @@ score_subplan_index_is_unsafe(Oid indexid, BM25OidCache *oids)
 	{
 		Oid funcid = index->rd_support[i];
 
-		if (OidIsValid(funcid) && score_function_is_unsafe(funcid, oids))
+		if (OidIsValid(funcid) && score_function_is_unsafe(funcid, context))
 			unsafe = true;
 	}
 	index_close(index, AccessShareLock);
@@ -1458,7 +1460,7 @@ score_subplan_is_unsafe(Plan *plan, ScoreProjectionContext *context)
 	{
 		IndexScan *scan = (IndexScan *)plan;
 
-		if (score_subplan_index_is_unsafe(scan->indexid, context->oids) ||
+		if (score_subplan_index_is_unsafe(scan->indexid, context) ||
 			score_projection_is_unsafe((Node *)scan->indexqual, context) ||
 			score_projection_is_unsafe((Node *)scan->indexqualorig, context) ||
 			score_projection_is_unsafe((Node *)scan->indexorderby, context) ||
@@ -1471,7 +1473,7 @@ score_subplan_is_unsafe(Plan *plan, ScoreProjectionContext *context)
 	{
 		IndexOnlyScan *scan = (IndexOnlyScan *)plan;
 
-		if (score_subplan_index_is_unsafe(scan->indexid, context->oids) ||
+		if (score_subplan_index_is_unsafe(scan->indexid, context) ||
 			score_projection_is_unsafe((Node *)scan->indexqual, context) ||
 			score_projection_is_unsafe((Node *)scan->recheckqual, context) ||
 			score_projection_is_unsafe((Node *)scan->indexorderby, context))
@@ -1523,8 +1525,9 @@ score_projection_is_unsafe(Node *node, void *arg)
 	if (context->in_subplan)
 	{
 		/*
-		 * Some expressions (domain checks, MinMaxExpr, etc.) invoke SQL
-		 * functions not reported by check_functions_in_node().
+		 * Domain checks and other expressions hide function calls. Even
+		 * built-in FuncExprs can dispatch to GUC/text-search callbacks.
+		 * Permit only expressions whose runtime calls are inspected below.
 		 */
 		switch (nodeTag(node))
 		{
@@ -1535,7 +1538,6 @@ score_projection_is_unsafe(Node *node, void *arg)
 		case T_Var:
 		case T_Const:
 		case T_Param:
-		case T_FuncExpr:
 		case T_OpExpr:
 		case T_DistinctExpr:
 		case T_NullIfExpr:
@@ -1559,7 +1561,7 @@ score_projection_is_unsafe(Node *node, void *arg)
 
 	/* Scoring operators and the score accessor do not run nested scans. */
 	if (!is_bm25_score_opexpr(node, context->oids) &&
-		check_functions_in_node(node, score_function_is_unsafe, context->oids))
+		check_functions_in_node(node, score_function_is_unsafe, context))
 		return true;
 
 	return expression_tree_walker(node, score_projection_is_unsafe, context);
