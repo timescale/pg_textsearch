@@ -9,6 +9,7 @@
 #include <access/genam.h>
 #include <catalog/pg_type_d.h>
 #include <limits.h>
+#include <miscadmin.h>
 #include <nodes/nodeFuncs.h>
 #include <nodes/pathnodes.h>
 #include <nodes/primnodes.h>
@@ -58,17 +59,10 @@ tp_boolean_get_constant_query(IndexClause *index_clause, TSQuery *query)
 }
 
 static bool
-tp_boolean_query_requires_full_scan(TSQuery query)
+tp_boolean_query_has_inexact_operand(TSQuery query)
 {
-	QueryItem *items;
+	QueryItem *items = GETQUERY(query);
 
-	if (query->size == 0)
-		return false;
-
-	if (!tsquery_requires_match(GETQUERY(query)))
-		return true;
-
-	items = GETQUERY(query);
 	for (int i = 0; i < query->size; i++)
 	{
 		if (items[i].type == QI_VAL &&
@@ -77,6 +71,41 @@ tp_boolean_query_requires_full_scan(TSQuery query)
 	}
 
 	return false;
+}
+
+static bool
+tp_boolean_query_requires_full_scan(TSQuery query)
+{
+	if (query->size == 0)
+		return false;
+
+	return !tsquery_requires_match(GETQUERY(query)) ||
+		   tp_boolean_query_has_inexact_operand(query);
+}
+
+/* Whether every match must contain some exact (unweighted, whole) term. */
+static bool
+tp_boolean_requires_exact_operand(QueryItem *item)
+{
+	check_stack_depth();
+
+	if (item->type == QI_VAL)
+		return !item->qoperand.prefix && item->qoperand.weight == 0;
+
+	switch (item->qoperator.oper)
+	{
+	case OP_AND:
+	case OP_PHRASE:
+		return tp_boolean_requires_exact_operand(
+					   item + item->qoperator.left) ||
+			   tp_boolean_requires_exact_operand(item + 1);
+	case OP_OR:
+		return tp_boolean_requires_exact_operand(
+					   item + item->qoperator.left) &&
+			   tp_boolean_requires_exact_operand(item + 1);
+	default:
+		return false;
+	}
 }
 
 static bool
@@ -180,6 +209,9 @@ tp_costestimate(
 	{
 		ListCell *lc;
 		int		  exact_operands = 0;
+		bool	  runtime_key	 = false;
+		bool	  inexact		 = false;
+		bool	  exact_filter	 = false;
 
 		foreach (lc, path->indexclauses)
 		{
@@ -205,6 +237,7 @@ tp_costestimate(
 							indexPages);
 					return;
 				}
+				runtime_key		  = true;
 				boolean_full_scan = true;
 			}
 			else
@@ -212,8 +245,8 @@ tp_costestimate(
 				int operands = tp_boolean_query_exact_operand_count(
 						boolean_query);
 
-				if (!has_orderby &&
-					operands > TP_BOOLEAN_MAX_EXACT_OPERANDS - exact_operands)
+				/* Ranked scans cannot filter over-budget predicates either. */
+				if (operands > TP_BOOLEAN_MAX_EXACT_OPERANDS - exact_operands)
 				{
 					tp_disable_index_path(
 							path,
@@ -224,11 +257,31 @@ tp_costestimate(
 							indexPages);
 					return;
 				}
-				if (!has_orderby)
-					exact_operands += operands;
+				exact_operands += operands;
 				boolean_full_scan |= tp_boolean_query_requires_full_scan(
 						boolean_query);
+				inexact |= tp_boolean_query_has_inexact_operand(boolean_query);
+				exact_filter |= boolean_query->size == 0 ||
+								tp_boolean_requires_exact_operand(
+										GETQUERY(boolean_query));
 			}
+		}
+
+		/*
+		 * Ranked scans filter BMW candidates on exact terms only.  Unless
+		 * every match contains one, prefix and weighted operands leave each
+		 * candidate to the heap recheck, which rescans ever deeper.
+		 */
+		if (has_orderby && inexact && !exact_filter && !runtime_key)
+		{
+			tp_disable_index_path(
+					path,
+					indexStartupCost,
+					indexTotalCost,
+					indexSelectivity,
+					indexCorrelation,
+					indexPages);
+			return;
 		}
 	}
 

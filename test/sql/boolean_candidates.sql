@@ -148,48 +148,99 @@ SELECT pg_temp.bounded_candidate_reads($q$
 $q$) AS negative_zero_fill_bounded;
 SELECT pg_temp.bounded_candidate_reads($q$
     SELECT id FROM boolean_candidate_prefix
-    WHERE body @@ 'prefix:*'::tsquery
-    ORDER BY body <@> to_bm25query('rankcommon',
-                                 'boolean_candidate_prefix_idx')
-    LIMIT 1
-$q$) AS unanchored_prefix_bounded;
-SELECT pg_temp.bounded_candidate_reads($q$
-    SELECT id FROM boolean_candidate_prefix
-    WHERE body @@ 'prefix:*'::tsquery
-    ORDER BY body <@> to_bm25query('absent',
-                                 'boolean_candidate_prefix_idx')
-    LIMIT 1
-$q$) AS prefix_zero_fill_bounded;
-SELECT pg_temp.bounded_candidate_reads($q$
-    SELECT id FROM boolean_candidate_prefix
     WHERE body @@ 'missing & prefix:*'::tsquery
     ORDER BY body <@> to_bm25query('absent',
                                  'boolean_candidate_prefix_idx')
     LIMIT 1
 $q$) AS missing_prefix_anchor_bounded;
-SELECT bool_and(pg_temp.bounded_candidate_reads(format($q$
-    SELECT id FROM boolean_candidate_prefix WHERE body @@ %L::tsquery
-    ORDER BY body <@> to_bm25query('absent',
-                                 'boolean_candidate_prefix_idx')
-    LIMIT 1
-$q$, predicate), 32)) AS negative_prefix_anchors_bounded
+-- Unanchored prefixes reach ranked scans only as runtime keys.
+SET plan_cache_mode = force_generic_plan;
+PREPARE prefix_rank_scan(tsquery) AS
+SELECT id FROM boolean_candidate_prefix WHERE body @@ $1
+ORDER BY body <@> to_bm25query('rankcommon', 'boolean_candidate_prefix_idx')
+LIMIT 1;
+PREPARE prefix_zero_scan(tsquery) AS
+SELECT id FROM boolean_candidate_prefix WHERE body @@ $1
+ORDER BY body <@> to_bm25query('absent', 'boolean_candidate_prefix_idx')
+LIMIT 1;
+PREPARE prefix_zero_count(tsquery) AS
+SELECT count(*) = 4096 AS complete_prefix_zero_matches FROM (
+    SELECT id FROM boolean_candidate_prefix WHERE body @@ $1
+    ORDER BY body <@> to_bm25query('absent', 'boolean_candidate_prefix_idx')
+    LIMIT 5000
+) s;
+SELECT pg_temp.bounded_candidate_reads(
+    'EXECUTE prefix_rank_scan(''prefix:*'')') AS unanchored_prefix_bounded;
+SELECT pg_temp.bounded_candidate_reads(
+    'EXECUTE prefix_zero_scan(''prefix:*'')') AS prefix_zero_fill_bounded;
+SELECT bool_and(pg_temp.bounded_candidate_reads(
+    format('EXECUTE prefix_zero_scan(%L)', predicate), 32))
+    AS negative_prefix_anchors_bounded
 FROM (VALUES
     ('!absent & missingprefix:*'),
     ('missingprefix:* & !absent'),
     ('(!absent | another) & missingprefix:*')
 ) queries(predicate);
-SELECT count(*) = 4096 AS complete_prefix_zero_matches FROM (
-    SELECT id FROM boolean_candidate_prefix
-    WHERE body @@ 'prefix:*'::tsquery
-    ORDER BY body <@> to_bm25query('absent',
-                                 'boolean_candidate_prefix_idx')
-    LIMIT 5000
-) s;
+EXECUTE prefix_zero_count('prefix:*');
+DEALLOCATE prefix_rank_scan;
+DEALLOCATE prefix_zero_scan;
+DEALLOCATE prefix_zero_count;
+RESET plan_cache_mode;
 SELECT id FROM boolean_candidate_prefix
 WHERE body @@ 'rankcommon & prefix:*'::tsquery
 ORDER BY body <@> to_bm25query('rankcommon', 'boolean_candidate_prefix_idx')
 LIMIT 1;
 DROP TABLE boolean_candidate_prefix;
+
+CREATE TABLE boolean_candidate_zero_fill (id int, body text);
+CREATE INDEX boolean_candidate_zero_fill_idx
+ON boolean_candidate_zero_fill USING bm25(body) WITH (text_config = 'simple');
+INSERT INTO boolean_candidate_zero_fill
+SELECT g, CASE WHEN g <= 1000 THEN 'rank filler'
+               WHEN g <= 2000 THEN 'a filler'
+               WHEN g <= 3000 THEN 'b filler'
+               ELSE 'a b rare' END
+FROM generate_series(1, 3005) g;
+SELECT bm25_spill_index('boolean_candidate_zero_fill_idx') > 0 AS spilled;
+-- Exact terms must reject zero-score candidates that prefixes cannot.
+SET pg_textsearch.default_limit = 10;
+SELECT bm25_debug_scoring_passes(true) >= 0 AS reset_passes;
+SELECT pg_temp.bounded_candidate_reads($q$
+    SELECT id FROM boolean_candidate_zero_fill
+    WHERE body @@ 'a & b & rare:*'::tsquery
+    ORDER BY body <@> to_bm25query('rank', 'boolean_candidate_zero_fill_idx')
+    LIMIT 10
+$q$) AS anchored_zero_fill_bounded;
+SELECT bm25_debug_scoring_passes(true) = 1 AS anchored_zero_fill_one_pass;
+SELECT array_agg(id ORDER BY id) AS anchored_zero_fill_matches FROM (
+    SELECT id FROM boolean_candidate_zero_fill
+    WHERE body @@ 'a & b & rare:*'::tsquery
+    ORDER BY body <@> to_bm25query('rank', 'boolean_candidate_zero_fill_idx')
+    LIMIT 10
+) s;
+DROP TABLE boolean_candidate_zero_fill;
+SET pg_textsearch.default_limit = 1;
+
+CREATE TABLE boolean_candidate_union (id int, body text);
+CREATE INDEX boolean_candidate_union_idx
+ON boolean_candidate_union USING bm25(body) WITH (text_config = 'simple');
+INSERT INTO boolean_candidate_union VALUES
+    (1, 'zed pb'), (2, 'zed pa'), (3, 'zed other');
+SELECT bm25_spill_index('boolean_candidate_union_idx') > 0 AS union_spilled;
+-- Prefix postings arrive term by term, so their union is not in doc order.
+SELECT pg_temp.bounded_candidate_reads($q$
+    SELECT id FROM boolean_candidate_union
+    WHERE body @@ '(p:* | absent) & zed'::tsquery
+    ORDER BY body <@> to_bm25query('absent', 'boolean_candidate_union_idx')
+    LIMIT 10
+$q$) AS unordered_union_bounded;
+SELECT array_agg(id ORDER BY id) AS unordered_union_matches FROM (
+    SELECT id FROM boolean_candidate_union
+    WHERE body @@ '(p:* | absent) & zed'::tsquery
+    ORDER BY body <@> to_bm25query('absent', 'boolean_candidate_union_idx')
+    LIMIT 10
+) s;
+DROP TABLE boolean_candidate_union;
 
 SET pg_textsearch.bulk_load_threshold = 0;
 SET pg_textsearch.memtable_pages_threshold = 0;

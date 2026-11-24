@@ -432,16 +432,26 @@ FROM (VALUES
     ('nested', '(beta | gamma) & !alpha', 'alpha gamma'),
     ('negative', '!alpha', 'alpha'),
     ('prefix', 'bet:*', 'alpha'),
+    ('anchored prefix', 'beta & bet:*', 'alpha'),
+    ('anchored disjunction', '(beta & bet:*) | (gamma & gam:*)', 'alpha'),
+    ('prefix disjunction', 'beta | bet:*', 'alpha'),
+    ('negated prefix', '!alpha & bet:*', 'alpha'),
+    ('weighted', 'beta:A', 'alpha'),
     ('empty ranking', 'beta', '')
 ) cases(name, predicate, ranking)
 ORDER BY name;
 name|ordered_index_scan
+anchored disjunction|t
+anchored prefix|t
 empty ranking|t
 independent|t
+negated prefix|f
 negative|t
 nested|t
-prefix|t
-(5 rows)
+prefix|f
+prefix disjunction|f
+weighted|f
+(10 rows)
 SELECT pg_temp.ranked_boolean_plan($q$
     SELECT id FROM ranked_disjoint_docs
     WHERE body @@ 'beta'::tsquery AND body @@ '!alpha'::tsquery
@@ -449,6 +459,32 @@ SELECT pg_temp.ranked_boolean_plan($q$
 $q$) AS multiple_boolean_keys;
 multiple_boolean_keys
 t
+(1 row)
+-- One key that requires an exact term lets ranked scans filter the rest.
+SELECT pg_temp.ranked_boolean_plan($q$
+    SELECT id FROM ranked_disjoint_docs
+    WHERE body @@ 'bet:*'::tsquery AND body @@ 'beta | gamma'::tsquery
+    ORDER BY body <@> to_bm25query('alpha', 'ranked_disjoint_idx') LIMIT 10
+$q$) AS anchored_prefix_keys;
+anchored_prefix_keys
+t
+(1 row)
+SELECT 'beta | ' || string_agg('unused' || g, ' | ') AS oversized_query
+FROM generate_series(1, 64) g \gset
+SELECT pg_temp.ranked_boolean_plan(format($q$
+    SELECT id FROM ranked_disjoint_docs WHERE body @@ %L::tsquery
+    ORDER BY body <@> to_bm25query('alpha', 'ranked_disjoint_idx') LIMIT 10
+$q$, :'oversized_query')) AS oversized_ordered_index_scan;
+oversized_ordered_index_scan
+f
+(1 row)
+SELECT array_agg(id ORDER BY id) AS oversized_matches FROM (
+    SELECT id FROM ranked_disjoint_docs
+    WHERE body @@ :'oversized_query'::tsquery
+    ORDER BY body <@> to_bm25query('alpha', 'ranked_disjoint_idx') LIMIT 10
+) s;
+oversized_matches
+{1,2}
 (1 row)
 SELECT array_agg(id ORDER BY id) AS nested_zero_matches FROM (
     SELECT id FROM ranked_disjoint_docs

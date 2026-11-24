@@ -30,6 +30,12 @@ typedef struct TpBooleanTerm
 	int	  length;
 } TpBooleanTerm;
 
+typedef struct TpBooleanRankingTerm
+{
+	const char *lexeme;
+	int			length;
+} TpBooleanRankingTerm;
+
 typedef struct TpBooleanEvalState
 {
 	TSQuery		   query;
@@ -765,6 +771,21 @@ tp_boolean_free_candidate_stream(TpBooleanCandidateStream *stream)
 	pfree(stream);
 }
 
+/* Unordered prefix postings reach the root only through unions. */
+static bool
+tp_boolean_candidate_stream_is_unordered(TpBooleanCandidateStream *stream)
+{
+	check_stack_depth();
+
+	if (stream->kind == TP_BOOLEAN_CANDIDATE_UNION)
+		return tp_boolean_candidate_stream_is_unordered(
+					   stream->state.union_stream.left) ||
+			   tp_boolean_candidate_stream_is_unordered(
+					   stream->state.union_stream.right);
+
+	return stream->kind == TP_BOOLEAN_CANDIDATE_PREFIX_UNORDERED;
+}
+
 static TSTernaryValue
 tp_boolean_segment_has_term(
 		void *arg, QueryOperand *operand, ExecPhraseData *data)
@@ -843,6 +864,7 @@ typedef struct TpBooleanRankedFilter
 	TpBooleanCandidateStream *candidates;
 	uint32					  candidate_doc_id;
 	bool					  candidate_loaded;
+	bool					  candidates_unordered;
 	bool					  has_prefix;
 } TpBooleanRankedFilter;
 
@@ -947,8 +969,7 @@ tp_boolean_ranked_segment_next(
 		uint32			*doc_id,
 		bool			 selective)
 {
-	TpBooleanRankedFilter *filter	 = arg;
-	bool				   unordered = !selective && filter->has_prefix;
+	TpBooleanRankedFilter *filter = arg;
 
 	/* Prefix expansion is worthwhile only when zero-score rows are needed. */
 	if (selective && filter->has_prefix)
@@ -970,7 +991,9 @@ tp_boolean_ranked_segment_next(
 					&filter->query,
 					reader,
 					GETQUERY(filter->query.query),
-					unordered);
+					filter->has_prefix);
+		filter->candidates_unordered =
+				tp_boolean_candidate_stream_is_unordered(filter->candidates);
 		MemoryContextSwitchTo(old);
 
 		/* Dense filters retain BMW's score-based pruning. */
@@ -984,6 +1007,8 @@ tp_boolean_ranked_segment_next(
 
 	for (;;)
 	{
+		bool unordered = filter->candidates_unordered;
+
 		CHECK_FOR_INTERRUPTS();
 		if (!filter->candidate_loaded ||
 			(!unordered && filter->candidate_doc_id < minimum))
@@ -998,7 +1023,10 @@ tp_boolean_ranked_segment_next(
 			if (!unordered && filter->candidate_doc_id < minimum)
 				continue;
 		}
-		/* Prefix predicates are heap-rechecked, so zeros need no doc order. */
+		/*
+		 * Term cursors need doc order.  Unordered prefix candidates are left
+		 * to the heap recheck, which needs no order for zero scores.
+		 */
 		if (unordered || filter->candidates->exact ||
 			tp_boolean_ranked_segment_matches(
 					filter, reader, filter->candidate_doc_id))
@@ -1018,8 +1046,9 @@ tp_boolean_ranked_filter_reset(void *arg)
 	TpBooleanRankedFilter *filter = arg;
 
 	tp_boolean_free_candidate_stream(filter->candidates);
-	filter->candidates		 = NULL;
-	filter->candidate_loaded = false;
+	filter->candidates			 = NULL;
+	filter->candidate_loaded	 = false;
+	filter->candidates_unordered = false;
 	if (filter->cursors != NULL)
 	{
 		for (int i = 0; i < filter->query.term_count; i++)
@@ -1045,31 +1074,41 @@ tp_boolean_ranked_filter_reset(void *arg)
 	}
 }
 
+static int
+tp_boolean_compare_ranking_terms(const void *left, const void *right)
+{
+	const TpBooleanRankingTerm *left_term  = left;
+	const TpBooleanRankingTerm *right_term = right;
+
+	if (left_term->length != right_term->length)
+		return left_term->length < right_term->length ? -1 : 1;
+	return memcmp(left_term->lexeme, right_term->lexeme, left_term->length);
+}
+
 static bool
 tp_boolean_implies_ranking_term(
-		QueryItem		  *item,
-		char			  *operands,
-		const char *const *ranking_terms,
-		int				   ranking_term_count)
+		QueryItem				   *item,
+		char					   *operands,
+		const TpBooleanRankingTerm *ranking_terms,
+		int							ranking_term_count)
 {
 	check_stack_depth();
 
 	if (item->type == QI_VAL)
 	{
-		QueryOperand *operand = &item->qoperand;
+		QueryOperand		*operand = &item->qoperand;
+		TpBooleanRankingTerm key;
 
 		if (operand->prefix)
 			return false;
 
-		for (int i = 0; i < ranking_term_count; i++)
-		{
-			if (strlen(ranking_terms[i]) == operand->length &&
-				memcmp(ranking_terms[i],
-					   operands + operand->distance,
-					   operand->length) == 0)
-				return true;
-		}
-		return false;
+		key.lexeme = operands + operand->distance;
+		key.length = operand->length;
+		return bsearch(&key,
+					   ranking_terms,
+					   ranking_term_count,
+					   sizeof(TpBooleanRankingTerm),
+					   tp_boolean_compare_ranking_terms) != NULL;
 	}
 
 	if (item->type != QI_OPR)
@@ -1108,6 +1147,7 @@ tp_boolean_filter_create(
 {
 	TpBMWFilter			  *predicate;
 	TpBooleanRankedFilter *filter;
+	TpBooleanRankingTerm  *sorted_terms;
 	const char			 **terms;
 	QueryItem			  *items = GETQUERY(query);
 
@@ -1125,6 +1165,19 @@ tp_boolean_filter_create(
 		*recheck	  = filter->query.requires_recheck;
 	}
 
+	/* Sorted once so long predicates do not rescan every ranking term. */
+	sorted_terms = palloc(
+			Max(ranking_term_count, 1) * sizeof(TpBooleanRankingTerm));
+	for (int i = 0; i < ranking_term_count; i++)
+	{
+		sorted_terms[i].lexeme = ranking_terms[i];
+		sorted_terms[i].length = strlen(ranking_terms[i]);
+	}
+	qsort(sorted_terms,
+		  ranking_term_count,
+		  sizeof(TpBooleanRankingTerm),
+		  tp_boolean_compare_ranking_terms);
+
 	terms = palloc(Max(filter->query.term_count, 1) * sizeof(char *));
 	for (int i = 0; i < filter->query.term_count; i++)
 		terms[i] = filter->query.terms[i].lexeme;
@@ -1133,8 +1186,9 @@ tp_boolean_filter_create(
 	predicate->include_zero_scores = !tp_boolean_implies_ranking_term(
 			GETQUERY(query),
 			GETOPERAND(query),
-			ranking_terms,
+			sorted_terms,
 			ranking_term_count);
+	pfree(sorted_terms);
 	predicate->state			= filter;
 	predicate->memtable_matches = tp_boolean_ranked_memtable_matches;
 	predicate->segment_matches	= tp_boolean_ranked_segment_matches;

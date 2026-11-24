@@ -265,6 +265,11 @@ FROM (VALUES
     ('nested', '(beta | gamma) & !alpha', 'alpha gamma'),
     ('negative', '!alpha', 'alpha'),
     ('prefix', 'bet:*', 'alpha'),
+    ('anchored prefix', 'beta & bet:*', 'alpha'),
+    ('anchored disjunction', '(beta & bet:*) | (gamma & gam:*)', 'alpha'),
+    ('prefix disjunction', 'beta | bet:*', 'alpha'),
+    ('negated prefix', '!alpha & bet:*', 'alpha'),
+    ('weighted', 'beta:A', 'alpha'),
     ('empty ranking', 'beta', '')
 ) cases(name, predicate, ranking)
 ORDER BY name;
@@ -273,6 +278,23 @@ SELECT pg_temp.ranked_boolean_plan($q$
     WHERE body @@ 'beta'::tsquery AND body @@ '!alpha'::tsquery
     ORDER BY body <@> to_bm25query('alpha', 'ranked_disjoint_idx') LIMIT 10
 $q$) AS multiple_boolean_keys;
+-- One key that requires an exact term lets ranked scans filter the rest.
+SELECT pg_temp.ranked_boolean_plan($q$
+    SELECT id FROM ranked_disjoint_docs
+    WHERE body @@ 'bet:*'::tsquery AND body @@ 'beta | gamma'::tsquery
+    ORDER BY body <@> to_bm25query('alpha', 'ranked_disjoint_idx') LIMIT 10
+$q$) AS anchored_prefix_keys;
+SELECT 'beta | ' || string_agg('unused' || g, ' | ') AS oversized_query
+FROM generate_series(1, 64) g \gset
+SELECT pg_temp.ranked_boolean_plan(format($q$
+    SELECT id FROM ranked_disjoint_docs WHERE body @@ %L::tsquery
+    ORDER BY body <@> to_bm25query('alpha', 'ranked_disjoint_idx') LIMIT 10
+$q$, :'oversized_query')) AS oversized_ordered_index_scan;
+SELECT array_agg(id ORDER BY id) AS oversized_matches FROM (
+    SELECT id FROM ranked_disjoint_docs
+    WHERE body @@ :'oversized_query'::tsquery
+    ORDER BY body <@> to_bm25query('alpha', 'ranked_disjoint_idx') LIMIT 10
+) s;
 SELECT array_agg(id ORDER BY id) AS nested_zero_matches FROM (
     SELECT id FROM ranked_disjoint_docs
     WHERE body @@ '(beta | gamma) & !alpha'::tsquery
