@@ -4,9 +4,6 @@
  */
 #include <postgres.h>
 
-#undef NDEBUG
-#include <assert.h>
-
 #include "../../src/scoring/bmw.c"
 #include "../../src/segment/fieldnorm.c"
 #undef printf
@@ -37,6 +34,9 @@ main(void)
 	TpTermState	   states[2]	 = {0};
 	TpTermState	  *terms[]		 = {&states[0], &states[1]};
 	float4		   norms[lengthof(FIELDNORM_DECODE_TABLE)];
+	/* Keep the reference runtime-evaluated under FMA and LTO. */
+	float4 (*volatile reference)(
+			float4, int32, int32, float4, float4, float4) = reference_score;
 
 	for (int i = 0; i < 2; i++)
 	{
@@ -64,23 +64,38 @@ main(void)
 
 						for (int i = 0; i < 2; i++)
 						{
+							float4 term_score;
+
 							postings[i].fieldnorm = (uint8)(i == 0 ? n
 																   : 255 - n);
 							postings[i].frequency = frequencies[f];
-							expected += reference_score(
-												states[i].idf,
-												postings[i].frequency,
-												(int32)decode_fieldnorm(
-														postings[i].fieldnorm),
-												k1_values[k],
-												b_values[b],
-												averages[a]) *
-										states[i].query_freq;
+							term_score =
+									reference(
+											states[i].idf,
+											postings[i].frequency,
+											(int32)decode_fieldnorm(
+													postings[i].fieldnorm),
+											k1_values[k],
+											b_values[b],
+											averages[a]) *
+									states[i].query_freq;
+							expected += term_score;
 						}
 						actual = score_pivot_document(
 								terms, 2, k1_values[k], norms);
-						assert(memcmp(&actual, &expected, sizeof(actual)) ==
-							   0);
+						if (memcmp(&actual, &expected, sizeof(actual)) != 0)
+						{
+							printf("k1=%a b=%a average=%a norm=%d tf=%u: "
+								   "actual=%a expected=%a\n",
+								   (double)k1_values[k],
+								   (double)b_values[b],
+								   (double)averages[a],
+								   n,
+								   frequencies[f],
+								   (double)actual,
+								   (double)expected);
+							return 1;
+						}
 					}
 			}
 	puts("BMW normalization traversal tests passed");
