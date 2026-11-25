@@ -464,6 +464,100 @@ SELECT round(bm25_get_current_score()::numeric, 6) AS repeated_index_score
 FROM bmw_repeat
 ORDER BY content <@> 'cat cat'::bm25query LIMIT 1;
 
+-- Plain correlated lookups must not disable index-score reuse (#636).
+CREATE TABLE bmw_score_parents (
+    id int PRIMARY KEY, visible boolean,
+    setting_name text DEFAULT 'application_name',
+    text_config regconfig DEFAULT 'simple'
+);
+INSERT INTO bmw_score_parents (id, visible)
+    VALUES (1, false), (2, true), (3, false);
+CREATE FUNCTION pg_temp.bmw_filter_score_is_cached(
+    filter_sql text, prepared_sql text DEFAULT NULL,
+    required_plan jsonpath DEFAULT NULL)
+RETURNS boolean LANGUAGE plpgsql AS $$
+DECLARE
+    plan jsonb;
+    scan jsonb;
+BEGIN
+    IF prepared_sql IS NOT NULL THEN
+        EXECUTE format('EXPLAIN (FORMAT JSON, COSTS OFF, VERBOSE) %s',
+                       prepared_sql) INTO plan;
+    ELSE
+        EXECUTE format($q$
+            EXPLAIN (FORMAT JSON, COSTS OFF, VERBOSE)
+            SELECT r.id,
+                   r.content <@> to_bm25query('cat', 'bmw_repeat_idx') AS score
+            FROM bmw_repeat r WHERE %s
+            ORDER BY r.content <@> 'bmw_repeat_idx:cat'::bm25query LIMIT 2
+        $q$, filter_sql) INTO plan;
+    END IF;
+    IF required_plan IS NOT NULL AND
+       NOT jsonb_path_exists(plan, required_plan) THEN
+        RAISE EXCEPTION 'expected plan shape %: %', required_plan, plan;
+    END IF;
+    scan := jsonb_path_query_first(plan,
+        '$.** ? (@."Node Type" == "Index Scan" &&
+                 @."Index Name" == "bmw_repeat_idx" && @."Alias" == "r")');
+    IF scan IS NULL THEN
+        RAISE EXCEPTION 'expected the outer BM25 index scan: %', plan;
+    END IF;
+    RETURN (scan->'Output')::text LIKE '%bm25_get_current_score()%';
+END
+$$;
+SELECT pg_temp.bmw_filter_score_is_cached($q$
+    (SELECT p.visible FROM bmw_score_parents p WHERE p.id = r.id)
+$q$) AS correlated_lookup_score_cached;
+-- An unindexable parent condition also exercises a plain SeqScan.
+SELECT pg_temp.bmw_filter_score_is_cached($q$
+    (SELECT p.visible FROM bmw_score_parents p WHERE p.id + 0 = r.id)
+$q$) AS sequential_lookup_score_cached;
+SELECT pg_temp.bmw_filter_score_is_cached($q$
+    (SELECT p.visible FROM bmw_score_parents p
+     WHERE p.id = r.id AND (SELECT p.id > 0))
+$q$) AS nested_lookup_score_cached;
+-- The higher-ranked row is hidden; the visible row has tf=1 and length=2.
+SELECT count(*) = 1 AND min(id) = 2 AND
+       bool_and(abs(score + ln(1.6) * 2.2 / 1.975) < 0.000001)
+       AS correlated_lookup_score_correct
+FROM (
+    SELECT r.id,
+           r.content <@> to_bm25query('cat', 'bmw_repeat_idx') AS score
+    FROM bmw_repeat r
+    WHERE (SELECT p.visible FROM bmw_score_parents p WHERE p.id = r.id)
+    ORDER BY r.content <@> 'bmw_repeat_idx:cat'::bm25query LIMIT 2
+) ranked;
+ALTER TABLE bmw_score_parents DROP CONSTRAINT bmw_score_parents_pkey;
+CREATE UNIQUE INDEX bmw_score_parents_cover ON bmw_score_parents (id)
+    INCLUDE (visible);
+VACUUM bmw_score_parents;
+SELECT pg_temp.bmw_filter_score_is_cached($q$
+    (SELECT p.visible FROM bmw_score_parents p WHERE p.id = r.id)
+$q$) AS index_only_lookup_score_cached;
+-- Built-in functions can dispatch to user-defined GUC/dictionary callbacks.
+SELECT pg_temp.bmw_filter_score_is_cached($q$
+    (SELECT p.visible AND current_setting(p.setting_name) IS NOT NULL
+     FROM bmw_score_parents p WHERE p.id = r.id)
+$q$) AS setting_lookup_score_cached;
+SELECT pg_temp.bmw_filter_score_is_cached($q$
+    (SELECT to_tsvector(p.text_config, p.visible::text) @@
+            to_tsquery('simple', 'true')
+     FROM bmw_score_parents p WHERE p.id = r.id)
+$q$) AS dictionary_lookup_score_cached;
+-- Stable text-search operators can dispatch through the current config too.
+SELECT pg_temp.bmw_filter_score_is_cached($q$
+    (SELECT p.setting_name @@ to_tsquery('simple', 'application_name')
+     FROM bmw_score_parents p WHERE p.id = r.id)
+$q$) AS stable_operator_score_cached;
+-- A BM25 scan hidden inside a second subquery must still disable reuse.
+SELECT pg_temp.bmw_filter_score_is_cached($q$
+    (SELECT p.visible FROM bmw_score_parents p
+     WHERE p.id = r.id AND
+           (SELECT id FROM bmw_repeat WHERE id <> r.id
+            ORDER BY content <@> to_bm25query('dog dog', 'bmw_repeat_idx')
+            LIMIT 1) > 0)
+$q$) AS nested_bm25_score_cached;
+
 -- A nested scan must not supply the outer scan's projected score.
 SELECT r.id,
        (SELECT id FROM bmw_repeat WHERE id <> r.id
@@ -495,12 +589,224 @@ $$;
 SELECT r.id, pg_temp.bmw_nested_scan(r.id) AS nested_id,
        r.content <@> to_bm25query('cat', 'bmw_repeat_idx') AS score
 FROM bmw_repeat r ORDER BY score LIMIT 1;
+SELECT pg_temp.bmw_filter_score_is_cached($q$
+    (SELECT pg_temp.bmw_nested_scan(p.id) > 0 FROM bmw_score_parents p
+     WHERE p.id = r.id)
+$q$) AS subquery_function_score_cached;
+-- SubPlan arguments execute outside the subquery's plan tree.
+SELECT pg_temp.bmw_filter_score_is_cached($q$
+    (SELECT p.visible FROM bmw_score_parents p
+     WHERE p.id = pg_temp.bmw_nested_scan(r.id))
+$q$) AS subquery_argument_score_cached;
 -- User-defined IMMUTABLE functions can execute scans too.
 ALTER FUNCTION pg_temp.bmw_nested_scan(integer) IMMUTABLE;
 SELECT r.id, pg_temp.bmw_nested_scan(r.id) AS nested_id,
        r.content <@> to_bm25query('cat', 'bmw_repeat_idx') AS score
 FROM bmw_repeat r ORDER BY score LIMIT 1;
+SELECT pg_temp.bmw_filter_score_is_cached($q$
+    (SELECT pg_temp.bmw_nested_scan(p.id) > 0 FROM bmw_score_parents p
+     WHERE p.id = r.id)
+$q$) AS subquery_immutable_function_score_cached;
+-- Domain checks can execute scans without an explicit function in the plan.
+CREATE DOMAIN bmw_score_visible AS boolean
+    CHECK (pg_temp.bmw_nested_scan(CASE WHEN VALUE THEN 2 ELSE 1 END) > 0);
+SELECT pg_temp.bmw_filter_score_is_cached($q$
+    (SELECT p.visible::bmw_score_visible FROM bmw_score_parents p
+     WHERE p.id = r.id)
+$q$) AS domain_lookup_score_cached;
+SELECT count(*) = 1 AND min(id) = 2 AND
+       bool_and(abs(score + ln(1.6) * 2.2 / 1.975) < 0.000001)
+       AS domain_lookup_score_correct
+FROM (
+    SELECT r.id,
+           r.content <@> to_bm25query('cat', 'bmw_repeat_idx') AS score
+    FROM bmw_repeat r
+    WHERE (SELECT p.visible::bmw_score_visible FROM bmw_score_parents p
+           WHERE p.id = r.id)
+    ORDER BY r.content <@> 'bmw_repeat_idx:cat'::bm25query LIMIT 2
+) ranked;
+DROP DOMAIN bmw_score_visible;
 DROP FUNCTION pg_temp.bmw_nested_scan(integer);
+
+-- Index support functions are not represented by expression-tree calls.
+CREATE FUNCTION bmw_nested_compare(a int, b int)
+RETURNS int LANGUAGE plpgsql IMMUTABLE AS $$
+BEGIN
+    PERFORM id FROM public.bmw_repeat WHERE id <> a
+    ORDER BY content OPERATOR(public.<@>)
+             public.to_bm25query('dog dog', 'public.bmw_repeat_idx') LIMIT 1;
+    RETURN btint4cmp(a, b);
+END
+$$;
+CREATE OPERATOR CLASS bmw_nested_ops FOR TYPE int USING btree AS
+    OPERATOR 1 < (int, int), OPERATOR 2 <= (int, int),
+    OPERATOR 3 = (int, int), OPERATOR 4 >= (int, int),
+    OPERATOR 5 > (int, int), FUNCTION 1 bmw_nested_compare(int, int);
+CREATE TABLE bmw_callback_parents (id int, visible boolean);
+INSERT INTO bmw_callback_parents VALUES (1, false), (2, true), (3, false);
+CREATE INDEX bmw_callback_parents_idx
+    ON bmw_callback_parents (id bmw_nested_ops);
+SELECT pg_temp.bmw_filter_score_is_cached($q$
+    (SELECT p.visible FROM bmw_callback_parents p WHERE p.id = r.id)
+$q$) AS callback_lookup_score_cached;
+SELECT count(*) = 1 AND min(id) = 2 AND
+       bool_and(abs(score + ln(1.6) * 2.2 / 1.975) < 0.000001)
+       AS callback_lookup_score_correct
+FROM (
+    SELECT r.id,
+           r.content <@> to_bm25query('cat', 'bmw_repeat_idx') AS score
+    FROM bmw_repeat r
+    WHERE (SELECT p.visible FROM bmw_callback_parents p WHERE p.id = r.id)
+    ORDER BY r.content <@> 'bmw_repeat_idx:cat'::bm25query LIMIT 2
+) ranked;
+DROP TABLE bmw_callback_parents;
+DROP OPERATOR CLASS bmw_nested_ops USING btree;
+DROP FUNCTION bmw_nested_compare(int, int);
+
+-- Cross-type comparators come from the family, not rd_support.
+CREATE FUNCTION bmw_nested_cross_compare(a bigint, b int)
+RETURNS int LANGUAGE plpgsql IMMUTABLE AS $$
+BEGIN
+    PERFORM id FROM public.bmw_repeat WHERE id <> b
+    ORDER BY content OPERATOR(public.<@>)
+             public.to_bm25query('dog dog', 'public.bmw_repeat_idx') LIMIT 1;
+    RETURN btint84cmp(a, b);
+END
+$$;
+CREATE OPERATOR CLASS bmw_cross_type_ops FOR TYPE bigint USING btree AS
+    OPERATOR 1 < (bigint, bigint), OPERATOR 2 <= (bigint, bigint),
+    OPERATOR 3 = (bigint, bigint), OPERATOR 4 >= (bigint, bigint),
+    OPERATOR 5 > (bigint, bigint), FUNCTION 1 btint8cmp(bigint, bigint);
+ALTER OPERATOR FAMILY bmw_cross_type_ops USING btree ADD
+    OPERATOR 3 = (bigint, int),
+    FUNCTION 1 (bigint, int) bmw_nested_cross_compare(bigint, int);
+CREATE TABLE bmw_cross_type_parents (id bigint, visible boolean);
+INSERT INTO bmw_cross_type_parents VALUES (1, false), (2, true), (3, false);
+CREATE INDEX bmw_cross_type_parents_idx
+    ON bmw_cross_type_parents (id bmw_cross_type_ops);
+SELECT pg_temp.bmw_filter_score_is_cached($q$
+    (SELECT p.visible FROM bmw_cross_type_parents p WHERE p.id = r.id)
+$q$, NULL, '$.** ? (@."Node Type" == "Index Scan" &&
+                   @."Index Name" == "bmw_cross_type_parents_idx")')
+    AS cross_type_lookup_score_cached;
+SELECT count(*) = 1 AND min(id) = 2 AND
+       bool_and(abs(score + ln(1.6) * 2.2 / 1.975) < 0.000001)
+       AS cross_type_lookup_score_correct
+FROM (
+    SELECT r.id,
+           r.content <@> to_bm25query('cat', 'bmw_repeat_idx') AS score
+    FROM bmw_repeat r
+    WHERE (SELECT p.visible FROM bmw_cross_type_parents p WHERE p.id = r.id)
+    ORDER BY r.content <@> 'bmw_repeat_idx:cat'::bm25query LIMIT 2
+) ranked;
+DROP TABLE bmw_cross_type_parents;
+DROP OPERATOR CLASS bmw_cross_type_ops USING btree;
+DROP OPERATOR FAMILY bmw_cross_type_ops USING btree;
+DROP FUNCTION bmw_nested_cross_compare(bigint, int);
+
+-- Hashed SubPlans resolve hash/equality callbacks outside their expressions.
+CREATE FUNCTION bmw_nested_hash(a int)
+RETURNS int LANGUAGE plpgsql IMMUTABLE AS $$
+BEGIN
+    PERFORM id FROM public.bmw_repeat WHERE id <> a
+    ORDER BY content OPERATOR(public.<@>)
+             public.to_bm25query('dog dog', 'public.bmw_repeat_idx') LIMIT 1;
+    RETURN hashint4(a);
+END
+$$;
+CREATE OPERATOR public.=== (
+    LEFTARG = int, RIGHTARG = int, FUNCTION = int4eq,
+    COMMUTATOR = OPERATOR(public.===), HASHES
+);
+CREATE OPERATOR CLASS bmw_nested_hash_ops FOR TYPE int USING hash AS
+    OPERATOR 1 public.=== (int, int), FUNCTION 1 bmw_nested_hash(int);
+SELECT pg_temp.bmw_filter_score_is_cached($q$
+    r.id OPERATOR(public.===) ANY (
+        SELECT p.id FROM bmw_score_parents p WHERE p.visible OFFSET 0
+    ) OR r.id = 0
+$q$, NULL, '$.** ? (@."Alias" == "r" &&
+                   @."Filter" like_regex "hashed SubPlan")')
+    AS hashed_subplan_score_cached;
+SELECT count(*) = 1 AND min(id) = 2 AND
+       bool_and(abs(score + ln(1.6) * 2.2 / 1.975) < 0.000001)
+       AS hashed_subplan_score_correct
+FROM (
+    SELECT r.id,
+           r.content <@> to_bm25query('cat', 'bmw_repeat_idx') AS score
+    FROM bmw_repeat r
+    WHERE r.id OPERATOR(public.===) ANY (
+        SELECT p.id FROM bmw_score_parents p WHERE p.visible OFFSET 0
+    ) OR r.id = 0
+    ORDER BY r.content <@> 'bmw_repeat_idx:cat'::bm25query LIMIT 2
+) ranked;
+DROP OPERATOR CLASS bmw_nested_hash_ops USING hash;
+DROP OPERATOR FAMILY bmw_nested_hash_ops USING hash;
+DROP OPERATOR public.=== (int, int);
+DROP FUNCTION bmw_nested_hash(int);
+
+-- A lazy InitPlan on an ancestor can run after the outer candidate is read.
+SELECT pg_temp.bmw_filter_score_is_cached($q$
+    (SELECT p.id > 0 FROM bmw_score_parents p WHERE p.id = r.id) AND
+    r.id + 0 < (SELECT nested.id FROM bmw_repeat nested
+                ORDER BY nested.content <@>
+                         to_bm25query('dog dog', 'bmw_repeat_idx') LIMIT 1)
+$q$, NULL, '$.** ? (@."Parent Relationship" == "InitPlan").** ?
+                   (@."Index Name" == "bmw_repeat_idx" &&
+                    @."Alias" == "nested")')
+    AS outer_initplan_score_cached;
+SELECT count(*) = 2 AND bool_and(abs(score -
+       CASE WHEN id = 1 THEN -ln(1.6) * 6.6 / 4.3125
+            ELSE -ln(1.6) * 2.2 / 1.975 END) < 0.000001)
+       AS outer_initplan_score_correct
+FROM (
+    SELECT r.id,
+           r.content <@> to_bm25query('cat', 'bmw_repeat_idx') AS score
+    FROM bmw_repeat r
+    WHERE (SELECT p.id > 0 FROM bmw_score_parents p WHERE p.id = r.id) AND
+          r.id + 0 < (SELECT id FROM bmw_repeat
+                      ORDER BY content <@>
+                               to_bm25query('dog dog', 'bmw_repeat_idx')
+                      LIMIT 1)
+    ORDER BY r.content <@> 'bmw_repeat_idx:cat'::bm25query LIMIT 2
+) ranked;
+
+-- PARAM_EXTERN may invoke an executor hook; keep it in the generic plan.
+SET plan_cache_mode = force_generic_plan;
+PREPARE bmw_external_argument(int) AS
+SELECT r.id, r.content <@> to_bm25query('cat', 'bmw_repeat_idx') AS score
+FROM bmw_repeat r
+WHERE (SELECT p.visible FROM bmw_score_parents p WHERE p.id = r.id + $1)
+ORDER BY r.content <@> 'bmw_repeat_idx:cat'::bm25query LIMIT 2;
+SELECT pg_temp.bmw_filter_score_is_cached(
+    NULL, 'EXECUTE bmw_external_argument(0)',
+    '$.** ? (@."Alias" == "p" && @."Index Cond" like_regex "\\$1")')
+    AS external_argument_score_cached;
+PREPARE bmw_sibling_parameter(int) AS
+SELECT r.id, r.content <@> to_bm25query('cat', 'bmw_repeat_idx') AS score
+FROM bmw_repeat r
+WHERE (SELECT p.visible FROM bmw_score_parents p WHERE p.id = r.id) AND
+      r.id + $1 > 0
+ORDER BY r.content <@> 'bmw_repeat_idx:cat'::bm25query LIMIT 2;
+SELECT pg_temp.bmw_filter_score_is_cached(
+    NULL, 'EXECUTE bmw_sibling_parameter(0)',
+    '$.** ? (@."Alias" == "r" && @."Filter" like_regex "\\$1")')
+    AS sibling_parameter_score_cached;
+-- Queries without subplans retain the existing prepared-query fast path.
+PREPARE bmw_plain_parameter(int) AS
+SELECT r.id, r.content <@> to_bm25query('cat', 'bmw_repeat_idx') AS score
+FROM bmw_repeat r WHERE r.id + $1 > 0
+ORDER BY r.content <@> 'bmw_repeat_idx:cat'::bm25query LIMIT 2;
+SELECT pg_temp.bmw_filter_score_is_cached(
+    NULL, 'EXECUTE bmw_plain_parameter(0)',
+    '$.** ? (@."Alias" == "r" && @."Filter" like_regex "\\$1")')
+    AS plain_parameter_score_cached;
+DEALLOCATE bmw_external_argument;
+DEALLOCATE bmw_sibling_parameter;
+DEALLOCATE bmw_plain_parameter;
+RESET plan_cache_mode;
+
+DROP FUNCTION pg_temp.bmw_filter_score_is_cached(text, text, jsonpath);
+DROP TABLE bmw_score_parents;
 
 DROP TABLE bmw_repeat;
 

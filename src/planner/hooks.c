@@ -10,6 +10,7 @@
  */
 #include <postgres.h>
 
+#include <access/amapi.h>
 #include <access/genam.h>
 #include <access/htup_details.h>
 #include <access/sysattr.h>
@@ -31,9 +32,11 @@
 #include <commands/defrem.h>
 #include <commands/extension.h>
 #include <limits.h>
+#include <miscadmin.h>
 #include <nodes/makefuncs.h>
 #include <nodes/nodeFuncs.h>
 #include <nodes/plannodes.h>
+#include <optimizer/clauses.h>
 #include <optimizer/optimizer.h>
 #include <optimizer/pathnode.h>
 #include <optimizer/paths.h>
@@ -1346,37 +1349,228 @@ plan_has_bm25_indexscan(Plan *plan, BM25OidCache *oids)
 	return false;
 }
 
+typedef struct ScoreProjectionContext
+{
+	BM25OidCache *oids;
+	PlannedStmt	 *stmt;
+	bool		  in_subplan;
+} ScoreProjectionContext;
+
 /*
  * A nested scan can overwrite the backend-local score before projection.
  * User-defined functions can run scans even when marked IMMUTABLE. Permit
  * only built-in immutable functions and known scan-free stable/accessor calls.
  */
 static bool
-score_function_is_unsafe(Oid funcid, void *context)
+score_function_is_unsafe(Oid funcid, void *arg)
 {
-	BM25OidCache *oids = context;
+	ScoreProjectionContext *context = arg;
+	BM25OidCache		   *oids	= context->oids;
 
-	if (funcid == oids->score_stub_func_oid ||
-		funcid == oids->partition_score_func_oid ||
-		funcid == oids->partition_array_score_func_oid ||
-		funcid == F_TS_MATCH_TQ || funcid == F_CURRENT_SETTING_TEXT ||
-		funcid == F_CURRENT_SETTING_TEXT_BOOL)
+	if (!context->in_subplan &&
+		(funcid == oids->score_stub_func_oid ||
+		 funcid == oids->partition_score_func_oid ||
+		 funcid == oids->partition_array_score_func_oid ||
+		 funcid == F_TS_MATCH_TQ || funcid == F_CURRENT_SETTING_TEXT ||
+		 funcid == F_CURRENT_SETTING_TEXT_BOOL))
 		return false;
 
 	return funcid >= FirstNormalObjectId ||
 		   func_volatile(funcid) != PROVOLATILE_IMMUTABLE;
 }
 
+static bool score_projection_is_unsafe(Node *node, void *context);
+
 static bool
-score_projection_is_unsafe(Node *node, void *context)
+score_subplan_type_is_unsafe(Oid type)
 {
-	if (node == NULL)
+	while (OidIsValid(type))
+	{
+		if (type >= FirstNormalObjectId || get_typtype(type) != TYPTYPE_BASE)
+			return true;
+		type = get_element_type(type);
+	}
+	return false;
+}
+
+/*
+ * Index AMs and opclass support functions can execute SQL without appearing
+ * in expressions. Restrict lookups to btree with built-in operator families
+ * and support functions.
+ */
+static bool
+score_subplan_index_is_unsafe(Oid indexid, ScoreProjectionContext *context)
+{
+	Relation index	= index_open(indexid, AccessShareLock);
+	bool	 unsafe = index->rd_rel->relam != BTREE_AM_OID;
+	int		 nkeys	= IndexRelationGetNumberOfKeyAttributes(index);
+	int		 nprocs = nkeys * index->rd_indam->amsupport;
+	int		 i;
+
+	/* Polymorphic comparators can dispatch to user-defined type functions. */
+	for (i = 0; !unsafe && i < nkeys; i++)
+	{
+		Oid type = index->rd_opcintype[i];
+
+		if (index->rd_opfamily[i] >= FirstNormalObjectId ||
+			score_subplan_type_is_unsafe(type))
+			unsafe = true;
+	}
+	for (i = 0; !unsafe && i < nprocs; i++)
+	{
+		Oid funcid = index->rd_support[i];
+
+		if (OidIsValid(funcid) && score_function_is_unsafe(funcid, context))
+			unsafe = true;
+	}
+	index_close(index, AccessShareLock);
+	return unsafe;
+}
+
+static bool
+score_subplan_is_unsafe(Plan *plan, ScoreProjectionContext *context)
+{
+	if (plan == NULL)
 		return false;
-	if (IsA(node, SubPlan) || IsA(node, AlternativeSubPlan))
+	check_stack_depth();
+
+	if (score_projection_is_unsafe((Node *)plan->targetlist, context) ||
+		score_projection_is_unsafe((Node *)plan->qual, context) ||
+		score_projection_is_unsafe((Node *)plan->initPlan, context))
 		return true;
 
+	if (IsA(plan, SeqScan) || IsA(plan, IndexScan) || IsA(plan, IndexOnlyScan))
+	{
+		Scan		  *scan = (Scan *)plan;
+		RangeTblEntry *rte	= rt_fetch(scan->scanrelid, context->stmt->rtable);
+
+		if (rte->rtekind != RTE_RELATION ||
+			get_rel_relam(rte->relid) != HEAP_TABLE_AM_OID)
+			return true;
+	}
+
+	switch (nodeTag(plan))
+	{
+	case T_Result:
+		if (score_projection_is_unsafe(
+					((Result *)plan)->resconstantqual, context))
+			return true;
+		break;
+	case T_SeqScan:
+	case T_Material:
+		break;
+	case T_IndexScan:
+	{
+		IndexScan *scan = (IndexScan *)plan;
+
+		if (score_subplan_index_is_unsafe(scan->indexid, context) ||
+			score_projection_is_unsafe((Node *)scan->indexqual, context) ||
+			score_projection_is_unsafe((Node *)scan->indexqualorig, context) ||
+			score_projection_is_unsafe((Node *)scan->indexorderby, context) ||
+			score_projection_is_unsafe(
+					(Node *)scan->indexorderbyorig, context))
+			return true;
+		break;
+	}
+	case T_IndexOnlyScan:
+	{
+		IndexOnlyScan *scan = (IndexOnlyScan *)plan;
+
+		if (score_subplan_index_is_unsafe(scan->indexid, context) ||
+			score_projection_is_unsafe((Node *)scan->indexqual, context) ||
+			score_projection_is_unsafe((Node *)scan->recheckqual, context) ||
+			score_projection_is_unsafe((Node *)scan->indexorderby, context))
+			return true;
+		break;
+	}
+	case T_Limit:
+		if (((Limit *)plan)->limitOption != LIMIT_OPTION_COUNT ||
+			score_projection_is_unsafe(
+					((Limit *)plan)->limitOffset, context) ||
+			score_projection_is_unsafe(((Limit *)plan)->limitCount, context))
+			return true;
+		break;
+	case T_SubqueryScan:
+		if (score_subplan_is_unsafe(((SubqueryScan *)plan)->subplan, context))
+			return true;
+		break;
+	default:
+		/* Uninspected expressions or executor callbacks require fallback. */
+		return true;
+	}
+
+	return score_subplan_is_unsafe(plan->lefttree, context) ||
+		   score_subplan_is_unsafe(plan->righttree, context);
+}
+
+static bool
+score_projection_is_unsafe(Node *node, void *arg)
+{
+	ScoreProjectionContext *context = arg;
+
+	if (node == NULL)
+		return false;
+	if (IsA(node, AlternativeSubPlan))
+		return true;
+	if (IsA(node, SubPlan))
+	{
+		SubPlan *subplan = (SubPlan *)node;
+		Plan *plan = list_nth(context->stmt->subplans, subplan->plan_id - 1);
+		ScoreProjectionContext subcontext = *context;
+
+		/* Hash subplans resolve additional operator-family support calls. */
+		if (subplan->useHashTable)
+			return true;
+		subcontext.in_subplan = true;
+		if (score_subplan_is_unsafe(plan, &subcontext))
+			return true;
+		return expression_tree_walker(
+				node, score_projection_is_unsafe, &subcontext);
+	}
+
+	if (context->in_subplan)
+	{
+		/*
+		 * Domain checks and other expressions hide function calls. Even
+		 * built-in FuncExprs can dispatch to GUC/text-search callbacks.
+		 * Permit only expressions whose runtime calls are inspected below.
+		 */
+		switch (nodeTag(node))
+		{
+		case T_List:
+		case T_TargetEntry:
+		case T_CaseWhen:
+			break;
+		case T_Param:
+			if (((Param *)node)->paramkind != PARAM_EXEC ||
+				score_subplan_type_is_unsafe(exprType(node)))
+				return true;
+			break;
+		case T_Var:
+		case T_Const:
+		case T_OpExpr:
+		case T_DistinctExpr:
+		case T_NullIfExpr:
+		case T_BoolExpr:
+		case T_NullTest:
+		case T_BooleanTest:
+		case T_RelabelType:
+		case T_CollateExpr:
+		case T_CaseExpr:
+		case T_CoalesceExpr:
+		case T_CoerceViaIO:
+		case T_ArrayExpr:
+		case T_ArrayCoerceExpr:
+			if (score_subplan_type_is_unsafe(exprType(node)))
+				return true;
+			break;
+		default:
+			return true;
+		}
+	}
+
 	/* Scoring operators and the score accessor do not run nested scans. */
-	if (!is_bm25_score_opexpr(node, context) &&
+	if (!is_bm25_score_opexpr(node, context->oids) &&
 		check_functions_in_node(node, score_function_is_unsafe, context))
 		return true;
 
@@ -1384,19 +1578,43 @@ score_projection_is_unsafe(Node *node, void *context)
 }
 
 static void
-replace_scores_in_indexscan(IndexScan *scan, BM25OidCache *oids)
+replace_scores_in_indexscan(
+		IndexScan			   *scan,
+		ScoreProjectionContext *context,
+		bool					unsafe_initplan_path)
 {
-	Expr	 *orderby_expr;
-	ListCell *lc;
+	BM25OidCache		  *oids			= context->oids;
+	ScoreProjectionContext scan_context = *context;
+	Expr				  *orderby_expr;
+	ListCell			  *lc;
 
-	if (list_length(scan->indexorderbyorig) != 1 ||
+	if (unsafe_initplan_path || list_length(scan->indexorderbyorig) != 1 ||
 		!plan_has_bm25_indexscan((Plan *)scan, oids))
 		return;
 
 	orderby_expr = linitial(scan->indexorderbyorig);
-	if (!is_bm25_score_opexpr((Node *)orderby_expr, oids) ||
-		score_projection_is_unsafe((Node *)scan->scan.plan.qual, oids) ||
-		score_projection_is_unsafe((Node *)scan->indexqualorig, oids))
+	if (!is_bm25_score_opexpr((Node *)orderby_expr, oids))
+		return;
+
+	/* A newly allowed SubPlan must not leave sibling callbacks unchecked. */
+	scan_context.in_subplan |= contain_subplans(
+									   (Node *)scan->scan.plan.qual) ||
+							   contain_subplans((Node *)scan->indexqualorig);
+	foreach (lc, scan->scan.plan.targetlist)
+	{
+		TargetEntry *tle = lfirst_node(TargetEntry, lc);
+
+		if (!equal(tle->expr, orderby_expr) &&
+			contain_subplans((Node *)tle->expr))
+		{
+			scan_context.in_subplan = true;
+			break;
+		}
+	}
+
+	if (score_projection_is_unsafe(
+				(Node *)scan->scan.plan.qual, &scan_context) ||
+		score_projection_is_unsafe((Node *)scan->indexqualorig, &scan_context))
 		return;
 
 	foreach (lc, scan->scan.plan.targetlist)
@@ -1405,7 +1623,7 @@ replace_scores_in_indexscan(IndexScan *scan, BM25OidCache *oids)
 
 		/* Matching expressions are removed, so cannot run nested scans. */
 		if (!equal(tle->expr, orderby_expr) &&
-			score_projection_is_unsafe((Node *)tle->expr, oids))
+			score_projection_is_unsafe((Node *)tle->expr, &scan_context))
 			return;
 	}
 
@@ -1431,20 +1649,26 @@ replace_scores_in_indexscan(IndexScan *scan, BM25OidCache *oids)
  * Recursively walk the plan tree and replace BM25 score expressions.
  */
 static void
-replace_scores_in_plan(Plan *plan, BM25OidCache *oids)
+replace_scores_in_plan(
+		Plan *plan, ScoreProjectionContext *context, bool unsafe_initplan_path)
 {
 	if (plan == NULL)
 		return;
 
+	/* Ancestor InitPlans can execute lazily during an IndexScan's quals. */
+	unsafe_initplan_path |=
+			score_projection_is_unsafe((Node *)plan->initPlan, context);
+
 	if (IsA(plan, IndexScan))
-		replace_scores_in_indexscan((IndexScan *)plan, oids);
+		replace_scores_in_indexscan(
+				(IndexScan *)plan, context, unsafe_initplan_path);
 	else
 		/* Preserve score reuse in projections above ordered joins. */
-		replace_scores_in_targetlist(plan->targetlist, oids);
+		replace_scores_in_targetlist(plan->targetlist, context->oids);
 
 	/* Recurse into child plans */
-	replace_scores_in_plan(plan->lefttree, oids);
-	replace_scores_in_plan(plan->righttree, oids);
+	replace_scores_in_plan(plan->lefttree, context, unsafe_initplan_path);
+	replace_scores_in_plan(plan->righttree, context, unsafe_initplan_path);
 
 	/* Handle plan-specific children */
 	switch (nodeTag(plan))
@@ -1455,7 +1679,8 @@ replace_scores_in_plan(Plan *plan, BM25OidCache *oids)
 		ListCell *lc;
 
 		foreach (lc, append->appendplans)
-			replace_scores_in_plan((Plan *)lfirst(lc), oids);
+			replace_scores_in_plan(
+					(Plan *)lfirst(lc), context, unsafe_initplan_path);
 	}
 	break;
 
@@ -1465,7 +1690,8 @@ replace_scores_in_plan(Plan *plan, BM25OidCache *oids)
 		ListCell	*lc;
 
 		foreach (lc, merge->mergeplans)
-			replace_scores_in_plan((Plan *)lfirst(lc), oids);
+			replace_scores_in_plan(
+					(Plan *)lfirst(lc), context, unsafe_initplan_path);
 	}
 	break;
 
@@ -1473,7 +1699,8 @@ replace_scores_in_plan(Plan *plan, BM25OidCache *oids)
 	{
 		SubqueryScan *subquery = (SubqueryScan *)plan;
 
-		replace_scores_in_plan(subquery->subplan, oids);
+		replace_scores_in_plan(
+				subquery->subplan, context, unsafe_initplan_path);
 	}
 	break;
 
@@ -1483,7 +1710,8 @@ replace_scores_in_plan(Plan *plan, BM25OidCache *oids)
 		ListCell   *lc2;
 
 		foreach (lc2, cscan->custom_plans)
-			replace_scores_in_plan((Plan *)lfirst(lc2), oids);
+			replace_scores_in_plan(
+					(Plan *)lfirst(lc2), context, unsafe_initplan_path);
 	}
 	break;
 
@@ -3313,6 +3541,8 @@ tp_planner_hook(
 	if (query_has_bm25_operators && result->planTree != NULL &&
 		plan_has_bm25_indexscan(result->planTree, &oid_cache))
 	{
+		ScoreProjectionContext context = {.oids = &oid_cache, .stmt = result};
+
 		/*
 		 * Validate implicit index resolution - for explicit indexes, the
 		 * set_rel_pathlist_hook should have already forced the correct index.
@@ -3322,7 +3552,7 @@ tp_planner_hook(
 		 */
 		validate_explicit_index_usage(result->planTree, &oid_cache);
 
-		replace_scores_in_plan(result->planTree, &oid_cache);
+		replace_scores_in_plan(result->planTree, &context, false);
 	}
 
 	if (query_has_partition_scores)
