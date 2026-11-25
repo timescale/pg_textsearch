@@ -680,6 +680,7 @@ encounter a conflict,
 
 Version | Highlights
 --- | ---
+[`v1.6.1`](https://github.com/timescale/pg_textsearch/releases/tag/v1.6.1) | Restore cached BM25 scores for correlated filters
 [`v1.6.0`](https://github.com/timescale/pg_textsearch/releases/tag/v1.6.0) | Ranked Boolean filter pushdown, PostgreSQL 19 support, and planner, scoring, and cache fixes
 [`v1.5.1`](https://github.com/timescale/pg_textsearch/releases/tag/v1.5.1) | Fix concurrent spill/merge corruption, expression indexes, and maintenance without the extension
 [`v1.5.0`](https://github.com/timescale/pg_textsearch/releases/tag/v1.5.0) | Background compaction, Boolean and phrase queries, and faster builds and scans
