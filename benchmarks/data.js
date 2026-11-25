@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795589932969,
+  "lastUpdate": 1795589936734,
   "repoUrl": "https://github.com/timescale/pg_textsearch",
   "entries": {
     "cranfield Benchmarks": [
@@ -324212,6 +324212,48 @@ window.BENCHMARK_DATA = {
           {
             "name": "paradedb_cranfield_insert - Throughput (avg ms/query)",
             "value": 177.47,
+            "unit": "ms"
+          },
+          {
+            "name": "paradedb_cranfield_insert - Index Size",
+            "value": 3.05,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tjgreen@gmail.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "193ba06642321f3550ab8098c51912aed1d5b39b",
+          "message": "Restore cached BM25 scores for correlated filters (#637)\n\nRestore index-score reuse for verified plain correlated lookups. Nested\nscans, opaque callbacks, external parameter hooks, and unsafe InitPlans\nretain standalone scoring.\n\nThe issue reproducer drops from ~81 ms to ~1.7 ms locally, with\nunchanged rows, ordering, and four-decimal scores.\n\nFixes #636.",
+          "timestamp": "2026-11-25T00:40:01Z",
+          "url": "https://github.com/timescale/pg_textsearch/commit/193ba06642321f3550ab8098c51912aed1d5b39b"
+        },
+        "date": 1795589936185,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "paradedb_cranfield_insert - Index Build Time",
+            "value": 5.505,
+            "unit": "ms"
+          },
+          {
+            "name": "paradedb_cranfield_insert - Insert Time",
+            "value": 50.362,
+            "unit": "ms"
+          },
+          {
+            "name": "paradedb_cranfield_insert - Throughput (avg ms/query)",
+            "value": 178.84,
             "unit": "ms"
           },
           {
