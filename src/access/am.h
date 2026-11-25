@@ -33,6 +33,7 @@ typedef struct TpScanOpaqueData
 	MemoryContext boolean_context;
 	bool		  is_boolean_scan;
 	bool		  boolean_recheck;
+	bool		  orderby_is_null;
 	BufFile		 *boolean_results;
 	Oid			  index_oid; /* Index OID */
 
@@ -86,7 +87,7 @@ struct IndexBuildResult;
  */
 
 /* Cached score for ORDER BY optimization */
-float8 tp_get_cached_score(void);
+float8 tp_get_cached_score(bool *is_null);
 
 /*
  * Access method handler

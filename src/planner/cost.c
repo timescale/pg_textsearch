@@ -17,9 +17,7 @@
 #include <tsearch/ts_cache.h>
 #include <tsearch/ts_type.h>
 #include <tsearch/ts_utils.h>
-#include <utils/builtins.h>
 #include <utils/float.h>
-#include <utils/fmgrprotos.h>
 #include <utils/lsyscache.h>
 #include <utils/rel.h>
 #include <utils/selfuncs.h>
@@ -29,17 +27,14 @@
 #include "index/metapage.h"
 #include "planner/cost.h"
 #include "planner/hooks.h"
-#include "types/query.h"
 
 static bool
-tp_boolean_get_constant_query(IndexPath *path, TSQuery *query)
+tp_boolean_get_constant_query(IndexClause *index_clause, TSQuery *query)
 {
-	IndexClause *index_clause;
-	OpExpr		*clause;
-	Node		*query_node;
-	Const		*query_const;
+	OpExpr *clause;
+	Node   *query_node;
+	Const  *query_const;
 
-	index_clause = linitial_node(IndexClause, path->indexclauses);
 	if (index_clause->rinfo == NULL ||
 		!IsA(index_clause->rinfo->clause, OpExpr))
 		return false;
@@ -64,17 +59,10 @@ tp_boolean_get_constant_query(IndexPath *path, TSQuery *query)
 }
 
 static bool
-tp_boolean_query_requires_full_scan(TSQuery query)
+tp_boolean_query_has_inexact_operand(TSQuery query)
 {
-	QueryItem *items;
+	QueryItem *items = GETQUERY(query);
 
-	if (query->size == 0)
-		return false;
-
-	if (!tsquery_requires_match(GETQUERY(query)))
-		return true;
-
-	items = GETQUERY(query);
 	for (int i = 0; i < query->size; i++)
 	{
 		if (items[i].type == QI_VAL &&
@@ -86,112 +74,38 @@ tp_boolean_query_requires_full_scan(TSQuery query)
 }
 
 static bool
-tp_boolean_implies_ranking_term(
-		QueryItem *item, char *operands, TSVector ranking_terms)
+tp_boolean_query_requires_full_scan(TSQuery query)
+{
+	if (query->size == 0)
+		return false;
+
+	return !tsquery_requires_match(GETQUERY(query)) ||
+		   tp_boolean_query_has_inexact_operand(query);
+}
+
+/* Whether every match must contain some exact (unweighted, whole) term. */
+static bool
+tp_boolean_requires_exact_operand(QueryItem *item)
 {
 	check_stack_depth();
 
 	if (item->type == QI_VAL)
-	{
-		QueryOperand *operand = &item->qoperand;
-		WordEntry	 *entries = ARRPTR(ranking_terms);
-		int			  low	  = 0;
-		int			  high	  = ranking_terms->size;
-
-		if (operand->prefix)
-			return false;
-
-		while (low < high)
-		{
-			int		   middle	  = low + (high - low) / 2;
-			WordEntry *entry	  = &entries[middle];
-			int		   comparison = tsCompareString(
-					   STRPTR(ranking_terms) + entry->pos,
-					   entry->len,
-					   operands + operand->distance,
-					   operand->length,
-					   false);
-
-			if (comparison == 0)
-				return true;
-			if (comparison < 0)
-				low = middle + 1;
-			else
-				high = middle;
-		}
-		return false;
-	}
-
-	if (item->type != QI_OPR)
-		return false;
+		return !item->qoperand.prefix && item->qoperand.weight == 0;
 
 	switch (item->qoperator.oper)
 	{
 	case OP_AND:
 	case OP_PHRASE:
-		return tp_boolean_implies_ranking_term(
-					   item + item->qoperator.left, operands, ranking_terms) ||
-			   tp_boolean_implies_ranking_term(
-					   item + 1, operands, ranking_terms);
+		return tp_boolean_requires_exact_operand(
+					   item + item->qoperator.left) ||
+			   tp_boolean_requires_exact_operand(item + 1);
 	case OP_OR:
-		return tp_boolean_implies_ranking_term(
-					   item + item->qoperator.left, operands, ranking_terms) &&
-			   tp_boolean_implies_ranking_term(
-					   item + 1, operands, ranking_terms);
+		return tp_boolean_requires_exact_operand(
+					   item + item->qoperator.left) &&
+			   tp_boolean_requires_exact_operand(item + 1);
 	default:
 		return false;
 	}
-}
-
-static bool
-tp_boolean_ranked_path_is_complete(
-		IndexPath *path, TSQuery query, Oid text_config)
-{
-	OpExpr	*orderby;
-	Node	*query_node;
-	Const	*query_const;
-	Oid		 left_type;
-	Oid		 right_type;
-	TpQuery *ranking_query;
-	char	*ranking_text;
-	text	*ranking_text_arg;
-	TSVector ranking_terms;
-	bool	 complete;
-
-	if (list_length(path->indexorderbys) != 1 ||
-		!IsA(linitial(path->indexorderbys), OpExpr))
-		return false;
-	orderby = linitial_node(OpExpr, path->indexorderbys);
-	if (list_length(orderby->args) != 2)
-		return false;
-
-	query_node = lsecond(orderby->args);
-	while (query_node != NULL && IsA(query_node, RelabelType))
-		query_node = (Node *)castNode(RelabelType, query_node)->arg;
-	if (query_node == NULL || !IsA(query_node, Const))
-		return false;
-	query_const = castNode(Const, query_node);
-	op_input_types(orderby->opno, &left_type, &right_type);
-	if (query_const->constisnull || query_const->consttype != right_type ||
-		right_type == TEXTOID)
-		return false;
-
-	ranking_query	 = (TpQuery *)PG_DETOAST_DATUM(query_const->constvalue);
-	ranking_text	 = get_tpquery_text(ranking_query);
-	ranking_text_arg = cstring_to_text(ranking_text);
-	ranking_terms	 = DatumGetTSVector(DirectFunctionCall2Coll(
-			   to_tsvector_byid,
-			   InvalidOid,
-			   ObjectIdGetDatum(text_config),
-			   PointerGetDatum(ranking_text_arg)));
-	complete		 = query->size == 0 ||
-			   tp_boolean_implies_ranking_term(
-					   GETQUERY(query), GETOPERAND(query), ranking_terms);
-	pfree(ranking_terms);
-	pfree(ranking_text_arg);
-	if ((Pointer)ranking_query != DatumGetPointer(query_const->constvalue))
-		pfree(ranking_query);
-	return complete;
 }
 
 static bool
@@ -275,11 +189,8 @@ tp_costestimate(
 	bool			has_orderby		  = path->indexorderbys != NIL;
 	bool			has_boolean		  = path->indexclauses != NIL;
 	bool			boolean_full_scan = false;
-	TSQuery			boolean_query	  = NULL;
 
-	/* Multiple Boolean scan keys are not supported. */
 	if ((!has_orderby && !has_boolean) ||
-		(has_boolean && list_length(path->indexclauses) != 1) ||
 		(has_boolean && has_orderby &&
 		 (!path->indexinfo || !OidIsValid(path->indexinfo->indexoid))) ||
 		(has_orderby && tp_indexpath_requires_other_index(path)))
@@ -296,26 +207,72 @@ tp_costestimate(
 
 	if (has_boolean)
 	{
-		if (!tp_boolean_get_constant_query(path, &boolean_query))
+		ListCell *lc;
+		int		  exact_operands = 0;
+		bool	  runtime_key	 = false;
+		bool	  inexact		 = false;
+		bool	  exact_filter	 = false;
+
+		foreach (lc, path->indexclauses)
 		{
-			/* Ranked fallbacks must not re-enter an over-budget Boolean scan.
-			 */
-			if (has_orderby || tp_query_has_ranked_sort(root, path))
+			TSQuery boolean_query = NULL;
+
+			if (!tp_boolean_get_constant_query(
+						lfirst_node(IndexClause, lc), &boolean_query))
 			{
-				tp_disable_index_path(
-						path,
-						indexStartupCost,
-						indexTotalCost,
-						indexSelectivity,
-						indexCorrelation,
-						indexPages);
-				return;
+				/*
+				 * Unordered scans reject runtime keys over the operand cap.
+				 * Combined keys have no plan-time bound, and ranked queries
+				 * have an ordered path that rechecks instead.
+				 */
+				if (!has_orderby && (list_length(path->indexclauses) > 1 ||
+									 tp_query_has_ranked_sort(root, path)))
+				{
+					tp_disable_index_path(
+							path,
+							indexStartupCost,
+							indexTotalCost,
+							indexSelectivity,
+							indexCorrelation,
+							indexPages);
+					return;
+				}
+				runtime_key		  = true;
+				boolean_full_scan = true;
 			}
-			boolean_full_scan = true;
+			else
+			{
+				int operands = tp_boolean_query_exact_operand_count(
+						boolean_query);
+
+				/* Ranked scans cannot filter over-budget predicates either. */
+				if (operands > TP_BOOLEAN_MAX_EXACT_OPERANDS - exact_operands)
+				{
+					tp_disable_index_path(
+							path,
+							indexStartupCost,
+							indexTotalCost,
+							indexSelectivity,
+							indexCorrelation,
+							indexPages);
+					return;
+				}
+				exact_operands += operands;
+				boolean_full_scan |= tp_boolean_query_requires_full_scan(
+						boolean_query);
+				inexact |= tp_boolean_query_has_inexact_operand(boolean_query);
+				exact_filter |= boolean_query->size == 0 ||
+								tp_boolean_requires_exact_operand(
+										GETQUERY(boolean_query));
+			}
 		}
-		else if (
-				tp_boolean_query_exact_operand_count(boolean_query) >
-				TP_BOOLEAN_MAX_EXACT_OPERANDS)
+
+		/*
+		 * Ranked scans filter BMW candidates on exact terms only.  Unless
+		 * every match contains one, prefix and weighted operands leave each
+		 * candidate to the heap recheck, which rescans ever deeper.
+		 */
+		if (has_orderby && inexact && !exact_filter && !runtime_key)
 		{
 			tp_disable_index_path(
 					path,
@@ -326,9 +283,6 @@ tp_costestimate(
 					indexPages);
 			return;
 		}
-		else
-			boolean_full_scan = tp_boolean_query_requires_full_scan(
-					boolean_query);
 	}
 
 	/* Ranked scans evaluate the predicate on BMW candidates, not every doc. */
@@ -344,10 +298,7 @@ tp_costestimate(
 		{
 			metap = tp_get_metapage(index_rel);
 			if (has_boolean &&
-				(metap->text_config_oid != getTSCurrentConfig(true) ||
-				 (has_orderby &&
-				  !tp_boolean_ranked_path_is_complete(
-						  path, boolean_query, metap->text_config_oid))))
+				metap->text_config_oid != getTSCurrentConfig(true))
 			{
 				pfree(metap);
 				index_close(index_rel, AccessShareLock);

@@ -137,7 +137,7 @@ tp_score_documents(
 	Assert(result_ctids != NULL);
 	Assert(result_scores != NULL);
 
-	if (query_term_count <= 0 || max_results <= 0)
+	if ((query_term_count <= 0 && filter == NULL) || max_results <= 0)
 		return 0;
 
 	if (!local_state->shared)
@@ -182,12 +182,14 @@ tp_score_documents(
 	total_docs	= scoring->total_docs;
 	avg_doc_len = scoring->avg_doc_len;
 
-	if (total_docs <= 0 || avg_doc_len <= 0.0f)
+	if (total_docs <= 0 || (avg_doc_len <= 0.0f && filter == NULL))
 	{
 		if (memtable_src != NULL)
 			tp_source_close(memtable_src);
 		return 0;
 	}
+	if (avg_doc_len <= 0.0f)
+		avg_doc_len = 1.0f;
 
 	/*
 	 * BMW fast path for single-term queries.
@@ -204,7 +206,7 @@ tp_score_documents(
 		/* Get unified doc_freq across memtable and segments */
 		doc_freq = tp_get_unified_doc_freq(
 				memtable_src, index_relation, term, snapshot);
-		if (doc_freq == 0)
+		if (doc_freq == 0 && filter == NULL)
 		{
 			if (memtable_src != NULL)
 				tp_source_close(memtable_src);
@@ -212,7 +214,7 @@ tp_score_documents(
 		}
 
 		/* Calculate IDF */
-		idf = tp_calculate_idf(doc_freq, total_docs);
+		idf = doc_freq > 0 ? tp_calculate_idf(doc_freq, total_docs) : 0.0f;
 		if (query_frequencies != NULL)
 			idf *= query_frequencies[0];
 

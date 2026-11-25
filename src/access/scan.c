@@ -39,11 +39,13 @@
  * bm25_get_current_score() stub function returns this value, avoiding
  * re-computation of scores in resjunk ORDER BY expressions.
  */
-static float8 tp_cached_score = 0.0;
+static float8 tp_cached_score		  = 0.0;
+static bool	  tp_cached_score_is_null = false;
 
 float8
-tp_get_cached_score(void)
+tp_get_cached_score(bool *is_null)
 {
+	*is_null = tp_cached_score_is_null;
 	return tp_cached_score;
 }
 
@@ -182,7 +184,8 @@ tp_rescan_process_orderby(
 			/*
 			 * Reject a NULL query before dereferencing the scan-key argument.
 			 */
-			if (orderby->sk_flags & SK_ISNULL)
+			so->orderby_is_null = (orderby->sk_flags & SK_ISNULL) != 0;
+			if (so->orderby_is_null && scan->numberOfKeys == 0)
 			{
 				ereport(ERROR,
 						(errmsg("NULL ORDER BY clause with BM25 operator")));
@@ -192,7 +195,9 @@ tp_rescan_process_orderby(
 			 * Use sk_subtype to determine the argument type.
 			 * sk_subtype contains the right-hand operand's type OID.
 			 */
-			if (orderby->sk_subtype == TEXTOID)
+			if (so->orderby_is_null)
+				query_cstr = pstrdup("");
+			else if (orderby->sk_subtype == TEXTOID)
 			{
 				/* Plain text - use text directly */
 				text *query_text = (text *)DatumGetPointer(query_datum);
@@ -671,7 +676,7 @@ tp_gettuple(IndexScanDesc scan, ScanDirection dir)
 		raw_score				 = so->result_scores[so->current_pos];
 		bm25_score				 = (raw_score > 0) ? -raw_score : raw_score;
 		scan->xs_orderbyvals[0]	 = Float8GetDatum((float8)bm25_score);
-		scan->xs_orderbynulls[0] = false;
+		scan->xs_orderbynulls[0] = so->orderby_is_null;
 
 		/*
 		 * These results have not passed heap visibility or RLS checks.
@@ -687,7 +692,8 @@ tp_gettuple(IndexScanDesc scan, ScanDirection dir)
 		}
 
 		/* Cache score for stub function to retrieve */
-		tp_cached_score = (float8)bm25_score;
+		tp_cached_score			= (float8)bm25_score;
+		tp_cached_score_is_null = so->orderby_is_null;
 	}
 
 	/* Move to next position */

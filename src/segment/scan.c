@@ -183,35 +183,16 @@ tp_segment_posting_iterator_init(
 	return false;
 }
 
-/*
- * Build candidates for dictionary terms with the prefix. Small expansions
- * return one iterator per term for ordered merging. Broad expansions consume
- * one iterator at a time into a document bitmap, bounding simultaneous pins.
- */
-void
-tp_segment_prefix_candidates_init(
-		TpSegmentReader			  *reader,
-		const char				  *prefix,
-		int						   prefix_length,
-		uint32					   max_iterators,
-		TpSegmentPrefixCandidates *candidates)
+static uint32
+tp_segment_prefix_lower_bound(TpSegmentReader *reader, const char *prefix)
 {
-	TpSegmentHeader *header;
+	TpSegmentHeader *header = reader->header;
 	TpDictionary	 dict_header;
-	char			*prefix_string;
-	uint32			 first;
-	uint32			 end;
 	uint32			 left;
-	uint32			 postings_since_interrupt = 0;
 	uint32			 right;
 
-	memset(candidates, 0, sizeof(*candidates));
-	if (!reader || !reader->header || prefix_length <= 0)
-		return;
-
-	header = reader->header;
 	if (header->num_terms == 0 || header->dictionary_offset == 0)
-		return;
+		return header->num_terms;
 
 	tp_segment_read(
 			reader,
@@ -227,15 +208,13 @@ tp_segment_prefix_candidates_init(
 						dict_header.num_terms,
 						header->num_terms)));
 
-	prefix_string = pnstrdup(prefix, prefix_length);
-
 	left  = 0;
 	right = dict_header.num_terms;
 	while (left < right)
 	{
 		uint32 mid	= left + (right - left) / 2;
 		char  *term = tp_segment_read_term_at_index(reader, header, NULL, mid);
-		int	   cmp	= strcmp(term, prefix_string);
+		int	   cmp	= strcmp(term, prefix);
 
 		pfree(term);
 		if (cmp < 0)
@@ -244,9 +223,107 @@ tp_segment_prefix_candidates_init(
 			right = mid;
 	}
 
-	first = left;
-	end	  = first;
-	while (end < dict_header.num_terms)
+	return left;
+}
+
+void
+tp_segment_prefix_iterator_init(
+		TpSegmentPrefixIterator *iter,
+		TpSegmentReader			*reader,
+		const char				*prefix,
+		int						 prefix_length)
+{
+	memset(iter, 0, sizeof(*iter));
+	if (!reader || !reader->header || prefix_length <= 0)
+		return;
+
+	iter->reader		= reader;
+	iter->prefix		= pnstrdup(prefix, prefix_length);
+	iter->prefix_length = prefix_length;
+	iter->next_term		= tp_segment_prefix_lower_bound(reader, iter->prefix);
+}
+
+bool
+tp_segment_prefix_iterator_next(
+		TpSegmentPrefixIterator *iter, TpSegmentPosting **posting)
+{
+	if (iter->prefix == NULL)
+		return false;
+
+	for (;;)
+	{
+		char *term;
+		bool  matches;
+
+		CHECK_FOR_INTERRUPTS();
+		if (iter->active)
+		{
+			if (tp_segment_posting_iterator_next(&iter->posting, posting))
+				return true;
+			tp_segment_posting_iterator_free(&iter->posting);
+			iter->active = false;
+		}
+		if (iter->next_term >= iter->reader->header->num_terms)
+			return false;
+
+		term = tp_segment_read_term_at_index(
+				iter->reader, iter->reader->header, NULL, iter->next_term);
+		matches = strncmp(term, iter->prefix, iter->prefix_length) == 0;
+		pfree(term);
+		if (!matches)
+		{
+			iter->next_term = iter->reader->header->num_terms;
+			return false;
+		}
+		tp_segment_posting_iterator_init_at(
+				&iter->posting, iter->reader, NULL, iter->next_term++, true);
+		iter->active = true;
+	}
+}
+
+void
+tp_segment_prefix_iterator_free(TpSegmentPrefixIterator *iter)
+{
+	if (iter->active)
+	{
+		tp_segment_posting_iterator_free(&iter->posting);
+		iter->active = false;
+	}
+	if (iter->prefix != NULL)
+	{
+		pfree(iter->prefix);
+		iter->prefix = NULL;
+	}
+}
+
+/*
+ * Build candidates for dictionary terms with the prefix. Small expansions
+ * return one iterator per term for ordered merging. Broad expansions consume
+ * one iterator at a time into a document bitmap, bounding simultaneous pins.
+ */
+void
+tp_segment_prefix_candidates_init(
+		TpSegmentReader			  *reader,
+		const char				  *prefix,
+		int						   prefix_length,
+		uint32					   max_iterators,
+		TpSegmentPrefixCandidates *candidates)
+{
+	TpSegmentHeader *header;
+	char			*prefix_string;
+	uint32			 first;
+	uint32			 end;
+	uint32			 postings_since_interrupt = 0;
+
+	memset(candidates, 0, sizeof(*candidates));
+	if (!reader || !reader->header || prefix_length <= 0)
+		return;
+
+	header		  = reader->header;
+	prefix_string = pnstrdup(prefix, prefix_length);
+	first		  = tp_segment_prefix_lower_bound(reader, prefix_string);
+	end			  = first;
+	while (end < header->num_terms)
 	{
 		char *term = tp_segment_read_term_at_index(reader, header, NULL, end);
 

@@ -149,16 +149,14 @@ Combine Boolean filtering and BM25 ranking in a single ordered index scan:
 
 ```sql
 SELECT * FROM documents
-WHERE content @@ to_tsquery('english', 'postgres & search')
+WHERE content @@ to_tsquery('english', 'database & !mysql')
 ORDER BY content <@> 'postgres search'
 LIMIT 10;
 ```
 
-The ordered fast path requires constant queries whose Boolean predicate
-guarantees that every match contains a ranking term. Other forms, including
-generic plans with unknown query terms, use PostgreSQL filtering and sorting
-so that zero-score matches are retained. Phrase, prefix, and weight
-restrictions may require heap rechecks.
+Boolean predicates and ranking terms are independent, including in prepared
+queries. Matches without ranking terms have score zero and follow ranked
+matches. Phrase, prefix, and weight restrictions may require heap rechecks.
 
 ### Verifying Index Usage
 
@@ -379,15 +377,14 @@ SELECT * FROM documents ORDER BY content <@> 'search terms' LIMIT 10;
 ```
 
 Prefer this direct ordered query over materializing matches and then scoring
-and sorting them. With constant queries whose Boolean predicate guarantees
-a ranking term, filtering can run inside the ranked scan; selective
+and sorting them. Boolean filtering runs inside the ranked scan; selective
 conditions can drive it from matching postings.
 
 | Query shape | Expected work |
 |---|---|
 | Ranked search, small `LIMIT` | BMW can skip noncompetitive blocks |
 | Selective ranked `@@` filter | Can seek to Boolean candidates |
-| Unproven or generic ranked `@@` | Fallback retains zero-score matches |
+| Independent or generic ranked `@@` | Ordered scan retains zero-score matches |
 | Counts or exhaustive retrieval | Must visit all matching candidates |
 | Phrase, prefix, or weight restriction | May retokenize rows for rechecks |
 | Other filters on a BM25 scan | Post-filtering may require deeper scoring |
@@ -396,9 +393,9 @@ conditions can drive it from matching postings.
 A small `LIMIT` does not guarantee little work. Very common terms, broad
 filters, or too few qualifying rows can limit score-based pruning. Phrase
 counts can be expensive even when only a few rows ultimately match.
-Prefix conditions on eligible scans retain ranked traversal and heap rechecks.
-Ranked queries with more than 64 exact Boolean term operands use a planner
-fallback or heap rechecks instead of internal predicate filtering.
+Prefix conditions retain ranked traversal and heap rechecks. Ranked queries
+with more than 64 exact Boolean term operands use heap rechecks instead of
+internal predicate filtering.
 Check `EXPLAIN` for an ordered BM25 index scan rather than standalone scoring
 followed by a sort; see [verifying index usage](#verifying-index-usage).
 

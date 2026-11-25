@@ -30,6 +30,12 @@ typedef struct TpBooleanTerm
 	int	  length;
 } TpBooleanTerm;
 
+typedef struct TpBooleanRankingTerm
+{
+	const char *lexeme;
+	int			length;
+} TpBooleanRankingTerm;
+
 typedef struct TpBooleanEvalState
 {
 	TSQuery		   query;
@@ -46,6 +52,7 @@ typedef enum TpBooleanCandidateKind
 	TP_BOOLEAN_CANDIDATE_UNION,
 	TP_BOOLEAN_CANDIDATE_PREFIX,
 	TP_BOOLEAN_CANDIDATE_PREFIX_BITMAP,
+	TP_BOOLEAN_CANDIDATE_PREFIX_UNORDERED,
 } TpBooleanCandidateKind;
 
 typedef struct TpBooleanPrefixHeapNode
@@ -101,6 +108,8 @@ typedef struct TpBooleanCandidateStream
 			uint32 next_doc_id;
 			uint32 num_docs;
 		} prefix_bitmap;
+
+		TpSegmentPrefixIterator unordered_prefix;
 	} state;
 } TpBooleanCandidateStream;
 
@@ -387,8 +396,20 @@ tp_boolean_create_union_stream(
 		TpBooleanCandidateStream *left,
 		TpBooleanCandidateStream *right)
 {
-	TpBooleanCandidateStream *stream = palloc0(sizeof(*stream));
+	TpBooleanCandidateStream *stream;
 
+	if (left->kind == TP_BOOLEAN_CANDIDATE_ALL)
+	{
+		tp_boolean_free_candidate_stream(right);
+		return left;
+	}
+	if (right->kind == TP_BOOLEAN_CANDIDATE_ALL)
+	{
+		tp_boolean_free_candidate_stream(left);
+		return right;
+	}
+
+	stream		  = palloc0(sizeof(*stream));
 	stream->kind  = TP_BOOLEAN_CANDIDATE_UNION;
 	stream->exact = left->exact && right->exact;
 	stream->estimate =
@@ -476,10 +497,25 @@ tp_boolean_prefix_stream_advance_root(TpBooleanCandidateStream *stream)
 
 static TpBooleanCandidateStream *
 tp_boolean_create_prefix_stream(
-		TpSegmentReader *reader, const char *prefix, int prefix_length)
+		TpSegmentReader *reader,
+		const char		*prefix,
+		int				 prefix_length,
+		bool			 unordered)
 {
 	TpSegmentPrefixCandidates candidates;
 	TpBooleanCandidateStream *stream = palloc0(sizeof(*stream));
+
+	if (unordered)
+	{
+		stream->kind	 = TP_BOOLEAN_CANDIDATE_PREFIX_UNORDERED;
+		stream->estimate = reader->header->num_docs;
+		tp_segment_prefix_iterator_init(
+				&stream->state.unordered_prefix,
+				reader,
+				prefix,
+				prefix_length);
+		return stream;
+	}
 
 	tp_segment_prefix_candidates_init(
 			reader,
@@ -514,7 +550,10 @@ tp_boolean_create_prefix_stream(
 
 static TpBooleanCandidateStream *
 tp_boolean_create_candidate_stream(
-		TpBooleanEvalState *state, TpSegmentReader *reader, QueryItem *item)
+		TpBooleanEvalState *state,
+		TpSegmentReader	   *reader,
+		QueryItem		   *item,
+		bool				unordered_prefixes)
 {
 	TpBooleanCandidateStream *stream;
 
@@ -525,7 +564,7 @@ tp_boolean_create_candidate_stream(
 
 		if (operand->prefix)
 			return tp_boolean_create_prefix_stream(
-					reader, lexeme, operand->length);
+					reader, lexeme, operand->length, unordered_prefixes);
 
 		if (operand->weight != 0)
 			return tp_boolean_create_all_stream(reader);
@@ -552,15 +591,20 @@ tp_boolean_create_candidate_stream(
 		return tp_boolean_create_all_stream(reader);
 
 	{
-		TpBooleanCandidateStream *right =
-				tp_boolean_create_candidate_stream(state, reader, item + 1);
+		TpBooleanCandidateStream *right = tp_boolean_create_candidate_stream(
+				state, reader, item + 1, unordered_prefixes);
 		TpBooleanCandidateStream *left = tp_boolean_create_candidate_stream(
-				state, reader, item + item->qoperator.left);
+				state,
+				reader,
+				item + item->qoperator.left,
+				unordered_prefixes);
 
 		if (item->qoperator.oper == OP_AND ||
 			item->qoperator.oper == OP_PHRASE)
 		{
-			if (left->estimate <= right->estimate)
+			if (left->estimate < right->estimate ||
+				(left->estimate == right->estimate &&
+				 left->kind != TP_BOOLEAN_CANDIDATE_ALL))
 			{
 				tp_boolean_free_candidate_stream(right);
 				left->exact = false;
@@ -660,6 +704,17 @@ tp_boolean_candidate_stream_next(
 				 stream->state.prefix.heap[0].doc_id == *doc_id);
 		return true;
 
+	case TP_BOOLEAN_CANDIDATE_PREFIX_UNORDERED:
+	{
+		TpSegmentPosting *posting;
+
+		if (!tp_segment_prefix_iterator_next(
+					&stream->state.unordered_prefix, &posting))
+			return false;
+		*doc_id = posting->doc_id;
+		return true;
+	}
+
 	case TP_BOOLEAN_CANDIDATE_PREFIX_BITMAP:
 		while (stream->state.prefix_bitmap.next_doc_id <
 			   stream->state.prefix_bitmap.num_docs)
@@ -710,8 +765,25 @@ tp_boolean_free_candidate_stream(TpBooleanCandidateStream *stream)
 	}
 	else if (stream->kind == TP_BOOLEAN_CANDIDATE_PREFIX_BITMAP)
 		pfree(stream->state.prefix_bitmap.bits);
+	else if (stream->kind == TP_BOOLEAN_CANDIDATE_PREFIX_UNORDERED)
+		tp_segment_prefix_iterator_free(&stream->state.unordered_prefix);
 
 	pfree(stream);
+}
+
+/* Unordered prefix postings reach the root only through unions. */
+static bool
+tp_boolean_candidate_stream_is_unordered(TpBooleanCandidateStream *stream)
+{
+	check_stack_depth();
+
+	if (stream->kind == TP_BOOLEAN_CANDIDATE_UNION)
+		return tp_boolean_candidate_stream_is_unordered(
+					   stream->state.union_stream.left) ||
+			   tp_boolean_candidate_stream_is_unordered(
+					   stream->state.union_stream.right);
+
+	return stream->kind == TP_BOOLEAN_CANDIDATE_PREFIX_UNORDERED;
 }
 
 static TSTernaryValue
@@ -792,6 +864,8 @@ typedef struct TpBooleanRankedFilter
 	TpBooleanCandidateStream *candidates;
 	uint32					  candidate_doc_id;
 	bool					  candidate_loaded;
+	bool					  candidates_unordered;
+	bool					  has_prefix;
 } TpBooleanRankedFilter;
 
 static int
@@ -807,6 +881,9 @@ tp_boolean_ranked_memtable_matches(
 	TpBooleanRankedFilter *filter = arg;
 	TpBooleanEvalState	  *query  = &filter->query;
 	TpBooleanMemtableEval  eval;
+
+	if (query->query == NULL)
+		return true;
 
 	if (filter->postings == NULL)
 	{
@@ -860,6 +937,9 @@ tp_boolean_ranked_segment_matches(
 	TpBooleanRankedFilter *filter = arg;
 	TpBooleanEvalState	  *query  = &filter->query;
 
+	if (query->query == NULL)
+		return true;
+
 	if (filter->cursors == NULL)
 	{
 		MemoryContext old = MemoryContextSwitchTo(filter->context);
@@ -883,9 +963,17 @@ tp_boolean_ranked_segment_matches(
 
 static bool
 tp_boolean_ranked_segment_next(
-		void *arg, TpSegmentReader *reader, uint32 minimum, uint32 *doc_id)
+		void			*arg,
+		TpSegmentReader *reader,
+		uint32			 minimum,
+		uint32			*doc_id,
+		bool			 selective)
 {
 	TpBooleanRankedFilter *filter = arg;
+
+	/* Prefix expansion is worthwhile only when zero-score rows are needed. */
+	if (selective && filter->has_prefix)
+		return false;
 
 	if (filter->candidates == NULL)
 	{
@@ -893,12 +981,23 @@ tp_boolean_ranked_segment_next(
 		uint32		  threshold = reader->header->num_docs / 100 +
 						   (reader->header->num_docs % 100 != 0);
 
-		filter->candidates = tp_boolean_create_candidate_stream(
-				&filter->query, reader, GETQUERY(filter->query.query));
+		if (filter->query.query == NULL)
+		{
+			filter->candidates		  = tp_boolean_create_all_stream(reader);
+			filter->candidates->exact = true;
+		}
+		else
+			filter->candidates = tp_boolean_create_candidate_stream(
+					&filter->query,
+					reader,
+					GETQUERY(filter->query.query),
+					filter->has_prefix);
+		filter->candidates_unordered =
+				tp_boolean_candidate_stream_is_unordered(filter->candidates);
 		MemoryContextSwitchTo(old);
 
 		/* Dense filters retain BMW's score-based pruning. */
-		if (filter->candidates->estimate > threshold)
+		if (selective && filter->candidates->estimate > threshold)
 		{
 			tp_boolean_free_candidate_stream(filter->candidates);
 			filter->candidates = NULL;
@@ -908,8 +1007,11 @@ tp_boolean_ranked_segment_next(
 
 	for (;;)
 	{
+		bool unordered = filter->candidates_unordered;
+
 		CHECK_FOR_INTERRUPTS();
-		if (!filter->candidate_loaded || filter->candidate_doc_id < minimum)
+		if (!filter->candidate_loaded ||
+			(!unordered && filter->candidate_doc_id < minimum))
 		{
 			filter->candidate_loaded = tp_boolean_candidate_stream_next(
 					filter->candidates, &filter->candidate_doc_id);
@@ -918,14 +1020,20 @@ tp_boolean_ranked_segment_next(
 				*doc_id = UINT32_MAX;
 				return true;
 			}
-			if (filter->candidate_doc_id < minimum)
+			if (!unordered && filter->candidate_doc_id < minimum)
 				continue;
 		}
-		if (filter->candidates->exact ||
+		/*
+		 * Term cursors need doc order.  Unordered prefix candidates are left
+		 * to the heap recheck, which needs no order for zero scores.
+		 */
+		if (unordered || filter->candidates->exact ||
 			tp_boolean_ranked_segment_matches(
 					filter, reader, filter->candidate_doc_id))
 		{
 			*doc_id = filter->candidate_doc_id;
+			if (unordered)
+				filter->candidate_loaded = false;
 			return true;
 		}
 		filter->candidate_loaded = false;
@@ -938,8 +1046,9 @@ tp_boolean_ranked_filter_reset(void *arg)
 	TpBooleanRankedFilter *filter = arg;
 
 	tp_boolean_free_candidate_stream(filter->candidates);
-	filter->candidates		 = NULL;
-	filter->candidate_loaded = false;
+	filter->candidates			 = NULL;
+	filter->candidate_loaded	 = false;
+	filter->candidates_unordered = false;
 	if (filter->cursors != NULL)
 	{
 		for (int i = 0; i < filter->query.term_count; i++)
@@ -965,42 +1074,130 @@ tp_boolean_ranked_filter_reset(void *arg)
 	}
 }
 
+static int
+tp_boolean_compare_ranking_terms(const void *left, const void *right)
+{
+	const TpBooleanRankingTerm *left_term  = left;
+	const TpBooleanRankingTerm *right_term = right;
+
+	if (left_term->length != right_term->length)
+		return left_term->length < right_term->length ? -1 : 1;
+	return memcmp(left_term->lexeme, right_term->lexeme, left_term->length);
+}
+
+static bool
+tp_boolean_implies_ranking_term(
+		QueryItem				   *item,
+		char					   *operands,
+		const TpBooleanRankingTerm *ranking_terms,
+		int							ranking_term_count)
+{
+	check_stack_depth();
+
+	if (item->type == QI_VAL)
+	{
+		QueryOperand		*operand = &item->qoperand;
+		TpBooleanRankingTerm key;
+
+		if (operand->prefix)
+			return false;
+
+		key.lexeme = operands + operand->distance;
+		key.length = operand->length;
+		return bsearch(&key,
+					   ranking_terms,
+					   ranking_term_count,
+					   sizeof(TpBooleanRankingTerm),
+					   tp_boolean_compare_ranking_terms) != NULL;
+	}
+
+	if (item->type != QI_OPR)
+		return false;
+
+	switch (item->qoperator.oper)
+	{
+	case OP_AND:
+	case OP_PHRASE:
+		return tp_boolean_implies_ranking_term(
+					   item + item->qoperator.left,
+					   operands,
+					   ranking_terms,
+					   ranking_term_count) ||
+			   tp_boolean_implies_ranking_term(
+					   item + 1, operands, ranking_terms, ranking_term_count);
+	case OP_OR:
+		return tp_boolean_implies_ranking_term(
+					   item + item->qoperator.left,
+					   operands,
+					   ranking_terms,
+					   ranking_term_count) &&
+			   tp_boolean_implies_ranking_term(
+					   item + 1, operands, ranking_terms, ranking_term_count);
+	default:
+		return false;
+	}
+}
+
 TpBMWFilter *
-tp_boolean_filter_create(TSQuery query, bool *recheck)
+tp_boolean_filter_create(
+		TSQuery			   query,
+		const char *const *ranking_terms,
+		int				   ranking_term_count,
+		bool			  *recheck)
 {
 	TpBMWFilter			  *predicate;
 	TpBooleanRankedFilter *filter;
+	TpBooleanRankingTerm  *sorted_terms;
 	const char			 **terms;
 	QueryItem			  *items = GETQUERY(query);
 
-	/* Generic plans cannot validate runtime predicates during costing. */
-	if (tp_boolean_query_exact_operand_count(query) >
-		TP_BOOLEAN_MAX_EXACT_OPERANDS)
-	{
-		*recheck = true;
-		return NULL;
-	}
-
 	predicate		= palloc0(sizeof(*predicate));
 	filter			= palloc0(sizeof(*filter));
-	filter->query	= tp_boolean_extract_terms(query);
 	filter->context = CurrentMemoryContext;
-	*recheck		= filter->query.requires_recheck;
+
+	/* Oversized runtime predicates retain all candidates for heap rechecks. */
+	if (tp_boolean_query_exact_operand_count(query) >
+		TP_BOOLEAN_MAX_EXACT_OPERANDS)
+		*recheck = true;
+	else
+	{
+		filter->query = tp_boolean_extract_terms(query);
+		*recheck	  = filter->query.requires_recheck;
+	}
+
+	/* Sorted once so long predicates do not rescan every ranking term. */
+	sorted_terms = palloc(
+			Max(ranking_term_count, 1) * sizeof(TpBooleanRankingTerm));
+	for (int i = 0; i < ranking_term_count; i++)
+	{
+		sorted_terms[i].lexeme = ranking_terms[i];
+		sorted_terms[i].length = strlen(ranking_terms[i]);
+	}
+	qsort(sorted_terms,
+		  ranking_term_count,
+		  sizeof(TpBooleanRankingTerm),
+		  tp_boolean_compare_ranking_terms);
+
 	terms = palloc(Max(filter->query.term_count, 1) * sizeof(char *));
 	for (int i = 0; i < filter->query.term_count; i++)
 		terms[i] = filter->query.terms[i].lexeme;
-	predicate->terms			= terms;
-	predicate->term_count		= filter->query.term_count;
+	predicate->terms			   = terms;
+	predicate->term_count		   = filter->query.term_count;
+	predicate->include_zero_scores = !tp_boolean_implies_ranking_term(
+			GETQUERY(query),
+			GETOPERAND(query),
+			sorted_terms,
+			ranking_term_count);
+	pfree(sorted_terms);
 	predicate->state			= filter;
 	predicate->memtable_matches = tp_boolean_ranked_memtable_matches;
 	predicate->segment_matches	= tp_boolean_ranked_segment_matches;
 	predicate->segment_next		= tp_boolean_ranked_segment_next;
-	/* Prefix streams may enumerate all postings before density is known. */
 	for (int i = 0; i < query->size; i++)
 	{
 		if (items[i].type == QI_VAL && items[i].qoperand.prefix)
 		{
-			predicate->segment_next = NULL;
+			filter->has_prefix = true;
 			break;
 		}
 	}
@@ -1013,7 +1210,7 @@ tp_boolean_write_segment(
 		TpSegmentReader *reader, TpBooleanResultWriter *writer)
 {
 	TpBooleanCandidateStream *stream = tp_boolean_create_candidate_stream(
-			writer->query, reader, GETQUERY(writer->query->query));
+			writer->query, reader, GETQUERY(writer->query->query), false);
 	TpBooleanTermCursor *cursors = palloc0(
 			writer->query->term_count * sizeof(*cursors));
 	uint32 cache_threshold = reader->header->num_docs / 100 +
@@ -1063,24 +1260,53 @@ tp_boolean_rescan(
 	TpScanOpaque  so = (TpScanOpaque)scan->opaque;
 	MemoryContext old_context;
 
-	if (nkeys != 1 || keys == NULL ||
-		keys[0].sk_strategy != TSearchStrategyNumber)
+	if (nkeys < 1 || keys == NULL)
 		ereport(ERROR,
 				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-				 errmsg("BM25 Boolean scans require exactly one @@ "
-						"condition")));
+				 errmsg("BM25 Boolean scans require an @@ condition")));
+
+	for (int i = 0; i < nkeys; i++)
+	{
+		if (keys[i].sk_strategy != TSearchStrategyNumber)
+			ereport(ERROR,
+					(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+					 errmsg("BM25 Boolean scans require @@ conditions")));
+	}
 
 	so->boolean_query	= NULL;
 	so->is_boolean_scan = scan->numberOfOrderBys == 0;
 	so->boolean_recheck = false;
 
-	if (keys[0].sk_flags & SK_ISNULL)
-		return;
+	for (int i = 0; i < nkeys; i++)
+	{
+		if (keys[i].sk_flags & SK_ISNULL)
+			return;
+	}
 
 	tp_boolean_check_config(scan->indexRelation, metap);
 
 	old_context		  = MemoryContextSwitchTo(so->scan_context);
 	so->boolean_query = DatumGetTSQueryCopy(keys[0].sk_argument);
+	for (int i = 1; i < nkeys && so->boolean_query->size > 0; i++)
+	{
+		TSQuery key_query = DatumGetTSQueryCopy(keys[i].sk_argument);
+		TSQuery combined;
+
+		/* Empty queries match nothing, but tsquery_and treats them as no-op.
+		 */
+		if (key_query->size == 0)
+			combined = key_query;
+		else
+		{
+			combined = DatumGetTSQuery(DirectFunctionCall2(
+					tsquery_and,
+					PointerGetDatum(so->boolean_query),
+					PointerGetDatum(key_query)));
+			pfree(key_query);
+		}
+		pfree(so->boolean_query);
+		so->boolean_query = combined;
+	}
 	MemoryContextSwitchTo(old_context);
 
 	tp_boolean_warn_if_incomplete(

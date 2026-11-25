@@ -268,9 +268,14 @@ PG_FUNCTION_INFO_V1(bm25_get_current_score);
  * by the index scan.
  */
 Datum
-bm25_get_current_score(PG_FUNCTION_ARGS pg_attribute_unused())
+bm25_get_current_score(PG_FUNCTION_ARGS)
 {
-	PG_RETURN_FLOAT8(tp_get_cached_score());
+	bool   is_null;
+	float8 score = tp_get_cached_score(&is_null);
+
+	if (is_null)
+		PG_RETURN_NULL();
+	PG_RETURN_FLOAT8(score);
 }
 
 /*

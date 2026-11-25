@@ -296,6 +296,17 @@ typedef struct TpSegmentPrefixCandidates
 	uint64					  estimate;
 } TpSegmentPrefixCandidates;
 
+/* Unordered prefix traversal retaining only one term's posting iterator. */
+typedef struct TpSegmentPrefixIterator
+{
+	TpSegmentReader			*reader;
+	char					*prefix;
+	int						 prefix_length;
+	uint32					 next_term;
+	bool					 active;
+	TpSegmentPostingIterator posting;
+} TpSegmentPrefixIterator;
+
 /* Segment posting iterator functions */
 extern bool tp_segment_posting_iterator_init(
 		TpSegmentPostingIterator *iter,
@@ -307,6 +318,14 @@ extern void tp_segment_prefix_candidates_init(
 		int						   prefix_length,
 		uint32					   max_iterators,
 		TpSegmentPrefixCandidates *candidates);
+extern void tp_segment_prefix_iterator_init(
+		TpSegmentPrefixIterator *iter,
+		TpSegmentReader			*reader,
+		const char				*prefix,
+		int						 prefix_length);
+extern bool tp_segment_prefix_iterator_next(
+		TpSegmentPrefixIterator *iter, TpSegmentPosting **posting);
+extern void tp_segment_prefix_iterator_free(TpSegmentPrefixIterator *iter);
 extern bool
 tp_segment_posting_iterator_load_block(TpSegmentPostingIterator *iter);
 extern bool tp_segment_posting_iterator_next(

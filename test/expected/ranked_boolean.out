@@ -135,7 +135,7 @@ SELECT pg_temp.ranked_boolean_plan(
 ) AS generic_boolean_ordered_index_scan;
  generic_boolean_ordered_index_scan 
 ------------------------------------
- f
+ t
 (1 row)
 
 EXECUTE ranked_boolean_scan('beta & !padding'::tsquery);
@@ -422,5 +422,227 @@ FROM ranked_recheck_scores;
 (1 row)
 
 DROP TABLE ranked_recheck_scores;
+\pset format unaligned
+SELECT name, pg_temp.ranked_boolean_plan(format($q$
+    SELECT id FROM ranked_disjoint_docs WHERE body @@ %L::tsquery
+    ORDER BY body <@> to_bm25query(%L, 'ranked_disjoint_idx') LIMIT 10
+$q$, predicate, ranking)) AS ordered_index_scan
+FROM (VALUES
+    ('independent', 'beta', 'alpha'),
+    ('nested', '(beta | gamma) & !alpha', 'alpha gamma'),
+    ('negative', '!alpha', 'alpha'),
+    ('prefix', 'bet:*', 'alpha'),
+    ('anchored prefix', 'beta & bet:*', 'alpha'),
+    ('anchored disjunction', '(beta & bet:*) | (gamma & gam:*)', 'alpha'),
+    ('prefix disjunction', 'beta | bet:*', 'alpha'),
+    ('negated prefix', '!alpha & bet:*', 'alpha'),
+    ('weighted', 'beta:A', 'alpha'),
+    ('empty ranking', 'beta', '')
+) cases(name, predicate, ranking)
+ORDER BY name;
+name|ordered_index_scan
+anchored disjunction|t
+anchored prefix|t
+empty ranking|t
+independent|t
+negated prefix|f
+negative|t
+nested|t
+prefix|f
+prefix disjunction|f
+weighted|f
+(10 rows)
+SELECT pg_temp.ranked_boolean_plan($q$
+    SELECT id FROM ranked_disjoint_docs
+    WHERE body @@ 'beta'::tsquery AND body @@ '!alpha'::tsquery
+    ORDER BY body <@> to_bm25query('alpha', 'ranked_disjoint_idx') LIMIT 10
+$q$) AS multiple_boolean_keys;
+multiple_boolean_keys
+t
+(1 row)
+-- One key that requires an exact term lets ranked scans filter the rest.
+SELECT pg_temp.ranked_boolean_plan($q$
+    SELECT id FROM ranked_disjoint_docs
+    WHERE body @@ 'bet:*'::tsquery AND body @@ 'beta | gamma'::tsquery
+    ORDER BY body <@> to_bm25query('alpha', 'ranked_disjoint_idx') LIMIT 10
+$q$) AS anchored_prefix_keys;
+anchored_prefix_keys
+t
+(1 row)
+SELECT 'beta | ' || string_agg('unused' || g, ' | ') AS oversized_query
+FROM generate_series(1, 64) g \gset
+SELECT pg_temp.ranked_boolean_plan(format($q$
+    SELECT id FROM ranked_disjoint_docs WHERE body @@ %L::tsquery
+    ORDER BY body <@> to_bm25query('alpha', 'ranked_disjoint_idx') LIMIT 10
+$q$, :'oversized_query')) AS oversized_ordered_index_scan;
+oversized_ordered_index_scan
+f
+(1 row)
+SELECT array_agg(id ORDER BY id) AS oversized_matches FROM (
+    SELECT id FROM ranked_disjoint_docs
+    WHERE body @@ :'oversized_query'::tsquery
+    ORDER BY body <@> to_bm25query('alpha', 'ranked_disjoint_idx') LIMIT 10
+) s;
+oversized_matches
+{1,2}
+(1 row)
+SELECT array_agg(id ORDER BY id) AS nested_zero_matches FROM (
+    SELECT id FROM ranked_disjoint_docs
+    WHERE body @@ '(beta | gamma) & !alpha'::tsquery
+    ORDER BY body <@> to_bm25query('alpha absent', 'ranked_disjoint_idx')
+    LIMIT 10
+) s;
+nested_zero_matches
+{2,4}
+(1 row)
+SELECT count(*) = 2 AND bool_and(score = 0) AS empty_ranking_scores FROM (
+    SELECT body <@> to_bm25query('', 'ranked_disjoint_idx') AS score
+    FROM ranked_disjoint_docs WHERE body @@ 'beta'::tsquery
+    ORDER BY body <@> to_bm25query('', 'ranked_disjoint_idx') LIMIT 10
+) s;
+empty_ranking_scores
+t
+(1 row)
+SET plan_cache_mode = force_generic_plan;
+PREPARE ranked_runtime_both(tsquery, bm25query) AS
+SELECT id, (body <@> $2) IS NULL AS null_score
+FROM ranked_disjoint_docs WHERE body @@ $1
+ORDER BY body <@> $2 LIMIT 10;
+SELECT pg_temp.ranked_boolean_plan($q$
+    EXECUTE ranked_runtime_both(
+        'beta', to_bm25query('absent', 'ranked_disjoint_idx'))
+$q$) AS runtime_queries_ordered_index_scan;
+runtime_queries_ordered_index_scan
+t
+(1 row)
+EXECUTE ranked_runtime_both(
+    'beta', to_bm25query('absent', 'ranked_disjoint_idx'));
+id|null_score
+1|f
+2|f
+(2 rows)
+EXECUTE ranked_runtime_both('!absent', NULL);
+id|null_score
+1|t
+2|t
+3|t
+4|t
+(4 rows)
+EXECUTE ranked_runtime_both(
+    NULL, to_bm25query('alpha', 'ranked_disjoint_idx'));
+id|null_score
+(0 rows)
+EXECUTE ranked_runtime_both(
+    'beta', to_bm25query('absent', 'ranked_disjoint_idx'));
+id|null_score
+1|f
+2|f
+(2 rows)
+DEALLOCATE ranked_runtime_both;
+PREPARE ranked_runtime_keys(tsquery, tsquery) AS
+SELECT id FROM ranked_disjoint_docs WHERE body @@ $1 AND body @@ $2
+ORDER BY body <@> to_bm25query('alpha', 'ranked_disjoint_idx') LIMIT 10;
+EXECUTE ranked_runtime_keys('beta', '!alpha');
+id
+2
+(1 row)
+EXECUTE ranked_runtime_keys('', 'beta');
+id
+(0 rows)
+EXECUTE ranked_runtime_keys('beta', '');
+id
+(0 rows)
+EXECUTE ranked_runtime_keys(NULL, 'beta');
+id
+(0 rows)
+EXECUTE ranked_runtime_keys('beta', '!absent');
+id
+1
+2
+(2 rows)
+-- Individually bounded runtime keys can exceed the combined operand cap.
+SELECT 'beta | ' || string_agg('unused' || g, ' | ') AS first_query,
+       '!alpha & ' || string_agg('!unused' || g, ' & ') AS second_query
+FROM generate_series(1, 39) g \gset
+EXECUTE ranked_runtime_keys(:'first_query', :'second_query');
+id
+2
+(1 row)
+DEALLOCATE ranked_runtime_keys;
+PREPARE boolean_runtime_keys(tsquery, tsquery) AS
+SELECT array_agg(id ORDER BY id) AS runtime_matches
+FROM ranked_disjoint_docs WHERE body @@ $1 AND body @@ $2;
+EXECUTE boolean_runtime_keys(:'first_query', :'second_query');
+runtime_matches
+{2}
+(1 row)
+DEALLOCATE boolean_runtime_keys;
+PREPARE boolean_mixed_keys(tsquery) AS
+SELECT array_agg(id ORDER BY id) AS mixed_matches
+FROM ranked_disjoint_docs
+WHERE body @@ :'first_query'::tsquery AND body @@ $1;
+EXECUTE boolean_mixed_keys(:'second_query');
+mixed_matches
+{2}
+(1 row)
+DEALLOCATE boolean_mixed_keys;
+RESET plan_cache_mode;
+INSERT INTO ranked_disjoint_docs VALUES (5, 'beta delta'), (6, '');
+CREATE FUNCTION pg_temp.ranked_zero_matches()
+RETURNS integer[] LANGUAGE sql AS $$
+    SELECT array_agg(id ORDER BY id) FROM (
+        SELECT id FROM ranked_disjoint_docs WHERE body @@ '!alpha'::tsquery
+        ORDER BY body <@> to_bm25query('alpha absent', 'ranked_disjoint_idx')
+        LIMIT 10
+    ) s;
+$$;
+SELECT pg_temp.ranked_zero_matches() AS mixed_zero_matches;
+mixed_zero_matches
+{2,3,4,5,6}
+(1 row)
+SET pg_textsearch.memtable_cache_enabled = off;
+SELECT pg_temp.ranked_zero_matches() AS chain_zero_matches;
+chain_zero_matches
+{2,3,4,5,6}
+(1 row)
+RESET pg_textsearch.memtable_cache_enabled;
+UPDATE ranked_disjoint_docs SET body = 'alpha' WHERE id = 2;
+DELETE FROM ranked_disjoint_docs WHERE id = 4;
+SELECT pg_temp.ranked_zero_matches() AS live_zero_matches;
+live_zero_matches
+{3,5,6}
+(1 row)
+SELECT bm25_spill_index('ranked_disjoint_idx') > 0 AS zero_spilled;
+zero_spilled
+t
+(1 row)
+VACUUM ranked_disjoint_docs;
+SELECT pg_temp.ranked_zero_matches() AS spilled_zero_matches;
+spilled_zero_matches
+{3,5,6}
+(1 row)
+SELECT bm25_force_merge('ranked_disjoint_idx') IS NOT NULL AS zero_merged;
+zero_merged
+t
+(1 row)
+SELECT pg_temp.ranked_zero_matches() AS merged_zero_matches;
+merged_zero_matches
+{3,5,6}
+(1 row)
+TRUNCATE ranked_disjoint_docs;
+INSERT INTO ranked_disjoint_docs VALUES (7, ''), (8, '');
+SELECT pg_temp.ranked_zero_matches() AS empty_corpus_matches;
+empty_corpus_matches
+{7,8}
+(1 row)
+SELECT bm25_spill_index('ranked_disjoint_idx') > 0 AS empty_corpus_spilled;
+empty_corpus_spilled
+t
+(1 row)
+SELECT pg_temp.ranked_zero_matches() AS empty_segment_matches;
+empty_segment_matches
+{7,8}
+(1 row)
+\pset format aligned
 DROP TABLE ranked_disjoint_docs;
 DROP EXTENSION pg_textsearch;
