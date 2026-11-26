@@ -1,0 +1,67 @@
+-- Test case: parallel_build_partial_expr
+-- A parallel build of a partial expression index must check the index
+-- predicate before it evaluates the index expression, as the serial build
+-- does.  Evaluating the expression first runs it on every heap row, not
+-- only on the rows the index covers (issue #593).
+CREATE EXTENSION IF NOT EXISTS pg_textsearch;
+
+-- Lower threshold so the test table qualifies for a parallel build
+SET min_parallel_table_scan_size = 0;
+SET maintenance_work_mem = '256MB';
+
+-- Only the first 200 of 200,000 rows belong to tenant 1
+CREATE TABLE partial_expr (
+    id      INT,
+    tenant  INT,
+    content TEXT
+);
+
+INSERT INTO partial_expr
+SELECT i, CASE WHEN i <= 200 THEN 1 ELSE 2 END,
+       'needle' || i || ' alpha beta gamma'
+FROM generate_series(1, 200000) AS i;
+
+-- A parallel build needs at least 100,000 estimated rows
+ANALYZE partial_expr;
+
+-- The index expression raises for any row outside the predicate, so a
+-- build that evaluates it on one of them fails instead of only slowing
+-- down.
+CREATE FUNCTION partial_expr_content(tenant INT, content TEXT)
+RETURNS TEXT LANGUAGE plpgsql IMMUTABLE STRICT PARALLEL SAFE AS $$
+BEGIN
+    IF tenant <> 1 THEN
+        RAISE EXCEPTION 'index expression evaluated for tenant %', tenant;
+    END IF;
+    RETURN content;
+END $$;
+
+-- The serial build checks the predicate first, so it succeeds.
+SET max_parallel_maintenance_workers = 0;
+CREATE INDEX partial_expr_idx ON partial_expr
+  USING bm25 ((partial_expr_content(tenant, content)))
+  WITH (text_config='simple') WHERE tenant = 1;
+DROP INDEX partial_expr_idx;
+
+ALTER TABLE partial_expr SET (parallel_workers = 2);
+SET max_parallel_maintenance_workers = 2;
+
+-- The build notice "launched 2 of 2 requested workers" is part of the
+-- expected output on purpose: if fewer workers start, the build falls back
+-- to the serial path, which never had this bug, and the test must fail
+-- instead of passing silently.
+CREATE INDEX partial_expr_idx ON partial_expr
+  USING bm25 ((partial_expr_content(tenant, content)))
+  WITH (text_config='simple') WHERE tenant = 1;
+
+-- The parallel build indexed exactly the 200 tenant-1 rows.
+SET enable_seqscan = off;
+SELECT COUNT(*) AS alpha_count FROM (SELECT 1 FROM partial_expr
+WHERE tenant = 1
+ORDER BY partial_expr_content(tenant, content) <@>
+         to_bm25query('alpha', 'partial_expr_idx')) sub;
+RESET enable_seqscan;
+
+DROP TABLE partial_expr;
+DROP FUNCTION partial_expr_content(INT, TEXT);
+DROP EXTENSION pg_textsearch CASCADE;
