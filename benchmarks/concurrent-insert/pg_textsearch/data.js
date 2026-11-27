@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795677701704,
+  "lastUpdate": 1795764153622,
   "repoUrl": "https://github.com/timescale/pg_textsearch",
   "entries": {
     "Concurrent INSERT (pg_textsearch)": [
@@ -14698,6 +14698,68 @@ window.BENCHMARK_DATA = {
           {
             "name": "pg_textsearch INSERT latency (c=8)",
             "value": 0.562,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tjgreen@gmail.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "193ba06642321f3550ab8098c51912aed1d5b39b",
+          "message": "Restore cached BM25 scores for correlated filters (#637)\n\nRestore index-score reuse for verified plain correlated lookups. Nested\nscans, opaque callbacks, external parameter hooks, and unsafe InitPlans\nretain standalone scoring.\n\nThe issue reproducer drops from ~81 ms to ~1.7 ms locally, with\nunchanged rows, ordering, and four-decimal scores.\n\nFixes #636.",
+          "timestamp": "2026-11-25T00:40:01Z",
+          "url": "https://github.com/timescale/pg_textsearch/commit/193ba06642321f3550ab8098c51912aed1d5b39b"
+        },
+        "date": 1795764081893,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "pg_textsearch INSERT TPS (c=1)",
+            "value": 2514.438005,
+            "unit": "tps"
+          },
+          {
+            "name": "pg_textsearch INSERT latency (c=1)",
+            "value": 0.398,
+            "unit": "ms"
+          },
+          {
+            "name": "pg_textsearch INSERT TPS (c=2)",
+            "value": 4509.87552,
+            "unit": "tps"
+          },
+          {
+            "name": "pg_textsearch INSERT latency (c=2)",
+            "value": 0.443,
+            "unit": "ms"
+          },
+          {
+            "name": "pg_textsearch INSERT TPS (c=4)",
+            "value": 7282.379047,
+            "unit": "tps"
+          },
+          {
+            "name": "pg_textsearch INSERT latency (c=4)",
+            "value": 0.549,
+            "unit": "ms"
+          },
+          {
+            "name": "pg_textsearch INSERT TPS (c=8)",
+            "value": 10679.110261,
+            "unit": "tps"
+          },
+          {
+            "name": "pg_textsearch INSERT latency (c=8)",
+            "value": 0.749,
             "unit": "ms"
           }
         ]
