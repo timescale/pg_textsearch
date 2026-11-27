@@ -331,16 +331,21 @@ tp_parallel_build_worker_main(dsm_segment *seg, shm_toc *toc)
 		int			term_count;
 		int			doc_length;
 
-		/* Evaluate index expression (or extract plain column) */
 		econtext->ecxt_scantuple = slot;
+
+		/*
+		 * Check the partial index predicate before evaluating the index
+		 * expression, as the serial build does, so rows the index excludes
+		 * never run the expression.
+		 */
+		if (indexInfo->ii_Predicate != NIL &&
+			!ExecQual(indexInfo->ii_PredicateState, econtext))
+			goto next_tuple;
+
+		/* Evaluate index expression (or extract plain column) */
 		FormIndexDatum(indexInfo, slot, estate, idx_values, idx_isnull);
 
 		if (idx_isnull[0])
-			goto next_tuple;
-
-		/* Check partial index predicate */
-		if (indexInfo->ii_Predicate != NIL &&
-			!ExecQual(indexInfo->ii_PredicateState, econtext))
 			goto next_tuple;
 
 		ctid = &slot->tts_tid;
