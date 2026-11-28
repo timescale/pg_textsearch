@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795846658368,
+  "lastUpdate": 1795846662746,
   "repoUrl": "https://github.com/timescale/pg_textsearch",
   "entries": {
     "cranfield Benchmarks": [
@@ -410990,6 +410990,78 @@ window.BENCHMARK_DATA = {
           {
             "name": "msmarco_vacuum - Query Latency After Update VACUUM",
             "value": 7.76,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tjgreen@gmail.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "193ba06642321f3550ab8098c51912aed1d5b39b",
+          "message": "Restore cached BM25 scores for correlated filters (#637)\n\nRestore index-score reuse for verified plain correlated lookups. Nested\nscans, opaque callbacks, external parameter hooks, and unsafe InitPlans\nretain standalone scoring.\n\nThe issue reproducer drops from ~81 ms to ~1.7 ms locally, with\nunchanged rows, ordering, and four-decimal scores.\n\nFixes #636.",
+          "timestamp": "2026-11-25T00:40:01Z",
+          "url": "https://github.com/timescale/pg_textsearch/commit/193ba06642321f3550ab8098c51912aed1d5b39b"
+        },
+        "date": 1795846661976,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "msmarco_vacuum - Index Size",
+            "value": 2435,
+            "unit": "MB"
+          },
+          {
+            "name": "msmarco_vacuum - Partial VACUUM (concentrated delete)",
+            "value": 1993.174,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco_vacuum - Full VACUUM (uniform delete)",
+            "value": 10447.101,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco_vacuum - Full VACUUM (uniform update)",
+            "value": 7746.192,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco_vacuum - Index Size After Partial VACUUM",
+            "value": 2435,
+            "unit": "MB"
+          },
+          {
+            "name": "msmarco_vacuum - Index Size After Full VACUUM",
+            "value": 2435,
+            "unit": "MB"
+          },
+          {
+            "name": "msmarco_vacuum - Query Latency After Partial VACUUM",
+            "value": 6.39,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco_vacuum - Query Latency After Full VACUUM",
+            "value": 6.22,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco_vacuum - Index Size After Update VACUUM",
+            "value": 2435,
+            "unit": "MB"
+          },
+          {
+            "name": "msmarco_vacuum - Query Latency After Update VACUUM",
+            "value": 6.31,
             "unit": "ms"
           }
         ]
