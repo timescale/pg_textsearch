@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795846653652,
+  "lastUpdate": 1795846658368,
   "repoUrl": "https://github.com/timescale/pg_textsearch",
   "entries": {
     "cranfield Benchmarks": [
@@ -54206,6 +54206,133 @@ window.BENCHMARK_DATA = {
           {
             "name": "msmarco (8.8M docs) - Query Latency After Update VACUUM",
             "value": 7.76,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Todd J. Green",
+            "username": "tjgreen42",
+            "email": "tjgreen@gmail.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "193ba06642321f3550ab8098c51912aed1d5b39b",
+          "message": "Restore cached BM25 scores for correlated filters (#637)\n\nRestore index-score reuse for verified plain correlated lookups. Nested\nscans, opaque callbacks, external parameter hooks, and unsafe InitPlans\nretain standalone scoring.\n\nThe issue reproducer drops from ~81 ms to ~1.7 ms locally, with\nunchanged rows, ordering, and four-decimal scores.\n\nFixes #636.",
+          "timestamp": "2026-11-25T00:40:01Z",
+          "url": "https://github.com/timescale/pg_textsearch/commit/193ba06642321f3550ab8098c51912aed1d5b39b"
+        },
+        "date": 1795846657651,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "msmarco (8.8M docs) - Index Build Time",
+            "value": 145953.024,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - 1 Token Query (p50)",
+            "value": 0.47,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - 2 Token Query (p50)",
+            "value": 1,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - 3 Token Query (p50)",
+            "value": 1.88,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - 4 Token Query (p50)",
+            "value": 3.15,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - 5 Token Query (p50)",
+            "value": 4.92,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - 6 Token Query (p50)",
+            "value": 7.52,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - 7 Token Query (p50)",
+            "value": 12.1,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - 8+ Token Query (p50)",
+            "value": 18.21,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - Weighted Latency (p50, ms)",
+            "value": 3.26,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - Weighted Throughput (avg ms/query)",
+            "value": 4.14,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - Index Size",
+            "value": 2432.6,
+            "unit": "MB"
+          },
+          {
+            "name": "msmarco (8.8M docs) - Partial VACUUM (concentrated delete)",
+            "value": 1993.174,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - Full VACUUM (uniform delete)",
+            "value": 10447.101,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - Full VACUUM (uniform update)",
+            "value": 7746.192,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - Index Size After Partial VACUUM",
+            "value": 2435,
+            "unit": "MB"
+          },
+          {
+            "name": "msmarco (8.8M docs) - Index Size After Full VACUUM",
+            "value": 2435,
+            "unit": "MB"
+          },
+          {
+            "name": "msmarco (8.8M docs) - Query Latency After Partial VACUUM",
+            "value": 6.39,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - Query Latency After Full VACUUM",
+            "value": 6.22,
+            "unit": "ms"
+          },
+          {
+            "name": "msmarco (8.8M docs) - Index Size After Update VACUUM",
+            "value": 2435,
+            "unit": "MB"
+          },
+          {
+            "name": "msmarco (8.8M docs) - Query Latency After Update VACUUM",
+            "value": 6.31,
             "unit": "ms"
           }
         ]
